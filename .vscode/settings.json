@@ -1,0 +1,10 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "go": true,
+        "/usr/local/go/bin/go": true,
+        "/usr/bin/go": true,
+        "brew": true,
+        },
+        "mkdir": true
+    }
+}

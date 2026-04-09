@@ -1,0 +1,18 @@
+# Build output
+kshrk
+dist/
+
+# Go toolchain
+*.test
+*.out
+vendor/
+
+# Planning docs (local only)
+planning/
+
+# Env / secrets
+*.env
+.env
+
+# macOS
+.DS_Store
