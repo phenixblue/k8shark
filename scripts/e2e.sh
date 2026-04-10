@@ -48,6 +48,26 @@ assert_not_empty() {
   fi
 }
 
+assert_equals() {
+  local desc="$1" got="$2" want="$3"
+  if [[ "$got" == "$want" ]]; then
+    pass "$desc"
+  else
+    fail "$desc"
+    info "want: $want"
+    info "got:  $got"
+  fi
+}
+
+# sorted_names runs a jsonpath query against a kubectl output and returns a
+# sorted, newline-separated list of names — for stable round-trip comparison.
+sorted_names() {
+  local kc="$1"; shift
+  kubectl --kubeconfig "$kc" --request-timeout=10s "$@" \
+    -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}' 2>/dev/null \
+    | sort
+}
+
 # ── Cleanup ────────────────────────────────────────────────────────────────────
 SERVER_PID=""
 cleanup() {
@@ -234,6 +254,20 @@ kubectl "${KC[@]}" rollout status daemonset/log-collector -n k8shark-test --time
 kubectl "${KC[@]}" rollout status statefulset/web         -n k8shark-test --timeout=120s
 pass "All workloads ready"
 
+# ── Phase 4b: Snapshot live cluster state (for round-trip comparison later) ───
+log "Snapshotting live cluster state"
+LIVE_POD_NAMES=$(sorted_names      "$KIND_KUBECONFIG" get pods         -n k8shark-test)
+LIVE_DEPLOY_NAMES=$(sorted_names   "$KIND_KUBECONFIG" get deployments  -n k8shark-test)
+LIVE_DS_NAMES=$(sorted_names       "$KIND_KUBECONFIG" get daemonsets   -n k8shark-test)
+LIVE_STS_NAMES=$(sorted_names      "$KIND_KUBECONFIG" get statefulsets -n k8shark-test)
+LIVE_JOB_NAMES=$(sorted_names      "$KIND_KUBECONFIG" get jobs         -n k8shark-jobs)
+LIVE_NODE_NAMES=$(sorted_names     "$KIND_KUBECONFIG" get nodes)
+LIVE_NGINX_REPLICAS=$(kubectl --kubeconfig "$KIND_KUBECONFIG" get deployment nginx \
+  -n k8shark-test -o jsonpath='{.spec.replicas}' 2>/dev/null)
+LIVE_NGINX_IMAGE=$(kubectl --kubeconfig "$KIND_KUBECONFIG" get deployment nginx \
+  -n k8shark-test -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null)
+pass "Live state snapshot saved"
+
 info "Resource state at time of capture:"
 kubectl "${KC[@]}" get pods,deployments,daemonsets,statefulsets,pvc -n k8shark-test 2>/dev/null || true
 kubectl "${KC[@]}" get jobs -n k8shark-jobs 2>/dev/null || true
@@ -307,6 +341,112 @@ if [[ ! -s "$CAPTURE_FILE" ]]; then
 fi
 ARCHIVE_SIZE=$(du -h "$CAPTURE_FILE" | cut -f1)
 pass "Capture archive written: $(basename "$CAPTURE_FILE") ($ARCHIVE_SIZE)"
+
+# ── Phase 6b: kshrk inspect ───────────────────────────────────────────────────
+log "Testing kshrk inspect"
+
+# Table output
+out=$("$BINARY" inspect "$CAPTURE_FILE" 2>&1) || true
+assert_contains "inspect: Capture ID present"          "$out" "Capture ID:"
+assert_contains "inspect: Kubernetes version present"  "$out" "Kubernetes:"
+assert_contains "inspect: Record count present"         "$out" "Records:"
+assert_contains "inspect: pods resource listed"         "$out" "pods"
+assert_contains "inspect: deployments resource listed"  "$out" "deployments"
+assert_contains "inspect: secrets resource listed"      "$out" "secrets"
+
+# JSON output
+out=$("$BINARY" inspect "$CAPTURE_FILE" -o json 2>&1) || true
+INSPECT_RECORDS=$(echo "$out" | jq -r '.record_count' 2>/dev/null || echo "")
+INSPECT_VERSION=$(echo "$out" | jq -r '.kubernetes_version' 2>/dev/null || echo "")
+assert_not_empty "inspect -o json: kubernetes_version present" "$INSPECT_VERSION"
+if [[ -n "$INSPECT_RECORDS" && "$INSPECT_RECORDS" -gt 0 ]]; then
+  pass "inspect -o json: record_count > 0 ($INSPECT_RECORDS)"
+else
+  fail "inspect -o json: expected record_count > 0, got '${INSPECT_RECORDS}'"
+fi
+
+# ── Phase 6c: capture with --redact-secrets and --allow-secret ────────────────
+log "Testing kshrk capture --redact-secrets --allow-secret"
+INLINE_REDACTED_FILE="${CAPTURE_FILE%.tar.gz}-inline-redacted.tar.gz"
+
+# Capture again with inline redaction; allow app-secret so we can verify it is
+# preserved while other secrets are redacted.
+"$BINARY" --config "$CAPTURE_CONFIG" capture \
+  --redact-secrets \
+  --allow-secret "k8shark-test/app-secret" \
+  --output "$INLINE_REDACTED_FILE"
+
+if [[ -s "$INLINE_REDACTED_FILE" ]]; then
+  pass "capture --redact-secrets: output archive created"
+else
+  fail "capture --redact-secrets: output archive missing or empty"
+fi
+
+INLINE_SERVER_LOG="/tmp/k8shark-inline-server-$$.log"
+INLINE_SERVER_PID=""
+"$BINARY" open "$INLINE_REDACTED_FILE" >"$INLINE_SERVER_LOG" 2>&1 &
+INLINE_SERVER_PID=$!
+INLINE_KUBECONFIG=""
+for i in $(seq 1 30); do
+  if grep -q "Kubeconfig:" "$INLINE_SERVER_LOG" 2>/dev/null; then
+    INLINE_KUBECONFIG=$(grep "Kubeconfig:" "$INLINE_SERVER_LOG" | awk '{print $2}')
+    break
+  fi
+  sleep 0.5
+done
+
+if [[ -z "$INLINE_KUBECONFIG" ]]; then
+  fail "capture --redact-secrets: mock server did not start within 15s"
+else
+  pass "capture --redact-secrets: mock server started"
+
+  for i in $(seq 1 20); do
+    if kubectl --kubeconfig "$INLINE_KUBECONFIG" --request-timeout=2s \
+        get namespaces </dev/null &>/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.5
+  done
+
+  REDACTED_B64="UkVEQUNURUQ="
+
+  # app-secret should be preserved (allowlisted).
+  app_val=$(kubectl --kubeconfig "$INLINE_KUBECONFIG" --request-timeout=10s \
+    get secret app-secret -n k8shark-test \
+    -o jsonpath='{.data.db-password}' 2>/dev/null || echo "")
+  if [[ "$app_val" != "$REDACTED_B64" && -n "$app_val" ]]; then
+    pass "capture --redact-secrets: allowlisted secret (app-secret) data preserved"
+  elif [[ -z "$app_val" ]]; then
+    fail "capture --redact-secrets: could not read app-secret data"
+  else
+    fail "capture --redact-secrets: app-secret was redacted despite --allow-secret"
+  fi
+
+  # Other secrets in k8shark-test should be redacted.
+  other_secret=$(kubectl --kubeconfig "$INLINE_KUBECONFIG" --request-timeout=10s \
+    get secrets -n k8shark-test -o name 2>/dev/null \
+    | grep -v "app-secret" | head -1 || echo "")
+  if [[ -n "$other_secret" ]]; then
+    other_data=$(kubectl --kubeconfig "$INLINE_KUBECONFIG" --request-timeout=10s \
+      get "$other_secret" -n k8shark-test \
+      -o jsonpath='{range .data.*}{@}{"\n"}{end}' 2>/dev/null | head -1 || echo "")
+    if [[ "$other_data" == "$REDACTED_B64" ]]; then
+      pass "capture --redact-secrets: non-allowlisted secret data redacted"
+    elif [[ -z "$other_data" ]]; then
+      info "capture --redact-secrets: other secret had no data fields to check"
+    else
+      fail "capture --redact-secrets: non-allowlisted secret not redacted (got '$other_data')"
+    fi
+  else
+    info "capture --redact-secrets: no other secrets found in k8shark-test to verify"
+  fi
+fi
+
+if [[ -n "$INLINE_SERVER_PID" ]]; then
+  kill "$INLINE_SERVER_PID" 2>/dev/null || true
+  wait "$INLINE_SERVER_PID" 2>/dev/null || true
+fi
+rm -f "$INLINE_REDACTED_FILE" "$INLINE_SERVER_LOG"
 
 # ── Phase 7: Start mock server ─────────────────────────────────────────────────
 log "Starting kshrk open (mock server)"
@@ -434,7 +574,112 @@ assert_contains "PVC www-web-0 present" "$out" "www-web-0"
 out=$(kubectl "${EKC[@]}" get pv -o name 2>&1) || true
 assert_not_empty "PersistentVolumes present (cluster-scoped)" "$out"
 
-# ── Phase 9: Summary ───────────────────────────────────────────────────────────
+# ── Phase 8b: kshrk redact ────────────────────────────────────────────────────
+log "Testing kshrk redact"
+REDACTED_FILE="${CAPTURE_FILE%.tar.gz}-redacted.tar.gz"
+REDACTED_SERVER_LOG="/tmp/k8shark-redacted-server-$$.log"
+REDACTED_KC="/tmp/k8shark-redacted-kc-$$.yaml"
+REDACTED_SERVER_PID=""
+
+# Run redact on the original (un-redacted) capture without an allowlist so
+# all secrets (including app-secret) are redacted.
+redact_out=$("$BINARY" redact \
+  --in "$CAPTURE_FILE" \
+  --out "$REDACTED_FILE" 2>&1) || true
+assert_contains "redact: success message present"       "$redact_out" "Redacted"
+assert_contains "redact: reported secrets redacted"     "$redact_out" "secret"
+if [[ -s "$REDACTED_FILE" ]]; then
+  pass "redact: output archive created"
+else
+  fail "redact: output archive missing or empty"
+fi
+
+# Count redacted secrets from message (expect > 0).
+REDACTED_COUNT=$(echo "$redact_out" | grep -oE '[0-9]+ secret' | grep -oE '[0-9]+' || echo "0")
+if [[ "$REDACTED_COUNT" -gt 0 ]]; then
+  pass "redact: $REDACTED_COUNT secret(s) redacted"
+else
+  fail "redact: expected > 0 secrets redacted, got 0"
+fi
+
+# Open the redacted archive and verify secret data values are REDACTED.
+# Use --kubeconfig-out so this server writes its kubeconfig to a private temp
+# file and does NOT overwrite the original server's kubeconfig (both archives
+# share the same capture ID, which would stomp the original kubeconfig path
+# causing Phase 9 round-trip queries to hit a dead server port).
+"$BINARY" open "$REDACTED_FILE" --kubeconfig-out "$REDACTED_KC" >"$REDACTED_SERVER_LOG" 2>&1 &
+REDACTED_SERVER_PID=$!
+REDACTED_KUBECONFIG=""
+for i in $(seq 1 30); do
+  if [[ -s "$REDACTED_KC" ]]; then
+    REDACTED_KUBECONFIG="$REDACTED_KC"
+    break
+  fi
+  sleep 0.5
+done
+
+if [[ -z "$REDACTED_KUBECONFIG" ]]; then
+  fail "redact: mock server for redacted archive did not start within 15s"
+else
+  pass "redact: mock server for redacted archive started"
+
+  # Wait for the redacted server to be ready.
+  for i in $(seq 1 20); do
+    if kubectl --kubeconfig "$REDACTED_KUBECONFIG" --request-timeout=2s \
+        get namespaces </dev/null &>/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.5
+  done
+
+  REDACTED_B64="UkVEQUNURUQ="
+
+  # app-secret should be redacted (no allowlist applied).
+  app_val=$(kubectl --kubeconfig "$REDACTED_KUBECONFIG" --request-timeout=10s \
+    get secret app-secret -n k8shark-test \
+    -o jsonpath='{.data.db-password}' 2>/dev/null || echo "")
+  if [[ "$app_val" == "$REDACTED_B64" ]]; then
+    pass "redact: secret data replaced with REDACTED"
+  elif [[ -z "$app_val" ]]; then
+    fail "redact: could not read app-secret data from redacted archive"
+  else
+    fail "redact: app-secret data was not redacted (got '$app_val')"
+  fi
+fi
+
+# Kill the redacted mock server.
+if [[ -n "$REDACTED_SERVER_PID" ]]; then
+  kill "$REDACTED_SERVER_PID" 2>/dev/null || true
+  wait "$REDACTED_SERVER_PID" 2>/dev/null || true
+fi
+rm -f "$REDACTED_FILE" "$REDACTED_SERVER_LOG" "$REDACTED_KC"
+
+# ── Phase 9: Round-trip comparison (live cluster vs. mock server) ─────────────
+log "Round-trip comparison: live cluster vs. mock server"
+
+MOCK_POD_NAMES=$(sorted_names      "$E2E_KUBECONFIG" get pods         -n k8shark-test)
+MOCK_DEPLOY_NAMES=$(sorted_names   "$E2E_KUBECONFIG" get deployments  -n k8shark-test)
+MOCK_DS_NAMES=$(sorted_names       "$E2E_KUBECONFIG" get daemonsets   -n k8shark-test)
+MOCK_STS_NAMES=$(sorted_names      "$E2E_KUBECONFIG" get statefulsets -n k8shark-test)
+MOCK_JOB_NAMES=$(sorted_names      "$E2E_KUBECONFIG" get jobs         -n k8shark-jobs)
+MOCK_NODE_NAMES=$(sorted_names     "$E2E_KUBECONFIG" get nodes)
+MOCK_NGINX_REPLICAS=$(kubectl --kubeconfig "$E2E_KUBECONFIG" --request-timeout=10s \
+  get deployment nginx -n k8shark-test \
+  -o jsonpath='{.spec.replicas}' 2>/dev/null)
+MOCK_NGINX_IMAGE=$(kubectl --kubeconfig "$E2E_KUBECONFIG" --request-timeout=10s \
+  get deployment nginx -n k8shark-test \
+  -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null)
+
+assert_equals "round-trip: pod names in k8shark-test"         "$MOCK_POD_NAMES"     "$LIVE_POD_NAMES"
+assert_equals "round-trip: deployment names in k8shark-test"  "$MOCK_DEPLOY_NAMES"  "$LIVE_DEPLOY_NAMES"
+assert_equals "round-trip: daemonset names in k8shark-test"   "$MOCK_DS_NAMES"      "$LIVE_DS_NAMES"
+assert_equals "round-trip: statefulset names in k8shark-test" "$MOCK_STS_NAMES"     "$LIVE_STS_NAMES"
+assert_equals "round-trip: job names in k8shark-jobs"         "$MOCK_JOB_NAMES"     "$LIVE_JOB_NAMES"
+assert_equals "round-trip: node names"                        "$MOCK_NODE_NAMES"    "$LIVE_NODE_NAMES"
+assert_equals "round-trip: deployment/nginx spec.replicas"    "$MOCK_NGINX_REPLICAS" "$LIVE_NGINX_REPLICAS"
+assert_equals "round-trip: deployment/nginx container image"  "$MOCK_NGINX_IMAGE"   "$LIVE_NGINX_IMAGE"
+
+# ── Phase 10: Summary ───────────────────────────────────────────────────────────
 log "Test summary"
 printf '  Passed: \033[1;32m%d\033[0m\n' "$PASS"
 printf '  Failed: \033[1;31m%d\033[0m\n' "$FAIL"
