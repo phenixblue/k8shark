@@ -341,3 +341,50 @@ func TestHandler_Watch_TimeoutSeconds(t *testing.T) {
 		t.Error("expected a BOOKMARK event")
 	}
 }
+
+// TestHandler_WriteMethodsReturn405 verifies that POST, PUT, PATCH, and DELETE
+// all receive a 405 Method Not Allowed response with a Status JSON body, while
+// a regular GET to the same path is not blocked.
+func TestHandler_WriteMethodsReturn405(t *testing.T) {
+	store := buildTestStore(t, map[string][]byte{
+		"/api/v1/namespaces/default/pods": []byte(`{"kind":"PodList","items":[]}`),
+	})
+	h := newHandler(store, time.Time{}, false)
+
+	writeMethods := []string{
+		http.MethodPost,
+		http.MethodPut,
+		http.MethodPatch,
+		http.MethodDelete,
+	}
+	path := "/api/v1/namespaces/default/pods"
+
+	for _, method := range writeMethods {
+		t.Run(method, func(t *testing.T) {
+			req := httptest.NewRequest(method, path, nil)
+			rw := httptest.NewRecorder()
+			h.ServeHTTP(rw, req)
+
+			if rw.Code != http.StatusMethodNotAllowed {
+				t.Fatalf("expected 405, got %d", rw.Code)
+			}
+			var body map[string]any
+			if err := json.Unmarshal(rw.Body.Bytes(), &body); err != nil {
+				t.Fatalf("expected JSON body: %v", err)
+			}
+			if code, _ := body["code"].(float64); int(code) != http.StatusMethodNotAllowed {
+				t.Errorf("expected body.code=405, got %v", body["code"])
+			}
+		})
+	}
+
+	// GET must still work normally.
+	t.Run("GET_allowed", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rw := httptest.NewRecorder()
+		h.ServeHTTP(rw, req)
+		if rw.Code == http.StatusMethodNotAllowed {
+			t.Fatalf("GET should not return 405")
+		}
+	})
+}
