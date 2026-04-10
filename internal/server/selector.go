@@ -19,14 +19,15 @@ type k8sObject struct {
 
 // labelRequirement is one parsed segment of a labelSelector.
 type labelRequirement struct {
-	key   string
-	op    string // "=", "!=", "in", "notin", "exists", "doesnotexist"
+	key    string
+	op     string // "=", "!=", "in", "notin", "exists", "doesnotexist"
 	values []string
 }
 
 // parseRequirements parses a comma-separated labelSelector string into requirements.
 // Supports: key=val, key==val, key!=val, key in (v1,v2), key notin (v1,v2),
-//           key (existence), !key (non-existence).
+//
+//	key (existence), !key (non-existence).
 func parseRequirements(selector string) ([]labelRequirement, error) {
 	if selector == "" {
 		return nil, nil
@@ -175,9 +176,9 @@ func matchesLabels(obj *k8sObject, reqs []labelRequirement) bool {
 
 // fieldSelectorReq is one parsed field= or field!= requirement.
 type fieldSelectorReq struct {
-	field   string
-	op      string // "=" or "!="
-	value   string
+	field string
+	op    string // "=" or "!="
+	value string
 }
 
 // parseFieldSelector parses a comma-separated fieldSelector.

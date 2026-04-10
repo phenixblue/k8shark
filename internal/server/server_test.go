@@ -85,8 +85,8 @@ func TestServer_Open_EndToEnd(t *testing.T) {
 	}
 
 	for _, tc := range []struct {
-		name   string
-		path   string
+		name     string
+		path     string
 		wantKind string
 	}{
 		{"api-versions", "/api", "APIVersions"},

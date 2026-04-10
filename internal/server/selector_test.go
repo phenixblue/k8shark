@@ -76,7 +76,7 @@ func TestApplySelectors_LabelFilter(t *testing.T) {
 	})
 
 	cases := []struct {
-		sel      string
+		sel       string
 		wantNames []string
 	}{
 		{"app=nginx", []string{"nginx", "nginx-dev"}},
@@ -109,7 +109,7 @@ func TestApplySelectors_FieldFilter(t *testing.T) {
 	})
 
 	cases := []struct {
-		sel      string
+		sel       string
 		wantNames []string
 	}{
 		{"metadata.name=nginx", []string{"nginx"}},
