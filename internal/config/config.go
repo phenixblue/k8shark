@@ -23,6 +23,10 @@ type Resource struct {
 	IntervalRaw string `mapstructure:"interval"`
 	// Interval is parsed from IntervalRaw.
 	Interval time.Duration `mapstructure:"-"`
+	// Logs is the number of tail lines to capture from each pod's log when this
+	// resource is "pods". 0 (default) disables log capture. For example, set
+	// logs: 200 to capture the last 200 lines from every pod at capture time.
+	Logs int `mapstructure:"logs"`
 }
 
 // Config holds the full capture configuration.
@@ -99,6 +103,9 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("resources[%d] (%s): invalid interval %q: %w", i, r.Resource, r.IntervalRaw, err)
 		}
 		r.Interval = iv
+		if r.Logs < 0 {
+			return fmt.Errorf("resources[%d] (%s): 'logs' must be >= 0", i, r.Resource)
+		}
 	}
 
 	return nil
