@@ -95,7 +95,7 @@ func Open(opts OpenOptions) (*Server, error) {
 		home, _ := os.UserHomeDir()
 		kubeconfigPath = filepath.Join(home, ".kube", "k8shark-"+store.Metadata.CaptureID+".yaml")
 	}
-	if err := writeKubeconfig(addr, certPEM, kubeconfigPath); err != nil {
+	if err := writeKubeconfig(addr, kubeconfigPath); err != nil {
 		_ = os.RemoveAll(tmpDir)
 		_ = ln.Close()
 		return nil, fmt.Errorf("writing kubeconfig: %w", err)
@@ -128,6 +128,16 @@ func (s *Server) Address() string { return s.address }
 
 // KubeconfigPath returns the path to the generated kubeconfig.
 func (s *Server) KubeconfigPath() string { return s.kubeconfigPath }
+
+// Shutdown immediately stops the server and cleans up the temp directory.
+// Useful in tests and programmatic usage; Wait() is preferred for CLI use.
+func (s *Server) Shutdown() {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = s.httpServer.Shutdown(ctx)
+	<-s.done
+	_ = os.RemoveAll(s.tmpDir)
+}
 
 // Wait blocks until Ctrl+C / SIGTERM, then shuts the server down and cleans up.
 func (s *Server) Wait() error {

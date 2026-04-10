@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/phenixblue/k8shark/internal/capture"
 	"github.com/phenixblue/k8shark/internal/config"
@@ -57,9 +58,57 @@ func runCapture(cmd *cobra.Command, args []string) error {
 	}
 
 	fmt.Fprintf(os.Stdout, "Starting capture -> %s\n", cfg.Output)
-	if err := engine.Run(); err != nil {
+
+	// Spinner runs until capture finishes.
+	stopSpinner := startSpinner(os.Stdout)
+	sum, err := engine.Run()
+	stopSpinner()
+
+	if err != nil {
 		return fmt.Errorf("capture failed: %w", err)
 	}
-	fmt.Fprintf(os.Stdout, "Capture complete -> %s\n", cfg.Output)
+
+	fmt.Fprintf(os.Stdout, "\nCapture complete\n")
+	fmt.Fprintf(os.Stdout, "  Output:    %s (%s)\n", sum.OutputPath, formatBytes(sum.OutputSize))
+	fmt.Fprintf(os.Stdout, "  Records:   %d across %d resource path(s)\n", sum.RecordCount, sum.ResourceCount)
+	fmt.Fprintf(os.Stdout, "  Duration:  %s\n", sum.Duration)
 	return nil
+}
+
+// startSpinner prints a rotating spinner on w until the returned stop function
+// is called. stop blocks until the spinner goroutine has exited.
+func startSpinner(w *os.File) func() {
+	frames := []string{"|", "/", "-", "\\"}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				fmt.Fprint(w, "\r")
+				return
+			case <-time.After(100 * time.Millisecond):
+				fmt.Fprintf(w, "\r  capturing %s", frames[i%len(frames)])
+			}
+		}
+	}()
+	return func() {
+		close(stop)
+		<-done
+	}
+}
+
+// formatBytes returns a human-readable byte size string.
+func formatBytes(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(b)/float64(div), "KMGTPE"[exp])
 }

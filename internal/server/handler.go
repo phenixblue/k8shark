@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -41,6 +42,14 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Route discovery and resource requests.
 	switch {
+	case path == "/version":
+		h.serveVersion(w)
+	case path == "/healthz", path == "/readyz", path == "/livez":
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	case path == "/openapi/v2":
+		// Return a minimal stub; kubectl tolerates an empty spec.
+		writeJSON(w, http.StatusOK, map[string]any{"swagger": "2.0", "info": map[string]any{"title": "k8shark", "version": "0.0.0"}, "paths": map[string]any{}})
 	case path == "/api":
 		h.serveAPIVersions(w)
 	case path == "/apis":
@@ -50,7 +59,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(path, "/apis/") && isGroupVersionPath(path):
 		h.serveGroupResourceList(w, path)
 	default:
-		h.serveResource(w, path, replayAt)
+		h.serveResource(w, r, path, replayAt)
 	}
 }
 
@@ -58,6 +67,24 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func isGroupVersionPath(path string) bool {
 	rest := strings.TrimPrefix(path, "/apis/")
 	return len(strings.Split(rest, "/")) == 2
+}
+
+func (h *handler) serveVersion(w http.ResponseWriter) {
+	kv := h.store.Metadata.KubernetesVersion
+	if kv == "" {
+		kv = "v0.0.0-k8shark"
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"major":        "1",
+		"minor":        "0",
+		"gitVersion":   kv,
+		"gitCommit":    "k8shark-replay",
+		"gitTreeState": "clean",
+		"buildDate":    h.store.Metadata.CapturedAt.UTC().Format(time.RFC3339),
+		"goVersion":    "go0.0.0",
+		"compiler":     "gc",
+		"platform":     "linux/amd64",
+	})
 }
 
 func (h *handler) serveAPIVersions(w http.ResponseWriter) {
@@ -151,7 +178,7 @@ func (h *handler) serveGroupResourceList(w http.ResponseWriter, path string) {
 	h.serveAPIResourceList(w, parts[0], parts[1])
 }
 
-func (h *handler) serveResource(w http.ResponseWriter, path string, at time.Time) {
+func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path string, at time.Time) {
 	body, code, err := h.store.Latest(path, at)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, statusObj(500, err.Error()))
@@ -165,6 +192,13 @@ func (h *handler) serveResource(w http.ResponseWriter, path string, at time.Time
 
 	if code == 404 {
 		h.writeStatus(w, http.StatusNotFound, fmt.Sprintf("%q not found in capture", path))
+		return
+	}
+
+	// Apply label/field selectors if present.
+	body, err = applySelectors(body, r.URL.Query().Get("labelSelector"), r.URL.Query().Get("fieldSelector"))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, statusObj(500, err.Error()))
 		return
 	}
 
@@ -211,18 +245,32 @@ func (h *handler) trySingleItemGet(path string, at time.Time) ([]byte, int) {
 }
 
 func (h *handler) handleWatch(w http.ResponseWriter, r *http.Request, path string, at time.Time) {
-	body, code, err := h.store.Latest(strings.TrimSuffix(path, "/"), at)
+	rawBody, code, err := h.store.Latest(strings.TrimSuffix(path, "/"), at)
 	if err != nil || code != 200 {
 		h.writeStatus(w, http.StatusNotFound, fmt.Sprintf("%q not found in capture", path))
 		return
 	}
 
+	// Apply selectors before streaming watch events.
+	body, _ := applySelectors(rawBody, r.URL.Query().Get("labelSelector"), r.URL.Query().Get("fieldSelector"))
+
 	var list struct {
+		Metadata struct {
+			ResourceVersion string `json:"resourceVersion"`
+		} `json:"metadata"`
 		Items []json.RawMessage `json:"items"`
 	}
 	if err := json.Unmarshal(body, &list); err != nil {
 		h.writeStatus(w, http.StatusInternalServerError, "parsing list")
 		return
+	}
+
+	// Honor ?timeoutSeconds: nil channel blocks forever (no timeout).
+	var timer <-chan time.Time
+	if secs := r.URL.Query().Get("timeoutSeconds"); secs != "" {
+		if n, err := strconv.Atoi(secs); err == nil && n > 0 {
+			timer = time.After(time.Duration(n) * time.Second)
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -239,13 +287,19 @@ func (h *handler) handleWatch(w http.ResponseWriter, r *http.Request, path strin
 		}
 	}
 
+	// Use resourceVersion from the list metadata; fall back to capture timestamp.
+	rv := list.Metadata.ResourceVersion
+	if rv == "" {
+		rv = fmt.Sprintf("%d", h.store.Metadata.CapturedAt.Unix())
+	}
+
 	// BOOKMARK signals end of initial list; kubectl -w then waits for new events.
 	bookmark := map[string]any{
 		"type": "BOOKMARK",
 		"object": map[string]any{
 			"apiVersion": "v1",
 			"kind":       "Status",
-			"metadata":   map[string]string{"resourceVersion": "0"},
+			"metadata":   map[string]string{"resourceVersion": rv},
 		},
 	}
 	data, _ := json.Marshal(bookmark)
@@ -253,7 +307,12 @@ func (h *handler) handleWatch(w http.ResponseWriter, r *http.Request, path strin
 	if canFlush {
 		flusher.Flush()
 	}
-	<-r.Context().Done()
+
+	// Hold until the client disconnects or timeoutSeconds elapses.
+	select {
+	case <-r.Context().Done():
+	case <-timer:
+	}
 }
 
 func (h *handler) writeStatus(w http.ResponseWriter, code int, msg string) {

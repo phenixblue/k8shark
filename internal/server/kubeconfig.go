@@ -1,20 +1,28 @@
 package server
 
 import (
-	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
 	"text/template"
 )
 
+// kubeconfigTmpl generates a kubeconfig for the local mock server.
+//
+// insecure-skip-tls-verify is appropriate here: the server is a short-lived
+// process on 127.0.0.1 whose TLS cert is generated fresh each run. There is
+// no meaningful security boundary to protect.
+//
+// A static bearer token is set so kubectl has an explicit credential mechanism
+// and never falls back to prompting for a username/password.
+// The mock server ignores all Authorization headers.
 var kubeconfigTmpl = template.Must(template.New("kc").Parse(`apiVersion: v1
 kind: Config
 preferences: {}
 clusters:
 - cluster:
     server: {{.ServerAddr}}
-    certificate-authority-data: {{.CACertB64}}
+    insecure-skip-tls-verify: true
   name: k8shark
 contexts:
 - context:
@@ -24,18 +32,16 @@ contexts:
 current-context: k8shark
 users:
 - name: k8shark
-  user: {}
+  user:
+    token: k8shark-replay
 `))
 
 type kubeconfigData struct {
 	ServerAddr string
-	CACertB64  string
 }
 
-// writeKubeconfig writes a kubeconfig that points kubectl at the mock server.
-// certPEM is embedded as the certificate-authority-data so kubectl validates
-// the self-signed TLS cert without --insecure-skip-tls-verify.
-func writeKubeconfig(serverAddr string, certPEM []byte, outputPath string) error {
+// writeKubeconfig writes a kubeconfig pointing kubectl at the mock server.
+func writeKubeconfig(serverAddr string, outputPath string) error {
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0o750); err != nil {
 		return fmt.Errorf("creating kubeconfig dir: %w", err)
 	}
@@ -44,8 +50,5 @@ func writeKubeconfig(serverAddr string, certPEM []byte, outputPath string) error
 		return fmt.Errorf("creating kubeconfig: %w", err)
 	}
 	defer f.Close()
-	return kubeconfigTmpl.Execute(f, kubeconfigData{
-		ServerAddr: serverAddr,
-		CACertB64:  base64.StdEncoding.EncodeToString(certPEM),
-	})
+	return kubeconfigTmpl.Execute(f, kubeconfigData{ServerAddr: serverAddr})
 }

@@ -18,11 +18,19 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
+// CaptureSummary holds statistics about a completed capture run.
+type CaptureSummary struct {
+	OutputPath    string
+	OutputSize    int64
+	RecordCount   int
+	ResourceCount int        // distinct API paths captured
+	Duration      time.Duration
+}
+
 // Engine orchestrates the capture loop.
 type Engine struct {
 	cfg        *config.Config
 	verbose    bool
-	restClient *rest.RESTClient
 	httpClient *http.Client
 	baseURL    string
 	mu         sync.Mutex
@@ -61,8 +69,21 @@ func NewEngine(cfg *config.Config, verbose bool) (*Engine, error) {
 	}, nil
 }
 
+// newEngineWith constructs an Engine with a pre-built HTTP client and base URL.
+// Used in tests to inject a fake API server.
+func newEngineWith(cfg *config.Config, client *http.Client, baseURL string, verbose bool) *Engine {
+	return &Engine{
+		cfg:        cfg,
+		verbose:    verbose,
+		httpClient: client,
+		baseURL:    baseURL,
+		index:      make(Index),
+	}
+}
+
 // Run executes the capture and writes the output archive.
-func (e *Engine) Run() error {
+func (e *Engine) Run() (*CaptureSummary, error) {
+	start := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), e.cfg.Duration)
 	defer cancel()
 
@@ -92,7 +113,22 @@ func (e *Engine) Run() error {
 		fmt.Fprintf(os.Stdout, "  captured %d records\n", len(e.records))
 	}
 
-	return archive.Write(e.cfg.Output, meta, e.records, e.index)
+	if err := archive.Write(e.cfg.Output, meta, e.records, e.index); err != nil {
+		return nil, err
+	}
+
+	var outputSize int64
+	if fi, err := os.Stat(e.cfg.Output); err == nil {
+		outputSize = fi.Size()
+	}
+
+	return &CaptureSummary{
+		OutputPath:    e.cfg.Output,
+		OutputSize:    outputSize,
+		RecordCount:   len(e.records),
+		ResourceCount: len(e.index),
+		Duration:      time.Since(start).Truncate(time.Second),
+	}, nil
 }
 
 // pollResource polls a single resource kind at its configured interval until ctx is done.
@@ -151,6 +187,9 @@ func (e *Engine) fetchResource(ctx context.Context, res config.Resource) {
 			continue
 		}
 
+		if resp.StatusCode == http.StatusForbidden {
+			fmt.Fprintf(os.Stderr, "  [warn] RBAC denied: %s (check cluster permissions)\n", apiPath)
+		}
 		if e.verbose {
 			fmt.Fprintf(os.Stdout, "  [capture] %s -> %d\n", apiPath, resp.StatusCode)
 		}
