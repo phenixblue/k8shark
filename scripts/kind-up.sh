@@ -189,15 +189,70 @@ spec:
 YAML
 ok "Job: data-processor"
 
+# StatefulSet with PVC (nginx with persistent storage)
+kubectl "${KC[@]}" apply -n k8shark-test -f - <<'YAML'
+apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-service
+  labels:
+    app: nginx-stateful
+spec:
+  ports:
+  - port: 80
+    name: web
+  clusterIP: None
+  selector:
+    app: nginx-stateful
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: web
+spec:
+  serviceName: "nginx-service"
+  replicas: 3
+  selector:
+    matchLabels:
+      app: nginx-stateful
+  template:
+    metadata:
+      labels:
+        app: nginx-stateful
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+          name: web
+        volumeMounts:
+        - name: www
+          mountPath: /usr/share/nginx/html
+  volumeClaimTemplates:
+  - metadata:
+      name: www
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: "standard"
+      resources:
+        requests:
+          storage: 1Gi
+YAML
+ok "StatefulSet: web (x3) with PVCs"
+
 # ── Wait for workloads ─────────────────────────────────────────────────────────
 log "Waiting for workloads (timeout 120s each)"
 kubectl "${KC[@]}" rollout status deployment/nginx        -n k8shark-test --timeout=120s
 kubectl "${KC[@]}" rollout status deployment/redis        -n k8shark-test --timeout=120s
 kubectl "${KC[@]}" rollout status daemonset/log-collector -n k8shark-test --timeout=120s
+kubectl "${KC[@]}" rollout status statefulset/web         -n k8shark-test --timeout=120s
 ok "All workloads ready"
 
 # ── Done ───────────────────────────────────────────────────────────────────────
 printf '\n\033[1;32mCluster ready.\033[0m\n'
+info "export KUBECONFIG=${KIND_KUBECONFIG}"
+info "kubectl get pods,statefulsets,pvc -n k8shark-test"
 printf '\n  export KUBECONFIG=%s\n\n' "$KIND_KUBECONFIG"
 printf '  kubectl get pods -A\n'
 printf '  make kind-down    # when finished\n\n'
