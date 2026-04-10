@@ -61,6 +61,8 @@ Capture complete
 | `--duration` | | from config | Override capture duration (e.g. `5m`) |
 | `--kubeconfig` | | `$KUBECONFIG` / `~/.kube/config` | Source cluster kubeconfig |
 | `--verbose` | `-v` | false | Log every API path as it is fetched |
+| `--redact-secrets` | | false | Redact Secret `data`/`stringData` values from the archive after capture |
+| `--allow-secret` | | | `namespace/name` of secret to preserve when `--redact-secrets` is set (repeatable) |
 
 The `--config` flag auto-discovers `./k8shark.yaml` if not specified.
 
@@ -129,7 +131,11 @@ This is useful when you have a long capture (e.g. 1h) and want to compare cluste
 
 ## Redact
 
-`kshrk redact` produces a new capture archive with all Kubernetes Secret `data` and `stringData` values replaced by `"REDACTED"`. The original archive is not modified. Use this before sharing a capture with support teams or filing bug reports.
+Secret values can be removed from a capture archive in two ways:
+
+### Option A — `kshrk redact` (post-capture)
+
+Produces a **new** archive with all Kubernetes Secret `data` and `stringData` values replaced by `"REDACTED"`. The original archive is not modified.
 
 ```sh
 kshrk redact --in capture.tar.gz
@@ -142,13 +148,26 @@ kshrk redact --in capture.tar.gz --out safe-capture.tar.gz \
   --allow-secret kube-system/bootstrap-token
 ```
 
-### Redact flags
+### Option B — `--redact-secrets` flag on `kshrk capture` (at collection time)
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--in` | (required) | Source capture archive |
-| `--out` | `<in>-redacted.tar.gz` | Output archive path |
-| `--allow-secret` | | `namespace/name` of secret to keep unredacted (repeatable) |
+Pass `--redact-secrets` to have the archive redacted **in-place** immediately after capture completes, before any data is stored on disk in final form:
+
+```sh
+kshrk capture --config k8shark.yaml --redact-secrets
+kshrk capture --config k8shark.yaml --redact-secrets \
+  --allow-secret default/pull-secret
+```
+
+The final archive at the configured output path will already be redacted. No intermediate unredacted file is retained.
+
+### Redact flags (both commands)
+
+| Flag | Command | Default | Description |
+|------|---------|---------|-------------|
+| `--in` | `redact` | (required) | Source capture archive |
+| `--out` | `redact` | `<in>-redacted.tar.gz` | Output archive path |
+| `--redact-secrets` | `capture` | false | Redact secrets in-place after capture |
+| `--allow-secret` | both | | `namespace/name` of secret to preserve (repeatable) |
 
 Secret metadata (name, namespace, labels, annotations, type) is always preserved so you can still count and identify secrets by kind.
 
