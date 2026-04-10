@@ -325,5 +325,3 @@ func buildAPIPath(group, version, resource, namespace string) string {
 	}
 	return base + "/namespaces/" + namespace + "/" + resource
 }
-
-
