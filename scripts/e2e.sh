@@ -290,6 +290,7 @@ resources:
     resource: pods
     namespaces: [k8shark-test, k8shark-jobs]
     interval: 5s
+    logs: 50
   - group: apps
     version: v1
     resource: deployments
@@ -653,6 +654,26 @@ if [[ -n "$REDACTED_SERVER_PID" ]]; then
   wait "$REDACTED_SERVER_PID" 2>/dev/null || true
 fi
 rm -f "$REDACTED_FILE" "$REDACTED_SERVER_LOG" "$REDACTED_KC"
+
+# ── Phase 8c: kubectl logs ────────────────────────────────────────────────────
+log "Testing kubectl logs via mock server"
+
+# Get the name of one nginx pod from the mock server.
+NGINX_POD=$(kubectl "${EKC[@]}" get pods -n k8shark-test -l app=nginx \
+  -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+if [[ -z "$NGINX_POD" ]]; then
+  fail "kubectl logs: could not find an nginx pod in mock server"
+else
+  log_out=$(kubectl --kubeconfig "$E2E_KUBECONFIG" --request-timeout=10s \
+    logs "$NGINX_POD" -n k8shark-test 2>&1) || true
+  assert_not_empty "kubectl logs: captured nginx pod log is non-empty" "$log_out"
+fi
+
+# A pod whose logs were not captured should return the k8shark stub message.
+stub_out=$(kubectl --kubeconfig "$E2E_KUBECONFIG" --request-timeout=10s \
+  logs nonexistent-pod -n k8shark-test 2>&1) || true
+assert_contains "kubectl logs: stub message mentions k8shark"       "$stub_out" "k8shark"
+assert_contains "kubectl logs: stub message mentions not captured" "$stub_out" "not captured"
 
 # ── Phase 9: Round-trip comparison (live cluster vs. mock server) ─────────────
 log "Round-trip comparison: live cluster vs. mock server"
