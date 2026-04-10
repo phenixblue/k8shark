@@ -68,6 +68,50 @@ The `--config` flag auto-discovers `./k8shark.yaml` if not specified.
 
 ---
 
+## Validate
+
+`kshrk validate` parses and validates a capture config file without connecting to a cluster or making any API calls. Use it to catch mistakes before starting a capture.
+
+```sh
+kshrk validate --config k8shark.yaml
+```
+
+On success it prints a summary:
+
+```
+✓ Config valid (10 resources, 4 namespaces, duration 10m)
+```
+
+Errors exit non-zero:
+
+```
+error: resources[2] (pods): invalid interval "0s": must be > 0
+```
+
+Warnings are printed to stderr but do **not** cause a non-zero exit:
+
+```
+warning: resources[5] (storageclasses): cluster-scoped resource has 'namespaces:' set — this will be ignored at capture time
+warning: resources[3] (events): interval 2s is very short and may produce a large archive
+```
+
+### Checks performed
+
+**Hard errors** (exit 1):
+- Missing `resource` or `version` field
+- Unparseable `duration` or `interval` strings (e.g. `"0s"` interval)
+- `logs` < 0
+
+**Warnings** (exit 0, printed to stderr):
+- Capture `duration` > 2 h — may produce a very large archive
+- Resource `interval` < 5 s — may produce a very large archive
+- Well-known cluster-scoped resource (`nodes`, `persistentvolumes`,
+  `storageclasses`, `namespaces`, `clusterroles`, etc.) with `namespaces:` set
+  — the capture engine auto-corrects this at runtime but it is likely a mistake
+- `output` path already exists — the file will be overwritten
+
+---
+
 ## Inspect
 
 `kshrk inspect` reads a capture archive and prints a summary of its contents without starting a server.

@@ -110,3 +110,62 @@ func (c *Config) Validate() error {
 
 	return nil
 }
+
+// knownClusterScoped is the set of well-known cluster-scoped resource kinds.
+// Resources in this set that also specify namespaces: in the config are likely
+// a mistake — the capture engine auto-corrects at runtime but warns the user.
+var knownClusterScoped = map[string]bool{
+	"nodes":                           true,
+	"namespaces":                      true,
+	"persistentvolumes":               true,
+	"storageclasses":                  true,
+	"clusterroles":                    true,
+	"clusterrolebindings":             true,
+	"apiservices":                     true,
+	"ingressclasses":                  true,
+	"priorityclasses":                 true,
+	"runtimeclasses":                  true,
+	"volumeattachments":               true,
+	"csidrivers":                      true,
+	"csinodes":                        true,
+	"mutatingwebhookconfigurations":   true,
+	"validatingwebhookconfigurations": true,
+	"customresourcedefinitions":       true,
+	"certificatesigningrequests":      true,
+}
+
+// IsClusterScoped reports whether resource is a well-known cluster-scoped resource.
+func IsClusterScoped(resource string) bool { return knownClusterScoped[resource] }
+
+// Warnings returns a list of non-fatal advisory messages about cfg.
+// Validate must be called before Warnings so that Duration and Interval fields
+// are populated.
+func Warnings(cfg *Config) []string {
+	var ws []string
+
+	if cfg.Duration > 2*time.Hour {
+		ws = append(ws, fmt.Sprintf(
+			"capture duration %s is very long and may produce a large archive", cfg.Duration))
+	}
+
+	if cfg.Output != "" && cfg.Output != "-" {
+		if _, err := os.Stat(cfg.Output); err == nil {
+			ws = append(ws, fmt.Sprintf(
+				"output file %q already exists and will be overwritten", cfg.Output))
+		}
+	}
+
+	for i, r := range cfg.Resources {
+		if r.Interval > 0 && r.Interval < 5*time.Second {
+			ws = append(ws, fmt.Sprintf(
+				"resources[%d] (%s): interval %s is very short and may produce a large archive",
+				i, r.Resource, r.Interval))
+		}
+		if knownClusterScoped[r.Resource] && len(r.Namespaces) > 0 {
+			ws = append(ws, fmt.Sprintf(
+				"resources[%d] (%s): cluster-scoped resource has 'namespaces:' set — this will be ignored at capture time",
+				i, r.Resource))
+		}
+	}
+	return ws
+}
