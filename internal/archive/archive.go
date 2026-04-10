@@ -8,7 +8,121 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sync"
 )
+
+// RecordSink accepts individual capture records as they arrive.
+// It decouples the engine from the specific output format (tar.gz vs NDJSON).
+type RecordSink interface {
+	WriteRecord(rec any) error
+	Finish(meta, index any) error
+	RecordCount() int
+}
+
+// StreamWriter streams each record directly into a .tar.gz archive as it
+// arrives. metadata.json and index.json are written by Finish(). Thread-safe.
+type StreamWriter struct {
+	mu sync.Mutex
+	f  *os.File
+	gw *gzip.Writer
+	tw *tar.Writer
+	n  int
+}
+
+// NewStreamWriter creates a new StreamWriter writing to outputPath.
+func NewStreamWriter(outputPath string) (*StreamWriter, error) {
+	f, err := os.Create(outputPath)
+	if err != nil {
+		return nil, fmt.Errorf("creating output file %q: %w", outputPath, err)
+	}
+	gw := gzip.NewWriter(f)
+	tw := tar.NewWriter(gw)
+	return &StreamWriter{f: f, gw: gw, tw: tw}, nil
+}
+
+// WriteRecord marshals rec to JSON and appends it to the tar archive.
+func (w *StreamWriter) WriteRecord(rec any) error {
+	data, err := json.Marshal(rec)
+	if err != nil {
+		return fmt.Errorf("marshalling record: %w", err)
+	}
+	var idHolder struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(data, &idHolder); err != nil || idHolder.ID == "" {
+		return fmt.Errorf("record missing id field")
+	}
+	path := filepath.Join("k8shark-capture", "records", idHolder.ID+".json")
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if err := writeBytesToTar(w.tw, path, data); err != nil {
+		return err
+	}
+	w.n++
+	return nil
+}
+
+// Finish writes metadata.json and index.json then closes the archive.
+func (w *StreamWriter) Finish(meta, index any) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if err := writeJSON(w.tw, "k8shark-capture/metadata.json", meta); err != nil {
+		return err
+	}
+	if err := writeJSON(w.tw, "k8shark-capture/index.json", index); err != nil {
+		return err
+	}
+	if err := w.tw.Close(); err != nil {
+		return fmt.Errorf("closing tar: %w", err)
+	}
+	if err := w.gw.Close(); err != nil {
+		return fmt.Errorf("closing gzip: %w", err)
+	}
+	return w.f.Close()
+}
+
+// RecordCount returns the number of records written so far.
+func (w *StreamWriter) RecordCount() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.n
+}
+
+// NDJSONWriter writes each record as a newline-delimited JSON object to an
+// io.Writer (typically os.Stdout). Finish is a no-op. Thread-safe.
+type NDJSONWriter struct {
+	mu  sync.Mutex
+	w   io.Writer
+	enc *json.Encoder
+	n   int
+}
+
+// NewNDJSONWriter creates an NDJSONWriter writing to w.
+func NewNDJSONWriter(w io.Writer) *NDJSONWriter {
+	return &NDJSONWriter{w: w, enc: json.NewEncoder(w)}
+}
+
+// WriteRecord encodes rec as a single JSON line.
+func (w *NDJSONWriter) WriteRecord(rec any) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if err := w.enc.Encode(rec); err != nil {
+		return err
+	}
+	w.n++
+	return nil
+}
+
+// Finish is a no-op for NDJSONWriter.
+func (w *NDJSONWriter) Finish(_, _ any) error { return nil }
+
+// RecordCount returns the number of records written so far.
+func (w *NDJSONWriter) RecordCount() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.n
+}
 
 // Writable is anything that can provide records, index, and metadata for writing.
 // We use concrete types from capture to avoid circular imports by defining them as

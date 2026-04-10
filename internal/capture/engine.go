@@ -7,7 +7,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/signal"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -33,8 +35,8 @@ type Engine struct {
 	httpClient *http.Client
 	baseURL    string
 	mu         sync.Mutex
-	records    []*Record
 	index      Index
+	sink       archive.RecordSink // set by Run(); exposed for tests
 }
 
 // NewEngine creates a capture Engine from validated config.
@@ -86,6 +88,33 @@ func (e *Engine) Run() (*CaptureSummary, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), e.cfg.Duration)
 	defer cancel()
 
+	// Install SIGTERM/SIGINT handler so the capture can be wound down gracefully:
+	// the context is cancelled, polling stops, and Finish() still writes a valid
+	// (partial) archive.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+	defer signal.Stop(sigCh)
+	go func() {
+		select {
+		case <-sigCh:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
+	// Create the record sink (only if not pre-set by tests).
+	var err error
+	if e.sink == nil {
+		if e.cfg.Output == "-" {
+			e.sink = archive.NewNDJSONWriter(os.Stdout)
+		} else {
+			e.sink, err = archive.NewStreamWriter(e.cfg.Output)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+
 	// Collect server version for metadata.
 	kVersion, serverAddr := e.fetchServerVersion(ctx)
 
@@ -119,26 +148,28 @@ func (e *Engine) Run() (*CaptureSummary, error) {
 		CapturedUntil:     time.Now().UTC(),
 		KubernetesVersion: kVersion,
 		ServerAddress:     serverAddr,
-		RecordCount:       len(e.records),
+		RecordCount:       e.sink.RecordCount(),
 	}
 
 	if e.verbose {
-		fmt.Fprintf(os.Stdout, "  captured %d records\n", len(e.records))
+		fmt.Fprintf(os.Stdout, "  captured %d records\n", e.sink.RecordCount())
 	}
 
-	if err := archive.Write(e.cfg.Output, meta, e.records, e.index); err != nil {
+	if err := e.sink.Finish(meta, e.index); err != nil {
 		return nil, err
 	}
 
 	var outputSize int64
-	if fi, err := os.Stat(e.cfg.Output); err == nil {
-		outputSize = fi.Size()
+	if e.cfg.Output != "-" {
+		if fi, err := os.Stat(e.cfg.Output); err == nil {
+			outputSize = fi.Size()
+		}
 	}
 
 	return &CaptureSummary{
 		OutputPath:    e.cfg.Output,
 		OutputSize:    outputSize,
-		RecordCount:   len(e.records),
+		RecordCount:   e.sink.RecordCount(),
 		ResourceCount: len(e.index),
 		Duration:      time.Since(start).Truncate(time.Second),
 	}, nil
@@ -311,8 +342,14 @@ func (e *Engine) doFetch(ctx context.Context, apiPath, tableKeySuffix string) ([
 		ResponseBody: json.RawMessage(body),
 	}
 
+	// Stream the record to the sink immediately — no in-memory buffer.
+	if e.sink != nil {
+		if err := e.sink.WriteRecord(rec); err != nil && e.verbose {
+			fmt.Fprintf(os.Stderr, "  [warn] writing record %s: %v\n", indexKey, err)
+		}
+	}
+
 	e.mu.Lock()
-	e.records = append(e.records, rec)
 	if _, ok := e.index[indexKey]; !ok {
 		e.index[indexKey] = &IndexEntry{APIPath: indexKey}
 	}
@@ -439,8 +476,12 @@ func (e *Engine) fetchOnePodLog(ctx context.Context, namespace, podName string, 
 		ResponseCode: http.StatusOK,
 		ResponseBody: json.RawMessage(jsonBody),
 	}
+	if e.sink != nil {
+		if err := e.sink.WriteRecord(rec); err != nil && e.verbose {
+			fmt.Fprintf(os.Stderr, "  [warn] writing log record %s: %v\n", logPath, err)
+		}
+	}
 	e.mu.Lock()
-	e.records = append(e.records, rec)
 	if _, ok := e.index[logPath]; !ok {
 		e.index[logPath] = &IndexEntry{APIPath: logPath}
 	}
