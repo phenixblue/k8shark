@@ -305,10 +305,25 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 	}
 
 	// Apply label/field selectors if present.
-	body, err = applySelectors(body, r.URL.Query().Get("labelSelector"), r.URL.Query().Get("fieldSelector"))
+	labelSel := r.URL.Query().Get("labelSelector")
+	fieldSel := r.URL.Query().Get("fieldSelector")
+	body, err = applySelectors(body, labelSel, fieldSel)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, statusObj(500, err.Error()))
 		return
+	}
+
+	// tableFiltered applies label/field selectors to a stored Table-format body,
+	// removing rows whose embedded object does not match. Returns tb unchanged
+	// when selectors are empty or if filtering fails (best-effort).
+	tableFiltered := func(tb []byte) []byte {
+		if labelSel == "" && fieldSel == "" {
+			return tb
+		}
+		if out, ferr := filterTableRows(tb, labelSel, fieldSel); ferr == nil {
+			return out
+		}
+		return tb
 	}
 
 	// If kubectl requests Table format, try the captured Table response first
@@ -319,10 +334,12 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 		if tb, tbCode, _ := h.store.Latest(path+"?as=Table", at); tbCode == 200 {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(200)
-			_, _ = w.Write(tb)
+			_, _ = w.Write(tableFiltered(tb))
 			return
 		}
 		// Single-item GET: extract the matching row from the parent list's Table.
+		// Selectors on single-item GETs are resolved by name, not labels — no
+		// row filtering needed here.
 		if i := strings.LastIndex(path, "/"); i > 0 {
 			parentTable, ptCode, _ := h.store.Latest(path[:i]+"?as=Table", at)
 			if ptCode == 200 {
@@ -338,10 +355,11 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 		if tb, tbCode, _ := h.store.AggregateTableAcrossNamespaces(path, at); tbCode == 200 {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(200)
-			_, _ = w.Write(tb)
+			_, _ = w.Write(tableFiltered(tb))
 			return
 		}
 		// Last resort: synthesize a minimal Table from the list body (old captures).
+		// body is already selector-filtered above, so buildTable sees filtered items.
 		if tb, err2 := buildTable(body); err2 == nil {
 			body = tb
 		}
