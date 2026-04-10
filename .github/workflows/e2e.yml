@@ -2,9 +2,19 @@ name: e2e
 
 on:
   pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.github/*.yml'
+      - '.github/*.yaml'
   push:
     branches:
       - main
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.github/*.yml'
+      - '.github/*.yaml'
 
 jobs:
   e2e:

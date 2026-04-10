@@ -2,9 +2,19 @@ name: ci
 
 on:
   pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.github/*.yml'
+      - '.github/*.yaml'
   push:
     branches:
       - main
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.github/*.yml'
+      - '.github/*.yaml'
 
 jobs:
   contract:
