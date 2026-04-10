@@ -368,6 +368,10 @@ func TestHandler_WriteMethodsReturn405(t *testing.T) {
 			if rw.Code != http.StatusMethodNotAllowed {
 				t.Fatalf("expected 405, got %d", rw.Code)
 			}
+			// RFC 7231 §6.5.5 requires Allow header on 405 responses.
+			if allow := rw.Header().Get("Allow"); allow == "" {
+				t.Error("expected Allow header, got none")
+			}
 			var body map[string]any
 			if err := json.Unmarshal(rw.Body.Bytes(), &body); err != nil {
 				t.Fatalf("expected JSON body: %v", err)

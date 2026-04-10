@@ -35,10 +35,12 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Reject all write operations — k8shark replay is read-only.
+	// RFC 7231 §6.5.5 requires an Allow header with a 405 response.
 	switch r.Method {
 	case http.MethodGet, http.MethodHead:
 		// allowed
 	default:
+		w.Header().Set("Allow", "GET, HEAD")
 		h.writeStatus(w, http.StatusMethodNotAllowed,
 			"k8shark replay server is read-only; write operations are not supported")
 		return
