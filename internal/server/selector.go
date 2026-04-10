@@ -229,6 +229,49 @@ func matchesFields(obj *k8sObject, reqs []fieldSelectorReq) bool {
 	return true
 }
 
+// filterTableRows applies label/field selectors to a Table-format response,
+// keeping only rows whose embedded object satisfies both selectors. Returns the
+// original body unchanged if selectors are empty, the body cannot be decoded as
+// a Table, or the rows array is absent.
+func filterTableRows(tableBody []byte, labelSelector, fieldSelector string) ([]byte, error) {
+	if labelSelector == "" && fieldSelector == "" {
+		return tableBody, nil
+	}
+
+	labelReqs, err := parseRequirements(labelSelector)
+	if err != nil {
+		return tableBody, nil // malformed selector — serve unfiltered (best-effort)
+	}
+	fieldReqs := parseFieldSelector(fieldSelector)
+
+	var table struct {
+		APIVersion        json.RawMessage   `json:"apiVersion"`
+		Kind              json.RawMessage   `json:"kind"`
+		Metadata          json.RawMessage   `json:"metadata"`
+		ColumnDefinitions json.RawMessage   `json:"columnDefinitions"`
+		Rows              []json.RawMessage `json:"rows"`
+	}
+	if err := json.Unmarshal(tableBody, &table); err != nil || table.Rows == nil {
+		return tableBody, nil
+	}
+
+	filtered := make([]json.RawMessage, 0, len(table.Rows))
+	for _, row := range table.Rows {
+		var r struct {
+			Object k8sObject `json:"object"`
+		}
+		if err := json.Unmarshal(row, &r); err != nil {
+			filtered = append(filtered, row) // can't inspect — include to avoid data loss
+			continue
+		}
+		if matchesLabels(&r.Object, labelReqs) && matchesFields(&r.Object, fieldReqs) {
+			filtered = append(filtered, row)
+		}
+	}
+	table.Rows = filtered
+	return json.Marshal(table)
+}
+
 // applySelectors filters a JSON list body keeping only items that match both
 // labelSelector and fieldSelector. Returns the original body unchanged if
 // both selectors are empty or if the body is not a list.

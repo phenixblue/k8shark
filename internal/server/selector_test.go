@@ -217,3 +217,145 @@ func stringSliceEqual(a, b []string) bool {
 	}
 	return true
 }
+
+// ── filterTableRows tests ─────────────────────────────────────────────────────
+
+// tableWithPods builds a meta.k8s.io/v1 Table JSON from a slice of podSpecs,
+// mirroring the structure the mock server stores from a real cluster capture.
+func tableWithPods(pods []podSpec) []byte {
+	rows := make([]map[string]any, 0, len(pods))
+	for _, p := range pods {
+		ns := p.namespace
+		if ns == "" {
+			ns = "default"
+		}
+		rows = append(rows, map[string]any{
+			"cells": []any{p.name, ns, "1d"},
+			"object": map[string]any{
+				"apiVersion": "v1",
+				"kind":       "Pod",
+				"metadata": map[string]any{
+					"name":      p.name,
+					"namespace": ns,
+					"labels":    p.labels,
+				},
+			},
+		})
+	}
+	body, _ := json.Marshal(map[string]any{
+		"apiVersion": "meta.k8s.io/v1",
+		"kind":       "Table",
+		"metadata":   map[string]any{"resourceVersion": "1"},
+		"columnDefinitions": []map[string]any{
+			{"name": "Name", "type": "string"},
+			{"name": "Namespace", "type": "string"},
+			{"name": "Age", "type": "date"},
+		},
+		"rows": rows,
+	})
+	return body
+}
+
+// tableRowNames extracts metadata.name from each row's embedded object.
+func tableRowNames(t *testing.T, body []byte) []string {
+	t.Helper()
+	var table struct {
+		Rows []struct {
+			Object struct {
+				Metadata struct {
+					Name string `json:"name"`
+				} `json:"metadata"`
+			} `json:"object"`
+		} `json:"rows"`
+	}
+	if err := json.Unmarshal(body, &table); err != nil {
+		t.Fatalf("tableRowNames unmarshal: %v\nbody: %s", err, body)
+	}
+	names := make([]string, 0, len(table.Rows))
+	for _, r := range table.Rows {
+		names = append(names, r.Object.Metadata.Name)
+	}
+	return names
+}
+
+func TestFilterTableRows_LabelFilter(t *testing.T) {
+	table := tableWithPods([]podSpec{
+		{name: "nginx-1", labels: map[string]string{"app": "nginx", "env": "prod"}},
+		{name: "redis-1", labels: map[string]string{"app": "redis", "env": "prod"}},
+		{name: "nginx-dev", labels: map[string]string{"app": "nginx", "env": "dev"}},
+	})
+
+	cases := []struct {
+		sel       string
+		wantNames []string
+	}{
+		{"app=nginx", []string{"nginx-1", "nginx-dev"}},
+		{"app=redis", []string{"redis-1"}},
+		{"app!=nginx", []string{"redis-1"}},
+		{"env in (prod)", []string{"nginx-1", "redis-1"}},
+		{"app notin (nginx,redis)", []string{}},
+		{"app", []string{"nginx-1", "redis-1", "nginx-dev"}},
+		{"!missing", []string{"nginx-1", "redis-1", "nginx-dev"}},
+		{"app=nginx,env=prod", []string{"nginx-1"}},
+	}
+
+	for _, tc := range cases {
+		filtered, err := filterTableRows(table, tc.sel, "")
+		if err != nil {
+			t.Fatalf("[%q] error: %v", tc.sel, err)
+		}
+		names := tableRowNames(t, filtered)
+		if !stringSliceEqual(names, tc.wantNames) {
+			t.Errorf("[%q] got %v, want %v", tc.sel, names, tc.wantNames)
+		}
+	}
+}
+
+func TestFilterTableRows_FieldFilter(t *testing.T) {
+	table := tableWithPods([]podSpec{
+		{name: "nginx", namespace: "default"},
+		{name: "redis", namespace: "kube-system"},
+	})
+
+	cases := []struct {
+		sel       string
+		wantNames []string
+	}{
+		{"metadata.name=nginx", []string{"nginx"}},
+		{"metadata.name!=nginx", []string{"redis"}},
+		{"metadata.namespace=kube-system", []string{"redis"}},
+	}
+
+	for _, tc := range cases {
+		filtered, err := filterTableRows(table, "", tc.sel)
+		if err != nil {
+			t.Fatalf("[%q] error: %v", tc.sel, err)
+		}
+		names := tableRowNames(t, filtered)
+		if !stringSliceEqual(names, tc.wantNames) {
+			t.Errorf("[%q] got %v, want %v", tc.sel, names, tc.wantNames)
+		}
+	}
+}
+
+func TestFilterTableRows_EmptySelector(t *testing.T) {
+	table := tableWithPods([]podSpec{{name: "nginx", labels: map[string]string{"app": "nginx"}}})
+	out, err := filterTableRows(table, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != string(table) {
+		t.Error("empty selectors should return body unchanged")
+	}
+}
+
+func TestFilterTableRows_NotATable(t *testing.T) {
+	body := []byte(`{"apiVersion":"v1","kind":"Pod","metadata":{"name":"nginx"}}`)
+	out, err := filterTableRows(body, "app=nginx", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != string(body) {
+		t.Error("non-Table body should be returned unchanged")
+	}
+}
