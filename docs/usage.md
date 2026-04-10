@@ -145,7 +145,7 @@ The mock server is designed to be a drop-in replacement for `kubectl`'s real ser
 | Label selectors (`-l app=foo`) | ✅ |
 | Field selectors (`--field-selector status.phase=Running`) | ✅ |
 | Watch (`-w`) | ✅ synthetic event stream |
-| Write operations (`apply`, `delete`, `edit`, …) | ❌ read-only |
+| Write operations (`apply`, `delete`, `edit`, …) | ⛔ returns `405 Method Not Allowed` — mock server is read-only |
 | `kubectl exec` / `kubectl logs` | ❌ |
 | `kubectl top` | ❌ metrics API not captured |
 
