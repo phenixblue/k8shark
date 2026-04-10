@@ -222,9 +222,9 @@ func (s *CaptureStore) AggregateTableAcrossNamespaces(clusterPath string, at tim
 	tableKeySuffix := "/" + resource + "?as=Table"
 
 	var (
-		allRows   []json.RawMessage
-		colDefs   json.RawMessage
-		found     bool
+		allRows []json.RawMessage
+		colDefs json.RawMessage
+		found   bool
 	)
 
 	for indexPath := range s.Index {
@@ -272,10 +272,10 @@ func (s *CaptureStore) AggregateTableAcrossNamespaces(clusterPath string, at tim
 
 // parseAPIPath extracts (group, version, resource, namespace) from a REST path.
 //
-//   /api/v1/pods                                  → ("", "v1", "pods", "")
-//   /api/v1/namespaces/default/pods               → ("", "v1", "pods", "default")
-//   /apis/apps/v1/deployments                     → ("apps", "v1", "deployments", "")
-//   /apis/apps/v1/namespaces/default/deployments  → ("apps", "v1", "deployments", "default")
+//	/api/v1/pods                                  → ("", "v1", "pods", "")
+//	/api/v1/namespaces/default/pods               → ("", "v1", "pods", "default")
+//	/apis/apps/v1/deployments                     → ("apps", "v1", "deployments", "")
+//	/apis/apps/v1/namespaces/default/deployments  → ("apps", "v1", "deployments", "default")
 func parseAPIPath(path string) (group, version, resource, namespace string) {
 	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
 	switch {

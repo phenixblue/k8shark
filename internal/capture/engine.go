@@ -23,7 +23,7 @@ type CaptureSummary struct {
 	OutputPath    string
 	OutputSize    int64
 	RecordCount   int
-	ResourceCount int        // distinct API paths captured
+	ResourceCount int // distinct API paths captured
 	Duration      time.Duration
 }
 
@@ -236,14 +236,14 @@ func (e *Engine) doFetch(ctx context.Context, apiPath, tableKeySuffix string) []
 
 	resp, err := e.httpClient.Do(req)
 	if err != nil {
-			if ctx.Err() != nil {
-				return nil // context cancelled, not a real error
-			}
-			if e.verbose {
-				fmt.Fprintf(os.Stderr, "  [warn] GET %s: %v\n", apiPath, err)
-			}
-			return nil
+		if ctx.Err() != nil {
+			return nil // context cancelled, not a real error
 		}
+		if e.verbose {
+			fmt.Fprintf(os.Stderr, "  [warn] GET %s: %v\n", apiPath, err)
+		}
+		return nil
+	}
 
 	body, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
