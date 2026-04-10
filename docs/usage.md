@@ -127,6 +127,33 @@ This is useful when you have a long capture (e.g. 1h) and want to compare cluste
 
 ---
 
+## Redact
+
+`kshrk redact` produces a new capture archive with all Kubernetes Secret `data` and `stringData` values replaced by `"REDACTED"`. The original archive is not modified. Use this before sharing a capture with support teams or filing bug reports.
+
+```sh
+kshrk redact --in capture.tar.gz
+# writes capture-redacted.tar.gz by default
+```
+
+```sh
+kshrk redact --in capture.tar.gz --out safe-capture.tar.gz \
+  --allow-secret default/pull-secret \
+  --allow-secret kube-system/bootstrap-token
+```
+
+### Redact flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--in` | (required) | Source capture archive |
+| `--out` | `<in>-redacted.tar.gz` | Output archive path |
+| `--allow-secret` | | `namespace/name` of secret to keep unredacted (repeatable) |
+
+Secret metadata (name, namespace, labels, annotations, type) is always preserved so you can still count and identify secrets by kind.
+
+---
+
 ## kubectl compatibility
 
 The mock server is designed to be a drop-in replacement for `kubectl`'s real server. Supported behaviours:
