@@ -34,6 +34,24 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fmt.Printf("  --> %s %s\n", r.Method, path)
 	}
 
+	// Intercept interactive sub-resources that can never work against a capture
+	// replay. Doing this before the method check ensures we return a specific,
+	// actionable error instead of the generic "write operations are not
+	// supported" message — and we don't hang waiting for a protocol upgrade.
+	//   kubectl exec / kubectl cp  → POST .../pods/<name>/exec
+	//   kubectl port-forward       → POST .../pods/<name>/portforward
+	//   kubectl attach             → POST .../pods/<name>/attach
+	if strings.HasSuffix(path, "/exec") ||
+		strings.HasSuffix(path, "/portforward") ||
+		strings.HasSuffix(path, "/attach") {
+		w.Header().Set("Allow", "")
+		h.writeStatus(w, http.StatusMethodNotAllowed,
+			"k8shark capture replay: exec, cp, and port-forward are not supported — "+
+				"this mock server replays a captured snapshot and cannot run commands "+
+				"or open connections on pods")
+		return
+	}
+
 	// Reject all write operations — k8shark replay is read-only.
 	// RFC 7231 §6.5.5 requires an Allow header with a 405 response.
 	switch r.Method {

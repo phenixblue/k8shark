@@ -392,3 +392,35 @@ func TestHandler_WriteMethodsReturn405(t *testing.T) {
 		}
 	})
 }
+
+func TestHandler_InteractiveSubResourcesReturn405(t *testing.T) {
+	store := buildTestStore(t, map[string][]byte{
+		"/api/v1/namespaces/default/pods": []byte(`{"kind":"PodList","items":[]}`),
+	})
+	h := newHandler(store, time.Time{}, false)
+
+	// These sub-resource paths must always return 405 regardless of method,
+	// with a message that explicitly references k8shark capture replay.
+	subResources := []string{
+		"/api/v1/namespaces/default/pods/mypod/exec",
+		"/api/v1/namespaces/default/pods/mypod/portforward",
+		"/api/v1/namespaces/default/pods/mypod/attach",
+	}
+	for _, sr := range subResources {
+		for _, method := range []string{http.MethodGet, http.MethodPost} {
+			t.Run(method+"_"+sr, func(t *testing.T) {
+				req := httptest.NewRequest(method, sr, nil)
+				rw := httptest.NewRecorder()
+				h.ServeHTTP(rw, req)
+
+				if rw.Code != http.StatusMethodNotAllowed {
+					t.Fatalf("%s %s: expected 405, got %d", method, sr, rw.Code)
+				}
+				body := rw.Body.String()
+				if !strings.Contains(body, "k8shark") {
+					t.Errorf("%s %s: expected error message to mention k8shark, got: %s", method, sr, body)
+				}
+			})
+		}
+	}
+}

@@ -233,7 +233,8 @@ The mock server is designed to be a drop-in replacement for `kubectl`'s real ser
 | Field selectors (`--field-selector status.phase=Running`) | ✅ |
 | Watch (`-w`) | ✅ synthetic event stream |
 | Write operations (`apply`, `delete`, `edit`, …) | ⛔ returns `405 Method Not Allowed` — mock server is read-only |
-| `kubectl exec` / `kubectl logs` | ❌ |
+| `kubectl exec` / `kubectl cp` / `kubectl port-forward` / `kubectl attach` | ⛔ returns `405 Method Not Allowed` with a clear error referencing k8shark capture replay |
+| `kubectl logs` | ❌ not yet captured |
 | `kubectl top` | ❌ metrics API not captured |
 
 ### Resources not in the capture
