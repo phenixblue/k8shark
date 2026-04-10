@@ -66,6 +66,47 @@ The `--config` flag auto-discovers `./k8shark.yaml` if not specified.
 
 ---
 
+## Inspect
+
+`kshrk inspect` reads a capture archive and prints a summary of its contents without starting a server.
+
+```sh
+kshrk inspect capture.tar.gz
+```
+
+Example output:
+
+```
+Capture ID:   a1b2c3d4-e5f6-7890-abcd-ef1234567890
+Captured:     2026-04-09T08:00:00Z → 2026-04-09T08:10:00Z  (10m0s)
+Kubernetes:   v1.29.0
+Server:       https://192.168.1.100:6443
+Archive:      capture.tar.gz (1245184 bytes)
+Records:      480
+
+RESOURCE              GROUP  VERSION  NAMESPACED  NAMESPACES              RECORDS
+deployments           apps   v1       yes         default,production      80
+nodes                        v1       no          -                       10
+pods                         v1       yes         default,kube-system     320
+secrets                      v1       yes         default                 40
+statefulsets          apps   v1       yes         production              30
+```
+
+Use `-o json` or `-o yaml` for machine-readable output:
+
+```sh
+kshrk inspect capture.tar.gz -o json
+kshrk inspect capture.tar.gz -o yaml
+```
+
+### Inspect flags
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--output` | `-o` | `table` | Output format: `table`, `json`, or `yaml` |
+
+---
+
 ## Open
 
 `kshrk open` extracts the archive, starts a local mock HTTPS API server on `127.0.0.1`, and writes a kubeconfig pointing at it.
