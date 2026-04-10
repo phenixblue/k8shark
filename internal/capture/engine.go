@@ -90,6 +90,9 @@ func (e *Engine) Run() (*CaptureSummary, error) {
 	// Collect server version for metadata.
 	kVersion, serverAddr := e.fetchServerVersion(ctx)
 
+	// Capture API discovery endpoints so the mock server can replay them faithfully.
+	e.fetchDiscovery(ctx)
+
 	var wg sync.WaitGroup
 	for _, res := range e.cfg.Resources {
 		wg.Add(1)
@@ -148,7 +151,13 @@ func (e *Engine) pollResource(ctx context.Context, res config.Resource) {
 	}
 }
 
-// fetchResource issues one GET for res and stores the record.
+// tableIndexKey is the virtual index key used to store Table-format responses
+// alongside regular list responses. The sentinel "?as=Table" cannot appear in
+// real API paths captured by the engine.
+const tableIndexKeySuffix = "?as=Table"
+
+// fetchResource issues one GET for res and stores the record. It also fetches
+// the Table-format response so the mock server can replay rich column definitions.
 func (e *Engine) fetchResource(ctx context.Context, res config.Resource) {
 	namespaces := res.Namespaces
 	if len(namespaces) == 0 {
@@ -157,61 +166,124 @@ func (e *Engine) fetchResource(ctx context.Context, res config.Resource) {
 
 	for _, ns := range namespaces {
 		apiPath := buildAPIPath(res.Group, res.Version, res.Resource, ns)
-		url := e.baseURL + apiPath
+		e.doFetch(ctx, apiPath, "")
+		e.doFetch(ctx, apiPath, tableIndexKeySuffix)
+	}
+}
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-		if err != nil {
-			if e.verbose {
-				fmt.Fprintf(os.Stderr, "  [warn] build request %s: %v\n", apiPath, err)
-			}
-			continue
+// fetchDiscovery captures the Kubernetes API discovery endpoints so the mock
+// server can replay them with real resource lists rather than inferring them
+// from the captured resource paths. Called once at the start of a capture run.
+func (e *Engine) fetchDiscovery(ctx context.Context) {
+	// Core discovery paths.
+	e.doFetch(ctx, "/api", "")
+	e.doFetch(ctx, "/api/v1", "")
+	apisBody := e.doFetch(ctx, "/apis", "")
+
+	// OpenAPI specs for kubectl explain.
+	e.doFetch(ctx, "/openapi/v2", "")
+	openapiV3Body := e.doFetch(ctx, "/openapi/v3", "")
+	if openapiV3Body != nil {
+		// Parse the v3 path index and fetch each per-group spec.
+		var v3Index struct {
+			Paths map[string]json.RawMessage `json:"paths"`
 		}
+		if err := json.Unmarshal(openapiV3Body, &v3Index); err == nil {
+			for p := range v3Index.Paths {
+				e.doFetch(ctx, "/openapi/v3/"+p, "")
+			}
+		}
+	}
 
-		resp, err := e.httpClient.Do(req)
-		if err != nil {
+	// Parse /apis to discover all non-core group-versions and capture each.
+	if apisBody == nil {
+		return
+	}
+	var groupList struct {
+		Groups []struct {
+			Versions []struct {
+				GroupVersion string `json:"groupVersion"`
+			} `json:"versions"`
+		} `json:"groups"`
+	}
+	if err := json.Unmarshal(apisBody, &groupList); err != nil {
+		return
+	}
+	for _, g := range groupList.Groups {
+		for _, v := range g.Versions {
+			e.doFetch(ctx, "/apis/"+v.GroupVersion, "")
+		}
+	}
+}
+
+// doFetch issues one GET for apiPath. When tableKeySuffix is non-empty the
+// request uses a Table Accept header and the response is stored under
+// apiPath+tableKeySuffix in the index. Returns the response body.
+func (e *Engine) doFetch(ctx context.Context, apiPath, tableKeySuffix string) []byte {
+	url := e.baseURL + apiPath
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		if e.verbose {
+			fmt.Fprintf(os.Stderr, "  [warn] build request %s: %v\n", apiPath, err)
+		}
+		return nil
+	}
+
+	if tableKeySuffix != "" {
+		req.Header.Set("Accept", "application/json;as=Table;g=meta.k8s.io;v=v1")
+	}
+
+	resp, err := e.httpClient.Do(req)
+	if err != nil {
 			if ctx.Err() != nil {
-				return // context cancelled, not a real error
+				return nil // context cancelled, not a real error
 			}
 			if e.verbose {
 				fmt.Fprintf(os.Stderr, "  [warn] GET %s: %v\n", apiPath, err)
 			}
-			continue
+			return nil
 		}
 
-		body, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			if e.verbose {
-				fmt.Fprintf(os.Stderr, "  [warn] read body %s: %v\n", apiPath, err)
-			}
-			continue
-		}
-
-		if resp.StatusCode == http.StatusForbidden {
-			fmt.Fprintf(os.Stderr, "  [warn] RBAC denied: %s (check cluster permissions)\n", apiPath)
-		}
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
 		if e.verbose {
-			fmt.Fprintf(os.Stdout, "  [capture] %s -> %d\n", apiPath, resp.StatusCode)
+			fmt.Fprintf(os.Stderr, "  [warn] read body %s: %v\n", apiPath, err)
 		}
-
-		rec := &Record{
-			ID:           uuid.New().String(),
-			CapturedAt:   time.Now().UTC(),
-			APIPath:      apiPath,
-			HTTPMethod:   http.MethodGet,
-			ResponseCode: resp.StatusCode,
-			ResponseBody: json.RawMessage(body),
-		}
-
-		e.mu.Lock()
-		e.records = append(e.records, rec)
-		if _, ok := e.index[apiPath]; !ok {
-			e.index[apiPath] = &IndexEntry{APIPath: apiPath}
-		}
-		e.index[apiPath].RecordIDs = append(e.index[apiPath].RecordIDs, rec.ID)
-		e.index[apiPath].Times = append(e.index[apiPath].Times, rec.CapturedAt)
-		e.mu.Unlock()
+		return nil
 	}
+
+	if tableKeySuffix == "" && resp.StatusCode == http.StatusForbidden {
+		fmt.Fprintf(os.Stderr, "  [warn] RBAC denied: %s (check cluster permissions)\n", apiPath)
+	}
+	if e.verbose {
+		label := apiPath
+		if tableKeySuffix != "" {
+			label += tableKeySuffix
+		}
+		fmt.Fprintf(os.Stdout, "  [capture] %s -> %d\n", label, resp.StatusCode)
+	}
+
+	indexKey := apiPath + tableKeySuffix
+	rec := &Record{
+		ID:           uuid.New().String(),
+		CapturedAt:   time.Now().UTC(),
+		APIPath:      indexKey,
+		HTTPMethod:   http.MethodGet,
+		ResponseCode: resp.StatusCode,
+		ResponseBody: json.RawMessage(body),
+	}
+
+	e.mu.Lock()
+	e.records = append(e.records, rec)
+	if _, ok := e.index[indexKey]; !ok {
+		e.index[indexKey] = &IndexEntry{APIPath: indexKey}
+	}
+	e.index[indexKey].RecordIDs = append(e.index[indexKey].RecordIDs, rec.ID)
+	e.index[indexKey].Times = append(e.index[indexKey].Times, rec.CapturedAt)
+	e.mu.Unlock()
+	return body
 }
 
 // fetchServerVersion attempts to retrieve the server version string.
