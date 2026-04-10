@@ -110,13 +110,41 @@ func TestHandler_GroupResourceList(t *testing.T) {
 	assertJSON(t, rw, 200, "kind", "APIResourceList")
 }
 
-func TestHandler_NotFound(t *testing.T) {
+// TestHandler_NotFound_ListPath verifies that a list-level resource not in the capture
+// returns 200 + empty list + Warning header rather than a 404 error.
+func TestHandler_NotFound_ListPath(t *testing.T) {
 	store := buildTestStore(t, map[string][]byte{
 		"/api/v1/namespaces/default/pods": []byte(`{"kind":"PodList","items":[]}`),
 	})
 	h := newHandler(store, time.Time{}, false)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/namespaces/default/services", nil)
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rw.Code)
+	}
+	if w := rw.Header().Get("Warning"); w == "" {
+		t.Error("expected Warning header, got none")
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rw.Body.Bytes(), &body); err != nil {
+		t.Fatalf("expected JSON body: %v", err)
+	}
+	if body["kind"] != "ServiceList" {
+		t.Errorf("expected kind ServiceList, got %v", body["kind"])
+	}
+}
+
+// TestHandler_NotFound_ItemPath verifies that an item-level GET for a resource whose
+// parent list is not in the capture still returns a 404.
+func TestHandler_NotFound_ItemPath(t *testing.T) {
+	store := buildTestStore(t, map[string][]byte{})
+	h := newHandler(store, time.Time{}, false)
+
+	// 6-segment path (item-level): parseAPIPath returns empty resource → 404.
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/namespaces/default/services/my-svc", nil)
 	rw := httptest.NewRecorder()
 	h.ServeHTTP(rw, req)
 

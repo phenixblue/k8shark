@@ -266,8 +266,30 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 	}
 
 	if code == 404 {
-		h.writeStatus(w, http.StatusNotFound, fmt.Sprintf("%q not found in capture", path))
-		return
+		// If the path parses as a list-level resource (not an item GET), return
+		// an empty list with a Warning header so kubectl shows
+		// "No resources found" rather than "Error from server: not found".
+		// Item-level GETs (path has more segments than parseAPIPath handles)
+		// still get a proper 404.
+		g, v, resource, _ := parseAPIPath(path)
+		if resource != "" {
+			av := v
+			if g != "" {
+				av = g + "/" + v
+			}
+			emptyList, _ := json.Marshal(map[string]any{
+				"apiVersion": av,
+				"kind":       resourceToKind(resource) + "List",
+				"metadata":   map[string]string{"resourceVersion": "0"},
+				"items":      []any{},
+			})
+			w.Header().Set("Warning", fmt.Sprintf(`299 k8shark %q`,
+				resource+" not found in capture; was it included in the capture config?"))
+			body, code = emptyList, 200
+		} else {
+			h.writeStatus(w, http.StatusNotFound, fmt.Sprintf("%q not found in capture", path))
+			return
+		}
 	}
 
 	// Apply label/field selectors if present.
