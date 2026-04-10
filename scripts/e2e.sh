@@ -672,8 +672,10 @@ fi
 # A pod whose logs were not captured should return the k8shark stub message.
 # kubectl logs first fetches the pod (which would 404 for a nonexistent pod),
 # so we hit the /log sub-resource directly via curl to test the stub path.
-SERVER_ADDR=$(grep -E '^\s+server:' "$E2E_KUBECONFIG" | awk '{print $2}')
-stub_out=$(curl -s "${SERVER_ADDR}/api/v1/namespaces/k8shark-test/pods/nonexistent-pod/log" 2>&1) || true
+# Use -k because the mock server uses a self-signed TLS cert.
+SERVER_ADDR=$(kubectl config --kubeconfig "$E2E_KUBECONFIG" view \
+  --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || echo "")
+stub_out=$(curl -sk "${SERVER_ADDR}/api/v1/namespaces/k8shark-test/pods/nonexistent-pod/log" 2>&1) || true
 assert_contains "kubectl logs: stub message mentions k8shark"       "$stub_out" "k8shark"
 assert_contains "kubectl logs: stub message mentions not captured" "$stub_out" "not captured"
 
