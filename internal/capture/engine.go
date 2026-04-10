@@ -163,10 +163,28 @@ func (e *Engine) fetchResource(ctx context.Context, res config.Resource) {
 		namespaces = []string{""}
 	}
 
+	// Track whether every explicitly-namespaced fetch returned 404. If so, the
+	// resource is likely cluster-scoped and the config has 'namespaces:' set by
+	// mistake — warn and also capture the cluster-scoped path as a fallback.
+	allNotFound := len(res.Namespaces) > 0
 	for _, ns := range namespaces {
 		apiPath := buildAPIPath(res.Group, res.Version, res.Resource, ns)
-		e.doFetch(ctx, apiPath, "")
+		_, code := e.doFetch(ctx, apiPath, "")
+		if code != 0 && code != http.StatusNotFound {
+			allNotFound = false
+		}
 		e.doFetch(ctx, apiPath, tableIndexKeySuffix)
+	}
+
+	if allNotFound {
+		clusterPath := buildAPIPath(res.Group, res.Version, res.Resource, "")
+		fmt.Fprintf(os.Stderr,
+			"  [warn] %s: all namespace-scoped fetches returned 404 — "+
+				"this is likely a cluster-scoped resource; remove 'namespaces:' "+
+				"from its config entry. Fetching cluster-scoped path %s as fallback.\n",
+			res.Resource, clusterPath)
+		e.doFetch(ctx, clusterPath, "")
+		e.doFetch(ctx, clusterPath, tableIndexKeySuffix)
 	}
 }
 
@@ -177,11 +195,11 @@ func (e *Engine) fetchDiscovery(ctx context.Context) {
 	// Core discovery paths.
 	e.doFetch(ctx, "/api", "")
 	e.doFetch(ctx, "/api/v1", "")
-	apisBody := e.doFetch(ctx, "/apis", "")
+	apisBody, _ := e.doFetch(ctx, "/apis", "")
 
 	// OpenAPI specs for kubectl explain.
 	e.doFetch(ctx, "/openapi/v2", "")
-	openapiV3Body := e.doFetch(ctx, "/openapi/v3", "")
+	openapiV3Body, _ := e.doFetch(ctx, "/openapi/v3", "")
 	if openapiV3Body != nil {
 		// Parse the v3 path index and fetch each per-group spec.
 		var v3Index struct {
@@ -217,8 +235,9 @@ func (e *Engine) fetchDiscovery(ctx context.Context) {
 
 // doFetch issues one GET for apiPath. When tableKeySuffix is non-empty the
 // request uses a Table Accept header and the response is stored under
-// apiPath+tableKeySuffix in the index. Returns the response body.
-func (e *Engine) doFetch(ctx context.Context, apiPath, tableKeySuffix string) []byte {
+// apiPath+tableKeySuffix in the index. Returns the response body and HTTP
+// status code, or (nil, 0) when the request could not be completed.
+func (e *Engine) doFetch(ctx context.Context, apiPath, tableKeySuffix string) ([]byte, int) {
 	url := e.baseURL + apiPath
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -226,7 +245,7 @@ func (e *Engine) doFetch(ctx context.Context, apiPath, tableKeySuffix string) []
 		if e.verbose {
 			fmt.Fprintf(os.Stderr, "  [warn] build request %s: %v\n", apiPath, err)
 		}
-		return nil
+		return nil, 0
 	}
 
 	if tableKeySuffix != "" {
@@ -236,12 +255,12 @@ func (e *Engine) doFetch(ctx context.Context, apiPath, tableKeySuffix string) []
 	resp, err := e.httpClient.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
-			return nil // context cancelled, not a real error
+			return nil, 0 // context cancelled, not a real error
 		}
 		if e.verbose {
 			fmt.Fprintf(os.Stderr, "  [warn] GET %s: %v\n", apiPath, err)
 		}
-		return nil
+		return nil, 0
 	}
 
 	body, err := io.ReadAll(resp.Body)
@@ -250,7 +269,7 @@ func (e *Engine) doFetch(ctx context.Context, apiPath, tableKeySuffix string) []
 		if e.verbose {
 			fmt.Fprintf(os.Stderr, "  [warn] read body %s: %v\n", apiPath, err)
 		}
-		return nil
+		return nil, 0
 	}
 
 	if tableKeySuffix == "" && resp.StatusCode == http.StatusForbidden {
@@ -282,7 +301,7 @@ func (e *Engine) doFetch(ctx context.Context, apiPath, tableKeySuffix string) []
 	e.index[indexKey].RecordIDs = append(e.index[indexKey].RecordIDs, rec.ID)
 	e.index[indexKey].Times = append(e.index[indexKey].Times, rec.CapturedAt)
 	e.mu.Unlock()
-	return body
+	return body, resp.StatusCode
 }
 
 // fetchServerVersion attempts to retrieve the server version string.

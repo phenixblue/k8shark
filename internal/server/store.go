@@ -63,6 +63,11 @@ func LoadStore(dir string) (*CaptureStore, error) {
 // in the index keys.
 func (s *CaptureStore) buildResourceInfo() {
 	for path := range s.Index {
+		// Skip Table-format index keys (they use "?as=Table" suffix which is
+		// not a valid path component and would produce bogus ResourceInfo entries).
+		if strings.Contains(path, "?") {
+			continue
+		}
 		g, v, r, ns := parseAPIPath(path)
 		if r == "" {
 			continue
