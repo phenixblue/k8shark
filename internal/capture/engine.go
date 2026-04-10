@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -113,6 +114,11 @@ func (e *Engine) Run() (*CaptureSummary, error) {
 				return nil, err
 			}
 		}
+	}
+
+	// Expand wildcard namespaces before polling begins.
+	if err := e.expandWildcardNamespaces(ctx); err != nil {
+		return nil, err
 	}
 
 	// Collect server version for metadata.
@@ -488,4 +494,98 @@ func (e *Engine) fetchOnePodLog(ctx context.Context, namespace, podName string, 
 	e.index[logPath].RecordIDs = append(e.index[logPath].RecordIDs, rec.ID)
 	e.index[logPath].Times = append(e.index[logPath].Times, rec.CapturedAt)
 	e.mu.Unlock()
+}
+
+// expandWildcardNamespaces replaces "*" in any resource's Namespaces list with
+// the full list of namespaces discovered from the source cluster. If no
+// resource mentions "*" the method is a no-op. Expansion happens once before
+// polling begins; namespaces created during the capture are not included.
+//
+// Cluster-scoped resources with "*" emit a warning and fall back to a
+// cluster-scoped (no namespace) fetch.
+func (e *Engine) expandWildcardNamespaces(ctx context.Context) error {
+	// Fast path: check whether any resource actually uses "*".
+	needsExpansion := false
+	for _, r := range e.cfg.Resources {
+		for _, ns := range r.Namespaces {
+			if ns == "*" {
+				needsExpansion = true
+				break
+			}
+		}
+		if needsExpansion {
+			break
+		}
+	}
+	if !needsExpansion {
+		return nil
+	}
+
+	// Fetch the namespace list from the cluster.
+	nsBody, code := e.doFetch(ctx, "/api/v1/namespaces", "")
+	if code != http.StatusOK || nsBody == nil {
+		return fmt.Errorf("namespace discovery failed (HTTP %d): check cluster permissions", code)
+	}
+	var nsList struct {
+		Items []struct {
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(nsBody, &nsList); err != nil {
+		return fmt.Errorf("parsing namespace list: %w", err)
+	}
+	allNS := make([]string, 0, len(nsList.Items))
+	for _, item := range nsList.Items {
+		allNS = append(allNS, item.Metadata.Name)
+	}
+
+	// Expand each resource entry that contains "*".
+	for i := range e.cfg.Resources {
+		r := &e.cfg.Resources[i]
+		hasWildcard := false
+		for _, ns := range r.Namespaces {
+			if ns == "*" {
+				hasWildcard = true
+				break
+			}
+		}
+		if !hasWildcard {
+			continue
+		}
+
+		if config.IsClusterScoped(r.Resource) {
+			fmt.Fprintf(os.Stderr,
+				"  [warn] %s: cluster-scoped resource with namespaces: [\"*\"] — ignoring namespaces\n",
+				r.Resource)
+			r.Namespaces = nil
+			continue
+		}
+
+		// Build expanded list: explicit (non-wildcard) namespaces first, then
+		// all discovered, deduplicated while preserving order.
+		seen := make(map[string]bool)
+		expanded := make([]string, 0, len(allNS))
+		for _, ns := range r.Namespaces {
+			if ns != "*" && !seen[ns] {
+				seen[ns] = true
+				expanded = append(expanded, ns)
+			}
+		}
+		for _, ns := range allNS {
+			if !seen[ns] {
+				seen[ns] = true
+				expanded = append(expanded, ns)
+			}
+		}
+		r.Namespaces = expanded
+
+		if e.verbose {
+			fmt.Fprintf(os.Stdout,
+				"  [info] %s: expanded '*' to %d namespaces: %s\n",
+				r.Resource, len(expanded), strings.Join(expanded, ", "))
+		}
+	}
+	return nil
 }

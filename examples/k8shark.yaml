@@ -19,7 +19,7 @@ resources:
   - group: ""
     version: v1
     resource: pods
-    namespaces: [default, kube-system, k8shark-test, k8shark-jobs]
+    namespaces: ["*"]          # capture pods from ALL namespaces
     interval: 30s
 
   - group: ""
@@ -30,7 +30,7 @@ resources:
   - group: ""
     version: v1
     resource: events
-    namespaces: [default, k8shark-test, k8shark-jobs]
+    namespaces: ["*"]
     interval: 10s
 
   # ── Controllers ──────────────────────────────────────────────────────────────
@@ -38,19 +38,19 @@ resources:
   - group: apps
     version: v1
     resource: deployments
-    namespaces: [default, k8shark-test, k8shark-jobs]
+    namespaces: ["*"]
     interval: 30s
 
   - group: apps
     version: v1
     resource: daemonsets
-    namespaces: [default, kube-system, k8shark-test, k8shark-jobs]
+    namespaces: ["*"]
     interval: 60s
 
   - group: apps
     version: v1
     resource: statefulsets
-    namespaces: [default, k8shark-test, k8shark-jobs]
+    namespaces: ["*"]
     interval: 30s
 
   # ── Jobs ─────────────────────────────────────────────────────────────────────
@@ -58,7 +58,7 @@ resources:
   - group: batch
     version: v1
     resource: jobs
-    namespaces: [default, k8shark-test, k8shark-jobs]
+    namespaces: ["*"]
     interval: 30s
 
   # ── Networking ───────────────────────────────────────────────────────────────
@@ -66,7 +66,7 @@ resources:
   - group: ""
     version: v1
     resource: services
-    namespaces: [default, k8shark-test, k8shark-jobs]
+    namespaces: ["*"]
     interval: 60s
 
   # ── Storage ──────────────────────────────────────────────────────────────────
@@ -74,7 +74,7 @@ resources:
   - group: ""
     version: v1
     resource: persistentvolumeclaims
-    namespaces: [default, k8shark-test, k8shark-jobs]
+    namespaces: ["*"]
     interval: 30s
 
   - group: ""

@@ -271,3 +271,197 @@ func TestEngine_NDJSONOutput(t *testing.T) {
 		}
 	}
 }
+
+// ── Wildcard namespace expansion tests ──────────────────────────────────────
+
+func nsList(namespaces ...string) string {
+	items := make([]string, 0, len(namespaces))
+	for _, ns := range namespaces {
+		items = append(items, fmt.Sprintf(`{"metadata":{"name":%q}}`, ns))
+	}
+	return `{"kind":"NamespaceList","items":[` + strings.Join(items, ",") + `]}`
+}
+
+func wildcardServer(t *testing.T, discoveredNS []string, reqPaths chan<- string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if reqPaths != nil {
+			select {
+			case reqPaths <- r.URL.Path:
+			default:
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/version":
+			fmt.Fprint(w, `{"gitVersion":"v1.29.0"}`)
+		case "/api/v1/namespaces":
+			fmt.Fprint(w, nsList(discoveredNS...))
+		default:
+			// Return a minimal list for any resource path so engine doesn't warn.
+			fmt.Fprintf(w, `{"kind":"List","items":[]}`)
+		}
+	}))
+	return srv
+}
+
+func TestExpandWildcard_NoWildcard(t *testing.T) {
+	paths := make(chan string, 100)
+	srv := wildcardServer(t, []string{"default", "kube-system"}, paths)
+	defer srv.Close()
+
+	outDir := t.TempDir()
+	cfg := &config.Config{
+		DurationRaw: "500ms",
+		Duration:    500 * time.Millisecond,
+		Output:      filepath.Join(outDir, "capture.tar.gz"),
+		Resources: []config.Resource{
+			{Version: "v1", Resource: "pods", Namespaces: []string{"default"}, IntervalRaw: "200ms", Interval: 200 * time.Millisecond},
+		},
+	}
+
+	eng := newEngineWith(cfg, srv.Client(), srv.URL, false)
+	if _, err := eng.Run(); err != nil {
+		t.Fatalf("engine.Run() error: %v", err)
+	}
+
+	// /api/v1/namespaces (discovery) must NOT have been called.
+	close(paths)
+	for p := range paths {
+		if p == "/api/v1/namespaces" {
+			t.Error("namespace discovery endpoint was called even though no '*' was configured")
+		}
+	}
+
+	// Namespaces must be unchanged.
+	if got := cfg.Resources[0].Namespaces; len(got) != 1 || got[0] != "default" {
+		t.Errorf("expected namespaces unchanged, got %v", got)
+	}
+}
+
+func TestExpandWildcard_AllNamespaces(t *testing.T) {
+	discovered := []string{"default", "kube-system", "production"}
+	srv := wildcardServer(t, discovered, nil)
+	defer srv.Close()
+
+	outDir := t.TempDir()
+	cfg := &config.Config{
+		DurationRaw: "500ms",
+		Duration:    500 * time.Millisecond,
+		Output:      filepath.Join(outDir, "capture.tar.gz"),
+		Resources: []config.Resource{
+			{Version: "v1", Resource: "pods", Namespaces: []string{"*"}, IntervalRaw: "200ms", Interval: 200 * time.Millisecond},
+		},
+	}
+
+	eng := newEngineWith(cfg, srv.Client(), srv.URL, false)
+	if _, err := eng.Run(); err != nil {
+		t.Fatalf("engine.Run() error: %v", err)
+	}
+
+	got := cfg.Resources[0].Namespaces
+	if len(got) != len(discovered) {
+		t.Fatalf("expected %d namespaces after expansion, got %d: %v", len(discovered), len(got), got)
+	}
+	for i, want := range discovered {
+		if got[i] != want {
+			t.Errorf("namespace[%d]: want %q, got %q", i, want, got[i])
+		}
+	}
+}
+
+func TestExpandWildcard_Mixed(t *testing.T) {
+	discovered := []string{"default", "kube-system", "production"}
+	srv := wildcardServer(t, discovered, nil)
+	defer srv.Close()
+
+	outDir := t.TempDir()
+	cfg := &config.Config{
+		DurationRaw: "500ms",
+		Duration:    500 * time.Millisecond,
+		Output:      filepath.Join(outDir, "capture.tar.gz"),
+		Resources: []config.Resource{
+			// "production" explicit first, then wildcard — production must not be duplicated.
+			{Version: "v1", Resource: "pods", Namespaces: []string{"production", "*"}, IntervalRaw: "200ms", Interval: 200 * time.Millisecond},
+		},
+	}
+
+	eng := newEngineWith(cfg, srv.Client(), srv.URL, false)
+	if _, err := eng.Run(); err != nil {
+		t.Fatalf("engine.Run() error: %v", err)
+	}
+
+	got := cfg.Resources[0].Namespaces
+	// Expect: production (explicit), default, kube-system — no duplicate production.
+	wantLen := len(discovered) // 3 unique namespaces
+	if len(got) != wantLen {
+		t.Fatalf("expected %d namespaces (deduped), got %d: %v", wantLen, len(got), got)
+	}
+	if got[0] != "production" {
+		t.Errorf("expected 'production' first (explicit), got %q", got[0])
+	}
+	seen := make(map[string]bool)
+	for _, ns := range got {
+		if seen[ns] {
+			t.Errorf("duplicate namespace %q in expanded list %v", ns, got)
+		}
+		seen[ns] = true
+	}
+}
+
+func TestExpandWildcard_ClusterScoped(t *testing.T) {
+	srv := wildcardServer(t, []string{"default"}, nil)
+	defer srv.Close()
+
+	outDir := t.TempDir()
+	cfg := &config.Config{
+		DurationRaw: "500ms",
+		Duration:    500 * time.Millisecond,
+		Output:      filepath.Join(outDir, "capture.tar.gz"),
+		Resources: []config.Resource{
+			{Version: "v1", Resource: "nodes", Namespaces: []string{"*"}, IntervalRaw: "200ms", Interval: 200 * time.Millisecond},
+		},
+	}
+
+	eng := newEngineWith(cfg, srv.Client(), srv.URL, false)
+	if _, err := eng.Run(); err != nil {
+		t.Fatalf("engine.Run() error: %v", err)
+	}
+
+	// Namespaces must be cleared (cluster-scoped fetch).
+	if got := cfg.Resources[0].Namespaces; len(got) != 0 {
+		t.Errorf("expected nil/empty Namespaces for cluster-scoped resource, got %v", got)
+	}
+}
+
+func TestExpandWildcard_DiscoveryFailure(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/namespaces" {
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprint(w, `{"kind":"Status","code":403}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"gitVersion":"v1.29.0"}`)
+	}))
+	defer srv.Close()
+
+	outDir := t.TempDir()
+	cfg := &config.Config{
+		DurationRaw: "500ms",
+		Duration:    500 * time.Millisecond,
+		Output:      filepath.Join(outDir, "capture.tar.gz"),
+		Resources: []config.Resource{
+			{Version: "v1", Resource: "pods", Namespaces: []string{"*"}, IntervalRaw: "200ms", Interval: 200 * time.Millisecond},
+		},
+	}
+
+	eng := newEngineWith(cfg, srv.Client(), srv.URL, false)
+	_, err := eng.Run()
+	if err == nil {
+		t.Fatal("expected error from discovery failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "namespace discovery failed") {
+		t.Errorf("expected 'namespace discovery failed' in error, got: %v", err)
+	}
+}
