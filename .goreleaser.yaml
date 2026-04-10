@@ -1,0 +1,71 @@
+version: 2
+
+project_name: k8shark
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: kshrk
+    main: .
+    binary: kshrk
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X github.com/phenixblue/k8shark/cmd.Version={{ .Version }}
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: github-native
+
+sboms:
+  - artifacts: archive
+
+signs:
+  - artifacts: checksum
+    cmd: cosign
+    args:
+      - sign-blob
+      - --yes
+      - --output-signature=${signature}
+      - --output-certificate=${certificate}
+      - ${artifact}
+
+brews:
+  - name: k8shark
+    homepage: https://github.com/phenixblue/k8shark
+    description: Kubernetes cluster state capture and mock API replay tool
+    license: Apache-2.0
+    repository:
+      owner: "{{ .Env.HOMEBREW_TAP_OWNER }}"
+      name: "{{ .Env.HOMEBREW_TAP_NAME }}"
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    commit_author:
+      name: github-actions[bot]
+      email: github-actions[bot]@users.noreply.github.com
+    test: |
+      system "#{bin}/kshrk", "version"
+    install: |
+      bin.install "kshrk"
+
+release:
+  draft: false
+  prerelease: auto

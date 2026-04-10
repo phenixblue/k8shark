@@ -1,4 +1,4 @@
-.PHONY: build test test-race test-cover fmt lint e2e kind-up kind-down clean help
+.PHONY: build test test-race test-cover fmt lint e2e kind-up kind-down release-snapshot release-local clean help
 
 BINARY  := kshrk
 VERSION ?= dev
@@ -36,6 +36,12 @@ kind-down: ## Delete the dev KinD cluster (k8shark-dev)
 
 clean: ## Remove build artifacts
 	rm -f $(BINARY) coverage.out coverage.html
+
+release-snapshot: ## Build a local release snapshot without publishing (no signing)
+	goreleaser release --snapshot --clean
+
+release-local: ## Dry-run release with SBOM + Homebrew output but no publish
+	goreleaser release --snapshot --clean --skip=sign,publish
 
 help: ## Print available targets
 	@grep -E '^[a-zA-Z0-9_-]+:.*## .*$$' $(MAKEFILE_LIST) | \
