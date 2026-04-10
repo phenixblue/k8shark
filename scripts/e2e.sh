@@ -578,6 +578,7 @@ assert_not_empty "PersistentVolumes present (cluster-scoped)" "$out"
 log "Testing kshrk redact"
 REDACTED_FILE="${CAPTURE_FILE%.tar.gz}-redacted.tar.gz"
 REDACTED_SERVER_LOG="/tmp/k8shark-redacted-server-$$.log"
+REDACTED_KC="/tmp/k8shark-redacted-kc-$$.yaml"
 REDACTED_SERVER_PID=""
 
 # Run redact on the original (un-redacted) capture without an allowlist so
@@ -602,12 +603,16 @@ else
 fi
 
 # Open the redacted archive and verify secret data values are REDACTED.
-"$BINARY" open "$REDACTED_FILE" >"$REDACTED_SERVER_LOG" 2>&1 &
+# Use --kubeconfig-out so this server writes its kubeconfig to a private temp
+# file and does NOT overwrite the original server's kubeconfig (both archives
+# share the same capture ID, which would stomp the original kubeconfig path
+# causing Phase 9 round-trip queries to hit a dead server port).
+"$BINARY" open "$REDACTED_FILE" --kubeconfig-out "$REDACTED_KC" >"$REDACTED_SERVER_LOG" 2>&1 &
 REDACTED_SERVER_PID=$!
 REDACTED_KUBECONFIG=""
 for i in $(seq 1 30); do
-  if grep -q "Kubeconfig:" "$REDACTED_SERVER_LOG" 2>/dev/null; then
-    REDACTED_KUBECONFIG=$(grep "Kubeconfig:" "$REDACTED_SERVER_LOG" | awk '{print $2}')
+  if [[ -s "$REDACTED_KC" ]]; then
+    REDACTED_KUBECONFIG="$REDACTED_KC"
     break
   fi
   sleep 0.5
@@ -647,7 +652,7 @@ if [[ -n "$REDACTED_SERVER_PID" ]]; then
   kill "$REDACTED_SERVER_PID" 2>/dev/null || true
   wait "$REDACTED_SERVER_PID" 2>/dev/null || true
 fi
-rm -f "$REDACTED_FILE" "$REDACTED_SERVER_LOG"
+rm -f "$REDACTED_FILE" "$REDACTED_SERVER_LOG" "$REDACTED_KC"
 
 # ── Phase 9: Round-trip comparison (live cluster vs. mock server) ─────────────
 log "Round-trip comparison: live cluster vs. mock server"
