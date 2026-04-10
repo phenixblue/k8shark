@@ -6,112 +6,35 @@
 
 ## How it works
 
-1. **Capture** — `kshrk capture` polls the Kubernetes API at defined intervals for a configured duration, recording every response as JSON. Everything is packaged into a `k8shark-<timestamp>.tar.gz` file.
+1. **Capture** — `kshrk capture` polls the Kubernetes API at configured intervals for a set duration and packages all responses into a `.tar.gz` file.
+2. **Open** — `kshrk open capture.tar.gz` extracts the archive, starts a local mock HTTPS API server, and writes a kubeconfig. Set `KUBECONFIG` and use `kubectl` normally.
 
-2. **Open** — `kshrk open capture.tar.gz` extracts the archive, starts a local mock HTTPS API server, and writes a kubeconfig pointing at it. Run `export KUBECONFIG=~/.kube/k8shark-<id>` and use `kubectl` normally.
+A customer hands over one file. A support engineer queries the environment interactively, without live cluster access or back-and-forth command output.
 
-This lets a customer hand over a single capture file so a support engineer can query the environment interactively, without waiting for back-and-forth command output or needing cluster access.
-
-## Install
-
-```sh
-go install github.com/phenixblue/k8shark@latest
-```
-
-Or build from source:
+## Quick start
 
 ```sh
-git clone https://github.com/phenixblue/k8shark
-cd k8shark
-go build -o kshrk .
-```
+# Install
+brew install phenixblue/tap/k8shark
 
-## Usage
-
-### Capture
-
-```sh
-# Using a config file
+# Capture cluster state for 10 minutes
 kshrk capture --config k8shark.yaml
 
-# Override output path and duration
-kshrk capture --config k8shark.yaml --output my-capture.tar.gz --duration 5m
-```
-
-Example `k8shark.yaml`:
-
-```yaml
-duration: 10m
-output: ./capture.tar.gz
-
-resources:
-  - group: ""
-    version: v1
-    resource: pods
-    namespaces: [default, kube-system]
-    interval: 30s
-  - group: ""
-    version: v1
-    resource: nodes
-    interval: 60s
-  - group: apps
-    version: v1
-    resource: deployments
-    namespaces: [default]
-    interval: 30s
-  - group: ""
-    version: v1
-    resource: events
-    namespaces: [default]
-    interval: 10s
-```
-
-### Open
-
-```sh
+# Replay the capture
 kshrk open capture.tar.gz
-
-# Output:
-# k8shark mock server running
-#   Address:    https://127.0.0.1:54321
-#   Kubeconfig: ~/.kube/k8shark-abc123
-#
-# Run: export KUBECONFIG=~/.kube/k8shark-abc123
-# Then use kubectl normally against the capture.
+export KUBECONFIG=~/.kube/k8shark-<id>.yaml
+kubectl get pods -A
 ```
 
-### Flags
+## Documentation
 
-| Flag | Description |
-|------|-------------|
-| `--config` | Path to capture config file (default: `./k8shark.yaml`) |
-| `--verbose` / `-v` | Enable verbose output |
-
-#### `capture`
-
-| Flag | Description |
-|------|-------------|
-| `--output` / `-o` | Output `.tar.gz` path |
-| `--kubeconfig` | Path to kubeconfig for the source cluster |
-| `--duration` | Override capture duration (e.g. `5m`, `1h`) |
-
-#### `open`
-
-| Flag | Description |
-|------|-------------|
-| `--port` | Port for mock API server (default: random) |
-| `--kubeconfig-out` | Where to write the generated kubeconfig |
-| `--at` | Pin replay to a specific timestamp (RFC3339) |
-
-## Capture archive format
-
-```
-k8shark-capture/
-  metadata.json       # cluster info, k8s version, capture config, timestamps
-  records/
-    <uuid>.json       # one JSON file per polled API response
-  index.json          # maps api_path -> [record IDs sorted by time]
-```
+| Doc | Description |
+|-----|-------------|
+| [docs/usage.md](docs/usage.md) | Installation, capture and open workflows, all CLI flags, kubectl compatibility |
+| [docs/config.md](docs/config.md) | Config file reference, namespaced vs cluster-scoped resources, example configs |
+| [docs/releases.md](docs/releases.md) | How to cut a release, GoReleaser pipeline, signing, Homebrew tap |
+| [docs/development.md](docs/development.md) | Building, testing, linting, KinD dev cluster, E2E tests, package layout |
+| [docs/archive-format.md](docs/archive-format.md) | Internal `.tar.gz` layout, record and index JSON schemas |
 
 ## License
 
