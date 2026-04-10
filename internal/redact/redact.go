@@ -88,8 +88,10 @@ func Archive(srcPath, dstPath string, allowList map[string]bool) (int, error) {
 	return redactedCount, nil
 }
 
-// redactRecord modifies rec in-place if it is a Secret not in the allowList.
-// Returns true if the record was redacted.
+// redactRecord modifies rec in-place if it contains Secret data.
+// Handles both individual Secret objects ("kind":"Secret") and list responses
+// ("kind":"SecretList") since the capture engine stores list-level responses.
+// Returns true if any redaction was performed.
 func redactRecord(rec *capture.Record, allowList map[string]bool) (bool, error) {
 	var obj map[string]json.RawMessage
 	if err := json.Unmarshal(rec.ResponseBody, &obj); err != nil {
@@ -102,13 +104,24 @@ func redactRecord(rec *capture.Record, allowList map[string]bool) (bool, error) 
 		return false, nil
 	}
 	var kind string
-	if err := json.Unmarshal(kindRaw, &kind); err != nil || kind != "Secret" {
+	if err := json.Unmarshal(kindRaw, &kind); err != nil {
 		return false, nil
 	}
 
-	// Check allowlist.
-	metaKey := secretKey(obj)
-	if allowList[metaKey] {
+	switch kind {
+	case "Secret":
+		return redactSecretObj(obj, allowList, &rec.ResponseBody)
+	case "SecretList":
+		return redactSecretList(obj, allowList, &rec.ResponseBody)
+	default:
+		return false, nil
+	}
+}
+
+// redactSecretObj redacts data/stringData on a single Secret map.
+// Writes back to dest if modified.
+func redactSecretObj(obj map[string]json.RawMessage, allowList map[string]bool, dest *json.RawMessage) (bool, error) {
+	if allowList[secretKey(obj)] {
 		return false, nil
 	}
 
@@ -116,7 +129,7 @@ func redactRecord(rec *capture.Record, allowList map[string]bool) (bool, error) 
 
 	if dataRaw, ok := obj["data"]; ok {
 		var dataMap map[string]string
-		if err := json.Unmarshal(dataRaw, &dataMap); err == nil {
+		if err := json.Unmarshal(dataRaw, &dataMap); err == nil && len(dataMap) > 0 {
 			for k := range dataMap {
 				dataMap[k] = redactedB64
 			}
@@ -128,7 +141,7 @@ func redactRecord(rec *capture.Record, allowList map[string]bool) (bool, error) 
 
 	if sdRaw, ok := obj["stringData"]; ok {
 		var sdMap map[string]string
-		if err := json.Unmarshal(sdRaw, &sdMap); err == nil {
+		if err := json.Unmarshal(sdRaw, &sdMap); err == nil && len(sdMap) > 0 {
 			for k := range sdMap {
 				sdMap[k] = "REDACTED"
 			}
@@ -143,9 +156,52 @@ func redactRecord(rec *capture.Record, allowList map[string]bool) (bool, error) 
 		if err != nil {
 			return false, fmt.Errorf("re-marshalling secret: %w", err)
 		}
-		rec.ResponseBody = newBody
+		*dest = newBody
+	}
+	return modified, nil
+}
+
+// redactSecretList redacts all items in a SecretList response.
+func redactSecretList(obj map[string]json.RawMessage, allowList map[string]bool, dest *json.RawMessage) (bool, error) {
+	itemsRaw, ok := obj["items"]
+	if !ok {
+		return false, nil
 	}
 
+	var items []json.RawMessage
+	if err := json.Unmarshal(itemsRaw, &items); err != nil || len(items) == 0 {
+		return false, nil
+	}
+
+	modified := false
+	for i, itemRaw := range items {
+		var itemObj map[string]json.RawMessage
+		if err := json.Unmarshal(itemRaw, &itemObj); err != nil {
+			continue
+		}
+		var newBody json.RawMessage = itemRaw
+		changed, err := redactSecretObj(itemObj, allowList, &newBody)
+		if err != nil {
+			return false, err
+		}
+		if changed {
+			items[i] = newBody
+			modified = true
+		}
+	}
+
+	if modified {
+		newItems, err := json.Marshal(items)
+		if err != nil {
+			return false, fmt.Errorf("re-marshalling secret list items: %w", err)
+		}
+		obj["items"] = newItems
+		newBody, err := json.Marshal(obj)
+		if err != nil {
+			return false, fmt.Errorf("re-marshalling secret list: %w", err)
+		}
+		*dest = newBody
+	}
 	return modified, nil
 }
 

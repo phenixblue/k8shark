@@ -87,6 +87,26 @@ func podRecord(id, ns string) *capture.Record {
 	}
 }
 
+// secretListRecord creates a record whose response body is a SecretList — the real
+// format stored by the capture engine (it GETs the list endpoint, not individual items).
+func secretListRecord(id, ns string, items []map[string]any) *capture.Record {
+	obj := map[string]any{
+		"kind":       "SecretList",
+		"apiVersion": "v1",
+		"metadata":   map[string]any{},
+		"items":      items,
+	}
+	body, _ := json.Marshal(obj)
+	apiPath := "/api/v1/namespaces/" + ns + "/secrets"
+	return &capture.Record{
+		ID:           id,
+		APIPath:      apiPath,
+		CapturedAt:   time.Now(),
+		ResponseCode: 200,
+		ResponseBody: body,
+	}
+}
+
 func TestRedact_SecretDataRedacted(t *testing.T) {
 	encoded := base64.StdEncoding.EncodeToString([]byte("my-password"))
 	src := buildTestArchive(t, []*capture.Record{
@@ -208,5 +228,104 @@ func TestRedact_NonSecretUnchanged(t *testing.T) {
 	}
 	if n != 0 {
 		t.Errorf("expected 0 redacted (no secrets), got %d", n)
+	}
+}
+
+func TestRedact_SecretListRedacted(t *testing.T) {
+	encoded := base64.StdEncoding.EncodeToString([]byte("hunter2"))
+	item := map[string]any{
+		"kind":       "Secret",
+		"apiVersion": "v1",
+		"metadata":   map[string]any{"name": "app-secret", "namespace": "k8shark-test"},
+		"data":       map[string]string{"password": encoded},
+	}
+	src := buildTestArchive(t, []*capture.Record{
+		secretListRecord("r5", "k8shark-test", []map[string]any{item}),
+	})
+	dst := src + "-redacted.tar.gz"
+	t.Cleanup(func() { os.Remove(dst) })
+
+	n, err := Archive(src, dst, nil)
+	if err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("expected 1 redacted record, got %d", n)
+	}
+
+	tmpDir := t.TempDir()
+	if err := archive.Open(dst, tmpDir); err != nil {
+		t.Fatalf("opening redacted archive: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(tmpDir, "k8shark-capture", "records", "r5.json"))
+	if err != nil {
+		t.Fatalf("reading record: %v", err)
+	}
+	var rec capture.Record
+	_ = json.Unmarshal(data, &rec)
+	var obj map[string]json.RawMessage
+	_ = json.Unmarshal(rec.ResponseBody, &obj)
+	var items []json.RawMessage
+	_ = json.Unmarshal(obj["items"], &items)
+	if len(items) == 0 {
+		t.Fatal("expected items array in SecretList response")
+	}
+	var itemObj map[string]json.RawMessage
+	_ = json.Unmarshal(items[0], &itemObj)
+	var dataMap map[string]string
+	_ = json.Unmarshal(itemObj["data"], &dataMap)
+
+	want := base64.StdEncoding.EncodeToString([]byte("REDACTED"))
+	if dataMap["password"] != want {
+		t.Errorf("expected data[password]=%q, got %q", want, dataMap["password"])
+	}
+}
+
+func TestRedact_SecretList_AllowList(t *testing.T) {
+	encoded := base64.StdEncoding.EncodeToString([]byte("keep-me"))
+	item := map[string]any{
+		"kind":       "Secret",
+		"apiVersion": "v1",
+		"metadata":   map[string]any{"name": "allowed-secret", "namespace": "default"},
+		"data":       map[string]string{"key": encoded},
+	}
+	src := buildTestArchive(t, []*capture.Record{
+		secretListRecord("r6", "default", []map[string]any{item}),
+	})
+	dst := src + "-redacted.tar.gz"
+	t.Cleanup(func() { os.Remove(dst) })
+
+	n, err := Archive(src, dst, map[string]bool{"default/allowed-secret": true})
+	if err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("expected 0 redacted records (allowlisted), got %d", n)
+	}
+
+	tmpDir := t.TempDir()
+	if err := archive.Open(dst, tmpDir); err != nil {
+		t.Fatalf("opening redacted archive: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(tmpDir, "k8shark-capture", "records", "r6.json"))
+	if err != nil {
+		t.Fatalf("reading record: %v", err)
+	}
+	var rec capture.Record
+	_ = json.Unmarshal(data, &rec)
+	var obj map[string]json.RawMessage
+	_ = json.Unmarshal(rec.ResponseBody, &obj)
+	var items []json.RawMessage
+	_ = json.Unmarshal(obj["items"], &items)
+	if len(items) == 0 {
+		t.Fatal("expected items array in SecretList response")
+	}
+	var itemObj map[string]json.RawMessage
+	_ = json.Unmarshal(items[0], &itemObj)
+	var dataMap map[string]string
+	_ = json.Unmarshal(itemObj["data"], &dataMap)
+
+	if dataMap["key"] != encoded {
+		t.Errorf("expected original value preserved for allowlisted secret in list, got %q", dataMap["key"])
 	}
 }
