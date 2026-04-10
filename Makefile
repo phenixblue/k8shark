@@ -1,4 +1,4 @@
-.PHONY: build test test-race test-cover fmt lint e2e kind-up kind-down release-snapshot release-local clean help
+.PHONY: build test test-race test-cover bench fmt lint e2e kind-up kind-down release-snapshot release-local clean help
 
 BINARY  := kshrk
 VERSION ?= dev
@@ -17,6 +17,9 @@ test-race: ## Run unit tests with the race detector
 test-cover: ## Run unit tests and generate an HTML coverage report
 	go test -coverprofile=coverage.out ./...
 	go tool cover -html=coverage.out -o coverage.html
+
+bench: ## Run all benchmarks (use BENCH=<regexp> to filter)
+	go test -bench=${BENCH:-.} -benchmem -run=^$$ ./...
 
 fmt: ## Format Go source files
 	gofmt -w .
