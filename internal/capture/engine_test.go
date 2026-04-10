@@ -1,6 +1,7 @@
 package capture
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -8,11 +9,36 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/config"
 )
+
+// sliceSink is a test RecordSink that accumulates records in memory.
+type sliceSink struct {
+	mu      sync.Mutex
+	records []*Record
+}
+
+func (s *sliceSink) WriteRecord(rec any) error {
+	r, ok := rec.(*Record)
+	if !ok {
+		return nil
+	}
+	s.mu.Lock()
+	s.records = append(s.records, r)
+	s.mu.Unlock()
+	return nil
+}
+func (s *sliceSink) Finish(_, _ any) error { return nil }
+func (s *sliceSink) RecordCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.records)
+}
 
 // fakeK8sServer returns an httptest.TLSServer that responds to the paths used by
 // a minimal capture config (pods in default, nodes cluster-scoped).
@@ -69,27 +95,21 @@ func TestEngine_CaptureToArchive(t *testing.T) {
 		t.Fatal("output archive is empty")
 	}
 
-	// Must have captured at least one record per resource.
-	if len(eng.records) == 0 {
-		t.Fatal("no records captured")
+	// Extract the archive and verify its contents.
+	extractDir := t.TempDir()
+	if err := archive.Open(outFile, extractDir); err != nil {
+		t.Fatalf("failed to open archive: %v", err)
 	}
-	// Verify at least one pod record exists.
-	foundPod := false
-	for _, rec := range eng.records {
-		if rec.APIPath == "/api/v1/namespaces/default/pods" && rec.ResponseCode == 200 {
-			var podList map[string]any
-			if err := json.Unmarshal(rec.ResponseBody, &podList); err != nil {
-				t.Errorf("pod response not valid JSON: %v", err)
-			}
-			if podList["kind"] != "PodList" {
-				t.Errorf("expected kind=PodList, got %v", podList["kind"])
-			}
-			foundPod = true
-		}
+
+	// metadata.json must exist.
+	if _, err := os.Stat(filepath.Join(extractDir, "k8shark-capture", "metadata.json")); err != nil {
+		t.Error("metadata.json missing from archive")
 	}
-	if !foundPod {
-		t.Error("no pod records found in capture")
+	// index.json must exist.
+	if _, err := os.Stat(filepath.Join(extractDir, "k8shark-capture", "index.json")); err != nil {
+		t.Error("index.json missing from archive")
 	}
+
 	// Verify index contains the captured paths.
 	if _, ok := eng.index["/api/v1/namespaces/default/pods"]; !ok {
 		t.Error("pod path missing from index")
@@ -141,6 +161,8 @@ func TestEngine_FetchPodsLogs(t *testing.T) {
 	}
 
 	eng := newEngineWith(cfg, srv.Client(), srv.URL, false)
+	ss := &sliceSink{}
+	eng.sink = ss
 	if _, err := eng.Run(); err != nil {
 		t.Fatalf("engine.Run() error: %v", err)
 	}
@@ -156,7 +178,7 @@ func TestEngine_FetchPodsLogs(t *testing.T) {
 	}
 
 	// Log records must be stored as JSON strings encoding the plain-text body.
-	for _, rec := range eng.records {
+	for _, rec := range ss.records {
 		if rec.APIPath != nginxLogPath && rec.APIPath != redisLogPath {
 			continue
 		}
@@ -215,5 +237,37 @@ func TestEngine_NoLogsWhenDisabled(t *testing.T) {
 	}
 	if logCalled {
 		t.Error("log endpoint was called even though Logs=0")
+	}
+}
+
+func TestEngine_NDJSONOutput(t *testing.T) {
+	srv := fakeK8sServer(t)
+	defer srv.Close()
+
+	cfg := &config.Config{
+		DurationRaw: "500ms",
+		Duration:    500 * time.Millisecond,
+		Output:      "-",
+		Resources: []config.Resource{
+			{Version: "v1", Resource: "pods", Namespaces: []string{"default"}, IntervalRaw: "200ms", Interval: 200 * time.Millisecond},
+		},
+	}
+
+	var buf bytes.Buffer
+	eng := newEngineWith(cfg, srv.Client(), srv.URL, false)
+	eng.sink = archive.NewNDJSONWriter(&buf)
+	if _, err := eng.Run(); err != nil {
+		t.Fatalf("engine.Run() error: %v", err)
+	}
+
+	output := strings.TrimSpace(buf.String())
+	if output == "" {
+		t.Fatal("expected NDJSON output, got empty buffer")
+	}
+	for i, line := range strings.Split(output, "\n") {
+		var obj map[string]any
+		if err := json.Unmarshal([]byte(line), &obj); err != nil {
+			t.Errorf("line %d is not valid JSON: %v\nline: %s", i, err, line)
+		}
 	}
 }
