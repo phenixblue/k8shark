@@ -13,7 +13,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/config"
-	k8serrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
@@ -327,7 +326,4 @@ func buildAPIPath(group, version, resource, namespace string) string {
 	return base + "/namespaces/" + namespace + "/" + resource
 }
 
-// statusNotFound returns true for 404 API errors (resource not present on server).
-func statusNotFound(err error) bool {
-	return k8serrors.IsNotFound(err)
-}
+

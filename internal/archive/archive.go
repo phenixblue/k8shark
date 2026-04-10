@@ -41,16 +41,6 @@ func Write(outputPath string, metadata any, records any, index any) error {
 		return err
 	}
 
-	type recorder interface {
-		GetID() string
-		JSON() ([]byte, error)
-	}
-
-	// records is []*capture.Record — iterate via reflection-free type assertion
-	type record interface {
-		GetID() string
-	}
-
 	// Use json marshal + unmarshal round-trip to get individual records as
 	// []map[string]any so archive package stays import-cycle-free.
 	raw, err := json.Marshal(records)
