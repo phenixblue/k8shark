@@ -8,6 +8,8 @@ on:
 jobs:
   benchmark:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -19,6 +21,16 @@ jobs:
 
       - name: Tidy
         run: go mod tidy
+
+      - name: Initialize gh-pages branch
+        run: |
+          if ! git ls-remote --exit-code origin gh-pages; then
+            git checkout --orphan gh-pages
+            git rm -rf . --quiet
+            git commit --allow-empty -m "chore: initialize gh-pages branch"
+            git push origin gh-pages
+            git checkout main
+          fi
 
       - name: Run benchmarks
         run: go test -bench=. -benchmem -run=^$ -count=5 ./... | tee bench-output.txt
