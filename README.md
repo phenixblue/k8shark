@@ -2,14 +2,25 @@
 
 > Like Wireshark, but for Kubernetes.
 
+![k8shark demo](docs/demo/demo.gif)
+
+> **Customer cluster is broken. You can't get access. You can't reproduce it. k8shark fixes that.**
+
 **k8shark** captures a Kubernetes cluster's state over time and packages it into a single portable archive. A built-in mock API server lets support engineers replay that archive exactly like a live cluster — no direct connectivity required.
+
+A customer hands over one file. A support engineer queries the environment interactively, without live cluster access or back-and-forth command output.
 
 ## How it works
 
+```mermaid
+flowchart LR
+    A[Your Cluster] -->|kshrk capture| B(capture.tar.gz)
+    B -->|kshrk open| C[Mock API Server]
+    C -->|kubectl| D[Offline Debugging]
+```
+
 1. **Capture** — `kshrk capture` polls the Kubernetes API at configured intervals for a set duration and packages all responses into a `.tar.gz` file.
 2. **Open** — `kshrk open capture.tar.gz` extracts the archive, starts a local mock HTTPS API server, and writes a kubeconfig. Set `KUBECONFIG` and use `kubectl` normally.
-
-A customer hands over one file. A support engineer queries the environment interactively, without live cluster access or back-and-forth command output.
 
 ## Quick start
 

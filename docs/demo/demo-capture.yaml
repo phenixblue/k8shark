@@ -1,0 +1,39 @@
+duration: 2s
+output: ./demo-capture.tar.gz
+kubeconfig: /tmp/k8shark-dev.yaml
+
+resources:
+  - group: ""
+    version: v1
+    resource: pods
+    namespaces: [default, k8shark-test, k8shark-jobs]
+    interval: 2s
+
+  - group: ""
+    version: v1
+    resource: nodes
+    interval: 2s
+
+  - group: ""
+    version: v1
+    resource: secrets
+    namespaces: [k8shark-test]
+    interval: 2s
+
+  - group: apps
+    version: v1
+    resource: deployments
+    namespaces: [default, k8shark-test]
+    interval: 2s
+
+  - group: apps
+    version: v1
+    resource: statefulsets
+    namespaces: [default]
+    interval: 2s
+
+  - group: apps
+    version: v1
+    resource: daemonsets
+    namespaces: [k8shark-test]
+    interval: 2s

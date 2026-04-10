@@ -17,6 +17,6 @@ planning/
 # macOS
 .DS_Store
 
-# Test Data
-capture.tar.gz
+# Test / local capture data
+*.tar.gz
 k8shark-capture/
