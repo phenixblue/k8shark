@@ -28,6 +28,24 @@ k8shark reads a YAML config file that controls what gets captured, from which na
 
 > **Warning**: if you include `namespaces:` for a cluster-scoped resource, k8shark will warn during capture and automatically fall back to the correct cluster-scoped path.
 
+### Wildcard namespaces
+
+Use `"*"` as a namespace value to automatically capture from all namespaces discoverable at capture start:
+
+```yaml
+- group: apps
+  version: v1
+  resource: deployments
+  namespaces: ["*"]
+  interval: 30s
+```
+
+**Behaviour:**
+- `namespaces: ["*"]` expands to every namespace present at the start of the capture. Namespaces created _during_ the capture are not included.
+- Mixed lists such as `namespaces: ["production", "*"]` are supported — explicit namespaces appear first, then all remaining discovered namespaces are appended, deduplicated.
+- If namespace discovery fails (e.g. RBAC permissions), the capture exits with a clear error.
+- A well-known cluster-scoped resource (nodes, persistentvolumes, etc.) with `namespaces: ["*"]` emits a warning and falls back to a cluster-scoped fetch.
+
 ## Example configs
 
 ### Minimal: just pods in one namespace
