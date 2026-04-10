@@ -127,3 +127,21 @@ print(entry['record_ids'][-1])
 # then:
 # tar -xOf capture.tar.gz k8shark-capture/records/<uuid>.json | python3 -m json.tool
 ```
+
+## Redacted archives
+
+`kshrk redact` produces a structurally identical archive where every Kubernetes
+Secret record has its `data` and `stringData` fields scrubbed:
+
+- `data` values are replaced with `UkVEQUNURUQ=` (base64 of `"REDACTED"`)
+- `stringData` values are replaced with the string `"REDACTED"`
+- All other Secret fields (name, namespace, labels, annotations, type) are unchanged
+- Non-Secret records are written verbatim
+
+The `index.json` and `metadata.json` are written unchanged. A redacted archive is
+fully usable with `kshrk open` — `kubectl get secret` will show the secret names
+and types, but all values will be `REDACTED`.
+
+```sh
+kshrk redact --in capture.tar.gz --out capture-redacted.tar.gz
+```

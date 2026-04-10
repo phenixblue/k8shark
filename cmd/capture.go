@@ -7,6 +7,7 @@ import (
 
 	"github.com/phenixblue/k8shark/internal/capture"
 	"github.com/phenixblue/k8shark/internal/config"
+	"github.com/phenixblue/k8shark/internal/redact"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -25,6 +26,8 @@ func init() {
 	captureCmd.Flags().StringP("output", "o", "", "output file path (default: ./k8shark-<timestamp>.tar.gz)")
 	captureCmd.Flags().String("kubeconfig", "", "path to kubeconfig (defaults to KUBECONFIG env, then ~/.kube/config)")
 	captureCmd.Flags().String("duration", "", "capture duration, overrides config file value (e.g. 10m, 1h)")
+	captureCmd.Flags().Bool("redact-secrets", false, "redact Secret data and stringData values from the archive after capture")
+	captureCmd.Flags().StringArray("allow-secret", nil, "namespace/name of secret to preserve when --redact-secrets is set (repeatable)")
 	_ = viper.BindPFlag("output", captureCmd.Flags().Lookup("output"))
 	_ = viper.BindPFlag("kubeconfig", captureCmd.Flags().Lookup("kubeconfig"))
 	_ = viper.BindPFlag("duration", captureCmd.Flags().Lookup("duration"))
@@ -72,6 +75,28 @@ func runCapture(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(os.Stdout, "  Output:    %s (%s)\n", sum.OutputPath, formatBytes(sum.OutputSize))
 	fmt.Fprintf(os.Stdout, "  Records:   %d across %d resource path(s)\n", sum.RecordCount, sum.ResourceCount)
 	fmt.Fprintf(os.Stdout, "  Duration:  %s\n", sum.Duration)
+
+	// Optional in-place redaction of Secret values.
+	if doRedact, _ := cmd.Flags().GetBool("redact-secrets"); doRedact {
+		allows, _ := cmd.Flags().GetStringArray("allow-secret")
+		allowList := make(map[string]bool, len(allows))
+		for _, a := range allows {
+			allowList[a] = true
+		}
+
+		tmpPath := sum.OutputPath + ".redacting"
+		n, err := redact.Archive(sum.OutputPath, tmpPath, allowList)
+		if err != nil {
+			_ = os.Remove(tmpPath)
+			return fmt.Errorf("redacting secrets: %w", err)
+		}
+		if err := os.Rename(tmpPath, sum.OutputPath); err != nil {
+			_ = os.Remove(tmpPath)
+			return fmt.Errorf("replacing archive with redacted version: %w", err)
+		}
+		fmt.Fprintf(os.Stdout, "  Redacted:  %d secret(s) scrubbed from archive\n", n)
+	}
+
 	return nil
 }
 
