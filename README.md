@@ -1,5 +1,9 @@
 # k8shark
 
+<p align="center">
+  <img src="docs/images/k8shark-logo.png" alt="k8shark logo" width="200"/>
+</p>
+
 > Like Wireshark, but for Kubernetes.
 
 ![k8shark demo](docs/demo/demo.gif)
