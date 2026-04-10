@@ -424,3 +424,50 @@ func TestHandler_InteractiveSubResourcesReturn405(t *testing.T) {
 		}
 	}
 }
+
+func TestHandler_ServeLog_Captured(t *testing.T) {
+	// Log bodies are stored as JSON strings in the archive.
+	logContent := "line1\nline2\nline3\n"
+	logJSON, _ := json.Marshal(logContent)
+	store := buildTestStore(t, map[string][]byte{
+		"/api/v1/namespaces/default/pods/mypod/log": logJSON,
+	})
+	h := newHandler(store, time.Time{}, false)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/namespaces/default/pods/mypod/log", nil)
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rw.Code)
+	}
+	if ct := rw.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
+		t.Errorf("expected text/plain Content-Type, got %q", ct)
+	}
+	if got := rw.Body.String(); got != logContent {
+		t.Errorf("expected log body %q, got %q", logContent, got)
+	}
+}
+
+func TestHandler_ServeLog_NotCaptured(t *testing.T) {
+	store := buildTestStore(t, map[string][]byte{
+		"/api/v1/namespaces/default/pods": []byte(`{"kind":"PodList","items":[]}`),
+	})
+	h := newHandler(store, time.Time{}, false)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/namespaces/default/pods/mypod/log", nil)
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, req)
+
+	// Should return 200 with a stub message — not 404 or an error.
+	if rw.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rw.Code)
+	}
+	body := rw.Body.String()
+	if !strings.Contains(body, "k8shark") {
+		t.Errorf("expected stub message to mention k8shark, got: %q", body)
+	}
+	if !strings.Contains(body, "not captured") {
+		t.Errorf("expected stub to mention 'not captured', got: %q", body)
+	}
+}

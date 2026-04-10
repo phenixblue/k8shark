@@ -234,8 +234,40 @@ The mock server is designed to be a drop-in replacement for `kubectl`'s real ser
 | Watch (`-w`) | ✅ synthetic event stream |
 | Write operations (`apply`, `delete`, `edit`, …) | ⛔ returns `405 Method Not Allowed` — mock server is read-only |
 | `kubectl exec` / `kubectl cp` / `kubectl port-forward` / `kubectl attach` | ⛔ returns `405 Method Not Allowed` with a clear error referencing k8shark capture replay |
-| `kubectl logs` | ❌ not yet captured |
+| `kubectl logs` | ✅ if captured via `logs: N` in capture config; helpful stub returned when not captured |
 | `kubectl top` | ❌ metrics API not captured |
+
+---
+
+## Capturing pod logs
+
+To capture pod logs alongside resource state, add a `logs` field to a `pods` resource entry in your capture config. The value is the number of tail lines to capture per pod:
+
+```yaml
+resources:
+  - version: v1
+    resource: pods
+    namespaces: [production, staging]
+    interval: 30s
+    logs: 200       # capture last 200 lines from each pod
+```
+
+Log content is fetched once at the end of the capture run and stored in the archive. When you open the archive with `kshrk open`, `kubectl logs` returns the captured output:
+
+```sh
+kubectl logs my-app-pod-abc123 -n production
+# outputs the captured tail log
+```
+
+If a pod's logs were not captured (e.g. `logs` was omitted or set to `0`), `kubectl logs` returns a clear stub message instead of an error:
+
+```
+# k8shark capture replay: logs were not captured for this pod.
+# To capture logs, add 'logs: 200' (or another line count) to the
+# pods entry in your k8shark capture config and re-run the capture.
+```
+
+> **Note:** Large log volumes increase archive size. Use a reasonable tail-line limit (e.g. 100–500 lines). Previous-container logs (`kubectl logs --previous`) are not captured.
 
 ### Resources not in the capture
 

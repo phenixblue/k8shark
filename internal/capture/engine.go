@@ -102,6 +102,17 @@ func (e *Engine) Run() (*CaptureSummary, error) {
 	}
 	wg.Wait()
 
+	// Fetch pod logs for any pods resource entry with logs > 0. This runs after
+	// all polling so we capture the most recent log state. A short background
+	// context is used because the main capture context has already expired.
+	for _, res := range e.cfg.Resources {
+		if res.Logs > 0 && res.Resource == "pods" {
+			logCtx, logCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			e.fetchPodsLogs(logCtx, res)
+			logCancel()
+		}
+	}
+
 	meta := &CaptureMetadata{
 		CaptureID:         uuid.New().String(),
 		CapturedAt:        time.Now().UTC().Add(-e.cfg.Duration),
@@ -275,6 +286,13 @@ func (e *Engine) doFetch(ctx context.Context, apiPath, tableKeySuffix string) ([
 	if tableKeySuffix == "" && resp.StatusCode == http.StatusForbidden {
 		fmt.Fprintf(os.Stderr, "  [warn] RBAC denied: %s (check cluster permissions)\n", apiPath)
 	}
+
+	// Skip records with an empty body — storing json.RawMessage("") would
+	// produce invalid JSON in the archive and corrupt serialisation.
+	if len(body) == 0 {
+		return nil, resp.StatusCode
+	}
+
 	if e.verbose {
 		label := apiPath
 		if tableKeySuffix != "" {
@@ -343,4 +361,90 @@ func buildAPIPath(group, version, resource, namespace string) string {
 		return base + "/" + resource
 	}
 	return base + "/namespaces/" + namespace + "/" + resource
+}
+
+// fetchPodsLogs fetches the tail log for each pod found in res across all
+// configured namespaces. Each log is stored under the clean
+// /api/v1/namespaces/<ns>/pods/<name>/log path so the mock server can serve
+// it verbatim when kubectl logs is run against the replay server.
+func (e *Engine) fetchPodsLogs(ctx context.Context, res config.Resource) {
+	namespaces := res.Namespaces
+	if len(namespaces) == 0 {
+		namespaces = []string{""}
+	}
+	for _, ns := range namespaces {
+		listPath := buildAPIPath(res.Group, res.Version, res.Resource, ns)
+		listBody, code := e.doFetch(ctx, listPath, "")
+		if code != 200 || listBody == nil {
+			continue
+		}
+		var list struct {
+			Items []struct {
+				Metadata struct {
+					Name      string `json:"name"`
+					Namespace string `json:"namespace"`
+				} `json:"metadata"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(listBody, &list); err != nil {
+			continue
+		}
+		for _, item := range list.Items {
+			podNS := item.Metadata.Namespace
+			if podNS == "" {
+				podNS = ns
+			}
+			e.fetchOnePodLog(ctx, podNS, item.Metadata.Name, res.Logs)
+		}
+	}
+}
+
+// fetchOnePodLog fetches the last tailLines lines of a pod's log and stores
+// the plain-text content as a JSON-encoded string under the clean log path.
+// Storing as a JSON string ensures the record is valid JSON for the archive.
+func (e *Engine) fetchOnePodLog(ctx context.Context, namespace, podName string, tailLines int) {
+	logPath := fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/log", namespace, podName)
+	fetchURL := fmt.Sprintf("%s%s?tailLines=%d", e.baseURL, logPath, tailLines)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fetchURL, nil)
+	if err != nil {
+		return
+	}
+	resp, err := e.httpClient.Do(req)
+	if err != nil {
+		return
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return
+	}
+
+	// Encode plain-text log body as a JSON string so it can be stored in the
+	// JSON archive without breaking serialisation.
+	jsonBody, err := json.Marshal(string(body))
+	if err != nil {
+		return
+	}
+
+	if e.verbose {
+		fmt.Fprintf(os.Stdout, "  [capture] %s -> %d (%d bytes)\n", logPath, resp.StatusCode, len(body))
+	}
+
+	rec := &Record{
+		ID:           uuid.New().String(),
+		CapturedAt:   time.Now().UTC(),
+		APIPath:      logPath,
+		HTTPMethod:   http.MethodGet,
+		ResponseCode: http.StatusOK,
+		ResponseBody: json.RawMessage(jsonBody),
+	}
+	e.mu.Lock()
+	e.records = append(e.records, rec)
+	if _, ok := e.index[logPath]; !ok {
+		e.index[logPath] = &IndexEntry{APIPath: logPath}
+	}
+	e.index[logPath].RecordIDs = append(e.index[logPath].RecordIDs, rec.ID)
+	e.index[logPath].Times = append(e.index[logPath].Times, rec.CapturedAt)
+	e.mu.Unlock()
 }

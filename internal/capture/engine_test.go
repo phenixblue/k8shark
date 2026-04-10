@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -95,5 +96,124 @@ func TestEngine_CaptureToArchive(t *testing.T) {
 	}
 	if _, ok := eng.index["/api/v1/nodes"]; !ok {
 		t.Error("nodes path missing from index")
+	}
+}
+
+func TestEngine_FetchPodsLogs(t *testing.T) {
+	podList := `{"apiVersion":"v1","kind":"PodList","metadata":{},"items":[` +
+		`{"metadata":{"name":"nginx","namespace":"default"}},` +
+		`{"metadata":{"name":"redis","namespace":"default"}}]}`
+	nginxLog := "nginx log line 1\nnginx log line 2\n"
+	redisLog := "redis log line 1\n"
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/version":
+			fmt.Fprint(w, `{"gitVersion":"v1.29.0"}`)
+		case "/api/v1/namespaces/default/pods":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, podList)
+		case "/api/v1/namespaces/default/pods/nginx/log":
+			w.Header().Set("Content-Type", "text/plain")
+			fmt.Fprint(w, nginxLog)
+		case "/api/v1/namespaces/default/pods/redis/log":
+			w.Header().Set("Content-Type", "text/plain")
+			fmt.Fprint(w, redisLog)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	outDir := t.TempDir()
+	cfg := &config.Config{
+		DurationRaw: "1s",
+		Duration:    1 * time.Second,
+		Output:      filepath.Join(outDir, "capture.tar.gz"),
+		Resources: []config.Resource{
+			{
+				Version: "v1", Resource: "pods",
+				Namespaces:  []string{"default"},
+				IntervalRaw: "500ms", Interval: 500 * time.Millisecond,
+				Logs: 50,
+			},
+		},
+	}
+
+	eng := newEngineWith(cfg, srv.Client(), srv.URL, false)
+	if _, err := eng.Run(); err != nil {
+		t.Fatalf("engine.Run() error: %v", err)
+	}
+
+	// Both log paths must be in the index.
+	nginxLogPath := "/api/v1/namespaces/default/pods/nginx/log"
+	redisLogPath := "/api/v1/namespaces/default/pods/redis/log"
+	if _, ok := eng.index[nginxLogPath]; !ok {
+		t.Errorf("nginx log path %q missing from index", nginxLogPath)
+	}
+	if _, ok := eng.index[redisLogPath]; !ok {
+		t.Errorf("redis log path %q missing from index", redisLogPath)
+	}
+
+	// Log records must be stored as JSON strings encoding the plain-text body.
+	for _, rec := range eng.records {
+		if rec.APIPath != nginxLogPath && rec.APIPath != redisLogPath {
+			continue
+		}
+		var text string
+		if err := json.Unmarshal(rec.ResponseBody, &text); err != nil {
+			t.Errorf("log record at %q has invalid JSON body: %v", rec.APIPath, err)
+			continue
+		}
+		want := nginxLog
+		if rec.APIPath == redisLogPath {
+			want = redisLog
+		}
+		if text != want {
+			t.Errorf("%q: got %q, want %q", rec.APIPath, text, want)
+		}
+	}
+}
+
+func TestEngine_NoLogsWhenDisabled(t *testing.T) {
+	logCalled := false
+	podList := `{"apiVersion":"v1","kind":"PodList","metadata":{},"items":[{"metadata":{"name":"nginx","namespace":"default"}}]}`
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/log") {
+			logCalled = true
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, "some log")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/version":
+			fmt.Fprint(w, `{"gitVersion":"v1.29.0"}`)
+		case "/api/v1/namespaces/default/pods":
+			fmt.Fprint(w, podList)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	outDir := t.TempDir()
+	cfg := &config.Config{
+		DurationRaw: "1s",
+		Duration:    1 * time.Second,
+		Output:      filepath.Join(outDir, "capture.tar.gz"),
+		Resources: []config.Resource{
+			// Logs: 0 (default) — log capture disabled.
+			{Version: "v1", Resource: "pods", Namespaces: []string{"default"}, IntervalRaw: "500ms", Interval: 500 * time.Millisecond},
+		},
+	}
+
+	eng := newEngineWith(cfg, srv.Client(), srv.URL, false)
+	if _, err := eng.Run(); err != nil {
+		t.Fatalf("engine.Run() error: %v", err)
+	}
+	if logCalled {
+		t.Error("log endpoint was called even though Logs=0")
 	}
 }

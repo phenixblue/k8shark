@@ -102,6 +102,9 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if !h.tryServeFromStore(w, path, replayAt) {
 			h.serveGroupResourceList(w, path)
 		}
+	case strings.HasSuffix(path, "/log"):
+		// Pod log sub-resource: serve captured content or a helpful stub.
+		h.serveLog(w, path, replayAt)
 	default:
 		h.serveResource(w, r, path, replayAt)
 	}
@@ -624,6 +627,36 @@ func (h *handler) handleWatch(w http.ResponseWriter, r *http.Request, path strin
 	case <-r.Context().Done():
 	case <-timer:
 	}
+}
+
+// serveLog serves a pod log sub-resource (e.g. /api/v1/namespaces/<ns>/pods/<name>/log).
+// If the log was captured (logs: N in the resource config), it is served as
+// plain text. Otherwise a helpful stub message is returned so kubectl logs does
+// not error out against the mock server.
+func (h *handler) serveLog(w http.ResponseWriter, path string, at time.Time) {
+	body, code, err := h.store.Latest(path, at)
+	if err == nil && code == 200 {
+		// Logs are stored as JSON strings; decode to recover the original plain text.
+		var text string
+		if json.Unmarshal(body, &text) == nil {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprint(w, text)
+			return
+		}
+		// Fallback: body is already plain text (should not normally happen).
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+		return
+	}
+	// Log was not captured — return a readable stub so kubectl logs exits cleanly.
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = fmt.Fprint(w,
+		"# k8shark capture replay: logs were not captured for this pod.\n"+
+			"# To capture logs, add 'logs: 200' (or another line count) to the\n"+
+			"# pods entry in your k8shark capture config and re-run the capture.\n")
 }
 
 func (h *handler) writeStatus(w http.ResponseWriter, code int, msg string) {
