@@ -41,6 +41,15 @@ type Config struct {
 	Kubeconfig string `mapstructure:"kubeconfig"`
 	// Resources is the list of resources to capture.
 	Resources []Resource `mapstructure:"resources"`
+	// AutoDiscover, when true, causes the capture engine to walk /apis at
+	// capture time and automatically add every discovered non-core resource
+	// type to the poll loop, supplementing any explicit Resources entries.
+	AutoDiscover bool `mapstructure:"auto_discover"`
+	// AutoDiscoverExcludeGroups is an optional list of API groups to skip
+	// during auto-discovery (e.g. "metrics.k8s.io"). System groups that
+	// produce noisy or unusable data are excluded by default regardless of
+	// this setting; see defaultAutoDiscoverExcludeGroups.
+	AutoDiscoverExcludeGroups []string `mapstructure:"auto_discover_exclude_groups"`
 }
 
 // Load reads k8shark capture config. If configFile is empty, viper uses
@@ -83,8 +92,8 @@ func (c *Config) Validate() error {
 		// empty string is fine — client-go will use ~/.kube/config
 	}
 
-	if len(c.Resources) == 0 {
-		return fmt.Errorf("no resources defined in config; add at least one entry under 'resources:'")
+	if len(c.Resources) == 0 && !c.AutoDiscover {
+		return fmt.Errorf("no resources defined in config; add at least one entry under 'resources:' or set 'auto_discover: true'")
 	}
 
 	for i := range c.Resources {
@@ -164,6 +173,15 @@ func Warnings(cfg *Config) []string {
 		if knownClusterScoped[r.Resource] && len(r.Namespaces) > 0 {
 			ws = append(ws, fmt.Sprintf(
 				"resources[%d] (%s): cluster-scoped resource has 'namespaces:' set — this will be ignored at capture time",
+				i, r.Resource))
+		}
+		// For non-core (CRD-backed) resources we cannot determine cluster-scope
+		// offline. Warn when 'namespaces:' is set so the user knows to verify.
+		if r.Group != "" && !knownClusterScoped[r.Resource] && len(r.Namespaces) > 0 {
+			ws = append(ws, fmt.Sprintf(
+				"resources[%d] (%s): non-core resource with 'namespaces:' set — "+
+					"if this is a cluster-scoped CRD (e.g. ClusterIssuer, ClusterPolicy) "+
+					"remove 'namespaces:' so the cluster-scoped path is captured instead",
 				i, r.Resource))
 		}
 	}

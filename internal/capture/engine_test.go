@@ -465,3 +465,159 @@ func TestExpandWildcard_DiscoveryFailure(t *testing.T) {
 		t.Errorf("expected 'namespace discovery failed' in error, got: %v", err)
 	}
 }
+
+// ── Auto-discover CRD resource tests ────────────────────────────────────────
+
+// autoDiscoverServer returns a fake API server that serves minimal /apis and
+// /apis/<group>/<version> responses for one CRD group (networking.istio.io)
+// with two resources: virtualservices (namespaced) and gateways (namespaced).
+// It also serves a metrics.k8s.io group which should be excluded by default.
+func autoDiscoverServer(t *testing.T, reqPaths chan<- string) *httptest.Server {
+	t.Helper()
+	apisBody := `{
+		"kind":"APIGroupList","apiVersion":"v1",
+		"groups":[
+			{"name":"networking.istio.io","versions":[{"groupVersion":"networking.istio.io/v1beta1","version":"v1beta1"}]},
+			{"name":"metrics.k8s.io","versions":[{"groupVersion":"metrics.k8s.io/v1beta1","version":"v1beta1"}]}
+		]
+	}`
+	istioGVBody := `{
+		"kind":"APIResourceList","apiVersion":"v1",
+		"groupVersion":"networking.istio.io/v1beta1",
+		"resources":[
+			{"name":"virtualservices","namespaced":true,"kind":"VirtualService"},
+			{"name":"gateways","namespaced":true,"kind":"Gateway"},
+			{"name":"virtualservices/status","namespaced":true,"kind":"VirtualService"}
+		]
+	}`
+	metricsGVBody := `{
+		"kind":"APIResourceList","apiVersion":"v1",
+		"groupVersion":"metrics.k8s.io/v1beta1",
+		"resources":[{"name":"pods","namespaced":true,"kind":"PodMetrics"}]
+	}`
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if reqPaths != nil {
+			select {
+			case reqPaths <- r.URL.Path:
+			default:
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/version":
+			fmt.Fprint(w, `{"gitVersion":"v1.29.0"}`)
+		case "/apis":
+			fmt.Fprint(w, apisBody)
+		case "/apis/networking.istio.io/v1beta1":
+			fmt.Fprint(w, istioGVBody)
+		case "/apis/metrics.k8s.io/v1beta1":
+			fmt.Fprint(w, metricsGVBody)
+		default:
+			fmt.Fprint(w, `{"kind":"List","apiVersion":"v1","items":[]}`)
+		}
+	}))
+	return srv
+}
+
+func TestAutoDiscover_AddsResources(t *testing.T) {
+	srv := autoDiscoverServer(t, nil)
+	defer srv.Close()
+
+	outDir := t.TempDir()
+	cfg := &config.Config{
+		DurationRaw:  "500ms",
+		Duration:     500 * time.Millisecond,
+		Output:       filepath.Join(outDir, "capture.tar.gz"),
+		AutoDiscover: true,
+		// No explicit resources — auto-discover should populate them.
+	}
+
+	eng := newEngineWith(cfg, srv.Client(), srv.URL, false)
+	ss := &sliceSink{}
+	eng.sink = ss
+	if _, err := eng.Run(); err != nil {
+		t.Fatalf("engine.Run() error: %v", err)
+	}
+
+	// virtualservices and gateways should have been added; metrics.k8s.io excluded.
+	resourceNames := make(map[string]bool)
+	for _, r := range cfg.Resources {
+		resourceNames[r.Resource] = true
+		if r.Group == "metrics.k8s.io" {
+			t.Errorf("metrics.k8s.io/%s should be excluded by default", r.Resource)
+		}
+	}
+	for _, want := range []string{"virtualservices", "gateways"} {
+		if !resourceNames[want] {
+			t.Errorf("expected resource %q to be auto-discovered, got resources: %v", want, cfg.Resources)
+		}
+	}
+	// Sub-resources (virtualservices/status) must NOT be added.
+	if resourceNames["virtualservices/status"] {
+		t.Error("sub-resource 'virtualservices/status' should not be added as a resource entry")
+	}
+}
+
+func TestAutoDiscover_SkipsAlreadyConfigured(t *testing.T) {
+	srv := autoDiscoverServer(t, nil)
+	defer srv.Close()
+
+	outDir := t.TempDir()
+	cfg := &config.Config{
+		DurationRaw:  "500ms",
+		Duration:     500 * time.Millisecond,
+		Output:       filepath.Join(outDir, "capture.tar.gz"),
+		AutoDiscover: true,
+		Resources: []config.Resource{
+			// Pre-configured virtualservices — must not be duplicated.
+			{Group: "networking.istio.io", Version: "v1beta1", Resource: "virtualservices",
+				Namespaces: []string{"default"}, IntervalRaw: "200ms", Interval: 200 * time.Millisecond},
+		},
+	}
+
+	eng := newEngineWith(cfg, srv.Client(), srv.URL, false)
+	ss := &sliceSink{}
+	eng.sink = ss
+	if _, err := eng.Run(); err != nil {
+		t.Fatalf("engine.Run() error: %v", err)
+	}
+
+	// Count virtualservices entries — must be exactly 1.
+	count := 0
+	for _, r := range cfg.Resources {
+		if r.Resource == "virtualservices" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly 1 virtualservices entry, got %d", count)
+	}
+}
+
+func TestAutoDiscover_ExcludeGroupsOverride(t *testing.T) {
+	srv := autoDiscoverServer(t, nil)
+	defer srv.Close()
+
+	outDir := t.TempDir()
+	cfg := &config.Config{
+		DurationRaw:               "500ms",
+		Duration:                  500 * time.Millisecond,
+		Output:                    filepath.Join(outDir, "capture.tar.gz"),
+		AutoDiscover:              true,
+		AutoDiscoverExcludeGroups: []string{"networking.istio.io"},
+	}
+
+	eng := newEngineWith(cfg, srv.Client(), srv.URL, false)
+	ss := &sliceSink{}
+	eng.sink = ss
+	if _, err := eng.Run(); err != nil {
+		t.Fatalf("engine.Run() error: %v", err)
+	}
+
+	for _, r := range cfg.Resources {
+		if r.Group == "networking.istio.io" {
+			t.Errorf("networking.istio.io should be excluded via AutoDiscoverExcludeGroups, but found %v", r)
+		}
+	}
+}

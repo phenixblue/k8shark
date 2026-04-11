@@ -243,3 +243,161 @@ Both `duration` and `interval` accept Go duration strings:
 | `90s` | 90 seconds |
 
 The first poll for each resource happens immediately when the capture starts; subsequent polls fire on the interval.
+
+---
+
+## Capturing CRD-backed resources
+
+Custom Resource Definitions (CRDs) — Istio, cert-manager, Flux, ArgoCD,
+Crossplane, Kyverno, etc. — are captured exactly like built-in resources. Use
+the `group`, `version`, and `resource` fields from `kubectl api-resources`.
+
+### Finding group / version / resource values
+
+```bash
+kubectl api-resources --api-group=networking.istio.io
+# NAME              SHORTNAMES   APIVERSION                         NAMESPACED
+# destinationrules  dr           networking.istio.io/v1beta1        true
+# gateways          gw           networking.istio.io/v1beta1        true
+# virtualservices   vs           networking.istio.io/v1beta1        true
+```
+
+### Explicit CRD entries
+
+```yaml
+duration: 10m
+output: ./istio-capture.tar.gz
+
+resources:
+  - group: ""
+    version: v1
+    resource: pods
+    namespaces: ["*"]
+    interval: 30s
+
+  # Istio networking
+  - group: networking.istio.io
+    version: v1beta1
+    resource: virtualservices
+    namespaces: ["*"]
+    interval: 30s
+
+  - group: networking.istio.io
+    version: v1beta1
+    resource: destinationrules
+    namespaces: ["*"]
+    interval: 30s
+
+  - group: networking.istio.io
+    version: v1beta1
+    resource: gateways
+    namespaces: ["*"]
+    interval: 30s
+
+  # cert-manager — cluster-scoped CRD (no namespaces:)
+  - group: cert-manager.io
+    version: v1
+    resource: clusterissuers
+    interval: 60s
+
+  # cert-manager — namespaced CRD
+  - group: cert-manager.io
+    version: v1
+    resource: certificates
+    namespaces: ["*"]
+    interval: 60s
+```
+
+> **Tip**: `kshrk validate --config <file>` warns when a non-core resource has
+> `namespaces:` set for what might be a cluster-scoped CRD (e.g. `ClusterIssuer`).
+> Remove `namespaces:` from those entries.
+
+### Auto-discovery (capture all installed CRDs automatically)
+
+Instead of enumerating every CRD in the config, set `auto_discover: true` to
+have k8shark walk the cluster's `/apis` endpoint at capture time and
+automatically add every non-core resource type it finds.
+
+```yaml
+duration: 10m
+output: ./full-capture.tar.gz
+auto_discover: true
+
+# Explicit entries are still captured and take precedence over auto-discovered
+# duplicates.  You can combine the two approaches.
+resources:
+  - group: ""
+    version: v1
+    resource: pods
+    namespaces: ["*"]
+    interval: 30s
+    logs: 100
+
+  - group: ""
+    version: v1
+    resource: nodes
+    interval: 60s
+```
+
+**Auto-discovery behaviour:**
+- Walks `/apis` once at the start of the capture.
+- For each discovered non-core group-version, reads the resource list and adds
+  an entry for every non-sub-resource type.
+- Namespaced resources automatically use `namespaces: ["*"]` (wildcard
+  expansion applies).
+- Cluster-scoped resources are captured without a namespace.
+- The following system groups are excluded by default:
+
+  | Group | Reason |
+  |-------|--------|
+  | `metrics.k8s.io` | Live-only metrics, not persistent state |
+  | `apiregistration.k8s.io` | API aggregation layer internals |
+  | `apiextensions.k8s.io` | CRD definitions themselves (not instances) |
+  | `authentication.k8s.io` | Token review — live-only |
+  | `authorization.k8s.io` | Access review — live-only |
+
+- Add your own exclusions with `auto_discover_exclude_groups`:
+
+```yaml
+auto_discover: true
+auto_discover_exclude_groups:
+  - metrics.k8s.io
+  - my-internal.company.io
+```
+
+### Ecosystem-specific examples
+
+#### Flux CD
+
+```yaml
+auto_discover: true
+auto_discover_exclude_groups:
+  - metrics.k8s.io
+
+resources:
+  - group: ""
+    version: v1
+    resource: pods
+    namespaces: ["*"]
+    interval: 30s
+```
+
+Flux CRDs (`kustomizations.kustomize.toolkit.fluxcd.io`,
+`helmreleases.helm.toolkit.fluxcd.io`, etc.) will be picked up automatically
+by `auto_discover: true`.
+
+#### ArgoCD
+
+```yaml
+auto_discover: true
+
+resources:
+  - group: ""
+    version: v1
+    resource: pods
+    namespaces: [argocd]
+    interval: 30s
+```
+
+ArgoCD CRDs (`applications.argoproj.io`, `appprojects.argoproj.io`) are
+captured automatically via `auto_discover`.
