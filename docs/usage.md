@@ -323,3 +323,82 @@ Warning: persistentvolumeclaims not found in capture; was it included in the cap
 ```
 
 This is intentional — it avoids confusing `Error from server:` output for resources that simply weren't captured.
+
+---
+
+## Client compatibility
+
+The k8shark mock API server is designed to work with any read-only Kubernetes
+client, not just `kubectl`. This section documents what is supported, what
+requires special capture config, and what is intentionally unsupported.
+
+### Works out of the box
+
+These operations work against any k8shark archive with no special config:
+
+| Client / Command | Notes |
+|-----------------|-------|
+| `kubectl get`, `kubectl describe` | Full support |
+| `kubectl logs` | Requires `logs: N` in capture config — see above |
+| `kubectl api-resources` | Synthesised from index if discovery wasn't captured |
+| `kubectl explain` | Works if OpenAPI spec was captured (always attempted) |
+| `kubectl get --watch` | Synthetic watch stream; emits ADDED + BOOKMARK |
+| `helm list`, `helm status` | Reads Secrets for release state — works if captured |
+| `k9s` (read-only browsing) | Full support — API discovery + resource listing |
+
+### Requires CRD resources to be captured
+
+These tools or commands require CRD-backed resources to be present in the
+archive. Use `auto_discover: true` or explicit config entries (see
+[Capturing CRD-backed resources](config.md#capturing-crd-backed-resources)).
+
+| Client / Command | Required resources |
+|-----------------|--------------------|
+| `istioctl analyze` | `networking.istio.io`, `security.istio.io` CRDs |
+| `istioctl describe pod` | pods, services, VirtualServices, DestinationRules |
+| `istioctl x precheck` | Resource lists + RBAC resources |
+| `argocd app get` | `applications.argoproj.io`, `appprojects.argoproj.io` |
+| `flux get all` | Flux toolkit CRDs (`kustomize.toolkit.fluxcd.io`, etc.) |
+
+### Intentionally unsupported (always 405)
+
+These operations require a live cluster and cannot be replayed from a snapshot.
+The server returns `405 Method Not Allowed` with a clear message rather than
+hanging or returning a confusing error.
+
+| Operation | Why unsupported |
+|-----------|----------------|
+| `kubectl exec` / `kubectl cp` | Requires a running container |
+| `kubectl port-forward` | Requires a running pod |
+| `kubectl attach` | Requires a running container |
+| Pod/service proxy (`/proxy/`) | Requires a running in-cluster service |
+| `istioctl proxy-status` | Requires gRPC connection to Istiod |
+| Istiod xDS / gRPC endpoints | Out of scope for a replay server |
+| All write operations (POST/PUT/PATCH/DELETE) | Replay is read-only |
+
+### Using non-kubectl clients with kshrk open
+
+`kshrk open` writes a kubeconfig file (`kubectl config view`) that points at
+the mock server. Any tool that can be configured with a kubeconfig or a
+`--kubeconfig` flag will work:
+
+```sh
+# Start the mock server
+kshrk open capture.tar.gz
+# Note the printed kubeconfig path, e.g. /tmp/k8shark-kubeconfig-1234
+
+# Use with istioctl
+istioctl analyze --kubeconfig /tmp/k8shark-kubeconfig-1234
+
+# Use with helm
+helm list --kubeconfig /tmp/k8shark-kubeconfig-1234 --all-namespaces
+
+# Use with flux
+flux get all --kubeconfig /tmp/k8shark-kubeconfig-1234
+
+# Use with k9s
+k9s --kubeconfig /tmp/k8shark-kubeconfig-1234
+```
+
+> **Tip:** Export `KUBECONFIG=/tmp/k8shark-kubeconfig-1234` to make all tools
+> in your shell session use the mock server automatically.

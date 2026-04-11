@@ -41,14 +41,18 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	//   kubectl exec / kubectl cp  → POST .../pods/<name>/exec
 	//   kubectl port-forward       → POST .../pods/<name>/portforward
 	//   kubectl attach             → POST .../pods/<name>/attach
+	//   istioctl proxy-status      → GET/POST .../pods/<name>/proxy/...
+	//                                GET/POST .../services/<name>/proxy/...
 	if strings.HasSuffix(path, "/exec") ||
 		strings.HasSuffix(path, "/portforward") ||
-		strings.HasSuffix(path, "/attach") {
+		strings.HasSuffix(path, "/attach") ||
+		strings.HasSuffix(path, "/proxy") ||
+		strings.Contains(path, "/proxy/") {
 		w.Header().Set("Allow", "")
 		h.writeStatus(w, http.StatusMethodNotAllowed,
-			"k8shark capture replay: exec, cp, and port-forward are not supported — "+
+			"k8shark capture replay: exec, cp, port-forward, and proxy are not supported — "+
 				"this mock server replays a captured snapshot and cannot run commands "+
-				"or open connections on pods")
+				"or proxy connections to pods/services")
 		return
 	}
 

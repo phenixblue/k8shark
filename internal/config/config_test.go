@@ -125,3 +125,32 @@ func contains(s, sub string) bool {
 			return false
 		}())
 }
+
+func TestWarnings_CRDWithNamespaces(t *testing.T) {
+	cfg := validatedCfg(t, "10m", []Resource{
+		{Group: "cert-manager.io", Version: "v1", Resource: "clusterissuers", IntervalRaw: "30s", Namespaces: []string{"default"}},
+	})
+	ws := Warnings(cfg)
+	found := false
+	for _, w := range ws {
+		if contains(w, "non-core resource") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected non-core CRD namespace advisory warning, got: %v", ws)
+	}
+}
+
+func TestWarnings_CRDNoNamespaces_NoWarn(t *testing.T) {
+	// A non-core resource without namespaces set should NOT trigger the advisory.
+	cfg := validatedCfg(t, "10m", []Resource{
+		{Group: "cert-manager.io", Version: "v1", Resource: "clusterissuers", IntervalRaw: "30s"},
+	})
+	ws := Warnings(cfg)
+	for _, w := range ws {
+		if contains(w, "non-core resource") {
+			t.Errorf("unexpected non-core advisory for resource without namespaces: %s", w)
+		}
+	}
+}

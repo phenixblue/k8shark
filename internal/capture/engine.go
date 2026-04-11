@@ -31,13 +31,14 @@ type CaptureSummary struct {
 
 // Engine orchestrates the capture loop.
 type Engine struct {
-	cfg        *config.Config
-	verbose    bool
-	httpClient *http.Client
-	baseURL    string
-	mu         sync.Mutex
-	index      Index
-	sink       archive.RecordSink // set by Run(); exposed for tests
+	cfg            *config.Config
+	verbose        bool
+	httpClient     *http.Client
+	baseURL        string
+	mu             sync.Mutex
+	index          Index
+	sink           archive.RecordSink // set by Run(); exposed for tests
+	discoveryCache map[string][]byte  // bodies saved by fetchDiscovery for autoDiscoverResources
 }
 
 // NewEngine creates a capture Engine from validated config.
@@ -63,11 +64,12 @@ func NewEngine(cfg *config.Config, verbose bool) (*Engine, error) {
 	}
 
 	return &Engine{
-		cfg:        cfg,
-		verbose:    verbose,
-		httpClient: httpClient,
-		baseURL:    restCfg.Host,
-		index:      make(Index),
+		cfg:            cfg,
+		verbose:        verbose,
+		httpClient:     httpClient,
+		baseURL:        restCfg.Host,
+		index:          make(Index),
+		discoveryCache: make(map[string][]byte),
 	}, nil
 }
 
@@ -75,11 +77,12 @@ func NewEngine(cfg *config.Config, verbose bool) (*Engine, error) {
 // Used in tests to inject a fake API server.
 func newEngineWith(cfg *config.Config, client *http.Client, baseURL string, verbose bool) *Engine {
 	return &Engine{
-		cfg:        cfg,
-		verbose:    verbose,
-		httpClient: client,
-		baseURL:    baseURL,
-		index:      make(Index),
+		cfg:            cfg,
+		verbose:        verbose,
+		httpClient:     client,
+		baseURL:        baseURL,
+		index:          make(Index),
+		discoveryCache: make(map[string][]byte),
 	}
 }
 
@@ -126,6 +129,11 @@ func (e *Engine) Run() (*CaptureSummary, error) {
 
 	// Capture API discovery endpoints so the mock server can replay them faithfully.
 	e.fetchDiscovery(ctx)
+
+	// Auto-discover CRD-backed and non-core resources from /apis if requested.
+	if e.cfg.AutoDiscover {
+		e.autoDiscoverResources(ctx)
+	}
 
 	var wg sync.WaitGroup
 	for _, res := range e.cfg.Resources {
@@ -236,14 +244,141 @@ func (e *Engine) fetchResource(ctx context.Context, res config.Resource) {
 	}
 }
 
+// defaultAutoDiscoverExcludeGroups are API groups that produce no useful
+// captures (internal machinery, aggregated metrics, etc.) and are always
+// excluded during auto-discovery regardless of user config.
+var defaultAutoDiscoverExcludeGroups = map[string]bool{
+	"metrics.k8s.io":         true,
+	"apiregistration.k8s.io": true,
+	"apiextensions.k8s.io":   true,
+	"authentication.k8s.io":  true,
+	"authorization.k8s.io":   true,
+}
+
+// autoDiscoverResources reads the already-cached /apis discovery documents
+// from e.discoveryCache (populated earlier in the same run by fetchDiscovery)
+// and appends one config.Resource entry per group-version-resource tuple that
+// is not already covered by an explicit config entry. The appended entries are
+// then picked up by the standard poll loop in Run().
+func (e *Engine) autoDiscoverResources(ctx context.Context) {
+	// Build the exclude set: defaults + user overrides.
+	exclude := make(map[string]bool, len(defaultAutoDiscoverExcludeGroups))
+	for g := range defaultAutoDiscoverExcludeGroups {
+		exclude[g] = true
+	}
+	for _, g := range e.cfg.AutoDiscoverExcludeGroups {
+		exclude[g] = true
+	}
+
+	// Build a set of already-configured (group, version, resource) triples so
+	// we don't add duplicates.
+	type gvr struct{ group, version, resource string }
+	configured := make(map[gvr]bool, len(e.cfg.Resources))
+	for _, r := range e.cfg.Resources {
+		configured[gvr{r.Group, r.Version, r.Resource}] = true
+	}
+
+	apisBody := e.discoveryCache["/apis"]
+	if apisBody == nil {
+		if e.verbose {
+			fmt.Fprintln(os.Stderr, "  [auto-discover] /apis not in discovery cache; skipping")
+		}
+		return
+	}
+
+	var groupList struct {
+		Groups []struct {
+			Name     string `json:"name"`
+			Versions []struct {
+				GroupVersion string `json:"groupVersion"`
+				Version      string `json:"version"`
+			} `json:"versions"`
+		} `json:"groups"`
+	}
+	if err := json.Unmarshal(apisBody, &groupList); err != nil {
+		return
+	}
+
+	added := 0
+	for _, g := range groupList.Groups {
+		if exclude[g.Name] {
+			continue
+		}
+		for _, gv := range g.Versions {
+			gvPath := "/apis/" + gv.GroupVersion
+			gvBody := e.discoveryCache[gvPath]
+			if gvBody == nil {
+				// Not in cache (e.g. an older capture); skip — we never fetch
+				// again here to avoid duplicate records in the archive.
+				continue
+			}
+
+			var resList struct {
+				Resources []struct {
+					Name       string `json:"name"`
+					Namespaced bool   `json:"namespaced"`
+				} `json:"resources"`
+			}
+			if err := json.Unmarshal(gvBody, &resList); err != nil {
+				continue
+			}
+
+			parts := strings.SplitN(gv.GroupVersion, "/", 2)
+			group := parts[0]
+			version := gv.Version
+			if len(parts) == 2 {
+				version = parts[1]
+			}
+
+			for _, res := range resList.Resources {
+				// Skip sub-resources (contain a slash, e.g. "pods/status").
+				if strings.Contains(res.Name, "/") {
+					continue
+				}
+				key := gvr{group, version, res.Name}
+				if configured[key] {
+					continue
+				}
+				newRes := config.Resource{
+					Group:       group,
+					Version:     version,
+					Resource:    res.Name,
+					IntervalRaw: "30s",
+					Interval:    30 * time.Second,
+				}
+				if res.Namespaced {
+					newRes.Namespaces = []string{"*"}
+				}
+				e.cfg.Resources = append(e.cfg.Resources, newRes)
+				configured[key] = true
+				added++
+				if e.verbose {
+					fmt.Fprintf(os.Stdout, "  [auto-discover] added %s/%s/%s (namespaced=%v)\n",
+						group, version, res.Name, res.Namespaced)
+				}
+			}
+		}
+	}
+
+	if e.verbose {
+		fmt.Fprintf(os.Stdout, "  [auto-discover] added %d resource types\n", added)
+	}
+}
+
 // fetchDiscovery captures the Kubernetes API discovery endpoints so the mock
 // server can replay them with real resource lists rather than inferring them
 // from the captured resource paths. Called once at the start of a capture run.
+// Bodies for /apis and each /apis/<group>/<version> are saved into
+// e.discoveryCache so that autoDiscoverResources can use them without issuing
+// a second round of HTTP requests to the live cluster.
 func (e *Engine) fetchDiscovery(ctx context.Context) {
 	// Core discovery paths.
 	e.doFetch(ctx, "/api", "")
 	e.doFetch(ctx, "/api/v1", "")
 	apisBody, _ := e.doFetch(ctx, "/apis", "")
+	if apisBody != nil {
+		e.discoveryCache["/apis"] = apisBody
+	}
 
 	// OpenAPI specs for kubectl explain.
 	e.doFetch(ctx, "/openapi/v2", "")
@@ -276,7 +411,11 @@ func (e *Engine) fetchDiscovery(ctx context.Context) {
 	}
 	for _, g := range groupList.Groups {
 		for _, v := range g.Versions {
-			e.doFetch(ctx, "/apis/"+v.GroupVersion, "")
+			gvPath := "/apis/" + v.GroupVersion
+			gvBody, _ := e.doFetch(ctx, gvPath, "")
+			if gvBody != nil {
+				e.discoveryCache[gvPath] = gvBody
+			}
 		}
 	}
 }

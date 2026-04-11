@@ -471,3 +471,89 @@ func TestHandler_ServeLog_NotCaptured(t *testing.T) {
 		t.Errorf("expected stub to mention 'not captured', got: %q", body)
 	}
 }
+
+// TestHandler_GroupResourceList_FallbackFromIndex verifies that the mock server
+// returns a valid APIResourceList for a CRD API group even when the
+// /apis/<group>/<version> discovery document was never captured — as long as
+// resource records for that group exist in the archive index.
+//
+// This covers the case where an older capture missed the discovery call but
+// has real VirtualService/Gateway records.
+func TestHandler_GroupResourceList_FallbackFromIndex(t *testing.T) {
+	// Store only resource-level records — no discovery doc for the group.
+	store := buildTestStore(t, map[string][]byte{
+		"/apis/networking.istio.io/v1beta1/namespaces/default/virtualservices": []byte(
+			`{"kind":"VirtualServiceList","apiVersion":"networking.istio.io/v1beta1","items":[]}`),
+		"/apis/networking.istio.io/v1beta1/namespaces/default/gateways": []byte(
+			`{"kind":"GatewayList","apiVersion":"networking.istio.io/v1beta1","items":[]}`),
+	})
+	h := newHandler(store, time.Time{}, false)
+
+	req := httptest.NewRequest(http.MethodGet, "/apis/networking.istio.io/v1beta1", nil)
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d\nbody: %s", rw.Code, rw.Body.String())
+	}
+	var result map[string]any
+	if err := json.Unmarshal(rw.Body.Bytes(), &result); err != nil {
+		t.Fatalf("expected JSON body: %v", err)
+	}
+	if result["kind"] != "APIResourceList" {
+		t.Errorf("expected kind=APIResourceList, got %v", result["kind"])
+	}
+	if result["groupVersion"] != "networking.istio.io/v1beta1" {
+		t.Errorf("expected groupVersion=networking.istio.io/v1beta1, got %v", result["groupVersion"])
+	}
+	resources, _ := result["resources"].([]any)
+	if len(resources) == 0 {
+		t.Fatalf("expected non-empty resources list in synthesised APIResourceList")
+	}
+	// Both virtualservices and gateways should appear.
+	names := make(map[string]bool)
+	for _, r := range resources {
+		if rm, ok := r.(map[string]any); ok {
+			if name, ok := rm["name"].(string); ok {
+				names[name] = true
+			}
+		}
+	}
+	for _, want := range []string{"virtualservices", "gateways"} {
+		if !names[want] {
+			t.Errorf("expected %q in synthesised resource list, got: %v", want, names)
+		}
+	}
+}
+
+// TestHandler_ProxySubResource405 verifies that requests to pod proxy
+// sub-resources (/pods/<name>/proxy/...) return 405 with a clear message,
+// rather than silently returning 404.
+func TestHandler_ProxySubResource405(t *testing.T) {
+	store := buildTestStore(t, map[string][]byte{
+		"/api/v1/namespaces/istio-system/pods": []byte(`{"kind":"PodList","items":[]}`),
+	})
+	h := newHandler(store, time.Time{}, false)
+
+	proxyPaths := []string{
+		"/api/v1/namespaces/istio-system/services/istiod:15014/proxy/debug/syncz",
+		"/api/v1/namespaces/istio-system/pods/istiod-abc/proxy/stats/prometheus",
+	}
+	for _, path := range proxyPaths {
+		for _, method := range []string{http.MethodGet, http.MethodPost} {
+			t.Run(method+"_"+path, func(t *testing.T) {
+				req := httptest.NewRequest(method, path, nil)
+				rw := httptest.NewRecorder()
+				h.ServeHTTP(rw, req)
+
+				if rw.Code != http.StatusMethodNotAllowed {
+					t.Fatalf("%s %s: expected 405, got %d\nbody: %s", method, path, rw.Code, rw.Body.String())
+				}
+				body := rw.Body.String()
+				if !strings.Contains(body, "k8shark") {
+					t.Errorf("expected k8shark mention in error message, got: %s", body)
+				}
+			})
+		}
+	}
+}
