@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -147,6 +148,13 @@ func (e *Engine) Run() (*CaptureSummary, error) {
 			defer wg.Done()
 			e.pollResource(ctx, r)
 		}(res)
+		if res.Watch {
+			wg.Add(1)
+			go func(r config.Resource) {
+				defer wg.Done()
+				e.watchResource(ctx, r)
+			}(res)
+		}
 	}
 	wg.Wait()
 
@@ -210,6 +218,150 @@ func (e *Engine) pollResource(ctx context.Context, res config.Resource) {
 			e.fetchResource(ctx, res)
 		}
 	}
+}
+
+// watchResource starts one watch loop per configured namespace for the given
+// resource. For cluster-scoped resources, a single watch loop is used.
+func (e *Engine) watchResource(ctx context.Context, res config.Resource) {
+	namespaces := res.Namespaces
+	if len(namespaces) == 0 {
+		namespaces = []string{""}
+	}
+
+	var wg sync.WaitGroup
+	for _, ns := range namespaces {
+		wg.Add(1)
+		go func(namespace string) {
+			defer wg.Done()
+			e.watchResourcePath(ctx, res, namespace)
+		}(ns)
+	}
+	wg.Wait()
+}
+
+func (e *Engine) watchResourcePath(ctx context.Context, res config.Resource, namespace string) {
+	apiPath := buildAPIPath(res.Group, res.Version, res.Resource, namespace)
+
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+
+		resourceVersion := ""
+		if body, code := e.doFetch(ctx, apiPath, "", res.DedupEnabled()); code == http.StatusOK && body != nil {
+			resourceVersion = extractResourceVersion(body)
+		}
+
+		if err := e.streamWatch(ctx, apiPath, resourceVersion); err != nil && ctx.Err() == nil && e.verbose {
+			fmt.Fprintf(os.Stderr, "  [watch] %s: %v\n", apiPath, err)
+		}
+
+		if ctx.Err() != nil {
+			return
+		}
+
+		// Brief backoff before reconnecting after a disconnect/error.
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+}
+
+func (e *Engine) streamWatch(ctx context.Context, apiPath, resourceVersion string) error {
+	q := url.Values{}
+	q.Set("watch", "1")
+	if resourceVersion != "" {
+		q.Set("resourceVersion", resourceVersion)
+	}
+
+	watchURL := e.baseURL + apiPath + "?" + q.Encode()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, watchURL, nil)
+	if err != nil {
+		return err
+	}
+
+	resp, err := e.httpClient.Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil
+		}
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("watch status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	if e.verbose {
+		fmt.Fprintf(os.Stdout, "  [watch] %s connected\n", apiPath)
+	}
+
+	dec := json.NewDecoder(resp.Body)
+	for {
+		var event struct {
+			Type   string          `json:"type"`
+			Object json.RawMessage `json:"object"`
+		}
+		if err := dec.Decode(&event); err != nil {
+			if err == io.EOF || ctx.Err() != nil {
+				return nil
+			}
+			return err
+		}
+
+		switch event.Type {
+		case "ADDED", "MODIFIED", "DELETED":
+			// Keep these event types.
+		default:
+			continue
+		}
+		if len(event.Object) == 0 {
+			continue
+		}
+
+		rec := &Record{
+			ID:           uuid.New().String(),
+			CapturedAt:   time.Now().UTC(),
+			APIPath:      apiPath,
+			EventType:    event.Type,
+			HTTPMethod:   http.MethodGet,
+			ResponseCode: http.StatusOK,
+			ResponseBody: event.Object,
+		}
+
+		if e.sink != nil {
+			if err := e.sink.WriteRecord(rec); err != nil {
+				if e.verbose {
+					fmt.Fprintf(os.Stderr, "  [warn] writing watch record %s: %v\n", apiPath, err)
+				}
+				continue
+			}
+		}
+
+		e.mu.Lock()
+		if _, ok := e.index[apiPath]; !ok {
+			e.index[apiPath] = &IndexEntry{APIPath: apiPath}
+		}
+		e.index[apiPath].RecordIDs = append(e.index[apiPath].RecordIDs, rec.ID)
+		e.index[apiPath].Times = append(e.index[apiPath].Times, rec.CapturedAt)
+		e.mu.Unlock()
+	}
+}
+
+func extractResourceVersion(body []byte) string {
+	var meta struct {
+		Metadata struct {
+			ResourceVersion string `json:"resourceVersion"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(body, &meta); err != nil {
+		return ""
+	}
+	return meta.Metadata.ResourceVersion
 }
 
 // tableIndexKey is the virtual index key used to store Table-format responses

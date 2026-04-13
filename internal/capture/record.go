@@ -10,6 +10,7 @@ type Record struct {
 	ID           string            `json:"id"`
 	CapturedAt   time.Time         `json:"captured_at"`
 	APIPath      string            `json:"api_path"`
+	EventType    string            `json:"event_type,omitempty"`
 	HTTPMethod   string            `json:"http_method"`
 	QueryParams  map[string]string `json:"query_params,omitempty"`
 	ResponseCode int               `json:"response_code"`
