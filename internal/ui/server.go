@@ -892,6 +892,9 @@ const indexHTML = `<!doctype html>
 	.toggle-actions button:hover { border-color:#64748b; }
     .toggle-list { margin-top:10px; display:grid; gap:6px; }
     .tree { padding:12px; }
+	.tree-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+	.tree-actions button { margin-left:6px; padding:3px 8px; border-radius:6px; border:1px solid #334155; background:#0f172a; color:#cbd5e1; font-size:11px; cursor:pointer; }
+	.tree-actions button:hover { border-color:#64748b; }
     .crumbs { color:var(--muted); font-size:13px; margin-bottom:8px; }
     details { border:1px solid #1f2937; border-radius:8px; margin-bottom:8px; background:rgba(2,6,23,.45); }
     summary { cursor:pointer; padding:8px 10px; }
@@ -944,6 +947,13 @@ const indexHTML = `<!doctype html>
       <div class="toggle-list" id="toggles"></div>
     </aside>
     <main class="panel tree">
+			<div class="tree-head">
+				<span class="toggle-head-title">Tree</span>
+				<span class="tree-actions">
+					<button id="expandAll" type="button">Expand All</button>
+					<button id="collapseAll" type="button">Collapse All</button>
+				</span>
+			</div>
       <div class="crumbs" id="crumbs">Cluster</div>
       <div id="tree"></div>
     </main>
@@ -977,6 +987,8 @@ const indexHTML = `<!doctype html>
 			tabYaml: document.getElementById('tabYaml'),
 			toggleAll: document.getElementById('toggleAll'),
 			toggleNone: document.getElementById('toggleNone'),
+			expandAll: document.getElementById('expandAll'),
+			collapseAll: document.getElementById('collapseAll'),
 			toasts: document.getElementById('toasts')
     };
 
@@ -985,6 +997,8 @@ const indexHTML = `<!doctype html>
     el.search.oninput = render;
 		el.toggleAll.onclick = () => setAllKinds(true);
 		el.toggleNone.onclick = () => setAllKinds(false);
+	el.expandAll.onclick = () => setAllTreeDetails(true);
+	el.collapseAll.onclick = () => setAllTreeDetails(false);
 	document.addEventListener('keydown', onTreeKeyDown);
 
     function setTab(tab) {
@@ -1243,6 +1257,12 @@ const indexHTML = `<!doctype html>
 				activeKinds = new Set();
 			}
 			render();
+		}
+
+		function setAllTreeDetails(open) {
+			for (const details of el.tree.querySelectorAll('details')) {
+				details.open = open;
+			}
 		}
 
     async function init() {
