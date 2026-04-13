@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -110,13 +111,14 @@ func (s *CaptureStore) Latest(apiPath string, at time.Time) ([]byte, int, error)
 
 	// Default to the most recent record.
 	id := entry.RecordIDs[len(entry.RecordIDs)-1]
-	if !at.IsZero() {
-		// Walk forward; keep the latest ID whose time is <= at.
-		for i, t := range entry.Times {
-			if !t.After(at) {
-				id = entry.RecordIDs[i]
-			}
+	if !at.IsZero() && len(entry.Times) == len(entry.RecordIDs) && len(entry.Times) > 0 {
+		idx := sort.Search(len(entry.Times), func(i int) bool {
+			return entry.Times[i].After(at)
+		})
+		if idx == 0 {
+			return nil, 404, nil
 		}
+		id = entry.RecordIDs[idx-1]
 	}
 
 	data, err := os.ReadFile(filepath.Join(s.Dir, "k8shark-capture", "records", id+".json"))

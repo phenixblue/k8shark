@@ -206,9 +206,15 @@ Every captured record is timestamped. `--at` lets you replay the capture as it l
 
 ```sh
 kshrk open capture.tar.gz --at 2026-04-09T10:30:00Z
+kshrk open capture.tar.gz --at -5m
 ```
 
-The timestamp must be in RFC3339 format. Use UTC (`Z`) or include an offset (`+05:30`).
+`--at` accepts either:
+
+- an RFC3339 timestamp, using UTC (`Z`) or an explicit offset (`+05:30`)
+- a relative duration such as `-5m` or `-1h`, interpreted relative to the capture end time
+
+If the requested time is outside the capture window, `kshrk open` exits with a clear error.
 
 This is useful when you have a long capture (e.g. 1h) and want to compare cluster state before and after an incident.
 

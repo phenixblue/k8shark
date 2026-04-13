@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -143,3 +144,85 @@ func TestStore_Latest_NotFound(t *testing.T) {
 		t.Errorf("expected 404, got %d", code)
 	}
 }
+
+func TestStore_Latest_AtTimestamp(t *testing.T) {
+	dir := t.TempDir()
+	recDir := filepath.Join(dir, "k8shark-capture", "records")
+	if err := os.MkdirAll(recDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	path := "/api/v1/namespaces/default/pods"
+	t1 := time.Date(2026, 4, 9, 10, 40, 0, 0, time.UTC)
+	t2 := t1.Add(2 * time.Minute)
+	records := []capture.Record{
+		{ID: "rec-1", CapturedAt: t1, APIPath: path, HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(`{"kind":"PodList","items":[{"metadata":{"name":"before"}}]}`)},
+		{ID: "rec-2", CapturedAt: t2, APIPath: path, HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(`{"kind":"PodList","items":[{"metadata":{"name":"after"}}]}`)},
+	}
+	for _, rec := range records {
+		data, err := json.Marshal(rec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(recDir, rec.ID+".json"), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	metaJSON, _ := json.Marshal(capture.CaptureMetadata{
+		CaptureID:     "test-capture-id",
+		CapturedAt:    t1,
+		CapturedUntil: t2,
+		RecordCount:   len(records),
+	})
+	if err := os.WriteFile(filepath.Join(dir, "k8shark-capture", "metadata.json"), metaJSON, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	idxJSON, _ := json.Marshal(capture.Index{
+		path: {
+			APIPath:   path,
+			RecordIDs: []string{"rec-1", "rec-2"},
+			Times:     []time.Time{t1, t2},
+		},
+	})
+	if err := os.WriteFile(filepath.Join(dir, "k8shark-capture", "index.json"), idxJSON, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := LoadStore(dir)
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+
+	body, code, err := store.Latest(path, t1.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if code != 200 {
+		t.Fatalf("expected 200, got %d", code)
+	}
+	if string(body) == "" || !containsString(string(body), "before") {
+		t.Fatalf("expected first record body, got %s", string(body))
+	}
+
+	body, code, err = store.Latest(path, t2.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if code != 200 {
+		t.Fatalf("expected 200, got %d", code)
+	}
+	if !containsString(string(body), "after") {
+		t.Fatalf("expected second record body, got %s", string(body))
+	}
+
+	_, code, err = store.Latest(path, t1.Add(-time.Second))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if code != 404 {
+		t.Fatalf("expected 404 before first record, got %d", code)
+	}
+}
+
+func containsString(s, sub string) bool { return strings.Contains(s, sub) }
