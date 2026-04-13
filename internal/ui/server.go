@@ -907,6 +907,10 @@ const indexHTML = `<!doctype html>
     .warn { background:rgba(245,158,11,.2); color:#fcd34d; }
     .bad { background:rgba(220,38,38,.2); color:#fca5a5; }
     .detail { padding:12px; background:rgba(17,24,39,.9); }
+	.tree-state { margin:8px; padding:10px 12px; border-radius:8px; border:1px solid #334155; background:rgba(15,23,42,.7); }
+	.tree-state.error { border-color:rgba(220,38,38,.55); color:#fecaca; background:rgba(127,29,29,.25); }
+	.tree-state.empty { border-color:rgba(148,163,184,.45); color:#cbd5e1; }
+	.tree-state.loading { border-color:rgba(59,130,246,.45); color:#bfdbfe; }
     pre { white-space:pre-wrap; background:#020617; border:1px solid #1f2937; padding:10px; border-radius:8px; }
     .tabs button { margin-right:6px; padding:6px 10px; border-radius:7px; border:1px solid #334155; background:#0f172a; color:var(--text); cursor:pointer; }
     .tabs button.active { border-color:var(--accent); color:#86efac; }
@@ -966,6 +970,14 @@ const indexHTML = `<!doctype html>
       }
     }
 
+		function setTreeState(type, message) {
+			el.tree.innerHTML = '';
+			const box = document.createElement('div');
+			box.className = 'tree-state ' + type;
+			box.textContent = message;
+			el.tree.appendChild(box);
+		}
+
     function statusClass(status) {
       const s = (status || '').toLowerCase();
       if (s.includes('running') || s.includes('ready') || s.includes('active')) return 'ok';
@@ -1011,17 +1023,31 @@ const indexHTML = `<!doctype html>
       selected = { node, crumbs };
       el.crumbs.textContent = crumbs.join(' / ');
       el.detailTitle.textContent = node.kind + ' ' + node.name;
-      const q = new URLSearchParams({ path: node.list_path, name: node.name });
-      const res = await fetch('/api/ui/detail?' + q.toString());
-      const data = await res.json();
-      selected.detail = data;
-      el.detailBody.textContent = data[activeTab] || JSON.stringify(data, null, 2);
+			el.detailBody.textContent = 'Loading detail...';
+			try {
+				const q = new URLSearchParams({ path: node.list_path, name: node.name });
+				const res = await fetch('/api/ui/detail?' + q.toString());
+				const data = await res.json();
+				if (!res.ok) {
+					const msg = (data && data.error) ? data.error : ('request failed with status ' + res.status);
+					throw new Error(msg);
+				}
+				selected.detail = data;
+				el.detailBody.textContent = data[activeTab] || JSON.stringify(data, null, 2);
+			} catch (err) {
+				selected.detail = null;
+				el.detailBody.textContent = 'Failed to load detail: ' + (err && err.message ? err.message : String(err));
+			}
     }
 
     function render() {
-      if (!treeData) return;
+			if (!treeData) {
+				setTreeState('loading', 'Loading captured resources...');
+				return;
+			}
       el.tree.innerHTML = '';
       const q = el.search.value.trim().toLowerCase();
+			let renderedNodes = 0;
 
       const cs = document.createElement('details');
       cs.open = true;
@@ -1029,6 +1055,7 @@ const indexHTML = `<!doctype html>
       for (const node of treeData.cluster_scoped) {
         if (!kindEnabled(node.kind) || !nodeMatches(node, q)) continue;
 				cs.appendChild(mkNode(node, ['Cluster', node.kind, node.name], 0, ''));
+				renderedNodes++;
       }
       el.tree.appendChild(cs);
 
@@ -1041,13 +1068,16 @@ const indexHTML = `<!doctype html>
 			for (const w of (ns.workloads || [])) {
           if (!kindEnabled(w.kind) || !nodeMatches(w, q)) continue;
 					ds.appendChild(mkNode(w, ['Cluster', ns.name, w.kind, w.name], 0, ''));
+					renderedNodes++;
           for (const p of (w.pods || [])) {
             if (!kindEnabled(p.kind) || !nodeMatches(p, q)) continue;
 						ds.appendChild(mkNode(p, ['Cluster', ns.name, w.kind, w.name, 'Pod', p.name], 1, ''));
+						renderedNodes++;
             for (const c of (p.containers || [])) {
               const fake = {kind:'Container',name:c.name,status:'',age:'',labels:{},list_path:p.list_path};
               if (!kindEnabled('Container') || !nodeMatches(fake, q)) continue;
 							ds.appendChild(mkNode(fake, ['Cluster', ns.name, w.kind, w.name, 'Pod', p.name, 'Container', c.name], 2, ''));
+							renderedNodes++;
             }
           }
         }
@@ -1055,19 +1085,29 @@ const indexHTML = `<!doctype html>
 			for (const p of (ns.pods || [])) {
           if (!kindEnabled(p.kind) || !nodeMatches(p, q)) continue;
 					ds.appendChild(mkNode(p, ['Cluster', ns.name, 'Pod', p.name], 0, ''));
+					renderedNodes++;
           for (const c of (p.containers || [])) {
             const fake = {kind:'Container',name:c.name,status:'',age:'',labels:{},list_path:p.list_path};
             if (!kindEnabled('Container') || !nodeMatches(fake, q)) continue;
 						ds.appendChild(mkNode(fake, ['Cluster', ns.name, 'Pod', p.name, 'Container', c.name], 1, ''));
+						renderedNodes++;
           }
         }
 
 			for (const r of (ns.resources || [])) {
           if (!kindEnabled(r.kind) || !nodeMatches(r, q)) continue;
 					ds.appendChild(mkNode(r, ['Cluster', ns.name, r.kind, r.name], 0, ''));
+					renderedNodes++;
         }
         el.tree.appendChild(ds);
       }
+
+			if (renderedNodes === 0) {
+				const msg = q
+					? 'No resources match the current search/filter selection.'
+					: 'No resources were found in this capture at the selected time.';
+				setTreeState('empty', msg);
+			}
     }
 
     function renderToggles(kinds) {
@@ -1090,11 +1130,22 @@ const indexHTML = `<!doctype html>
     }
 
     async function init() {
-      const res = await fetch('/api/ui/tree');
-      treeData = await res.json();
-      el.meta.textContent = 'capture ' + new Date(treeData.captured_at).toISOString() + ' to ' + new Date(treeData.captured_until).toISOString();
-      renderToggles(treeData.resource_kinds.concat(['Container']));
-      render();
+			setTreeState('loading', 'Loading captured resources...');
+			try {
+				const res = await fetch('/api/ui/tree');
+				const data = await res.json();
+				if (!res.ok) {
+					const msg = (data && data.error) ? data.error : ('request failed with status ' + res.status);
+					throw new Error(msg);
+				}
+				treeData = data;
+				el.meta.textContent = 'capture ' + new Date(treeData.captured_at).toISOString() + ' to ' + new Date(treeData.captured_until).toISOString();
+				renderToggles((treeData.resource_kinds || []).concat(['Container']));
+				render();
+			} catch (err) {
+				setTreeState('error', 'Failed to load capture tree: ' + (err && err.message ? err.message : String(err)));
+				el.meta.textContent = 'capture unavailable';
+			}
     }
     init();
   </script>
