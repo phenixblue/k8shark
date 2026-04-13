@@ -216,7 +216,7 @@ This is useful when you have a long capture (e.g. 1h) and want to compare cluste
 
 ## UI
 
-`kshrk ui` starts a local web-based explorer for a capture archive.
+`kshrk ui` starts a local web-based explorer and the mock Kubernetes API server for a capture archive.
 
 ```sh
 kshrk ui capture.tar.gz
@@ -225,6 +225,13 @@ kshrk ui capture.tar.gz
 Example output:
 
 ```
+k8shark mock server running
+  Address:    https://127.0.0.1:51325
+  Kubeconfig: ~/.kube/k8shark-abc123def456.yaml
+
+Run: export KUBECONFIG=~/.kube/k8shark-abc123def456.yaml
+Then use kubectl normally against the capture.
+
 k8shark UI running
   Address: http://127.0.0.1:53421
 
@@ -245,6 +252,8 @@ Open this URL in your browser. Press Ctrl+C to stop.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--port` | random | Port for the local UI server |
+| `--api-port` | random | Port for the mock API server |
+| `--kubeconfig-out` | `~/.kube/k8shark-<id>.yaml` | Where to write the generated kubeconfig |
 | `--at` | latest records | Pin UI data to a specific timestamp (RFC3339 or relative duration) |
 
 ---
