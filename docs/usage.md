@@ -220,6 +220,57 @@ This is useful when you have a long capture (e.g. 1h) and want to compare cluste
 
 ---
 
+## Diff
+
+`kshrk diff` compares either two capture archives or two points in time within the same archive.
+
+Compare two archives:
+
+```sh
+kshrk diff --before before.tar.gz --after after.tar.gz
+```
+
+Compare two points within one archive:
+
+```sh
+kshrk diff --archive capture.tar.gz \
+  --before-at 2026-04-09T10:40:00Z \
+  --after-at -1m
+```
+
+Scope the output:
+
+```sh
+kshrk diff --before before.tar.gz --after after.tar.gz \
+  --resource pods --namespace default
+```
+
+Emit machine-readable JSON instead of unified diff text:
+
+```sh
+kshrk diff --before before.tar.gz --after after.tar.gz --output json
+```
+
+### Diff flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--before` | | Before archive path |
+| `--after` | | After archive path |
+| `--archive` | | Single archive path for intra-archive diff |
+| `--before-at` | | Before snapshot time (RFC3339 or relative duration) |
+| `--after-at` | | After snapshot time (RFC3339 or relative duration) |
+| `--resource` | | Limit diff to one resource type |
+| `--namespace` | | Limit diff to one namespace |
+| `--output`, `-o` | `text` | Output format: `text` or `json` |
+
+Exit codes follow the usual diff convention:
+
+- `0` when no differences are found
+- `1` when differences are found
+
+---
+
 ## Redact
 
 Secret values can be removed from a capture archive in two ways:
