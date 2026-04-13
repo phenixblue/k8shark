@@ -891,8 +891,16 @@ const indexHTML = `<!doctype html>
     .crumbs { color:var(--muted); font-size:13px; margin-bottom:8px; }
     details { border:1px solid #1f2937; border-radius:8px; margin-bottom:8px; background:rgba(2,6,23,.45); }
     summary { cursor:pointer; padding:8px 10px; }
-    .node { padding:6px 10px; cursor:pointer; border-radius:6px; margin:3px 8px; border:1px solid transparent; }
+	.node { display:flex; align-items:center; gap:8px; padding:7px 10px; cursor:pointer; border-radius:6px; margin:3px 8px; border:1px solid transparent; }
     .node:hover { border-color:#334155; background:#0f172a; }
+	.node-name { font-weight:600; letter-spacing:.1px; }
+	.kind-chip { display:inline-block; min-width:68px; text-align:center; font-size:10px; font-weight:700; letter-spacing:.4px; text-transform:uppercase; padding:2px 6px; border-radius:999px; border:1px solid transparent; }
+	.tone-core { background:rgba(59,130,246,.18); color:#bfdbfe; border-color:rgba(59,130,246,.45); }
+	.tone-workload { background:rgba(234,179,8,.18); color:#fde68a; border-color:rgba(234,179,8,.45); }
+	.tone-pod { background:rgba(16,185,129,.18); color:#a7f3d0; border-color:rgba(16,185,129,.45); }
+	.tone-storage { background:rgba(249,115,22,.18); color:#fdba74; border-color:rgba(249,115,22,.45); }
+	.tone-security { background:rgba(244,63,94,.18); color:#fecdd3; border-color:rgba(244,63,94,.45); }
+	.tone-meta { background:rgba(148,163,184,.18); color:#e2e8f0; border-color:rgba(148,163,184,.45); }
     .muted { color:var(--muted); font-size:12px; }
     .badge { display:inline-block; font-size:11px; padding:2px 6px; border-radius:999px; margin-left:6px; background:#1f2937; }
     .ok { background:rgba(22,163,74,.2); color:#86efac; }
@@ -976,12 +984,25 @@ const indexHTML = `<!doctype html>
       return activeKinds.size === 0 || activeKinds.has(kind);
     }
 
-    function mkNode(label, node, crumbs) {
+		function kindTone(kind) {
+			const k = (kind || '').toLowerCase();
+			if (k === 'pod' || k === 'container') return 'tone-pod';
+			if (k.includes('deploy') || k.includes('stateful') || k.includes('daemon') || k.includes('job') || k.includes('replicaset')) return 'tone-workload';
+			if (k.includes('secret') || k.includes('serviceaccount') || k.includes('role')) return 'tone-security';
+			if (k.includes('persistent') || k.includes('storage') || k.includes('volume')) return 'tone-storage';
+			if (k === 'node' || k === 'namespace' || k === 'service') return 'tone-core';
+			return 'tone-meta';
+		}
+
+		function mkNode(node, crumbs, depth, namePrefix) {
       const d = document.createElement('div');
       d.className = 'node';
+			d.style.paddingLeft = (10 + (depth * 16)) + 'px';
       d.title = [node.kind, node.status, node.age, Object.entries(node.labels || {}).slice(0,5).map(([k,v]) => k + '=' + v).join(', ')].filter(Boolean).join(' | ');
       const badge = node.status ? '<span class="badge ' + statusClass(node.status) + '">' + node.status + '</span>' : '';
-      d.innerHTML = '<strong>' + label + '</strong>' + badge + (node.age ? ' <span class="muted">' + node.age + '</span>' : '');
+			const kindChip = '<span class="kind-chip ' + kindTone(node.kind) + '">' + (node.kind || 'Resource') + '</span>';
+			const nodeName = '<span class="node-name">' + (namePrefix ? namePrefix + node.name : node.name) + '</span>';
+			d.innerHTML = kindChip + nodeName + badge + (node.age ? ' <span class="muted">' + node.age + '</span>' : '');
       d.onclick = () => showDetail(node, crumbs);
       return d;
     }
@@ -1004,45 +1025,46 @@ const indexHTML = `<!doctype html>
 
       const cs = document.createElement('details');
       cs.open = true;
-      cs.innerHTML = '<summary>Cluster-scoped resources</summary>';
+			cs.innerHTML = '<summary>Cluster-scoped resources <span class="muted">(' + treeData.cluster_scoped.length + ')</span></summary>';
       for (const node of treeData.cluster_scoped) {
         if (!kindEnabled(node.kind) || !nodeMatches(node, q)) continue;
-        cs.appendChild(mkNode(node.kind + ' ' + node.name, node, ['Cluster', node.kind, node.name]));
+				cs.appendChild(mkNode(node, ['Cluster', node.kind, node.name], 0, ''));
       }
       el.tree.appendChild(cs);
 
       for (const ns of treeData.namespaces) {
         const ds = document.createElement('details');
         ds.open = true;
-        ds.innerHTML = '<summary>Namespace: <strong>' + ns.name + '</strong></summary>';
+				const nsCount = (ns.workloads || []).length + (ns.pods || []).length + (ns.resources || []).length;
+				ds.innerHTML = '<summary>Namespace: <strong>' + ns.name + '</strong> <span class="muted">(' + nsCount + ')</span></summary>';
 
 			for (const w of (ns.workloads || [])) {
           if (!kindEnabled(w.kind) || !nodeMatches(w, q)) continue;
-          ds.appendChild(mkNode(w.kind + ' ' + w.name, w, ['Cluster', ns.name, w.kind, w.name]));
+					ds.appendChild(mkNode(w, ['Cluster', ns.name, w.kind, w.name], 0, ''));
           for (const p of (w.pods || [])) {
             if (!kindEnabled(p.kind) || !nodeMatches(p, q)) continue;
-            ds.appendChild(mkNode('  Pod ' + p.name, p, ['Cluster', ns.name, w.kind, w.name, 'Pod', p.name]));
+						ds.appendChild(mkNode(p, ['Cluster', ns.name, w.kind, w.name, 'Pod', p.name], 1, ''));
             for (const c of (p.containers || [])) {
               const fake = {kind:'Container',name:c.name,status:'',age:'',labels:{},list_path:p.list_path};
               if (!kindEnabled('Container') || !nodeMatches(fake, q)) continue;
-              ds.appendChild(mkNode('    Container ' + c.name, fake, ['Cluster', ns.name, w.kind, w.name, 'Pod', p.name, 'Container', c.name]));
+							ds.appendChild(mkNode(fake, ['Cluster', ns.name, w.kind, w.name, 'Pod', p.name, 'Container', c.name], 2, ''));
             }
           }
         }
 
 			for (const p of (ns.pods || [])) {
           if (!kindEnabled(p.kind) || !nodeMatches(p, q)) continue;
-          ds.appendChild(mkNode('Pod ' + p.name, p, ['Cluster', ns.name, 'Pod', p.name]));
+					ds.appendChild(mkNode(p, ['Cluster', ns.name, 'Pod', p.name], 0, ''));
           for (const c of (p.containers || [])) {
             const fake = {kind:'Container',name:c.name,status:'',age:'',labels:{},list_path:p.list_path};
             if (!kindEnabled('Container') || !nodeMatches(fake, q)) continue;
-            ds.appendChild(mkNode('  Container ' + c.name, fake, ['Cluster', ns.name, 'Pod', p.name, 'Container', c.name]));
+						ds.appendChild(mkNode(fake, ['Cluster', ns.name, 'Pod', p.name, 'Container', c.name], 1, ''));
           }
         }
 
 			for (const r of (ns.resources || [])) {
           if (!kindEnabled(r.kind) || !nodeMatches(r, q)) continue;
-          ds.appendChild(mkNode(r.kind + ' ' + r.name, r, ['Cluster', ns.name, r.kind, r.name]));
+					ds.appendChild(mkNode(r, ['Cluster', ns.name, r.kind, r.name], 0, ''));
         }
         el.tree.appendChild(ds);
       }
