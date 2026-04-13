@@ -9,12 +9,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/phenixblue/k8shark/internal/archive"
+	"github.com/phenixblue/k8shark/internal/capture"
 	"github.com/phenixblue/k8shark/internal/server"
 	"gopkg.in/yaml.v3"
 )
@@ -87,6 +89,11 @@ type resourceNode struct {
 	Age      string            `json:"age,omitempty"`
 	ListPath string            `json:"list_path"`
 	Labels   map[string]string `json:"labels,omitempty"`
+}
+
+type listItem struct {
+	path string
+	item map[string]any
 }
 
 func Open(opts OpenOptions) (*Server, error) {
@@ -189,24 +196,32 @@ func (h *explorerHandler) serveDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, code, err := h.store.Latest(path, h.at)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-	if code == http.StatusNotFound {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "path not found in capture"})
-		return
-	}
-
 	name := r.URL.Query().Get("name")
+	var (
+		body []byte
+		code = http.StatusOK
+		err  error
+	)
 	if name != "" {
-		item, ok := findListItemByName(body, name)
-		if !ok {
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "item not found in list response"})
+		body, code, err = h.findResourceBody(path, name)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
-		body = item
+		if code == http.StatusNotFound {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "item not found in response"})
+			return
+		}
+	} else {
+		body, code, err = h.store.Latest(path, h.at)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		if code == http.StatusNotFound {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "path not found in capture"})
+			return
+		}
 	}
 
 	prettyJSON := body
@@ -233,7 +248,6 @@ func (h *explorerHandler) buildTree() (*treeResponse, error) {
 	nsMap := map[string]*namespaceNode{}
 	clusterScoped := make([]resourceNode, 0)
 	kindSet := map[string]bool{}
-
 	workloadKinds := map[string]bool{
 		"deployments":  true,
 		"statefulsets": true,
@@ -241,79 +255,77 @@ func (h *explorerHandler) buildTree() (*treeResponse, error) {
 		"jobs":         true,
 		"replicasets":  true,
 	}
-
+	// Map of (namespace, resource) -> all candidate index paths
+	byNSRes := map[string]map[string][]string{}
 	for path := range h.store.Index {
-		if strings.Contains(path, "?") {
-			continue
-		}
-		group, version, resource, ns := parseAPIPath(path)
+		group, version, resource, ns, _ := parseAPIPath(baseAPIPath(path))
 		if resource == "" {
 			continue
 		}
-
-		listBody, code, err := h.store.Latest(path, h.at)
-		if err != nil || code != http.StatusOK {
-			continue
+		if byNSRes[ns] == nil {
+			byNSRes[ns] = map[string][]string{}
 		}
-		items, err := parseListItems(listBody)
-		if err != nil {
-			continue
-		}
-
-		if ns == "" {
-			for _, item := range items {
-				node := toResourceNode(resource, path, item)
-				clusterScoped = append(clusterScoped, node)
-				kindSet[node.Kind] = true
-			}
-			continue
-		}
-
-		node, ok := nsMap[ns]
-		if !ok {
-			node = &namespaceNode{Name: ns}
-			nsMap[ns] = node
-		}
-
-		if workloadKinds[resource] {
-			for _, item := range items {
-				w := workloadNode{
-					Kind:     firstNonEmpty(asString(item["kind"]), kindFromResource(resource)),
-					Name:     getMetaName(item),
-					Status:   summarizeStatus(item),
-					Age:      summarizeAge(item),
-					ListPath: path,
-					Labels:   getMetaLabels(item),
-				}
-				node.Workloads = append(node.Workloads, w)
-				kindSet[w.Kind] = true
-			}
-			continue
-		}
-
-		if resource == "pods" {
-			for _, item := range items {
-				p := toPodNode(path, item)
-				node.Pods = append(node.Pods, p)
-				kindSet[p.Kind] = true
-			}
-			continue
-		}
-
-		for _, item := range items {
-			rn := toResourceNode(resource, path, item)
-			node.Resources = append(node.Resources, rn)
-			kindSet[rn.Kind] = true
-		}
-
+		byNSRes[ns][resource] = append(byNSRes[ns][resource], path)
 		_ = group
 		_ = version
 	}
-
+	for ns, resMap := range byNSRes {
+		for resource, candidates := range resMap {
+			items, ok := h.loadResourceItems(candidates)
+			if !ok {
+				continue
+			}
+			if ns == "" {
+				for _, entry := range items {
+					node := toResourceNode(resource, entry.path, entry.item)
+					clusterScoped = append(clusterScoped, node)
+					kindSet[node.Kind] = true
+				}
+				continue
+			}
+			node, ok := nsMap[ns]
+			if !ok {
+				node = &namespaceNode{
+					Name:      ns,
+					Workloads: []workloadNode{},
+					Pods:      []podNode{},
+					Resources: []resourceNode{},
+				}
+				nsMap[ns] = node
+			}
+			if workloadKinds[resource] {
+				for _, entry := range items {
+					w := workloadNode{
+						Kind:     firstNonEmpty(asString(entry.item["kind"]), kindFromResource(resource)),
+						Name:     getMetaName(entry.item),
+						Status:   summarizeStatus(entry.item),
+						Age:      summarizeAge(entry.item),
+						ListPath: entry.path,
+						Labels:   getMetaLabels(entry.item),
+					}
+					node.Workloads = append(node.Workloads, w)
+					kindSet[w.Kind] = true
+				}
+				continue
+			}
+			if resource == "pods" {
+				for _, entry := range items {
+					p := toPodNode(entry.path, entry.item)
+					node.Pods = append(node.Pods, p)
+					kindSet[p.Kind] = true
+				}
+				continue
+			}
+			for _, entry := range items {
+				rn := toResourceNode(resource, entry.path, entry.item)
+				node.Resources = append(node.Resources, rn)
+				kindSet[rn.Kind] = true
+			}
+		}
+	}
 	for ns := range nsMap {
 		attachPodsToWorkloads(nsMap[ns])
 	}
-
 	namespaces := make([]namespaceNode, 0, len(nsMap))
 	for _, ns := range nsMap {
 		sort.Slice(ns.Workloads, func(i, j int) bool {
@@ -338,13 +350,11 @@ func (h *explorerHandler) buildTree() (*treeResponse, error) {
 		}
 		return clusterScoped[i].Kind < clusterScoped[j].Kind
 	})
-
 	kinds := make([]string, 0, len(kindSet))
 	for k := range kindSet {
 		kinds = append(kinds, k)
 	}
 	sort.Strings(kinds)
-
 	return &treeResponse{
 		CapturedAt:    h.store.Metadata.CapturedAt,
 		CapturedUntil: h.store.Metadata.CapturedUntil,
@@ -442,6 +452,14 @@ func findListItemByName(body []byte, name string) ([]byte, bool) {
 	return nil, false
 }
 
+func matchesObjectName(body []byte, name string) bool {
+	var item map[string]any
+	if err := json.Unmarshal(body, &item); err != nil {
+		return false
+	}
+	return getMetaName(item) == name
+}
+
 func getMetaName(item map[string]any) string {
 	meta, _ := item["metadata"].(map[string]any)
 	return asString(meta["name"])
@@ -529,25 +547,282 @@ func kindFromResource(resource string) string {
 	return strings.ToUpper(s[:1]) + s[1:]
 }
 
-func parseAPIPath(path string) (group, version, resource, namespace string) {
+func buildPathCandidates(index map[string]*capture.IndexEntry) map[string][]string {
+	pathsByBase := make(map[string][]string)
+	for path := range index {
+		base := baseAPIPath(path)
+		if _, _, resource, _, _ := parseAPIPath(base); resource == "" {
+			continue
+		}
+		pathsByBase[base] = append(pathsByBase[base], path)
+	}
+	for base := range pathsByBase {
+		sort.Slice(pathsByBase[base], func(i, j int) bool {
+			pi := pathPriority(pathsByBase[base][i])
+			pj := pathPriority(pathsByBase[base][j])
+			if pi == pj {
+				return pathsByBase[base][i] < pathsByBase[base][j]
+			}
+			return pi < pj
+		})
+	}
+	return pathsByBase
+}
+
+func sortedKeys(m map[string][]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func (h *explorerHandler) loadResourceItems(candidates []string) ([]listItem, bool) {
+	sorted := append([]string(nil), candidates...)
+	sort.Slice(sorted, func(i, j int) bool {
+		pi := pathPriority(sorted[i])
+		pj := pathPriority(sorted[j])
+		if pi == pj {
+			return sorted[i] < sorted[j]
+		}
+		return pi < pj
+	})
+
+	var fallbackItems []listItem
+	var foundFallback bool
+	itemsByKey := make(map[string]listItem)
+	var itemOrder []string
+	for _, candidate := range sorted {
+		bodies, ok := h.responseBodies(candidate)
+		if !ok {
+			continue
+		}
+		for _, body := range bodies {
+			entries, hadItems, ok := parseResponseItems(candidate, body)
+			if !ok {
+				continue
+			}
+			if hadItems {
+				for _, entry := range entries {
+					key := itemIdentityKey(entry.item)
+					if _, exists := itemsByKey[key]; exists {
+						continue
+					}
+					itemsByKey[key] = entry
+					itemOrder = append(itemOrder, key)
+				}
+				continue
+			}
+			if !foundFallback {
+				fallbackItems = entries
+				foundFallback = true
+			}
+		}
+	}
+	if len(itemOrder) > 0 {
+		merged := make([]listItem, 0, len(itemOrder))
+		for _, key := range itemOrder {
+			merged = append(merged, itemsByKey[key])
+		}
+		return merged, true
+	}
+	if foundFallback {
+		return fallbackItems, true
+	}
+	return nil, false
+}
+
+func parseResponseItems(path string, body []byte) ([]listItem, bool, bool) {
+	if items, err := parseListItems(body); err == nil {
+		entries := make([]listItem, 0, len(items))
+		for _, item := range items {
+			entries = append(entries, listItem{path: path, item: item})
+		}
+		return entries, len(entries) > 0, true
+	}
+
+	if items, ok := parseTableItems(body); ok {
+		entries := make([]listItem, 0, len(items))
+		for _, item := range items {
+			entries = append(entries, listItem{path: path, item: item})
+		}
+		return entries, len(entries) > 0, true
+	}
+
+	var item map[string]any
+	if err := json.Unmarshal(body, &item); err != nil {
+		return nil, false, false
+	}
+	meta, _ := item["metadata"].(map[string]any)
+	if meta == nil || asString(meta["name"]) == "" {
+		return nil, false, false
+	}
+	return []listItem{{path: path, item: item}}, true, true
+}
+
+func parseTableItems(body []byte) ([]map[string]any, bool) {
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, false
+	}
+	kind := asString(raw["kind"])
+	rowsAny, ok := raw["rows"].([]any)
+	if !ok {
+		return nil, false
+	}
+	if kind != "Table" && !strings.HasSuffix(kind, "Table") {
+		return nil, false
+	}
+
+	items := make([]map[string]any, 0, len(rowsAny))
+	for _, row := range rowsAny {
+		rowMap, ok := row.(map[string]any)
+		if !ok {
+			continue
+		}
+		obj, ok := rowMap["object"].(map[string]any)
+		if !ok {
+			continue
+		}
+		meta, _ := obj["metadata"].(map[string]any)
+		if asString(meta["name"]) == "" {
+			continue
+		}
+		items = append(items, obj)
+	}
+	return items, true
+}
+
+func itemIdentityKey(item map[string]any) string {
+	meta, _ := item["metadata"].(map[string]any)
+	uid := asString(meta["uid"])
+	if uid != "" {
+		return uid
+	}
+	return firstNonEmpty(asString(item["kind"]), "?") + "/" + asString(meta["namespace"]) + "/" + asString(meta["name"])
+}
+
+func (h *explorerHandler) findResourceBody(path, name string) ([]byte, int, error) {
+	bodies, ok := h.responseBodies(path)
+	if !ok {
+		return nil, http.StatusNotFound, nil
+	}
+	for i := len(bodies) - 1; i >= 0; i-- {
+		body := bodies[i]
+		if item, ok := findListItemByName(body, name); ok {
+			return item, http.StatusOK, nil
+		}
+		if matchesObjectName(body, name) {
+			return body, http.StatusOK, nil
+		}
+	}
+	return nil, http.StatusNotFound, nil
+}
+
+func (h *explorerHandler) responseBodies(path string) ([][]byte, bool) {
+	entry, ok := h.store.Index[path]
+	if !ok || len(entry.RecordIDs) == 0 {
+		return nil, false
+	}
+
+	if !h.at.IsZero() {
+		index := -1
+		for i, t := range entry.Times {
+			if !t.After(h.at) {
+				index = i
+			}
+		}
+		if index < 0 {
+			return nil, false
+		}
+		body, ok := h.readRecordBody(entry.RecordIDs[index])
+		if !ok {
+			return nil, false
+		}
+		return [][]byte{body}, true
+	}
+
+	bodies := make([][]byte, 0, len(entry.RecordIDs))
+	for _, id := range entry.RecordIDs {
+		body, ok := h.readRecordBody(id)
+		if !ok {
+			continue
+		}
+		bodies = append(bodies, body)
+	}
+	if len(bodies) == 0 {
+		return nil, false
+	}
+	return bodies, true
+}
+
+func (h *explorerHandler) readRecordBody(id string) ([]byte, bool) {
+	data, err := os.ReadFile(filepath.Join(h.store.Dir, "k8shark-capture", "records", id+".json"))
+	if err != nil {
+		return nil, false
+	}
+	var rec capture.Record
+	if err := json.Unmarshal(data, &rec); err != nil {
+		return nil, false
+	}
+	if rec.ResponseCode != http.StatusOK {
+		return nil, false
+	}
+	return rec.ResponseBody, true
+}
+
+func baseAPIPath(path string) string {
+	if i := strings.Index(path, "?"); i >= 0 {
+		return path[:i]
+	}
+	return path
+}
+
+func pathPriority(path string) int {
+	if strings.Contains(path, "?as=Table") {
+		return 2
+	}
+	if strings.Contains(path, "?") {
+		return 1
+	}
+	return 0
+}
+
+func parseAPIPath(path string) (group, version, resource, namespace, name string) {
+	path = baseAPIPath(path)
 	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
 	switch {
 	case len(parts) >= 3 && parts[0] == "api":
 		version = parts[1]
 		if len(parts) == 3 {
 			resource = parts[2]
+		} else if len(parts) == 4 {
+			resource = parts[2]
+			name = parts[3]
 		} else if len(parts) == 5 && parts[2] == "namespaces" {
 			namespace = parts[3]
 			resource = parts[4]
+		} else if len(parts) == 6 && parts[2] == "namespaces" {
+			namespace = parts[3]
+			resource = parts[4]
+			name = parts[5]
 		}
 	case len(parts) >= 4 && parts[0] == "apis":
 		group = parts[1]
 		version = parts[2]
 		if len(parts) == 4 {
 			resource = parts[3]
+		} else if len(parts) == 5 {
+			resource = parts[3]
+			name = parts[4]
 		} else if len(parts) == 6 && parts[3] == "namespaces" {
 			namespace = parts[4]
 			resource = parts[5]
+		} else if len(parts) == 7 && parts[3] == "namespaces" {
+			namespace = parts[4]
+			resource = parts[5]
+			name = parts[6]
 		}
 	}
 	return
@@ -741,7 +1016,7 @@ const indexHTML = `<!doctype html>
         ds.open = true;
         ds.innerHTML = '<summary>Namespace: <strong>' + ns.name + '</strong></summary>';
 
-        for (const w of ns.workloads) {
+			for (const w of (ns.workloads || [])) {
           if (!kindEnabled(w.kind) || !nodeMatches(w, q)) continue;
           ds.appendChild(mkNode(w.kind + ' ' + w.name, w, ['Cluster', ns.name, w.kind, w.name]));
           for (const p of (w.pods || [])) {
@@ -755,7 +1030,7 @@ const indexHTML = `<!doctype html>
           }
         }
 
-        for (const p of ns.pods) {
+			for (const p of (ns.pods || [])) {
           if (!kindEnabled(p.kind) || !nodeMatches(p, q)) continue;
           ds.appendChild(mkNode('Pod ' + p.name, p, ['Cluster', ns.name, 'Pod', p.name]));
           for (const c of (p.containers || [])) {
@@ -765,7 +1040,7 @@ const indexHTML = `<!doctype html>
           }
         }
 
-        for (const r of ns.resources) {
+			for (const r of (ns.resources || [])) {
           if (!kindEnabled(r.kind) || !nodeMatches(r, q)) continue;
           ds.appendChild(mkNode(r.kind + ' ' + r.name, r, ['Cluster', ns.name, r.kind, r.name]));
         }
