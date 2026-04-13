@@ -967,6 +967,7 @@ const indexHTML = `<!doctype html>
 	.tabs-left button { margin-right:6px; padding:6px 10px; border-radius:7px; border:1px solid #334155; background:#0f172a; color:var(--text); cursor:pointer; }
 	.copy-btn { padding:6px 10px; border-radius:7px; border:1px solid #334155; background:#0f172a; color:#cbd5e1; cursor:pointer; font-size:12px; }
 	.copy-btn:hover { border-color:#64748b; }
+	.detail-actions { display:flex; gap:6px; }
     .tabs button.active { border-color:var(--accent); color:#86efac; }
 		.toast-stack { position:fixed; right:14px; bottom:14px; display:grid; gap:8px; z-index:40; pointer-events:none; }
 		.toast { pointer-events:auto; max-width:420px; border:1px solid #334155; border-radius:8px; padding:10px 12px; background:rgba(15,23,42,.92); box-shadow:0 8px 28px rgba(2,6,23,.45); font-size:13px; }
@@ -1013,7 +1014,10 @@ const indexHTML = `<!doctype html>
 					<button id="tabJson" class="active">JSON</button>
 					<button id="tabYaml">YAML</button>
 				</span>
-				<button id="copyDetail" class="copy-btn" type="button">Copy JSON</button>
+				<span class="detail-actions">
+					<button id="copyDetail" class="copy-btn" type="button">Copy JSON</button>
+					<button id="downloadDetail" class="copy-btn" type="button">Download JSON</button>
+				</span>
       </div>
       <pre id="detailBody">Click a node in the tree to inspect details.</pre>
     </section>
@@ -1044,6 +1048,7 @@ const indexHTML = `<!doctype html>
       tabJson: document.getElementById('tabJson'),
 			tabYaml: document.getElementById('tabYaml'),
 			copyDetail: document.getElementById('copyDetail'),
+			downloadDetail: document.getElementById('downloadDetail'),
 			toggleAll: document.getElementById('toggleAll'),
 			toggleNone: document.getElementById('toggleNone'),
 			expandAll: document.getElementById('expandAll'),
@@ -1054,6 +1059,7 @@ const indexHTML = `<!doctype html>
     el.tabJson.onclick = () => setTab('json');
     el.tabYaml.onclick = () => setTab('yaml');
 	el.copyDetail.onclick = () => copyActiveDetail();
+	el.downloadDetail.onclick = () => downloadActiveDetail();
     el.search.oninput = render;
 		el.toggleAll.onclick = () => setAllKinds(true);
 		el.toggleNone.onclick = () => setAllKinds(false);
@@ -1066,10 +1072,40 @@ const indexHTML = `<!doctype html>
       el.tabJson.classList.toggle('active', tab === 'json');
       el.tabYaml.classList.toggle('active', tab === 'yaml');
 			el.copyDetail.textContent = tab === 'yaml' ? 'Copy YAML' : 'Copy JSON';
+			el.downloadDetail.textContent = tab === 'yaml' ? 'Download YAML' : 'Download JSON';
       if (selected && selected.detail) {
         el.detailBody.textContent = selected.detail[activeTab] || '';
       }
     }
+
+		function sanitizeFilenamePart(v) {
+			return String(v || 'resource').replace(/[^a-zA-Z0-9._-]+/g, '-');
+		}
+
+		function downloadActiveDetail() {
+			if (!selected || !selected.detail) {
+				showToast('info', 'Select a resource first.');
+				return;
+			}
+			const text = selected.detail[activeTab] || '';
+			if (!text) {
+				showToast('info', 'No content available to download.');
+				return;
+			}
+			const ext = activeTab === 'yaml' ? 'yaml' : 'json';
+			const mime = activeTab === 'yaml' ? 'application/yaml' : 'application/json';
+			const name = sanitizeFilenamePart(selected.node && selected.node.name) + '.' + ext;
+			const blob = new Blob([text], { type: mime });
+			const url = URL.createObjectURL(blob);
+			const a = document.createElement('a');
+			a.href = url;
+			a.download = name;
+			document.body.appendChild(a);
+			a.click();
+			a.remove();
+			URL.revokeObjectURL(url);
+			showToast('info', (activeTab === 'yaml' ? 'YAML' : 'JSON') + ' downloaded as ' + name + '.');
+		}
 
 		async function copyActiveDetail() {
 			if (!selected || !selected.detail) {
