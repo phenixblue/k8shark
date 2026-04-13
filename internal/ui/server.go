@@ -979,6 +979,9 @@ const indexHTML = `<!doctype html>
 	let activeNodeIdx = -1;
 	const namespacePageSize = 120;
 	let namespaceVisibleLimit = {};
+	const storageKindsKey = 'kshrk.ui.activeKinds.v1';
+	const storageExpandedKey = 'kshrk.ui.expandedSections.v1';
+	let expandedSections = {};
 
     const el = {
       tree: document.getElementById('tree'),
@@ -1040,6 +1043,50 @@ const indexHTML = `<!doctype html>
 			el.toasts.appendChild(toast);
 			const ttl = timeoutMs || (type === 'error' ? 7000 : 3000);
 			window.setTimeout(() => toast.remove(), ttl);
+		}
+
+		function loadPreferences() {
+			try {
+				const kindsRaw = window.localStorage.getItem(storageKindsKey);
+				if (kindsRaw) {
+					const parsed = JSON.parse(kindsRaw);
+					if (Array.isArray(parsed)) activeKinds = new Set(parsed);
+				}
+			} catch (_) {}
+			try {
+				const expandedRaw = window.localStorage.getItem(storageExpandedKey);
+				if (expandedRaw) {
+					const parsed = JSON.parse(expandedRaw);
+					if (parsed && typeof parsed === 'object') expandedSections = parsed;
+				}
+			} catch (_) {}
+		}
+
+		function persistKinds() {
+			try {
+				window.localStorage.setItem(storageKindsKey, JSON.stringify(Array.from(activeKinds)));
+			} catch (_) {}
+		}
+
+		function persistExpandedSections() {
+			try {
+				window.localStorage.setItem(storageExpandedKey, JSON.stringify(expandedSections));
+			} catch (_) {}
+		}
+
+		function sectionOpen(sectionKey, fallbackOpen) {
+			if (Object.prototype.hasOwnProperty.call(expandedSections, sectionKey)) {
+				return !!expandedSections[sectionKey];
+			}
+			return fallbackOpen;
+		}
+
+		function bindSectionState(details, sectionKey) {
+			details.onToggle = null;
+			details.addEventListener('toggle', () => {
+				expandedSections[sectionKey] = details.open;
+				persistExpandedSections();
+			});
 		}
 
     function statusClass(status) {
@@ -1169,8 +1216,9 @@ const indexHTML = `<!doctype html>
 			let renderedNodes = 0;
 
       const cs = document.createElement('details');
-      cs.open = true;
+			cs.open = sectionOpen('cluster-scoped', true);
 			cs.innerHTML = '<summary>Cluster-scoped resources <span class="muted">(' + treeData.cluster_scoped.length + ')</span></summary>';
+			bindSectionState(cs, 'cluster-scoped');
       for (const node of treeData.cluster_scoped) {
         if (!kindEnabled(node.kind) || !nodeMatches(node, q)) continue;
 				cs.appendChild(mkNode(node, ['Cluster', node.kind, node.name], 0, ''));
@@ -1180,9 +1228,10 @@ const indexHTML = `<!doctype html>
 
       for (const ns of treeData.namespaces) {
         const ds = document.createElement('details');
-        ds.open = true;
+				ds.open = sectionOpen('ns:' + ns.name, true);
 				const nsCount = (ns.workloads || []).length + (ns.pods || []).length + (ns.resources || []).length;
 				ds.innerHTML = '<summary>Namespace: <strong>' + ns.name + '</strong> <span class="muted">(' + nsCount + ')</span></summary>';
+				bindSectionState(ds, 'ns:' + ns.name);
 
 				const nsNodes = [];
 
@@ -1261,7 +1310,12 @@ const indexHTML = `<!doctype html>
     }
 
     function renderToggles(kinds) {
-      activeKinds = new Set(kinds);
+			if (activeKinds.size === 0) {
+				activeKinds = new Set(kinds);
+			} else {
+				const allowed = new Set(kinds);
+				activeKinds = new Set(Array.from(activeKinds).filter((k) => allowed.has(k)));
+			}
       el.toggles.innerHTML = '';
       for (const kind of kinds) {
         const row = document.createElement('label');
@@ -1269,9 +1323,10 @@ const indexHTML = `<!doctype html>
         const cb = document.createElement('input');
         cb.type = 'checkbox';
 				cb.dataset.kind = kind;
-        cb.checked = true;
+				cb.checked = activeKinds.has(kind);
         cb.onchange = () => {
           if (cb.checked) activeKinds.add(kind); else activeKinds.delete(kind);
+				persistKinds();
           render();
         };
         row.appendChild(cb);
@@ -1289,18 +1344,28 @@ const indexHTML = `<!doctype html>
 			} else {
 				activeKinds = new Set();
 			}
+			persistKinds();
 			render();
 		}
 
 		function setAllTreeDetails(open) {
 			for (const details of el.tree.querySelectorAll('details')) {
 				details.open = open;
+				const summary = details.querySelector('summary');
+				if (summary && summary.textContent.startsWith('Namespace:')) {
+					const strong = summary.querySelector('strong');
+					if (strong) expandedSections['ns:' + strong.textContent] = open;
+				} else {
+					expandedSections['cluster-scoped'] = open;
+				}
 			}
+			persistExpandedSections();
 		}
 
     async function init() {
 			setTreeState('loading', 'Loading captured resources...');
 			try {
+				loadPreferences();
 				const res = await fetch('/api/ui/tree');
 				const data = await res.json();
 				if (!res.ok) {
