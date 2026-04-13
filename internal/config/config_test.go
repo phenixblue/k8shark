@@ -154,3 +154,18 @@ func TestWarnings_CRDNoNamespaces_NoWarn(t *testing.T) {
 		}
 	}
 }
+
+func TestResourceDedupEnabled_DefaultTrue(t *testing.T) {
+	r := Resource{}
+	if !r.DedupEnabled() {
+		t.Fatal("expected default dedup enabled when dedup is unset")
+	}
+}
+
+func TestResourceDedupEnabled_ExplicitFalse(t *testing.T) {
+	val := false
+	r := Resource{Dedup: &val}
+	if r.DedupEnabled() {
+		t.Fatal("expected dedup disabled when dedup is explicitly false")
+	}
+}

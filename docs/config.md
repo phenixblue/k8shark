@@ -20,6 +20,7 @@ k8shark reads a YAML config file that controls what gets captured, from which na
 | `resource` | string | yes | Plural resource name, e.g. `pods`, `deployments`. |
 | `namespaces` | list of strings | no | Namespaces to poll. **Omit entirely for cluster-scoped resources** (nodes, persistentvolumes, storageclasses, etc.). |
 | `interval` | duration string | `30s` | How often to re-poll this resource during the capture window. |
+| `dedup` | bool | `true` | Skip writing a record when the response body is identical to the previous poll for the same API path. Set `false` to force writing every poll. |
 
 ### Namespaced vs. cluster-scoped resources
 
@@ -45,6 +46,23 @@ Use `"*"` as a namespace value to automatically capture from all namespaces disc
 - Mixed lists such as `namespaces: ["production", "*"]` are supported — explicit namespaces appear first, then all remaining discovered namespaces are appended, deduplicated.
 - If namespace discovery fails (e.g. RBAC permissions), the capture exits with a clear error.
 - A well-known cluster-scoped resource (nodes, persistentvolumes, etc.) with `namespaces: ["*"]` emits a warning and falls back to a cluster-scoped fetch.
+
+### Response deduplication
+
+By default, k8shark writes the first poll result for each API path and skips
+consecutive polls whose response body bytes are unchanged. This can
+significantly reduce archive size for stable resources.
+
+Use `dedup: false` on a resource when every poll must be preserved:
+
+```yaml
+- group: ""
+  version: v1
+  resource: events
+  namespaces: [default]
+  interval: 10s
+  dedup: false
+```
 
 ## Example configs
 

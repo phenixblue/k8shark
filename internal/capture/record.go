@@ -24,6 +24,7 @@ type CaptureMetadata struct {
 	KubernetesVersion string    `json:"kubernetes_version"`
 	ServerAddress     string    `json:"server_address"`
 	RecordCount       int       `json:"record_count"`
+	DeduplicatedCount int       `json:"deduplicated_count"`
 }
 
 // IndexEntry maps an API path to the ordered list of record IDs captured for it.
