@@ -224,6 +224,13 @@ func (h *explorerHandler) serveDetail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	normalizedBody, err := normalizeDetailBody(body, path)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "invalid object body"})
+		return
+	}
+	body = normalizedBody
+
 	prettyJSON := body
 	var out bytes.Buffer
 	if err := json.Indent(&out, body, "", "  "); err == nil {
@@ -242,6 +249,39 @@ func (h *explorerHandler) serveDetail(w http.ResponseWriter, r *http.Request) {
 		"json":        string(prettyJSON),
 		"yaml":        string(yml),
 	})
+}
+
+func normalizeDetailBody(body []byte, path string) ([]byte, error) {
+	var obj map[string]any
+	if err := json.Unmarshal(body, &obj); err != nil {
+		return nil, err
+	}
+
+	// Keep list/table/detail envelopes as-is.
+	if _, hasItems := obj["items"]; hasItems {
+		return body, nil
+	}
+	if strings.HasSuffix(asString(obj["kind"]), "Table") {
+		return body, nil
+	}
+
+	group, version, resource, _, _ := parseAPIPath(path)
+	if asString(obj["apiVersion"]) == "" {
+		if group == "" {
+			obj["apiVersion"] = version
+		} else {
+			obj["apiVersion"] = group + "/" + version
+		}
+	}
+	if asString(obj["kind"]) == "" {
+		obj["kind"] = kindFromResource(resource)
+	}
+
+	b, err := json.Marshal(obj)
+	if err != nil {
+		return nil, err
+	}
+	return b, nil
 }
 
 func (h *explorerHandler) buildTree() (*treeResponse, error) {
@@ -923,7 +963,10 @@ const indexHTML = `<!doctype html>
 	.tree-state.empty { border-color:rgba(148,163,184,.45); color:#cbd5e1; }
 	.tree-state.loading { border-color:rgba(59,130,246,.45); color:#bfdbfe; }
     pre { white-space:pre-wrap; background:#020617; border:1px solid #1f2937; padding:10px; border-radius:8px; }
-    .tabs button { margin-right:6px; padding:6px 10px; border-radius:7px; border:1px solid #334155; background:#0f172a; color:var(--text); cursor:pointer; }
+	.tabs { display:flex; align-items:center; justify-content:space-between; margin-bottom:6px; }
+	.tabs-left button { margin-right:6px; padding:6px 10px; border-radius:7px; border:1px solid #334155; background:#0f172a; color:var(--text); cursor:pointer; }
+	.copy-btn { padding:6px 10px; border-radius:7px; border:1px solid #334155; background:#0f172a; color:#cbd5e1; cursor:pointer; font-size:12px; }
+	.copy-btn:hover { border-color:#64748b; }
     .tabs button.active { border-color:var(--accent); color:#86efac; }
 		.toast-stack { position:fixed; right:14px; bottom:14px; display:grid; gap:8px; z-index:40; pointer-events:none; }
 		.toast { pointer-events:auto; max-width:420px; border:1px solid #334155; border-radius:8px; padding:10px 12px; background:rgba(15,23,42,.92); box-shadow:0 8px 28px rgba(2,6,23,.45); font-size:13px; }
@@ -966,8 +1009,11 @@ const indexHTML = `<!doctype html>
       <h3 id="detailTitle">Select a resource</h3>
 			<div id="detailSummary" class="detail-summary"></div>
       <div class="tabs">
-        <button id="tabJson" class="active">JSON</button>
-        <button id="tabYaml">YAML</button>
+				<span class="tabs-left">
+					<button id="tabJson" class="active">JSON</button>
+					<button id="tabYaml">YAML</button>
+				</span>
+				<button id="copyDetail" class="copy-btn" type="button">Copy JSON</button>
       </div>
       <pre id="detailBody">Click a node in the tree to inspect details.</pre>
     </section>
@@ -997,6 +1043,7 @@ const indexHTML = `<!doctype html>
       detailBody: document.getElementById('detailBody'),
       tabJson: document.getElementById('tabJson'),
 			tabYaml: document.getElementById('tabYaml'),
+			copyDetail: document.getElementById('copyDetail'),
 			toggleAll: document.getElementById('toggleAll'),
 			toggleNone: document.getElementById('toggleNone'),
 			expandAll: document.getElementById('expandAll'),
@@ -1006,6 +1053,7 @@ const indexHTML = `<!doctype html>
 
     el.tabJson.onclick = () => setTab('json');
     el.tabYaml.onclick = () => setTab('yaml');
+	el.copyDetail.onclick = () => copyActiveDetail();
     el.search.oninput = render;
 		el.toggleAll.onclick = () => setAllKinds(true);
 		el.toggleNone.onclick = () => setAllKinds(false);
@@ -1017,10 +1065,38 @@ const indexHTML = `<!doctype html>
       activeTab = tab;
       el.tabJson.classList.toggle('active', tab === 'json');
       el.tabYaml.classList.toggle('active', tab === 'yaml');
+			el.copyDetail.textContent = tab === 'yaml' ? 'Copy YAML' : 'Copy JSON';
       if (selected && selected.detail) {
         el.detailBody.textContent = selected.detail[activeTab] || '';
       }
     }
+
+		async function copyActiveDetail() {
+			if (!selected || !selected.detail) {
+				showToast('info', 'Select a resource first.');
+				return;
+			}
+			const text = selected.detail[activeTab] || '';
+			if (!text) {
+				showToast('info', 'No content available to copy.');
+				return;
+			}
+			try {
+				if (navigator.clipboard && navigator.clipboard.writeText) {
+					await navigator.clipboard.writeText(text);
+				} else {
+					const tmp = document.createElement('textarea');
+					tmp.value = text;
+					document.body.appendChild(tmp);
+					tmp.select();
+					document.execCommand('copy');
+					tmp.remove();
+				}
+				showToast('info', (activeTab === 'yaml' ? 'YAML' : 'JSON') + ' copied to clipboard.');
+			} catch (err) {
+				showToast('error', 'Copy failed: ' + (err && err.message ? err.message : String(err)));
+			}
+		}
 
 		function setTreeState(type, message) {
 			el.tree.innerHTML = '';
