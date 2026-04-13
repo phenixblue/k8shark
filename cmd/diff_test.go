@@ -17,8 +17,12 @@ func TestRunDiff_ExitCodeOnDiff(t *testing.T) {
 	after := buildDiffArchive(t, `{"kind":"PodList","items":[{"metadata":{"name":"after"}}]}`)
 
 	cmd := newTestDiffCommand()
-	cmd.Flags().Set("before", before)
-	cmd.Flags().Set("after", after)
+	if err := cmd.Flags().Set("before", before); err != nil {
+		t.Fatalf("set before flag: %v", err)
+	}
+	if err := cmd.Flags().Set("after", after); err != nil {
+		t.Fatalf("set after flag: %v", err)
+	}
 
 	err := runDiff(cmd, nil)
 	if err == nil {
@@ -38,9 +42,15 @@ func TestRunDiff_JSONOutputNoDiff(t *testing.T) {
 	cmd := newTestDiffCommand()
 	buf := &bytes.Buffer{}
 	cmd.SetOut(buf)
-	cmd.Flags().Set("before", archivePath)
-	cmd.Flags().Set("after", archivePath)
-	cmd.Flags().Set("output", "json")
+	if err := cmd.Flags().Set("before", archivePath); err != nil {
+		t.Fatalf("set before flag: %v", err)
+	}
+	if err := cmd.Flags().Set("after", archivePath); err != nil {
+		t.Fatalf("set after flag: %v", err)
+	}
+	if err := cmd.Flags().Set("output", "json"); err != nil {
+		t.Fatalf("set output flag: %v", err)
+	}
 
 	err := runDiff(cmd, nil)
 	if err != nil {
