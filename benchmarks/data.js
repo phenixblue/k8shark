@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1776056032789,
+  "lastUpdate": 1776057531647,
   "repoUrl": "https://github.com/phenixblue/k8shark",
   "entries": {
     "k8shark benchmarks": [
@@ -6336,6 +6336,1590 @@ window.BENCHMARK_DATA = {
             "value": 46,
             "unit": "allocs/op",
             "extra": "208197 times\n4 procs"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "40017920+phenixblue@users.noreply.github.com",
+            "name": "Joe Searcy",
+            "username": "phenixblue"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "85bf8a0d5bc36e19190b8b4ff6b53fe815e164a4",
+          "message": "Merge pull request #40 from phenixblue/feat/issue-28-point-in-time-replay\n\nfeat: add point-in-time replay for kshrk open",
+          "timestamp": "2026-04-13T01:16:47-04:00",
+          "tree_id": "2f978e7c5c2e2fdbd6a80150754df08e50225769",
+          "url": "https://github.com/phenixblue/k8shark/commit/85bf8a0d5bc36e19190b8b4ff6b53fe815e164a4"
+        },
+        "date": 1776057531220,
+        "tool": "go",
+        "benches": [
+          {
+            "name": "BenchmarkStreamWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive)",
+            "value": 11960,
+            "unit": "ns/op\t    2064 B/op\t      44 allocs/op",
+            "extra": "100993 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive) - ns/op",
+            "value": 11960,
+            "unit": "ns/op",
+            "extra": "100993 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive) - B/op",
+            "value": 2064,
+            "unit": "B/op",
+            "extra": "100993 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive) - allocs/op",
+            "value": 44,
+            "unit": "allocs/op",
+            "extra": "100993 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive)",
+            "value": 12027,
+            "unit": "ns/op\t    2064 B/op\t      44 allocs/op",
+            "extra": "99531 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive) - ns/op",
+            "value": 12027,
+            "unit": "ns/op",
+            "extra": "99531 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive) - B/op",
+            "value": 2064,
+            "unit": "B/op",
+            "extra": "99531 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive) - allocs/op",
+            "value": 44,
+            "unit": "allocs/op",
+            "extra": "99531 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive)",
+            "value": 11912,
+            "unit": "ns/op\t    2064 B/op\t      44 allocs/op",
+            "extra": "100352 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive) - ns/op",
+            "value": 11912,
+            "unit": "ns/op",
+            "extra": "100352 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive) - B/op",
+            "value": 2064,
+            "unit": "B/op",
+            "extra": "100352 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive) - allocs/op",
+            "value": 44,
+            "unit": "allocs/op",
+            "extra": "100352 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive)",
+            "value": 11926,
+            "unit": "ns/op\t    2064 B/op\t      44 allocs/op",
+            "extra": "99832 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive) - ns/op",
+            "value": 11926,
+            "unit": "ns/op",
+            "extra": "99832 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive) - B/op",
+            "value": 2064,
+            "unit": "B/op",
+            "extra": "99832 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive) - allocs/op",
+            "value": 44,
+            "unit": "allocs/op",
+            "extra": "99832 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive)",
+            "value": 12257,
+            "unit": "ns/op\t    2064 B/op\t      44 allocs/op",
+            "extra": "99513 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive) - ns/op",
+            "value": 12257,
+            "unit": "ns/op",
+            "extra": "99513 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive) - B/op",
+            "value": 2064,
+            "unit": "B/op",
+            "extra": "99513 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive) - allocs/op",
+            "value": 44,
+            "unit": "allocs/op",
+            "extra": "99513 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/10_records (github.com/phenixblue/k8shark/internal/archive)",
+            "value": 1015344,
+            "unit": "ns/op\t 1293406 B/op\t     764 allocs/op",
+            "extra": "1226 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/10_records (github.com/phenixblue/k8shark/internal/archive) - ns/op",
+            "value": 1015344,
+            "unit": "ns/op",
+            "extra": "1226 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/10_records (github.com/phenixblue/k8shark/internal/archive) - B/op",
+            "value": 1293406,
+            "unit": "B/op",
+            "extra": "1226 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/10_records (github.com/phenixblue/k8shark/internal/archive) - allocs/op",
+            "value": 764,
+            "unit": "allocs/op",
+            "extra": "1226 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/10_records (github.com/phenixblue/k8shark/internal/archive)",
+            "value": 1080004,
+            "unit": "ns/op\t 1293725 B/op\t     765 allocs/op",
+            "extra": "1249 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/10_records (github.com/phenixblue/k8shark/internal/archive) - ns/op",
+            "value": 1080004,
+            "unit": "ns/op",
+            "extra": "1249 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/10_records (github.com/phenixblue/k8shark/internal/archive) - B/op",
+            "value": 1293725,
+            "unit": "B/op",
+            "extra": "1249 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/10_records (github.com/phenixblue/k8shark/internal/archive) - allocs/op",
+            "value": 765,
+            "unit": "allocs/op",
+            "extra": "1249 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/10_records (github.com/phenixblue/k8shark/internal/archive)",
+            "value": 1044625,
+            "unit": "ns/op\t 1293484 B/op\t     764 allocs/op",
+            "extra": "1254 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/10_records (github.com/phenixblue/k8shark/internal/archive) - ns/op",
+            "value": 1044625,
+            "unit": "ns/op",
+            "extra": "1254 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/10_records (github.com/phenixblue/k8shark/internal/archive) - B/op",
+            "value": 1293484,
+            "unit": "B/op",
+            "extra": "1254 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/10_records (github.com/phenixblue/k8shark/internal/archive) - allocs/op",
+            "value": 764,
+            "unit": "allocs/op",
+            "extra": "1254 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/10_records (github.com/phenixblue/k8shark/internal/archive)",
+            "value": 998555,
+            "unit": "ns/op\t 1293723 B/op\t     765 allocs/op",
+            "extra": "1176 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/10_records (github.com/phenixblue/k8shark/internal/archive) - ns/op",
+            "value": 998555,
+            "unit": "ns/op",
+            "extra": "1176 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/10_records (github.com/phenixblue/k8shark/internal/archive) - B/op",
+            "value": 1293723,
+            "unit": "B/op",
+            "extra": "1176 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/10_records (github.com/phenixblue/k8shark/internal/archive) - allocs/op",
+            "value": 765,
+            "unit": "allocs/op",
+            "extra": "1176 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/10_records (github.com/phenixblue/k8shark/internal/archive)",
+            "value": 1010328,
+            "unit": "ns/op\t 1293598 B/op\t     765 allocs/op",
+            "extra": "1194 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/10_records (github.com/phenixblue/k8shark/internal/archive) - ns/op",
+            "value": 1010328,
+            "unit": "ns/op",
+            "extra": "1194 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/10_records (github.com/phenixblue/k8shark/internal/archive) - B/op",
+            "value": 1293598,
+            "unit": "B/op",
+            "extra": "1194 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/10_records (github.com/phenixblue/k8shark/internal/archive) - allocs/op",
+            "value": 765,
+            "unit": "allocs/op",
+            "extra": "1194 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/100_records (github.com/phenixblue/k8shark/internal/archive)",
+            "value": 5924173,
+            "unit": "ns/op\t 4530433 B/op\t    6548 allocs/op",
+            "extra": "200 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/100_records (github.com/phenixblue/k8shark/internal/archive) - ns/op",
+            "value": 5924173,
+            "unit": "ns/op",
+            "extra": "200 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/100_records (github.com/phenixblue/k8shark/internal/archive) - B/op",
+            "value": 4530433,
+            "unit": "B/op",
+            "extra": "200 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/100_records (github.com/phenixblue/k8shark/internal/archive) - allocs/op",
+            "value": 6548,
+            "unit": "allocs/op",
+            "extra": "200 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/100_records (github.com/phenixblue/k8shark/internal/archive)",
+            "value": 5963603,
+            "unit": "ns/op\t 4530475 B/op\t    6549 allocs/op",
+            "extra": "200 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/100_records (github.com/phenixblue/k8shark/internal/archive) - ns/op",
+            "value": 5963603,
+            "unit": "ns/op",
+            "extra": "200 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/100_records (github.com/phenixblue/k8shark/internal/archive) - B/op",
+            "value": 4530475,
+            "unit": "B/op",
+            "extra": "200 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/100_records (github.com/phenixblue/k8shark/internal/archive) - allocs/op",
+            "value": 6549,
+            "unit": "allocs/op",
+            "extra": "200 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/100_records (github.com/phenixblue/k8shark/internal/archive)",
+            "value": 5963700,
+            "unit": "ns/op\t 4530144 B/op\t    6548 allocs/op",
+            "extra": "200 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/100_records (github.com/phenixblue/k8shark/internal/archive) - ns/op",
+            "value": 5963700,
+            "unit": "ns/op",
+            "extra": "200 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/100_records (github.com/phenixblue/k8shark/internal/archive) - B/op",
+            "value": 4530144,
+            "unit": "B/op",
+            "extra": "200 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/100_records (github.com/phenixblue/k8shark/internal/archive) - allocs/op",
+            "value": 6548,
+            "unit": "allocs/op",
+            "extra": "200 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/100_records (github.com/phenixblue/k8shark/internal/archive)",
+            "value": 5930046,
+            "unit": "ns/op\t 4530712 B/op\t    6549 allocs/op",
+            "extra": "193 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/100_records (github.com/phenixblue/k8shark/internal/archive) - ns/op",
+            "value": 5930046,
+            "unit": "ns/op",
+            "extra": "193 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/100_records (github.com/phenixblue/k8shark/internal/archive) - B/op",
+            "value": 4530712,
+            "unit": "B/op",
+            "extra": "193 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/100_records (github.com/phenixblue/k8shark/internal/archive) - allocs/op",
+            "value": 6549,
+            "unit": "allocs/op",
+            "extra": "193 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/100_records (github.com/phenixblue/k8shark/internal/archive)",
+            "value": 6002395,
+            "unit": "ns/op\t 4530320 B/op\t    6548 allocs/op",
+            "extra": "200 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/100_records (github.com/phenixblue/k8shark/internal/archive) - ns/op",
+            "value": 6002395,
+            "unit": "ns/op",
+            "extra": "200 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/100_records (github.com/phenixblue/k8shark/internal/archive) - B/op",
+            "value": 4530320,
+            "unit": "B/op",
+            "extra": "200 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/100_records (github.com/phenixblue/k8shark/internal/archive) - allocs/op",
+            "value": 6548,
+            "unit": "allocs/op",
+            "extra": "200 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/500_records (github.com/phenixblue/k8shark/internal/archive)",
+            "value": 30407712,
+            "unit": "ns/op\t18913328 B/op\t   32415 allocs/op",
+            "extra": "38 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/500_records (github.com/phenixblue/k8shark/internal/archive) - ns/op",
+            "value": 30407712,
+            "unit": "ns/op",
+            "extra": "38 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/500_records (github.com/phenixblue/k8shark/internal/archive) - B/op",
+            "value": 18913328,
+            "unit": "B/op",
+            "extra": "38 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/500_records (github.com/phenixblue/k8shark/internal/archive) - allocs/op",
+            "value": 32415,
+            "unit": "allocs/op",
+            "extra": "38 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/500_records (github.com/phenixblue/k8shark/internal/archive)",
+            "value": 32794621,
+            "unit": "ns/op\t18914546 B/op\t   32416 allocs/op",
+            "extra": "36 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/500_records (github.com/phenixblue/k8shark/internal/archive) - ns/op",
+            "value": 32794621,
+            "unit": "ns/op",
+            "extra": "36 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/500_records (github.com/phenixblue/k8shark/internal/archive) - B/op",
+            "value": 18914546,
+            "unit": "B/op",
+            "extra": "36 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/500_records (github.com/phenixblue/k8shark/internal/archive) - allocs/op",
+            "value": 32416,
+            "unit": "allocs/op",
+            "extra": "36 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/500_records (github.com/phenixblue/k8shark/internal/archive)",
+            "value": 30471478,
+            "unit": "ns/op\t18913131 B/op\t   32416 allocs/op",
+            "extra": "37 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/500_records (github.com/phenixblue/k8shark/internal/archive) - ns/op",
+            "value": 30471478,
+            "unit": "ns/op",
+            "extra": "37 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/500_records (github.com/phenixblue/k8shark/internal/archive) - B/op",
+            "value": 18913131,
+            "unit": "B/op",
+            "extra": "37 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/500_records (github.com/phenixblue/k8shark/internal/archive) - allocs/op",
+            "value": 32416,
+            "unit": "allocs/op",
+            "extra": "37 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/500_records (github.com/phenixblue/k8shark/internal/archive)",
+            "value": 30132723,
+            "unit": "ns/op\t18911609 B/op\t   32414 allocs/op",
+            "extra": "34 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/500_records (github.com/phenixblue/k8shark/internal/archive) - ns/op",
+            "value": 30132723,
+            "unit": "ns/op",
+            "extra": "34 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/500_records (github.com/phenixblue/k8shark/internal/archive) - B/op",
+            "value": 18911609,
+            "unit": "B/op",
+            "extra": "34 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/500_records (github.com/phenixblue/k8shark/internal/archive) - allocs/op",
+            "value": 32414,
+            "unit": "allocs/op",
+            "extra": "34 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/500_records (github.com/phenixblue/k8shark/internal/archive)",
+            "value": 30334275,
+            "unit": "ns/op\t18910911 B/op\t   32413 allocs/op",
+            "extra": "37 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/500_records (github.com/phenixblue/k8shark/internal/archive) - ns/op",
+            "value": 30334275,
+            "unit": "ns/op",
+            "extra": "37 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/500_records (github.com/phenixblue/k8shark/internal/archive) - B/op",
+            "value": 18910911,
+            "unit": "B/op",
+            "extra": "37 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkStreamWriter_RoundTrip/500_records (github.com/phenixblue/k8shark/internal/archive) - allocs/op",
+            "value": 32413,
+            "unit": "allocs/op",
+            "extra": "37 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkNDJSONWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive)",
+            "value": 2702,
+            "unit": "ns/op\t    2076 B/op\t      27 allocs/op",
+            "extra": "392038 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkNDJSONWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive) - ns/op",
+            "value": 2702,
+            "unit": "ns/op",
+            "extra": "392038 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkNDJSONWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive) - B/op",
+            "value": 2076,
+            "unit": "B/op",
+            "extra": "392038 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkNDJSONWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive) - allocs/op",
+            "value": 27,
+            "unit": "allocs/op",
+            "extra": "392038 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkNDJSONWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive)",
+            "value": 2691,
+            "unit": "ns/op\t    2048 B/op\t      27 allocs/op",
+            "extra": "408774 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkNDJSONWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive) - ns/op",
+            "value": 2691,
+            "unit": "ns/op",
+            "extra": "408774 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkNDJSONWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive) - B/op",
+            "value": 2048,
+            "unit": "B/op",
+            "extra": "408774 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkNDJSONWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive) - allocs/op",
+            "value": 27,
+            "unit": "allocs/op",
+            "extra": "408774 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkNDJSONWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive)",
+            "value": 2674,
+            "unit": "ns/op\t    2092 B/op\t      27 allocs/op",
+            "extra": "383164 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkNDJSONWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive) - ns/op",
+            "value": 2674,
+            "unit": "ns/op",
+            "extra": "383164 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkNDJSONWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive) - B/op",
+            "value": 2092,
+            "unit": "B/op",
+            "extra": "383164 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkNDJSONWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive) - allocs/op",
+            "value": 27,
+            "unit": "allocs/op",
+            "extra": "383164 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkNDJSONWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive)",
+            "value": 2685,
+            "unit": "ns/op\t    2046 B/op\t      27 allocs/op",
+            "extra": "410044 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkNDJSONWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive) - ns/op",
+            "value": 2685,
+            "unit": "ns/op",
+            "extra": "410044 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkNDJSONWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive) - B/op",
+            "value": 2046,
+            "unit": "B/op",
+            "extra": "410044 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkNDJSONWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive) - allocs/op",
+            "value": 27,
+            "unit": "allocs/op",
+            "extra": "410044 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkNDJSONWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive)",
+            "value": 2706,
+            "unit": "ns/op\t    2053 B/op\t      27 allocs/op",
+            "extra": "405720 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkNDJSONWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive) - ns/op",
+            "value": 2706,
+            "unit": "ns/op",
+            "extra": "405720 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkNDJSONWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive) - B/op",
+            "value": 2053,
+            "unit": "B/op",
+            "extra": "405720 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkNDJSONWriter_WriteRecord (github.com/phenixblue/k8shark/internal/archive) - allocs/op",
+            "value": 27,
+            "unit": "allocs/op",
+            "extra": "405720 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToArchive (github.com/phenixblue/k8shark/internal/capture)",
+            "value": 501194128,
+            "unit": "ns/op\t 1254744 B/op\t    3557 allocs/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToArchive (github.com/phenixblue/k8shark/internal/capture) - ns/op",
+            "value": 501194128,
+            "unit": "ns/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToArchive (github.com/phenixblue/k8shark/internal/capture) - B/op",
+            "value": 1254744,
+            "unit": "B/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToArchive (github.com/phenixblue/k8shark/internal/capture) - allocs/op",
+            "value": 3557,
+            "unit": "allocs/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToArchive (github.com/phenixblue/k8shark/internal/capture)",
+            "value": 501113796,
+            "unit": "ns/op\t 1246620 B/op\t    3539 allocs/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToArchive (github.com/phenixblue/k8shark/internal/capture) - ns/op",
+            "value": 501113796,
+            "unit": "ns/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToArchive (github.com/phenixblue/k8shark/internal/capture) - B/op",
+            "value": 1246620,
+            "unit": "B/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToArchive (github.com/phenixblue/k8shark/internal/capture) - allocs/op",
+            "value": 3539,
+            "unit": "allocs/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToArchive (github.com/phenixblue/k8shark/internal/capture)",
+            "value": 501237694,
+            "unit": "ns/op\t 1251660 B/op\t    3540 allocs/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToArchive (github.com/phenixblue/k8shark/internal/capture) - ns/op",
+            "value": 501237694,
+            "unit": "ns/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToArchive (github.com/phenixblue/k8shark/internal/capture) - B/op",
+            "value": 1251660,
+            "unit": "B/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToArchive (github.com/phenixblue/k8shark/internal/capture) - allocs/op",
+            "value": 3540,
+            "unit": "allocs/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToArchive (github.com/phenixblue/k8shark/internal/capture)",
+            "value": 500866336,
+            "unit": "ns/op\t 1252556 B/op\t    3546 allocs/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToArchive (github.com/phenixblue/k8shark/internal/capture) - ns/op",
+            "value": 500866336,
+            "unit": "ns/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToArchive (github.com/phenixblue/k8shark/internal/capture) - B/op",
+            "value": 1252556,
+            "unit": "B/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToArchive (github.com/phenixblue/k8shark/internal/capture) - allocs/op",
+            "value": 3546,
+            "unit": "allocs/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToArchive (github.com/phenixblue/k8shark/internal/capture)",
+            "value": 500944582,
+            "unit": "ns/op\t 1245616 B/op\t    3537 allocs/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToArchive (github.com/phenixblue/k8shark/internal/capture) - ns/op",
+            "value": 500944582,
+            "unit": "ns/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToArchive (github.com/phenixblue/k8shark/internal/capture) - B/op",
+            "value": 1245616,
+            "unit": "B/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToArchive (github.com/phenixblue/k8shark/internal/capture) - allocs/op",
+            "value": 3537,
+            "unit": "allocs/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToNDJSON (github.com/phenixblue/k8shark/internal/capture)",
+            "value": 500969979,
+            "unit": "ns/op\t  419584 B/op\t    3324 allocs/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToNDJSON (github.com/phenixblue/k8shark/internal/capture) - ns/op",
+            "value": 500969979,
+            "unit": "ns/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToNDJSON (github.com/phenixblue/k8shark/internal/capture) - B/op",
+            "value": 419584,
+            "unit": "B/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToNDJSON (github.com/phenixblue/k8shark/internal/capture) - allocs/op",
+            "value": 3324,
+            "unit": "allocs/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToNDJSON (github.com/phenixblue/k8shark/internal/capture)",
+            "value": 500886265,
+            "unit": "ns/op\t  432532 B/op\t    3352 allocs/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToNDJSON (github.com/phenixblue/k8shark/internal/capture) - ns/op",
+            "value": 500886265,
+            "unit": "ns/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToNDJSON (github.com/phenixblue/k8shark/internal/capture) - B/op",
+            "value": 432532,
+            "unit": "B/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToNDJSON (github.com/phenixblue/k8shark/internal/capture) - allocs/op",
+            "value": 3352,
+            "unit": "allocs/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToNDJSON (github.com/phenixblue/k8shark/internal/capture)",
+            "value": 501265652,
+            "unit": "ns/op\t  425328 B/op\t    3332 allocs/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToNDJSON (github.com/phenixblue/k8shark/internal/capture) - ns/op",
+            "value": 501265652,
+            "unit": "ns/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToNDJSON (github.com/phenixblue/k8shark/internal/capture) - B/op",
+            "value": 425328,
+            "unit": "B/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToNDJSON (github.com/phenixblue/k8shark/internal/capture) - allocs/op",
+            "value": 3332,
+            "unit": "allocs/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToNDJSON (github.com/phenixblue/k8shark/internal/capture)",
+            "value": 500921284,
+            "unit": "ns/op\t  420360 B/op\t    3330 allocs/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToNDJSON (github.com/phenixblue/k8shark/internal/capture) - ns/op",
+            "value": 500921284,
+            "unit": "ns/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToNDJSON (github.com/phenixblue/k8shark/internal/capture) - B/op",
+            "value": 420360,
+            "unit": "B/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToNDJSON (github.com/phenixblue/k8shark/internal/capture) - allocs/op",
+            "value": 3330,
+            "unit": "allocs/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToNDJSON (github.com/phenixblue/k8shark/internal/capture)",
+            "value": 500999320,
+            "unit": "ns/op\t  422772 B/op\t    3325 allocs/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToNDJSON (github.com/phenixblue/k8shark/internal/capture) - ns/op",
+            "value": 500999320,
+            "unit": "ns/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToNDJSON (github.com/phenixblue/k8shark/internal/capture) - B/op",
+            "value": 422772,
+            "unit": "B/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkEngine_CaptureToNDJSON (github.com/phenixblue/k8shark/internal/capture) - allocs/op",
+            "value": 3325,
+            "unit": "allocs/op",
+            "extra": "2 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList (github.com/phenixblue/k8shark/internal/server)",
+            "value": 13876,
+            "unit": "ns/op\t    2864 B/op\t      32 allocs/op",
+            "extra": "88261 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList (github.com/phenixblue/k8shark/internal/server) - ns/op",
+            "value": 13876,
+            "unit": "ns/op",
+            "extra": "88261 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList (github.com/phenixblue/k8shark/internal/server) - B/op",
+            "value": 2864,
+            "unit": "B/op",
+            "extra": "88261 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList (github.com/phenixblue/k8shark/internal/server) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "88261 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList (github.com/phenixblue/k8shark/internal/server)",
+            "value": 13518,
+            "unit": "ns/op\t    2864 B/op\t      32 allocs/op",
+            "extra": "87780 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList (github.com/phenixblue/k8shark/internal/server) - ns/op",
+            "value": 13518,
+            "unit": "ns/op",
+            "extra": "87780 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList (github.com/phenixblue/k8shark/internal/server) - B/op",
+            "value": 2864,
+            "unit": "B/op",
+            "extra": "87780 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList (github.com/phenixblue/k8shark/internal/server) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "87780 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList (github.com/phenixblue/k8shark/internal/server)",
+            "value": 13492,
+            "unit": "ns/op\t    2864 B/op\t      32 allocs/op",
+            "extra": "87285 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList (github.com/phenixblue/k8shark/internal/server) - ns/op",
+            "value": 13492,
+            "unit": "ns/op",
+            "extra": "87285 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList (github.com/phenixblue/k8shark/internal/server) - B/op",
+            "value": 2864,
+            "unit": "B/op",
+            "extra": "87285 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList (github.com/phenixblue/k8shark/internal/server) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "87285 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList (github.com/phenixblue/k8shark/internal/server)",
+            "value": 13564,
+            "unit": "ns/op\t    2864 B/op\t      32 allocs/op",
+            "extra": "87442 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList (github.com/phenixblue/k8shark/internal/server) - ns/op",
+            "value": 13564,
+            "unit": "ns/op",
+            "extra": "87442 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList (github.com/phenixblue/k8shark/internal/server) - B/op",
+            "value": 2864,
+            "unit": "B/op",
+            "extra": "87442 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList (github.com/phenixblue/k8shark/internal/server) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "87442 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList (github.com/phenixblue/k8shark/internal/server)",
+            "value": 13615,
+            "unit": "ns/op\t    2864 B/op\t      32 allocs/op",
+            "extra": "87649 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList (github.com/phenixblue/k8shark/internal/server) - ns/op",
+            "value": 13615,
+            "unit": "ns/op",
+            "extra": "87649 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList (github.com/phenixblue/k8shark/internal/server) - B/op",
+            "value": 2864,
+            "unit": "B/op",
+            "extra": "87649 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList (github.com/phenixblue/k8shark/internal/server) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "87649 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_10_paths (github.com/phenixblue/k8shark/internal/server)",
+            "value": 13724,
+            "unit": "ns/op\t    2912 B/op\t      32 allocs/op",
+            "extra": "87135 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_10_paths (github.com/phenixblue/k8shark/internal/server) - ns/op",
+            "value": 13724,
+            "unit": "ns/op",
+            "extra": "87135 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_10_paths (github.com/phenixblue/k8shark/internal/server) - B/op",
+            "value": 2912,
+            "unit": "B/op",
+            "extra": "87135 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_10_paths (github.com/phenixblue/k8shark/internal/server) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "87135 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_10_paths (github.com/phenixblue/k8shark/internal/server)",
+            "value": 13525,
+            "unit": "ns/op\t    2896 B/op\t      32 allocs/op",
+            "extra": "86451 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_10_paths (github.com/phenixblue/k8shark/internal/server) - ns/op",
+            "value": 13525,
+            "unit": "ns/op",
+            "extra": "86451 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_10_paths (github.com/phenixblue/k8shark/internal/server) - B/op",
+            "value": 2896,
+            "unit": "B/op",
+            "extra": "86451 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_10_paths (github.com/phenixblue/k8shark/internal/server) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "86451 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_10_paths (github.com/phenixblue/k8shark/internal/server)",
+            "value": 13643,
+            "unit": "ns/op\t    2912 B/op\t      32 allocs/op",
+            "extra": "87890 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_10_paths (github.com/phenixblue/k8shark/internal/server) - ns/op",
+            "value": 13643,
+            "unit": "ns/op",
+            "extra": "87890 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_10_paths (github.com/phenixblue/k8shark/internal/server) - B/op",
+            "value": 2912,
+            "unit": "B/op",
+            "extra": "87890 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_10_paths (github.com/phenixblue/k8shark/internal/server) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "87890 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_10_paths (github.com/phenixblue/k8shark/internal/server)",
+            "value": 13610,
+            "unit": "ns/op\t    2896 B/op\t      32 allocs/op",
+            "extra": "86739 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_10_paths (github.com/phenixblue/k8shark/internal/server) - ns/op",
+            "value": 13610,
+            "unit": "ns/op",
+            "extra": "86739 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_10_paths (github.com/phenixblue/k8shark/internal/server) - B/op",
+            "value": 2896,
+            "unit": "B/op",
+            "extra": "86739 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_10_paths (github.com/phenixblue/k8shark/internal/server) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "86739 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_10_paths (github.com/phenixblue/k8shark/internal/server)",
+            "value": 13633,
+            "unit": "ns/op\t    2912 B/op\t      32 allocs/op",
+            "extra": "88143 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_10_paths (github.com/phenixblue/k8shark/internal/server) - ns/op",
+            "value": 13633,
+            "unit": "ns/op",
+            "extra": "88143 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_10_paths (github.com/phenixblue/k8shark/internal/server) - B/op",
+            "value": 2912,
+            "unit": "B/op",
+            "extra": "88143 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_10_paths (github.com/phenixblue/k8shark/internal/server) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "88143 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_100_paths (github.com/phenixblue/k8shark/internal/server)",
+            "value": 13567,
+            "unit": "ns/op\t    2912 B/op\t      32 allocs/op",
+            "extra": "86443 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_100_paths (github.com/phenixblue/k8shark/internal/server) - ns/op",
+            "value": 13567,
+            "unit": "ns/op",
+            "extra": "86443 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_100_paths (github.com/phenixblue/k8shark/internal/server) - B/op",
+            "value": 2912,
+            "unit": "B/op",
+            "extra": "86443 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_100_paths (github.com/phenixblue/k8shark/internal/server) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "86443 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_100_paths (github.com/phenixblue/k8shark/internal/server)",
+            "value": 13541,
+            "unit": "ns/op\t    2912 B/op\t      32 allocs/op",
+            "extra": "86835 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_100_paths (github.com/phenixblue/k8shark/internal/server) - ns/op",
+            "value": 13541,
+            "unit": "ns/op",
+            "extra": "86835 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_100_paths (github.com/phenixblue/k8shark/internal/server) - B/op",
+            "value": 2912,
+            "unit": "B/op",
+            "extra": "86835 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_100_paths (github.com/phenixblue/k8shark/internal/server) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "86835 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_100_paths (github.com/phenixblue/k8shark/internal/server)",
+            "value": 13666,
+            "unit": "ns/op\t    2896 B/op\t      32 allocs/op",
+            "extra": "88149 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_100_paths (github.com/phenixblue/k8shark/internal/server) - ns/op",
+            "value": 13666,
+            "unit": "ns/op",
+            "extra": "88149 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_100_paths (github.com/phenixblue/k8shark/internal/server) - B/op",
+            "value": 2896,
+            "unit": "B/op",
+            "extra": "88149 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_100_paths (github.com/phenixblue/k8shark/internal/server) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "88149 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_100_paths (github.com/phenixblue/k8shark/internal/server)",
+            "value": 13754,
+            "unit": "ns/op\t    2928 B/op\t      32 allocs/op",
+            "extra": "88202 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_100_paths (github.com/phenixblue/k8shark/internal/server) - ns/op",
+            "value": 13754,
+            "unit": "ns/op",
+            "extra": "88202 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_100_paths (github.com/phenixblue/k8shark/internal/server) - B/op",
+            "value": 2928,
+            "unit": "B/op",
+            "extra": "88202 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_100_paths (github.com/phenixblue/k8shark/internal/server) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "88202 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_100_paths (github.com/phenixblue/k8shark/internal/server)",
+            "value": 13586,
+            "unit": "ns/op\t    2928 B/op\t      32 allocs/op",
+            "extra": "88274 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_100_paths (github.com/phenixblue/k8shark/internal/server) - ns/op",
+            "value": 13586,
+            "unit": "ns/op",
+            "extra": "88274 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_100_paths (github.com/phenixblue/k8shark/internal/server) - B/op",
+            "value": 2928,
+            "unit": "B/op",
+            "extra": "88274 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_100_paths (github.com/phenixblue/k8shark/internal/server) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "88274 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_500_paths (github.com/phenixblue/k8shark/internal/server)",
+            "value": 13639,
+            "unit": "ns/op\t    2928 B/op\t      32 allocs/op",
+            "extra": "87658 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_500_paths (github.com/phenixblue/k8shark/internal/server) - ns/op",
+            "value": 13639,
+            "unit": "ns/op",
+            "extra": "87658 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_500_paths (github.com/phenixblue/k8shark/internal/server) - B/op",
+            "value": 2928,
+            "unit": "B/op",
+            "extra": "87658 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_500_paths (github.com/phenixblue/k8shark/internal/server) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "87658 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_500_paths (github.com/phenixblue/k8shark/internal/server)",
+            "value": 13528,
+            "unit": "ns/op\t    2912 B/op\t      32 allocs/op",
+            "extra": "86236 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_500_paths (github.com/phenixblue/k8shark/internal/server) - ns/op",
+            "value": 13528,
+            "unit": "ns/op",
+            "extra": "86236 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_500_paths (github.com/phenixblue/k8shark/internal/server) - B/op",
+            "value": 2912,
+            "unit": "B/op",
+            "extra": "86236 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_500_paths (github.com/phenixblue/k8shark/internal/server) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "86236 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_500_paths (github.com/phenixblue/k8shark/internal/server)",
+            "value": 13688,
+            "unit": "ns/op\t    2928 B/op\t      32 allocs/op",
+            "extra": "85594 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_500_paths (github.com/phenixblue/k8shark/internal/server) - ns/op",
+            "value": 13688,
+            "unit": "ns/op",
+            "extra": "85594 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_500_paths (github.com/phenixblue/k8shark/internal/server) - B/op",
+            "value": 2928,
+            "unit": "B/op",
+            "extra": "85594 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_500_paths (github.com/phenixblue/k8shark/internal/server) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "85594 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_500_paths (github.com/phenixblue/k8shark/internal/server)",
+            "value": 13559,
+            "unit": "ns/op\t    2928 B/op\t      32 allocs/op",
+            "extra": "87986 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_500_paths (github.com/phenixblue/k8shark/internal/server) - ns/op",
+            "value": 13559,
+            "unit": "ns/op",
+            "extra": "87986 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_500_paths (github.com/phenixblue/k8shark/internal/server) - B/op",
+            "value": 2928,
+            "unit": "B/op",
+            "extra": "87986 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_500_paths (github.com/phenixblue/k8shark/internal/server) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "87986 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_500_paths (github.com/phenixblue/k8shark/internal/server)",
+            "value": 13642,
+            "unit": "ns/op\t    2928 B/op\t      32 allocs/op",
+            "extra": "89113 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_500_paths (github.com/phenixblue/k8shark/internal/server) - ns/op",
+            "value": 13642,
+            "unit": "ns/op",
+            "extra": "89113 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_500_paths (github.com/phenixblue/k8shark/internal/server) - B/op",
+            "value": 2928,
+            "unit": "B/op",
+            "extra": "89113 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetList_LargeStore/store_500_paths (github.com/phenixblue/k8shark/internal/server) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "89113 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetVersion (github.com/phenixblue/k8shark/internal/server)",
+            "value": 3854,
+            "unit": "ns/op\t    2848 B/op\t      38 allocs/op",
+            "extra": "290778 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetVersion (github.com/phenixblue/k8shark/internal/server) - ns/op",
+            "value": 3854,
+            "unit": "ns/op",
+            "extra": "290778 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetVersion (github.com/phenixblue/k8shark/internal/server) - B/op",
+            "value": 2848,
+            "unit": "B/op",
+            "extra": "290778 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetVersion (github.com/phenixblue/k8shark/internal/server) - allocs/op",
+            "value": 38,
+            "unit": "allocs/op",
+            "extra": "290778 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetVersion (github.com/phenixblue/k8shark/internal/server)",
+            "value": 3846,
+            "unit": "ns/op\t    2848 B/op\t      38 allocs/op",
+            "extra": "308143 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetVersion (github.com/phenixblue/k8shark/internal/server) - ns/op",
+            "value": 3846,
+            "unit": "ns/op",
+            "extra": "308143 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetVersion (github.com/phenixblue/k8shark/internal/server) - B/op",
+            "value": 2848,
+            "unit": "B/op",
+            "extra": "308143 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetVersion (github.com/phenixblue/k8shark/internal/server) - allocs/op",
+            "value": 38,
+            "unit": "allocs/op",
+            "extra": "308143 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetVersion (github.com/phenixblue/k8shark/internal/server)",
+            "value": 3833,
+            "unit": "ns/op\t    2848 B/op\t      38 allocs/op",
+            "extra": "304345 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetVersion (github.com/phenixblue/k8shark/internal/server) - ns/op",
+            "value": 3833,
+            "unit": "ns/op",
+            "extra": "304345 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetVersion (github.com/phenixblue/k8shark/internal/server) - B/op",
+            "value": 2848,
+            "unit": "B/op",
+            "extra": "304345 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetVersion (github.com/phenixblue/k8shark/internal/server) - allocs/op",
+            "value": 38,
+            "unit": "allocs/op",
+            "extra": "304345 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetVersion (github.com/phenixblue/k8shark/internal/server)",
+            "value": 3843,
+            "unit": "ns/op\t    2848 B/op\t      38 allocs/op",
+            "extra": "298213 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetVersion (github.com/phenixblue/k8shark/internal/server) - ns/op",
+            "value": 3843,
+            "unit": "ns/op",
+            "extra": "298213 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetVersion (github.com/phenixblue/k8shark/internal/server) - B/op",
+            "value": 2848,
+            "unit": "B/op",
+            "extra": "298213 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetVersion (github.com/phenixblue/k8shark/internal/server) - allocs/op",
+            "value": 38,
+            "unit": "allocs/op",
+            "extra": "298213 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetVersion (github.com/phenixblue/k8shark/internal/server)",
+            "value": 3826,
+            "unit": "ns/op\t    2848 B/op\t      38 allocs/op",
+            "extra": "304394 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetVersion (github.com/phenixblue/k8shark/internal/server) - ns/op",
+            "value": 3826,
+            "unit": "ns/op",
+            "extra": "304394 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetVersion (github.com/phenixblue/k8shark/internal/server) - B/op",
+            "value": 2848,
+            "unit": "B/op",
+            "extra": "304394 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_GetVersion (github.com/phenixblue/k8shark/internal/server) - allocs/op",
+            "value": 38,
+            "unit": "allocs/op",
+            "extra": "304394 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_NotFound (github.com/phenixblue/k8shark/internal/server)",
+            "value": 5716,
+            "unit": "ns/op\t    5330 B/op\t      46 allocs/op",
+            "extra": "207357 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_NotFound (github.com/phenixblue/k8shark/internal/server) - ns/op",
+            "value": 5716,
+            "unit": "ns/op",
+            "extra": "207357 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_NotFound (github.com/phenixblue/k8shark/internal/server) - B/op",
+            "value": 5330,
+            "unit": "B/op",
+            "extra": "207357 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_NotFound (github.com/phenixblue/k8shark/internal/server) - allocs/op",
+            "value": 46,
+            "unit": "allocs/op",
+            "extra": "207357 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_NotFound (github.com/phenixblue/k8shark/internal/server)",
+            "value": 5710,
+            "unit": "ns/op\t    5330 B/op\t      46 allocs/op",
+            "extra": "202502 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_NotFound (github.com/phenixblue/k8shark/internal/server) - ns/op",
+            "value": 5710,
+            "unit": "ns/op",
+            "extra": "202502 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_NotFound (github.com/phenixblue/k8shark/internal/server) - B/op",
+            "value": 5330,
+            "unit": "B/op",
+            "extra": "202502 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_NotFound (github.com/phenixblue/k8shark/internal/server) - allocs/op",
+            "value": 46,
+            "unit": "allocs/op",
+            "extra": "202502 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_NotFound (github.com/phenixblue/k8shark/internal/server)",
+            "value": 5665,
+            "unit": "ns/op\t    5330 B/op\t      46 allocs/op",
+            "extra": "205420 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_NotFound (github.com/phenixblue/k8shark/internal/server) - ns/op",
+            "value": 5665,
+            "unit": "ns/op",
+            "extra": "205420 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_NotFound (github.com/phenixblue/k8shark/internal/server) - B/op",
+            "value": 5330,
+            "unit": "B/op",
+            "extra": "205420 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_NotFound (github.com/phenixblue/k8shark/internal/server) - allocs/op",
+            "value": 46,
+            "unit": "allocs/op",
+            "extra": "205420 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_NotFound (github.com/phenixblue/k8shark/internal/server)",
+            "value": 5723,
+            "unit": "ns/op\t    5330 B/op\t      46 allocs/op",
+            "extra": "207421 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_NotFound (github.com/phenixblue/k8shark/internal/server) - ns/op",
+            "value": 5723,
+            "unit": "ns/op",
+            "extra": "207421 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_NotFound (github.com/phenixblue/k8shark/internal/server) - B/op",
+            "value": 5330,
+            "unit": "B/op",
+            "extra": "207421 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_NotFound (github.com/phenixblue/k8shark/internal/server) - allocs/op",
+            "value": 46,
+            "unit": "allocs/op",
+            "extra": "207421 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_NotFound (github.com/phenixblue/k8shark/internal/server)",
+            "value": 5723,
+            "unit": "ns/op\t    5330 B/op\t      46 allocs/op",
+            "extra": "209457 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_NotFound (github.com/phenixblue/k8shark/internal/server) - ns/op",
+            "value": 5723,
+            "unit": "ns/op",
+            "extra": "209457 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_NotFound (github.com/phenixblue/k8shark/internal/server) - B/op",
+            "value": 5330,
+            "unit": "B/op",
+            "extra": "209457 times\n4 procs"
+          },
+          {
+            "name": "BenchmarkHandler_NotFound (github.com/phenixblue/k8shark/internal/server) - allocs/op",
+            "value": 46,
+            "unit": "allocs/op",
+            "extra": "209457 times\n4 procs"
           }
         ]
       }
