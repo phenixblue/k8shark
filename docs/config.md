@@ -21,6 +21,7 @@ k8shark reads a YAML config file that controls what gets captured, from which na
 | `namespaces` | list of strings | no | Namespaces to poll. **Omit entirely for cluster-scoped resources** (nodes, persistentvolumes, storageclasses, etc.). |
 | `interval` | duration string | `30s` | How often to re-poll this resource during the capture window. |
 | `dedup` | bool | `true` | Skip writing a record when the response body is identical to the previous poll for the same API path. Set `false` to force writing every poll. |
+| `watch` | bool | `false` | Start a Kubernetes watch stream (`?watch=1`) for this resource in addition to polling. Watch events are recorded with an `event_type` field. |
 
 ### Namespaced vs. cluster-scoped resources
 
@@ -63,6 +64,27 @@ Use `dedup: false` on a resource when every poll must be preserved:
   interval: 10s
   dedup: false
 ```
+
+### Watch streaming alongside polling
+
+Set `watch: true` to supplement polling with watch events. This captures
+short-lived changes that may occur between poll intervals.
+
+```yaml
+- group: ""
+  version: v1
+  resource: pods
+  namespaces: [default]
+  interval: 30s
+  watch: true
+```
+
+Behavior:
+
+- poll-based capture remains active (first poll + interval polling)
+- watch events are recorded with `event_type` values such as `ADDED`,
+  `MODIFIED`, and `DELETED`
+- watch streams reconnect automatically when disconnected
 
 ## Example configs
 
