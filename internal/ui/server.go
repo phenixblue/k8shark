@@ -927,6 +927,9 @@ const indexHTML = `<!doctype html>
 		.toast { pointer-events:auto; max-width:420px; border:1px solid #334155; border-radius:8px; padding:10px 12px; background:rgba(15,23,42,.92); box-shadow:0 8px 28px rgba(2,6,23,.45); font-size:13px; }
 		.toast.error { border-color:rgba(239,68,68,.55); color:#fecaca; }
 		.toast.info { border-color:rgba(59,130,246,.55); color:#bfdbfe; }
+		.ns-pager { margin:6px 10px 10px; display:flex; align-items:center; gap:8px; }
+		.ns-pager button { padding:3px 8px; border-radius:6px; border:1px solid #334155; background:#0f172a; color:#cbd5e1; font-size:11px; cursor:pointer; }
+		.ns-pager button:hover { border-color:#64748b; }
   </style>
 </head>
 <body>
@@ -974,6 +977,8 @@ const indexHTML = `<!doctype html>
     let activeTab = 'json';
 	let visibleNodes = [];
 	let activeNodeIdx = -1;
+	const namespacePageSize = 120;
+	let namespaceVisibleLimit = {};
 
     const el = {
       tree: document.getElementById('tree'),
@@ -1016,6 +1021,16 @@ const indexHTML = `<!doctype html>
 			box.className = 'tree-state ' + type;
 			box.textContent = message;
 			el.tree.appendChild(box);
+		}
+
+		function namespaceLimit(name) {
+			if (!namespaceVisibleLimit[name]) namespaceVisibleLimit[name] = namespacePageSize;
+			return namespaceVisibleLimit[name];
+		}
+
+		function showMoreNamespace(name) {
+			namespaceVisibleLimit[name] = namespaceLimit(name) + namespacePageSize;
+			render();
 		}
 
 		function showToast(type, message, timeoutMs) {
@@ -1169,40 +1184,58 @@ const indexHTML = `<!doctype html>
 				const nsCount = (ns.workloads || []).length + (ns.pods || []).length + (ns.resources || []).length;
 				ds.innerHTML = '<summary>Namespace: <strong>' + ns.name + '</strong> <span class="muted">(' + nsCount + ')</span></summary>';
 
+				const nsNodes = [];
+
 			for (const w of (ns.workloads || [])) {
           if (!kindEnabled(w.kind) || !nodeMatches(w, q)) continue;
-					ds.appendChild(mkNode(w, ['Cluster', ns.name, w.kind, w.name], 0, ''));
-					renderedNodes++;
+					nsNodes.push(mkNode(w, ['Cluster', ns.name, w.kind, w.name], 0, ''));
           for (const p of (w.pods || [])) {
             if (!kindEnabled(p.kind) || !nodeMatches(p, q)) continue;
-						ds.appendChild(mkNode(p, ['Cluster', ns.name, w.kind, w.name, 'Pod', p.name], 1, ''));
-						renderedNodes++;
+						nsNodes.push(mkNode(p, ['Cluster', ns.name, w.kind, w.name, 'Pod', p.name], 1, ''));
             for (const c of (p.containers || [])) {
               const fake = {kind:'Container',name:c.name,status:'',age:'',labels:{},list_path:p.list_path};
               if (!kindEnabled('Container') || !nodeMatches(fake, q)) continue;
-							ds.appendChild(mkNode(fake, ['Cluster', ns.name, w.kind, w.name, 'Pod', p.name, 'Container', c.name], 2, ''));
-							renderedNodes++;
+							nsNodes.push(mkNode(fake, ['Cluster', ns.name, w.kind, w.name, 'Pod', p.name, 'Container', c.name], 2, ''));
             }
           }
         }
 
 			for (const p of (ns.pods || [])) {
           if (!kindEnabled(p.kind) || !nodeMatches(p, q)) continue;
-					ds.appendChild(mkNode(p, ['Cluster', ns.name, 'Pod', p.name], 0, ''));
-					renderedNodes++;
+					nsNodes.push(mkNode(p, ['Cluster', ns.name, 'Pod', p.name], 0, ''));
           for (const c of (p.containers || [])) {
             const fake = {kind:'Container',name:c.name,status:'',age:'',labels:{},list_path:p.list_path};
             if (!kindEnabled('Container') || !nodeMatches(fake, q)) continue;
-						ds.appendChild(mkNode(fake, ['Cluster', ns.name, 'Pod', p.name, 'Container', c.name], 1, ''));
-						renderedNodes++;
+						nsNodes.push(mkNode(fake, ['Cluster', ns.name, 'Pod', p.name, 'Container', c.name], 1, ''));
           }
         }
 
 			for (const r of (ns.resources || [])) {
           if (!kindEnabled(r.kind) || !nodeMatches(r, q)) continue;
-					ds.appendChild(mkNode(r, ['Cluster', ns.name, r.kind, r.name], 0, ''));
-					renderedNodes++;
+					nsNodes.push(mkNode(r, ['Cluster', ns.name, r.kind, r.name], 0, ''));
         }
+
+				const limit = q ? nsNodes.length : namespaceLimit(ns.name);
+				const shown = nsNodes.slice(0, limit);
+				for (const nodeEl of shown) {
+					ds.appendChild(nodeEl);
+					renderedNodes++;
+				}
+				if (!q && nsNodes.length > shown.length) {
+					const pager = document.createElement('div');
+					pager.className = 'ns-pager';
+					const hidden = nsNodes.length - shown.length;
+					const meta = document.createElement('span');
+					meta.className = 'muted';
+					meta.textContent = hidden + ' more hidden';
+					const btn = document.createElement('button');
+					btn.type = 'button';
+					btn.textContent = 'Show more';
+					btn.onclick = () => showMoreNamespace(ns.name);
+					pager.appendChild(meta);
+					pager.appendChild(btn);
+					ds.appendChild(pager);
+				}
         el.tree.appendChild(ds);
       }
 
