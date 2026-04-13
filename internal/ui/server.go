@@ -916,6 +916,8 @@ const indexHTML = `<!doctype html>
     .warn { background:rgba(245,158,11,.2); color:#fcd34d; }
     .bad { background:rgba(220,38,38,.2); color:#fca5a5; }
     .detail { padding:12px; background:rgba(17,24,39,.9); }
+	.detail-summary { display:flex; flex-wrap:wrap; gap:6px; margin:8px 0 10px; }
+	.summary-chip { font-size:11px; line-height:1; padding:5px 8px; border-radius:999px; border:1px solid #334155; color:#cbd5e1; background:#0f172a; }
 	.tree-state { margin:8px; padding:10px 12px; border-radius:8px; border:1px solid #334155; background:rgba(15,23,42,.7); }
 	.tree-state.error { border-color:rgba(220,38,38,.55); color:#fecaca; background:rgba(127,29,29,.25); }
 	.tree-state.empty { border-color:rgba(148,163,184,.45); color:#cbd5e1; }
@@ -962,6 +964,7 @@ const indexHTML = `<!doctype html>
     </main>
     <section class="detail">
       <h3 id="detailTitle">Select a resource</h3>
+			<div id="detailSummary" class="detail-summary"></div>
       <div class="tabs">
         <button id="tabJson" class="active">JSON</button>
         <button id="tabYaml">YAML</button>
@@ -990,6 +993,7 @@ const indexHTML = `<!doctype html>
       crumbs: document.getElementById('crumbs'),
       meta: document.getElementById('meta'),
       detailTitle: document.getElementById('detailTitle'),
+	detailSummary: document.getElementById('detailSummary'),
       detailBody: document.getElementById('detailBody'),
       tabJson: document.getElementById('tabJson'),
 			tabYaml: document.getElementById('tabYaml'),
@@ -1043,6 +1047,34 @@ const indexHTML = `<!doctype html>
 			el.toasts.appendChild(toast);
 			const ttl = timeoutMs || (type === 'error' ? 7000 : 3000);
 			window.setTimeout(() => toast.remove(), ttl);
+		}
+
+		function updateDetailSummary(data, node) {
+			el.detailSummary.innerHTML = '';
+			if (!data || !data.json) return;
+			let obj = null;
+			try {
+				obj = JSON.parse(data.json);
+			} catch (_) {
+				return;
+			}
+			const meta = obj.metadata || {};
+			const refs = meta.ownerReferences || [];
+			const owner = refs.length > 0 ? (refs[0].kind + '/' + refs[0].name) : '';
+			const labels = meta.labels ? Object.keys(meta.labels).length : 0;
+			const chips = [
+				['kind', obj.kind || node.kind || ''],
+				['name', meta.name || node.name || ''],
+				['ns', meta.namespace || '-'],
+				['labels', String(labels)],
+				['owner', owner || '-']
+			];
+			for (const [k, v] of chips) {
+				const chip = document.createElement('span');
+				chip.className = 'summary-chip';
+				chip.textContent = k + ': ' + v;
+				el.detailSummary.appendChild(chip);
+			}
 		}
 
 		function loadPreferences() {
@@ -1197,9 +1229,11 @@ const indexHTML = `<!doctype html>
 					throw new Error(msg);
 				}
 				selected.detail = data;
+				updateDetailSummary(data, node);
 				el.detailBody.textContent = data[activeTab] || JSON.stringify(data, null, 2);
 			} catch (err) {
 				selected.detail = null;
+				el.detailSummary.innerHTML = '';
 				const msg = (err && err.message ? err.message : String(err));
 				el.detailBody.textContent = 'Failed to load detail: ' + msg;
 				showToast('error', 'Detail request failed: ' + msg);
