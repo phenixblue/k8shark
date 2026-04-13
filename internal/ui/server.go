@@ -891,8 +891,10 @@ const indexHTML = `<!doctype html>
     .crumbs { color:var(--muted); font-size:13px; margin-bottom:8px; }
     details { border:1px solid #1f2937; border-radius:8px; margin-bottom:8px; background:rgba(2,6,23,.45); }
     summary { cursor:pointer; padding:8px 10px; }
-	.node { display:flex; align-items:center; gap:8px; padding:7px 10px; cursor:pointer; border-radius:6px; margin:3px 8px; border:1px solid transparent; }
+	.node { display:flex; align-items:center; gap:8px; padding:7px 10px; cursor:pointer; border-radius:6px; margin:3px 8px; border:1px solid transparent; outline:none; }
     .node:hover { border-color:#334155; background:#0f172a; }
+	.node:focus-visible { border-color:#22c55e; box-shadow:0 0 0 2px rgba(34,197,94,.2); }
+	.node.selected { border-color:#22c55e; background:rgba(34,197,94,.12); }
 	.node-name { font-weight:600; letter-spacing:.1px; }
 	.kind-chip { display:inline-block; min-width:68px; text-align:center; font-size:10px; font-weight:700; letter-spacing:.4px; text-transform:uppercase; padding:2px 6px; border-radius:999px; border:1px solid transparent; }
 	.tone-core { background:rgba(59,130,246,.18); color:#bfdbfe; border-color:rgba(59,130,246,.45); }
@@ -944,6 +946,8 @@ const indexHTML = `<!doctype html>
     let activeKinds = new Set();
     let selected = null;
     let activeTab = 'json';
+	let visibleNodes = [];
+	let activeNodeIdx = -1;
 
     const el = {
       tree: document.getElementById('tree'),
@@ -960,6 +964,7 @@ const indexHTML = `<!doctype html>
     el.tabJson.onclick = () => setTab('json');
     el.tabYaml.onclick = () => setTab('yaml');
     el.search.oninput = render;
+	document.addEventListener('keydown', onTreeKeyDown);
 
     function setTab(tab) {
       activeTab = tab;
@@ -1009,15 +1014,68 @@ const indexHTML = `<!doctype html>
 		function mkNode(node, crumbs, depth, namePrefix) {
       const d = document.createElement('div');
       d.className = 'node';
+			d.tabIndex = 0;
+			d.setAttribute('role', 'button');
 			d.style.paddingLeft = (10 + (depth * 16)) + 'px';
       d.title = [node.kind, node.status, node.age, Object.entries(node.labels || {}).slice(0,5).map(([k,v]) => k + '=' + v).join(', ')].filter(Boolean).join(' | ');
       const badge = node.status ? '<span class="badge ' + statusClass(node.status) + '">' + node.status + '</span>' : '';
 			const kindChip = '<span class="kind-chip ' + kindTone(node.kind) + '">' + (node.kind || 'Resource') + '</span>';
 			const nodeName = '<span class="node-name">' + (namePrefix ? namePrefix + node.name : node.name) + '</span>';
 			d.innerHTML = kindChip + nodeName + badge + (node.age ? ' <span class="muted">' + node.age + '</span>' : '');
-      d.onclick = () => showDetail(node, crumbs);
+			d._node = node;
+			d._crumbs = crumbs;
+      d.onclick = () => activateNodeElement(d, true);
+			d.onkeydown = (ev) => {
+				if (ev.key === 'Enter' || ev.key === ' ') {
+					ev.preventDefault();
+					activateNodeElement(d, false);
+				}
+			};
       return d;
     }
+
+		function clearNodeSelection() {
+			for (const n of visibleNodes) n.classList.remove('selected');
+		}
+
+		function selectNodeAt(index, focusNode) {
+			if (visibleNodes.length === 0) {
+				activeNodeIdx = -1;
+				return;
+			}
+			activeNodeIdx = Math.max(0, Math.min(index, visibleNodes.length - 1));
+			clearNodeSelection();
+			const nodeEl = visibleNodes[activeNodeIdx];
+			nodeEl.classList.add('selected');
+			if (focusNode) nodeEl.focus();
+			nodeEl.scrollIntoView({ block: 'nearest' });
+		}
+
+		function activateNodeElement(nodeEl, keepFocus) {
+			const idx = visibleNodes.indexOf(nodeEl);
+			if (idx >= 0) selectNodeAt(idx, keepFocus);
+			showDetail(nodeEl._node, nodeEl._crumbs);
+		}
+
+		function onTreeKeyDown(ev) {
+			if (visibleNodes.length === 0) return;
+			const tag = (document.activeElement && document.activeElement.tagName) || '';
+			if (tag === 'INPUT' || tag === 'TEXTAREA' || (document.activeElement && document.activeElement.isContentEditable)) return;
+			if (ev.key === 'ArrowDown') {
+				ev.preventDefault();
+				selectNodeAt(activeNodeIdx < 0 ? 0 : activeNodeIdx + 1, true);
+				return;
+			}
+			if (ev.key === 'ArrowUp') {
+				ev.preventDefault();
+				selectNodeAt(activeNodeIdx < 0 ? 0 : activeNodeIdx - 1, true);
+				return;
+			}
+			if ((ev.key === 'Enter' || ev.key === ' ') && activeNodeIdx >= 0) {
+				ev.preventDefault();
+				activateNodeElement(visibleNodes[activeNodeIdx], false);
+			}
+		}
 
     async function showDetail(node, crumbs) {
       selected = { node, crumbs };
@@ -1107,7 +1165,20 @@ const indexHTML = `<!doctype html>
 					? 'No resources match the current search/filter selection.'
 					: 'No resources were found in this capture at the selected time.';
 				setTreeState('empty', msg);
+				visibleNodes = [];
+				activeNodeIdx = -1;
+				return;
 			}
+
+			visibleNodes = Array.from(el.tree.querySelectorAll('.node'));
+			if (visibleNodes.length === 0) {
+				activeNodeIdx = -1;
+				return;
+			}
+			if (activeNodeIdx < 0 || activeNodeIdx >= visibleNodes.length) {
+				activeNodeIdx = 0;
+			}
+			selectNodeAt(activeNodeIdx, false);
     }
 
     function renderToggles(kinds) {
