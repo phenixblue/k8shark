@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/phenixblue/k8shark/internal/archive"
+	"github.com/phenixblue/k8shark/internal/capture"
 )
 
 // OpenOptions holds parameters for opening a capture archive.
@@ -55,13 +56,10 @@ func Open(opts OpenOptions) (*Server, error) {
 	}
 
 	// Parse optional replay timestamp.
-	var at time.Time
-	if opts.At != "" {
-		at, err = time.Parse(time.RFC3339, opts.At)
-		if err != nil {
-			_ = os.RemoveAll(tmpDir)
-			return nil, fmt.Errorf("parsing --at timestamp %q: %w", opts.At, err)
-		}
+	at, err := parseReplayAt(store.Metadata, opts.At)
+	if err != nil {
+		_ = os.RemoveAll(tmpDir)
+		return nil, err
 	}
 
 	// Generate a self-signed TLS certificate.
@@ -153,4 +151,28 @@ func (s *Server) Wait() error {
 	}
 	_ = os.RemoveAll(s.tmpDir)
 	return nil
+}
+
+func parseReplayAt(meta capture.CaptureMetadata, raw string) (time.Time, error) {
+	if raw == "" {
+		return time.Time{}, nil
+	}
+
+	at, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		d, derr := time.ParseDuration(raw)
+		if derr != nil {
+			return time.Time{}, fmt.Errorf("parsing --at %q: must be RFC3339 or a relative duration like -5m", raw)
+		}
+		at = meta.CapturedUntil.Add(d)
+	}
+
+	if !meta.CapturedAt.IsZero() && at.Before(meta.CapturedAt) {
+		return time.Time{}, fmt.Errorf("parsing --at %q: requested replay time %s is before capture start %s", raw, at.Format(time.RFC3339), meta.CapturedAt.Format(time.RFC3339))
+	}
+	if !meta.CapturedUntil.IsZero() && at.After(meta.CapturedUntil) {
+		return time.Time{}, fmt.Errorf("parsing --at %q: requested replay time %s is after capture end %s", raw, at.Format(time.RFC3339), meta.CapturedUntil.Format(time.RFC3339))
+	}
+
+	return at, nil
 }
