@@ -214,6 +214,41 @@ This is useful when you have a long capture (e.g. 1h) and want to compare cluste
 
 ---
 
+## UI
+
+`kshrk ui` starts a local web-based explorer for a capture archive.
+
+```sh
+kshrk ui capture.tar.gz
+```
+
+Example output:
+
+```
+k8shark UI running
+  Address: http://127.0.0.1:53421
+
+Open this URL in your browser. Press Ctrl+C to stop.
+```
+
+### UI features (v1)
+
+- Cluster and namespace drill-down
+- Workload, pod, and container navigation
+- Cluster-scoped resources at top level
+- Sidebar toggles by resource type
+- Search by name or label text
+- Click for detail panel with JSON/YAML views
+
+### UI flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--port` | random | Port for the local UI server |
+| `--at` | latest records | Pin UI data to a specific timestamp (RFC3339 or relative duration) |
+
+---
+
 ## Redact
 
 Secret values can be removed from a capture archive in two ways:
