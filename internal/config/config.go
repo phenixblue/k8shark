@@ -27,6 +27,15 @@ type Resource struct {
 	// resource is "pods". 0 (default) disables log capture. For example, set
 	// logs: 200 to capture the last 200 lines from every pod at capture time.
 	Logs int `mapstructure:"logs"`
+	// Dedup controls response-body deduplication for this resource. Nil means
+	// enabled by default; set dedup: false to force writing every poll.
+	Dedup *bool `mapstructure:"dedup"`
+}
+
+// DedupEnabled reports whether polling responses for this resource should be
+// deduplicated when body bytes are identical to the prior poll.
+func (r Resource) DedupEnabled() bool {
+	return r.Dedup == nil || *r.Dedup
 }
 
 // Config holds the full capture configuration.

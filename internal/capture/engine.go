@@ -2,6 +2,7 @@ package capture
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -39,6 +40,8 @@ type Engine struct {
 	index          Index
 	sink           archive.RecordSink // set by Run(); exposed for tests
 	discoveryCache map[string][]byte  // bodies saved by fetchDiscovery for autoDiscoverResources
+	lastHash       map[string][32]byte
+	dedupSkipped   int
 }
 
 // NewEngine creates a capture Engine from validated config.
@@ -70,6 +73,7 @@ func NewEngine(cfg *config.Config, verbose bool) (*Engine, error) {
 		baseURL:        restCfg.Host,
 		index:          make(Index),
 		discoveryCache: make(map[string][]byte),
+		lastHash:       make(map[string][32]byte),
 	}, nil
 }
 
@@ -83,6 +87,7 @@ func newEngineWith(cfg *config.Config, client *http.Client, baseURL string, verb
 		baseURL:        baseURL,
 		index:          make(Index),
 		discoveryCache: make(map[string][]byte),
+		lastHash:       make(map[string][32]byte),
 	}
 }
 
@@ -163,6 +168,7 @@ func (e *Engine) Run() (*CaptureSummary, error) {
 		KubernetesVersion: kVersion,
 		ServerAddress:     serverAddr,
 		RecordCount:       e.sink.RecordCount(),
+		DeduplicatedCount: e.dedupSkipped,
 	}
 
 	if e.verbose {
@@ -223,13 +229,14 @@ func (e *Engine) fetchResource(ctx context.Context, res config.Resource) {
 	// resource is likely cluster-scoped and the config has 'namespaces:' set by
 	// mistake — warn and also capture the cluster-scoped path as a fallback.
 	allNotFound := len(res.Namespaces) > 0
+	dedupEnabled := res.DedupEnabled()
 	for _, ns := range namespaces {
 		apiPath := buildAPIPath(res.Group, res.Version, res.Resource, ns)
-		_, code := e.doFetch(ctx, apiPath, "")
+		_, code := e.doFetch(ctx, apiPath, "", dedupEnabled)
 		if code != 0 && code != http.StatusNotFound {
 			allNotFound = false
 		}
-		e.doFetch(ctx, apiPath, tableIndexKeySuffix)
+		e.doFetch(ctx, apiPath, tableIndexKeySuffix, dedupEnabled)
 	}
 
 	if allNotFound {
@@ -239,8 +246,8 @@ func (e *Engine) fetchResource(ctx context.Context, res config.Resource) {
 				"this is likely a cluster-scoped resource; remove 'namespaces:' "+
 				"from its config entry. Fetching cluster-scoped path %s as fallback.\n",
 			res.Resource, clusterPath)
-		e.doFetch(ctx, clusterPath, "")
-		e.doFetch(ctx, clusterPath, tableIndexKeySuffix)
+		e.doFetch(ctx, clusterPath, "", dedupEnabled)
+		e.doFetch(ctx, clusterPath, tableIndexKeySuffix, dedupEnabled)
 	}
 }
 
@@ -373,16 +380,16 @@ func (e *Engine) autoDiscoverResources(ctx context.Context) {
 // a second round of HTTP requests to the live cluster.
 func (e *Engine) fetchDiscovery(ctx context.Context) {
 	// Core discovery paths.
-	e.doFetch(ctx, "/api", "")
-	e.doFetch(ctx, "/api/v1", "")
-	apisBody, _ := e.doFetch(ctx, "/apis", "")
+	e.doFetch(ctx, "/api", "", true)
+	e.doFetch(ctx, "/api/v1", "", true)
+	apisBody, _ := e.doFetch(ctx, "/apis", "", true)
 	if apisBody != nil {
 		e.discoveryCache["/apis"] = apisBody
 	}
 
 	// OpenAPI specs for kubectl explain.
-	e.doFetch(ctx, "/openapi/v2", "")
-	openapiV3Body, _ := e.doFetch(ctx, "/openapi/v3", "")
+	e.doFetch(ctx, "/openapi/v2", "", true)
+	openapiV3Body, _ := e.doFetch(ctx, "/openapi/v3", "", true)
 	if openapiV3Body != nil {
 		// Parse the v3 path index and fetch each per-group spec.
 		var v3Index struct {
@@ -390,7 +397,7 @@ func (e *Engine) fetchDiscovery(ctx context.Context) {
 		}
 		if err := json.Unmarshal(openapiV3Body, &v3Index); err == nil {
 			for p := range v3Index.Paths {
-				e.doFetch(ctx, "/openapi/v3/"+p, "")
+				e.doFetch(ctx, "/openapi/v3/"+p, "", true)
 			}
 		}
 	}
@@ -412,7 +419,7 @@ func (e *Engine) fetchDiscovery(ctx context.Context) {
 	for _, g := range groupList.Groups {
 		for _, v := range g.Versions {
 			gvPath := "/apis/" + v.GroupVersion
-			gvBody, _ := e.doFetch(ctx, gvPath, "")
+			gvBody, _ := e.doFetch(ctx, gvPath, "", true)
 			if gvBody != nil {
 				e.discoveryCache[gvPath] = gvBody
 			}
@@ -424,7 +431,7 @@ func (e *Engine) fetchDiscovery(ctx context.Context) {
 // request uses a Table Accept header and the response is stored under
 // apiPath+tableKeySuffix in the index. Returns the response body and HTTP
 // status code, or (nil, 0) when the request could not be completed.
-func (e *Engine) doFetch(ctx context.Context, apiPath, tableKeySuffix string) ([]byte, int) {
+func (e *Engine) doFetch(ctx context.Context, apiPath, tableKeySuffix string, dedupEnabled bool) ([]byte, int) {
 	url := e.baseURL + apiPath
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -478,6 +485,22 @@ func (e *Engine) doFetch(ctx context.Context, apiPath, tableKeySuffix string) ([
 	}
 
 	indexKey := apiPath + tableKeySuffix
+	if dedupEnabled {
+		h := sha256.Sum256(body)
+		e.mu.Lock()
+		prev, ok := e.lastHash[indexKey]
+		if ok && prev == h {
+			e.dedupSkipped++
+			e.mu.Unlock()
+			if e.verbose {
+				fmt.Fprintf(os.Stdout, "  [dedup] %s unchanged; skipping write\n", indexKey)
+			}
+			return body, resp.StatusCode
+		}
+		e.lastHash[indexKey] = h
+		e.mu.Unlock()
+	}
+
 	rec := &Record{
 		ID:           uuid.New().String(),
 		CapturedAt:   time.Now().UTC(),
@@ -556,7 +579,7 @@ func (e *Engine) fetchPodsLogs(ctx context.Context, res config.Resource) {
 	}
 	for _, ns := range namespaces {
 		listPath := buildAPIPath(res.Group, res.Version, res.Resource, ns)
-		listBody, code := e.doFetch(ctx, listPath, "")
+		listBody, code := e.doFetch(ctx, listPath, "", res.DedupEnabled())
 		if code != 200 || listBody == nil {
 			continue
 		}
@@ -661,7 +684,7 @@ func (e *Engine) expandWildcardNamespaces(ctx context.Context) error {
 	}
 
 	// Fetch the namespace list from the cluster.
-	nsBody, code := e.doFetch(ctx, "/api/v1/namespaces", "")
+	nsBody, code := e.doFetch(ctx, "/api/v1/namespaces", "", true)
 	if code != http.StatusOK || nsBody == nil {
 		return fmt.Errorf("namespace discovery failed (HTTP %d): check cluster permissions", code)
 	}

@@ -2,6 +2,7 @@ package capture
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -619,5 +620,188 @@ func TestAutoDiscover_ExcludeGroupsOverride(t *testing.T) {
 		if r.Group == "networking.istio.io" {
 			t.Errorf("networking.istio.io should be excluded via AutoDiscoverExcludeGroups, but found %v", r)
 		}
+	}
+}
+
+func TestDoFetch_DedupAllSame_FirstAlwaysWritten(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"kind":"List","items":[]}`)
+	}))
+	defer srv.Close()
+
+	eng := newEngineWith(&config.Config{}, srv.Client(), srv.URL, false)
+	ss := &sliceSink{}
+	eng.sink = ss
+
+	for i := 0; i < 3; i++ {
+		if _, code := eng.doFetch(context.Background(), "/api/v1/pods", "", true); code != http.StatusOK {
+			t.Fatalf("doFetch status = %d, want %d", code, http.StatusOK)
+		}
+	}
+
+	if got := ss.RecordCount(); got != 1 {
+		t.Fatalf("record count = %d, want 1", got)
+	}
+	if got := eng.dedupSkipped; got != 2 {
+		t.Fatalf("dedup skipped = %d, want 2", got)
+	}
+	entry := eng.index["/api/v1/pods"]
+	if entry == nil || len(entry.RecordIDs) != 1 || len(entry.Times) != 1 {
+		t.Fatalf("index entry should have exactly one written record, got %+v", entry)
+	}
+}
+
+func TestDoFetch_DedupAllDifferent(t *testing.T) {
+	count := 0
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count++
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"kind":"List","metadata":{"rv":%q},"items":[]}`, fmt.Sprintf("%d", count))
+	}))
+	defer srv.Close()
+
+	eng := newEngineWith(&config.Config{}, srv.Client(), srv.URL, false)
+	ss := &sliceSink{}
+	eng.sink = ss
+
+	for i := 0; i < 3; i++ {
+		if _, code := eng.doFetch(context.Background(), "/api/v1/pods", "", true); code != http.StatusOK {
+			t.Fatalf("doFetch status = %d, want %d", code, http.StatusOK)
+		}
+	}
+
+	if got := ss.RecordCount(); got != 3 {
+		t.Fatalf("record count = %d, want 3", got)
+	}
+	if got := eng.dedupSkipped; got != 0 {
+		t.Fatalf("dedup skipped = %d, want 0", got)
+	}
+}
+
+func TestDoFetch_DedupOptOutWritesEveryPoll(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"kind":"List","items":[]}`)
+	}))
+	defer srv.Close()
+
+	eng := newEngineWith(&config.Config{}, srv.Client(), srv.URL, false)
+	ss := &sliceSink{}
+	eng.sink = ss
+
+	for i := 0; i < 3; i++ {
+		if _, code := eng.doFetch(context.Background(), "/api/v1/events", "", false); code != http.StatusOK {
+			t.Fatalf("doFetch status = %d, want %d", code, http.StatusOK)
+		}
+	}
+
+	if got := ss.RecordCount(); got != 3 {
+		t.Fatalf("record count = %d, want 3", got)
+	}
+	if got := eng.dedupSkipped; got != 0 {
+		t.Fatalf("dedup skipped = %d, want 0", got)
+	}
+}
+
+func TestEngine_MetadataIncludesDeduplicatedCount(t *testing.T) {
+	podList := `{"apiVersion":"v1","kind":"PodList","items":[]}`
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/version":
+			fmt.Fprint(w, `{"gitVersion":"v1.29.0"}`)
+		case "/api", "/api/v1", "/apis", "/openapi/v2", "/openapi/v3":
+			fmt.Fprint(w, `{"kind":"List","items":[]}`)
+		case "/api/v1/namespaces/default/pods":
+			fmt.Fprint(w, podList)
+		default:
+			fmt.Fprint(w, `{"kind":"List","items":[]}`)
+		}
+	}))
+	defer srv.Close()
+
+	outDir := t.TempDir()
+	outFile := filepath.Join(outDir, "capture.tar.gz")
+	cfg := &config.Config{
+		DurationRaw: "1200ms",
+		Duration:    1200 * time.Millisecond,
+		Output:      outFile,
+		Resources: []config.Resource{
+			{Version: "v1", Resource: "pods", Namespaces: []string{"default"}, IntervalRaw: "200ms", Interval: 200 * time.Millisecond},
+		},
+	}
+
+	eng := newEngineWith(cfg, srv.Client(), srv.URL, false)
+	if _, err := eng.Run(); err != nil {
+		t.Fatalf("engine.Run() error: %v", err)
+	}
+
+	extractDir := t.TempDir()
+	if err := archive.Open(outFile, extractDir); err != nil {
+		t.Fatalf("failed to open archive: %v", err)
+	}
+	meta, err := archive.ReadMetadata(extractDir)
+	if err != nil {
+		t.Fatalf("failed to read metadata: %v", err)
+	}
+
+	v, ok := meta["deduplicated_count"]
+	if !ok {
+		t.Fatal("metadata missing deduplicated_count")
+	}
+	count, ok := v.(float64)
+	if !ok {
+		t.Fatalf("deduplicated_count has unexpected type %T", v)
+	}
+	if count < 1 {
+		t.Fatalf("deduplicated_count = %v, want >= 1", count)
+	}
+}
+
+func TestEngine_DedupPerResourceOptOut(t *testing.T) {
+	falseVal := false
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/version":
+			fmt.Fprint(w, `{"gitVersion":"v1.29.0"}`)
+		case "/api", "/api/v1", "/apis", "/openapi/v2", "/openapi/v3":
+			fmt.Fprint(w, `{"kind":"List","items":[]}`)
+		case "/api/v1/namespaces/default/pods":
+			fmt.Fprint(w, `{"kind":"PodList","items":[]}`)
+		case "/api/v1/namespaces/default/events":
+			fmt.Fprint(w, `{"kind":"EventList","items":[]}`)
+		default:
+			fmt.Fprint(w, `{"kind":"List","items":[]}`)
+		}
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		DurationRaw: "1200ms",
+		Duration:    1200 * time.Millisecond,
+		Output:      filepath.Join(t.TempDir(), "capture.tar.gz"),
+		Resources: []config.Resource{
+			{Version: "v1", Resource: "pods", Namespaces: []string{"default"}, IntervalRaw: "200ms", Interval: 200 * time.Millisecond},
+			{Version: "v1", Resource: "events", Namespaces: []string{"default"}, IntervalRaw: "200ms", Interval: 200 * time.Millisecond, Dedup: &falseVal},
+		},
+	}
+
+	eng := newEngineWith(cfg, srv.Client(), srv.URL, false)
+	if _, err := eng.Run(); err != nil {
+		t.Fatalf("engine.Run() error: %v", err)
+	}
+
+	podsEntry := eng.index["/api/v1/namespaces/default/pods"]
+	eventsEntry := eng.index["/api/v1/namespaces/default/events"]
+	if podsEntry == nil || eventsEntry == nil {
+		t.Fatalf("missing index entries: pods=%v events=%v", podsEntry != nil, eventsEntry != nil)
+	}
+	if got := len(podsEntry.RecordIDs); got != 1 {
+		t.Fatalf("pods should be deduplicated to one record, got %d", got)
+	}
+	if got := len(eventsEntry.RecordIDs); got <= 1 {
+		t.Fatalf("events with dedup:false should keep multiple polls, got %d", got)
 	}
 }
