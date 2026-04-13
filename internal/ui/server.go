@@ -886,6 +886,10 @@ const indexHTML = `<!doctype html>
     .panel:last-child { border-right:none; border-left:1px solid var(--line); }
     .side { padding:12px; background:rgba(17,24,39,.85); }
     .search { width:100%; box-sizing:border-box; padding:8px 10px; border:1px solid #334155; border-radius:8px; background:#0f172a; color:var(--text); }
+	.toggle-head { margin-top:10px; display:flex; justify-content:space-between; align-items:center; }
+	.toggle-head-title { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.6px; }
+	.toggle-actions button { margin-left:6px; padding:3px 8px; border-radius:6px; border:1px solid #334155; background:#0f172a; color:#cbd5e1; font-size:11px; cursor:pointer; }
+	.toggle-actions button:hover { border-color:#64748b; }
     .toggle-list { margin-top:10px; display:grid; gap:6px; }
     .tree { padding:12px; }
     .crumbs { color:var(--muted); font-size:13px; margin-bottom:8px; }
@@ -916,6 +920,10 @@ const indexHTML = `<!doctype html>
     pre { white-space:pre-wrap; background:#020617; border:1px solid #1f2937; padding:10px; border-radius:8px; }
     .tabs button { margin-right:6px; padding:6px 10px; border-radius:7px; border:1px solid #334155; background:#0f172a; color:var(--text); cursor:pointer; }
     .tabs button.active { border-color:var(--accent); color:#86efac; }
+		.toast-stack { position:fixed; right:14px; bottom:14px; display:grid; gap:8px; z-index:40; pointer-events:none; }
+		.toast { pointer-events:auto; max-width:420px; border:1px solid #334155; border-radius:8px; padding:10px 12px; background:rgba(15,23,42,.92); box-shadow:0 8px 28px rgba(2,6,23,.45); font-size:13px; }
+		.toast.error { border-color:rgba(239,68,68,.55); color:#fecaca; }
+		.toast.info { border-color:rgba(59,130,246,.55); color:#bfdbfe; }
   </style>
 </head>
 <body>
@@ -926,6 +934,13 @@ const indexHTML = `<!doctype html>
   <div class="layout">
     <aside class="panel side">
       <input class="search" id="search" placeholder="Search name or label..."/>
+			<div class="toggle-head">
+				<span class="toggle-head-title">Kinds</span>
+				<span class="toggle-actions">
+					<button id="toggleAll" type="button">All</button>
+					<button id="toggleNone" type="button">None</button>
+				</span>
+			</div>
       <div class="toggle-list" id="toggles"></div>
     </aside>
     <main class="panel tree">
@@ -941,6 +956,7 @@ const indexHTML = `<!doctype html>
       <pre id="detailBody">Click a node in the tree to inspect details.</pre>
     </section>
   </div>
+	<div id="toasts" class="toast-stack" aria-live="polite"></div>
   <script>
     let treeData = null;
     let activeKinds = new Set();
@@ -958,12 +974,17 @@ const indexHTML = `<!doctype html>
       detailTitle: document.getElementById('detailTitle'),
       detailBody: document.getElementById('detailBody'),
       tabJson: document.getElementById('tabJson'),
-      tabYaml: document.getElementById('tabYaml')
+			tabYaml: document.getElementById('tabYaml'),
+			toggleAll: document.getElementById('toggleAll'),
+			toggleNone: document.getElementById('toggleNone'),
+			toasts: document.getElementById('toasts')
     };
 
     el.tabJson.onclick = () => setTab('json');
     el.tabYaml.onclick = () => setTab('yaml');
     el.search.oninput = render;
+		el.toggleAll.onclick = () => setAllKinds(true);
+		el.toggleNone.onclick = () => setAllKinds(false);
 	document.addEventListener('keydown', onTreeKeyDown);
 
     function setTab(tab) {
@@ -981,6 +1002,15 @@ const indexHTML = `<!doctype html>
 			box.className = 'tree-state ' + type;
 			box.textContent = message;
 			el.tree.appendChild(box);
+		}
+
+		function showToast(type, message, timeoutMs) {
+			const toast = document.createElement('div');
+			toast.className = 'toast ' + type;
+			toast.textContent = message;
+			el.toasts.appendChild(toast);
+			const ttl = timeoutMs || (type === 'error' ? 7000 : 3000);
+			window.setTimeout(() => toast.remove(), ttl);
 		}
 
     function statusClass(status) {
@@ -1094,7 +1124,9 @@ const indexHTML = `<!doctype html>
 				el.detailBody.textContent = data[activeTab] || JSON.stringify(data, null, 2);
 			} catch (err) {
 				selected.detail = null;
-				el.detailBody.textContent = 'Failed to load detail: ' + (err && err.message ? err.message : String(err));
+				const msg = (err && err.message ? err.message : String(err));
+				el.detailBody.textContent = 'Failed to load detail: ' + msg;
+				showToast('error', 'Detail request failed: ' + msg);
 			}
     }
 
@@ -1189,6 +1221,7 @@ const indexHTML = `<!doctype html>
         row.className = 'muted';
         const cb = document.createElement('input');
         cb.type = 'checkbox';
+				cb.dataset.kind = kind;
         cb.checked = true;
         cb.onchange = () => {
           if (cb.checked) activeKinds.add(kind); else activeKinds.delete(kind);
@@ -1199,6 +1232,18 @@ const indexHTML = `<!doctype html>
         el.toggles.appendChild(row);
       }
     }
+
+		function setAllKinds(enabled) {
+			const inputs = el.toggles.querySelectorAll('input[type="checkbox"]');
+			for (const input of inputs) input.checked = enabled;
+			if (enabled) {
+				const kinds = Array.from(inputs).map((input) => input.dataset.kind || '').filter(Boolean);
+				activeKinds = new Set(kinds);
+			} else {
+				activeKinds = new Set();
+			}
+			render();
+		}
 
     async function init() {
 			setTreeState('loading', 'Loading captured resources...');
@@ -1214,7 +1259,9 @@ const indexHTML = `<!doctype html>
 				renderToggles((treeData.resource_kinds || []).concat(['Container']));
 				render();
 			} catch (err) {
-				setTreeState('error', 'Failed to load capture tree: ' + (err && err.message ? err.message : String(err)));
+				const msg = (err && err.message ? err.message : String(err));
+				setTreeState('error', 'Failed to load capture tree: ' + msg);
+				showToast('error', 'Capture tree failed to load: ' + msg);
 				el.meta.textContent = 'capture unavailable';
 			}
     }
