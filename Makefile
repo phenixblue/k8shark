@@ -1,9 +1,10 @@
-.PHONY: build test test-race test-cover bench fmt lint e2e kind-up kind-down release-snapshot release-local clean help
+.PHONY: build test test-race test-cover bench fmt lint lint-ci-install lint-ci e2e kind-up kind-down release-snapshot release-local clean help
 
 BINARY  := kshrk
 VERSION ?= dev
 LDFLAGS := -w -s -X github.com/phenixblue/k8shark/cmd.Version=$(VERSION)
 GOFLAGS := -trimpath
+GOLANGCI_LINT_VERSION ?= v1.64.8
 
 build: ## Build the kshrk binary
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINARY) .
@@ -26,6 +27,12 @@ fmt: ## Format Go source files
 
 lint: ## Run go vet
 	go vet ./...
+
+lint-ci-install: ## Install the pinned golangci-lint version used in CI
+	go install github.com/golangci/golangci-lint/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+
+lint-ci: ## Run golangci-lint exactly like CI (requires lint-ci-install)
+	golangci-lint run
 
 e2e: build ## Build binary and run end-to-end tests (requires kind + kubectl)
 	./scripts/e2e.sh
