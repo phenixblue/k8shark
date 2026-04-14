@@ -64,6 +64,7 @@ Capture complete
 | `--verbose` | `-v` | false | Log every API path as it is fetched |
 | `--redact-secrets` | | false | Redact Secret `data`/`stringData` values from the archive after capture |
 | `--allow-secret` | | | `namespace/name` of secret to preserve when `--redact-secrets` is set (repeatable) |
+| `--redact-field` | | | Field redaction rule applied after capture: `<path>:<Kind>:<replacement>[:<type>]` (repeatable) |
 
 The `--config` flag auto-discovers `./k8shark.yaml` if not specified.
 
@@ -327,45 +328,82 @@ Exit codes follow the usual diff convention:
 
 ## Redact
 
-Secret values can be removed from a capture archive in two ways:
+Sensitive values can be removed from a capture archive in two ways.
 
 ### Option A — `kshrk redact` (post-capture)
 
-Produces a **new** archive with all Kubernetes Secret `data` and `stringData` values replaced by `"REDACTED"`. The original archive is not modified.
+Produces a **new** archive with Kubernetes Secret data replaced and any configured field rules applied. The original archive is not modified.
 
 ```sh
-kshrk redact --in capture.tar.gz
-# writes capture-redacted.tar.gz by default
-```
+# Redact secrets only
+kshrk redact --in capture.tar.gz --redact-secrets
 
-```sh
-kshrk redact --in capture.tar.gz --out safe-capture.tar.gz \
+# Redact secrets + specific fields via CLI flags
+kshrk redact --in capture.tar.gz --redact-secrets \
+  --redact-field "data.api-key:ConfigMap:REDACTED" \
+  --redact-field "spec.containers[*].env[*].value:Pod:REDACTED:string"
+
+# Reuse the redaction rules from your capture config
+kshrk redact --in capture.tar.gz --out safe-capture.tar.gz --config k8shark.yaml
+
+# Preserve specific secrets from redaction
+kshrk redact --in capture.tar.gz --redact-secrets \
   --allow-secret default/pull-secret \
   --allow-secret kube-system/bootstrap-token
 ```
 
-### Option B — `--redact-secrets` flag on `kshrk capture` (at collection time)
+### Option B — inline after `kshrk capture`
 
-Pass `--redact-secrets` to have the archive redacted **in-place** immediately after capture completes, before any data is stored on disk in final form:
+Pass `--redact-secrets` or `--redact-field` to have the archive redacted **in-place** immediately after capture completes. Field rules defined in the capture config `redaction:` block are applied automatically without any extra flags.
 
 ```sh
+# Redact secrets at capture time
 kshrk capture --config k8shark.yaml --redact-secrets
+
+# Redact secrets + ad-hoc field rules
 kshrk capture --config k8shark.yaml --redact-secrets \
-  --allow-secret default/pull-secret
+  --redact-field "data.api-key:ConfigMap:REDACTED"
+
+# Config-driven: rules in redaction.rules block run automatically
+kshrk capture --config k8shark.yaml   # redaction.redactSecrets: true in config
 ```
 
 The final archive at the configured output path will already be redacted. No intermediate unredacted file is retained.
 
-### Redact flags (both commands)
+### `--redact-field` format
+
+```
+<fieldPath>:<Kind>:<replacement>[:<valueType>]
+```
+
+- `fieldPath` — dot-notation path with optional `[*]` wildcards or `**` recursive descent
+- `Kind` — resource kind to match (`*` matches all)
+- `replacement` — string written in place of the field value
+- `valueType` — optional type hint: `string`, `integer`, `number`, `bool`, `array`, `object`
+
+Examples:
+
+```sh
+--redact-field "data.api-key:ConfigMap:REDACTED"
+--redact-field "spec.containers[*].env[*].value:Pod:REDACTED:string"
+--redact-field "spec.replicas:Deployment:0:integer"
+--redact-field "**.password:*:REDACTED"
+```
+
+### Redact flags
 
 | Flag | Command | Default | Description |
 |------|---------|---------|-------------|
 | `--in` | `redact` | (required) | Source capture archive |
 | `--out` | `redact` | `<in>-redacted.tar.gz` | Output archive path |
-| `--redact-secrets` | `capture` | false | Redact secrets in-place after capture |
+| `--redact-secrets` | both | `false` | Redact all Secret `data`/`stringData` values |
 | `--allow-secret` | both | | `namespace/name` of secret to preserve (repeatable) |
+| `--redact-field` | both | | Field redaction rule (repeatable). Format: `<path>:<Kind>:<replacement>[:<type>]` |
+| `--config` | `redact` | | Capture config file — applies `redaction.rules` and `redaction.redactSecrets` |
 
 Secret metadata (name, namespace, labels, annotations, type) is always preserved so you can still count and identify secrets by kind.
+
+See [config.md](config.md#redaction) for the full `redaction:` config block reference with type-aware examples.
 
 ---
 

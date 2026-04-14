@@ -49,6 +49,40 @@ func (r Resource) DedupEnabled() bool {
 	return r.Dedup == nil || *r.Dedup
 }
 
+// RedactionRule describes a single field-level redaction rule.
+type RedactionRule struct {
+	// FieldPath is a JSONPath-like expression identifying the field(s) to
+	// redact. Supports dot-notation, array wildcards ([*]), and recursive
+	// descent (**). Examples: "data.api-key", "spec.containers[*].env[*].value",
+	// "**.password".
+	FieldPath string `mapstructure:"fieldPath"`
+	// Kind restricts the rule to a specific resource kind (e.g. "Pod",
+	// "ConfigMap"). Use "*" or omit to match all kinds.
+	Kind string `mapstructure:"kind"`
+	// Namespace restricts the rule to resources in a specific namespace.
+	// Omit to match all namespaces.
+	Namespace string `mapstructure:"namespace"`
+	// Replacement is the string value written in place of the redacted field.
+	// It will be converted to the appropriate JSON type (see ValueType).
+	Replacement string `mapstructure:"replacement"`
+	// ValueType optionally overrides type inference. Accepted values: "string",
+	// "integer", "number", "bool", "array", "object". When omitted the engine
+	// infers the type from the actual captured value.
+	ValueType string `mapstructure:"valueType"`
+}
+
+// RedactionConfig is the top-level redaction section of the capture config.
+type RedactionConfig struct {
+	// RedactSecrets, when true, redacts all Kubernetes Secret data and
+	// stringData fields (equivalent to --redact-secrets on the CLI).
+	RedactSecrets bool `mapstructure:"redactSecrets"`
+	// AllowSecrets is a list of "namespace/name" secret keys whose data will
+	// be preserved even when RedactSecrets is true.
+	AllowSecrets []string `mapstructure:"allowSecrets"`
+	// Rules is the list of field-level redaction rules applied to every record.
+	Rules []RedactionRule `mapstructure:"rules"`
+}
+
 // Config holds the full capture configuration.
 type Config struct {
 	// DurationRaw is the human-readable total capture duration (e.g. "10m").
@@ -70,6 +104,9 @@ type Config struct {
 	// produce noisy or unusable data are excluded by default regardless of
 	// this setting; see defaultAutoDiscoverExcludeGroups.
 	AutoDiscoverExcludeGroups []string `mapstructure:"auto_discover_exclude_groups"`
+	// Redaction holds field-level redaction rules applied during capture and
+	// post-capture redact workflows.
+	Redaction RedactionConfig `mapstructure:"redaction"`
 }
 
 // Load reads k8shark capture config. If configFile is empty, viper uses
