@@ -1196,6 +1196,8 @@ const indexHTML = `<!doctype html>
 	let currentAt = '';
 	let timelinePoints = [];
 	let scrubDebounce = null;
+	let lastLoadedAt = '';
+	let refreshToken = 0;
 
     const el = {
       tree: document.getElementById('tree'),
@@ -1245,8 +1247,15 @@ const indexHTML = `<!doctype html>
 		syncScrubberLabel();
 		if (scrubDebounce) window.clearTimeout(scrubDebounce);
 		scrubDebounce = window.setTimeout(() => {
-			applyScrubberSelection();
-		}, 120);
+			applyScrubberSelection(false);
+		}, 180);
+	};
+	el.timelineScrub.onchange = () => {
+		if (scrubDebounce) {
+			window.clearTimeout(scrubDebounce);
+			scrubDebounce = null;
+		}
+		applyScrubberSelection(true);
 	};
 	document.addEventListener('keydown', onTreeKeyDown);
 
@@ -1300,7 +1309,8 @@ const indexHTML = `<!doctype html>
 		}
 		const idx = Number(el.timelineScrub.value || 0);
 		const pos = Math.max(0, Math.min(idx, timelinePoints.length - 1));
-		el.timelinePosition.textContent = (pos + 1) + '/' + timelinePoints.length;
+		const ts = timelinePoints[pos] || '';
+		el.timelinePosition.textContent = (pos + 1) + '/' + timelinePoints.length + (ts ? (' · ' + formatAtLabel(ts)) : '');
 	}
 
 	function syncScrubber() {
@@ -1324,18 +1334,23 @@ const indexHTML = `<!doctype html>
 		syncScrubberLabel();
 	}
 
-	function applyScrubberSelection() {
+	function applyScrubberSelection(forceRefresh) {
 		if (!timelinePoints.length) return;
 		const idx = Number(el.timelineScrub.value || 0);
 		const pos = Math.max(0, Math.min(idx, timelinePoints.length - 1));
 		const ts = timelinePoints[pos];
 		const newest = timelinePoints[timelinePoints.length - 1];
-		currentAt = ts === newest ? 'latest' : ts;
+		const nextAt = ts === newest ? 'latest' : ts;
+		if (nextAt === currentAt && !forceRefresh) {
+			syncScrubberLabel();
+			return;
+		}
+		currentAt = nextAt;
 		el.snapshotAt.value = currentAt;
 		syncSnapshotButtons();
 		syncScrubber();
 		syncAtInURL();
-		refreshTree();
+		refreshTree(!!forceRefresh);
 	}
 
 	function stepSnapshot(delta) {
@@ -1357,7 +1372,11 @@ const indexHTML = `<!doctype html>
 		syncSnapshotButtons();
 		syncScrubber();
 		syncAtInURL();
-		refreshTree();
+		refreshTree(true);
+	}
+
+	function normalizedAt() {
+		return currentAt && currentAt !== 'latest' ? currentAt : 'latest';
 	}
 
 	function updateMetaLine() {
@@ -1695,9 +1714,19 @@ const indexHTML = `<!doctype html>
 		}
 
 		function onTreeKeyDown(ev) {
-			if (visibleNodes.length === 0) return;
 			const tag = (document.activeElement && document.activeElement.tagName) || '';
 			if (tag === 'INPUT' || tag === 'TEXTAREA' || (document.activeElement && document.activeElement.isContentEditable)) return;
+			if (ev.altKey && ev.key === 'ArrowLeft') {
+				ev.preventDefault();
+				stepSnapshot(1);
+				return;
+			}
+			if (ev.altKey && ev.key === 'ArrowRight') {
+				ev.preventDefault();
+				stepSnapshot(-1);
+				return;
+			}
+			if (visibleNodes.length === 0) return;
 			if (ev.key === 'ArrowDown') {
 				ev.preventDefault();
 				selectNodeAt(activeNodeIdx < 0 ? 0 : activeNodeIdx + 1, true);
@@ -1912,8 +1941,12 @@ const indexHTML = `<!doctype html>
 			syncAtInURL();
 		}
 
-		async function refreshTree() {
+		async function refreshTree(forceRefresh) {
 			const previousSelectionKey = selected && selected.node ? nodeIdentity(selected.node) : '';
+			if (!forceRefresh && normalizedAt() === lastLoadedAt) {
+				return;
+			}
+			const token = ++refreshToken;
 			setTreeState('loading', 'Loading captured resources...');
 			setSnapshotLoading(true);
 			const q = withAtQuery(new URLSearchParams());
@@ -1921,11 +1954,15 @@ const indexHTML = `<!doctype html>
 			try {
 				const res = await fetch(url);
 				const data = await res.json();
+				if (token !== refreshToken) {
+					return;
+				}
 				if (!res.ok) {
 					const msg = (data && data.error) ? data.error : ('request failed with status ' + res.status);
 					throw new Error(msg);
 				}
 				treeData = data;
+				lastLoadedAt = normalizedAt();
 				updateMetaLine();
 				renderToggles((treeData.resource_kinds || []).concat(['Container']));
 				render();
@@ -1940,8 +1977,10 @@ const indexHTML = `<!doctype html>
 					showDetail(selected.node, selected.crumbs || ['Cluster']);
 				}
 			} finally {
-				setSnapshotLoading(false);
-				syncSnapshotButtons();
+				if (token === refreshToken) {
+					setSnapshotLoading(false);
+					syncSnapshotButtons();
+				}
 			}
 		}
 
@@ -1951,7 +1990,7 @@ const indexHTML = `<!doctype html>
 				loadPreferences();
 				initAtFromURL();
 				await loadTimestamps();
-				await refreshTree();
+				await refreshTree(true);
 			} catch (err) {
 				const msg = (err && err.message ? err.message : String(err));
 				setTreeState('error', 'Failed to load capture tree: ' + msg);
