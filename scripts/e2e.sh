@@ -704,6 +704,84 @@ assert_equals "round-trip: node names"                        "$MOCK_NODE_NAMES"
 assert_equals "round-trip: deployment/nginx spec.replicas"    "$MOCK_NGINX_REPLICAS" "$LIVE_NGINX_REPLICAS"
 assert_equals "round-trip: deployment/nginx container image"  "$MOCK_NGINX_IMAGE"   "$LIVE_NGINX_IMAGE"
 
+# ── Phase 9b: all=true auto-discovery capture ──────────────────────────────────
+log "Testing 'resources: - all: true' auto-discovery capture"
+
+ALL_TRUE_CAPTURE_FILE="/tmp/k8shark-e2e-all-true-$$.tar.gz"
+ALL_TRUE_CONFIG="/tmp/k8shark-e2e-all-true-$$.yaml"
+ALL_TRUE_SERVER_LOG="/tmp/k8shark-all-true-server-$$.log"
+ALL_TRUE_KC="/tmp/k8shark-all-true-kc-$$.yaml"
+ALL_TRUE_SERVER_PID=""
+
+cat > "$ALL_TRUE_CONFIG" <<YAML
+duration: 15s
+output: ${ALL_TRUE_CAPTURE_FILE}
+kubeconfig: ${KIND_KUBECONFIG}
+resources:
+  - all: true
+    interval: 5s
+YAML
+pass "all=true capture config written"
+
+"$BINARY" --config "$ALL_TRUE_CONFIG" capture
+if [[ ! -s "$ALL_TRUE_CAPTURE_FILE" ]]; then
+  fail "all=true capture: archive missing or empty"
+else
+  ALL_TRUE_SIZE=$(du -h "$ALL_TRUE_CAPTURE_FILE" | cut -f1)
+  pass "all=true capture: archive written ($ALL_TRUE_SIZE)"
+fi
+
+# Open the all=true archive and assert key resources are accessible.
+"$BINARY" open "$ALL_TRUE_CAPTURE_FILE" --kubeconfig-out "$ALL_TRUE_KC" >"$ALL_TRUE_SERVER_LOG" 2>&1 &
+ALL_TRUE_SERVER_PID=$!
+
+for i in $(seq 1 30); do
+  if [[ -s "$ALL_TRUE_KC" ]]; then break; fi
+  sleep 0.5
+done
+
+if [[ ! -s "$ALL_TRUE_KC" ]]; then
+  fail "all=true capture: mock server did not start within 15s"
+else
+  pass "all=true capture: mock server started"
+
+  for i in $(seq 1 20); do
+    if kubectl --kubeconfig "$ALL_TRUE_KC" --request-timeout=2s \
+        get namespaces </dev/null &>/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.5
+  done
+
+  AT_KC=(--kubeconfig "$ALL_TRUE_KC" --request-timeout=10s)
+
+  # Core namespaced resources.
+  out=$(kubectl "${AT_KC[@]}" get pods -n k8shark-test -o name 2>&1) || true
+  assert_not_empty "all=true: pods present in k8shark-test" "$out"
+
+  out=$(kubectl "${AT_KC[@]}" get deployments -n k8shark-test -o name 2>&1) || true
+  assert_contains "all=true: deployment/nginx present" "$out" "nginx"
+
+  out=$(kubectl "${AT_KC[@]}" get configmaps -n k8shark-test -o name 2>&1) || true
+  assert_contains "all=true: configmap/app-config present" "$out" "app-config"
+
+  out=$(kubectl "${AT_KC[@]}" get services -n k8shark-test -o name 2>&1) || true
+  assert_not_empty "all=true: services present in k8shark-test" "$out"
+
+  # Core cluster-scoped resources.
+  out=$(kubectl "${AT_KC[@]}" get nodes -o name 2>&1) || true
+  assert_not_empty "all=true: nodes present (cluster-scoped)" "$out"
+
+  out=$(kubectl "${AT_KC[@]}" get namespaces -o name 2>&1) || true
+  assert_contains "all=true: namespace/k8shark-test present" "$out" "k8shark-test"
+fi
+
+if [[ -n "$ALL_TRUE_SERVER_PID" ]]; then
+  kill "$ALL_TRUE_SERVER_PID" 2>/dev/null || true
+  wait "$ALL_TRUE_SERVER_PID" 2>/dev/null || true
+fi
+rm -f "$ALL_TRUE_CAPTURE_FILE" "$ALL_TRUE_CONFIG" "$ALL_TRUE_SERVER_LOG" "$ALL_TRUE_KC"
+
 # ── Phase 10: Summary ───────────────────────────────────────────────────────────
 log "Test summary"
 printf '  Passed: \033[1;32m%d\033[0m\n' "$PASS"
