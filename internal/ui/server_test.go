@@ -174,10 +174,52 @@ func TestServeTimestamps(t *testing.T) {
 	if len(raw) != 2 {
 		t.Fatalf("expected 2 timestamps, got %d", len(raw))
 	}
+	if total, ok := body["total_count"].(float64); !ok || int(total) != 2 {
+		t.Fatalf("expected total_count=2, got %#v", body["total_count"])
+	}
+	if sampled, ok := body["sampled"].(bool); !ok || sampled {
+		t.Fatalf("expected sampled=false, got %#v", body["sampled"])
+	}
 	first, _ := raw[0].(string)
 	second, _ := raw[1].(string)
 	if !(strings.HasSuffix(first, "Z") && strings.HasSuffix(second, "Z")) {
 		t.Fatalf("expected RFC3339 timestamps, got %q and %q", first, second)
+	}
+}
+
+func TestCollectTimestamps_Sampled(t *testing.T) {
+	base := time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC)
+	index := capture.Index{}
+	for i := 0; i < 20; i++ {
+		path := "/api/v1/namespaces/default/pods?snapshot=" + time.Duration(i).String()
+		ts := base.Add(time.Duration(i) * time.Minute)
+		index[path] = &capture.IndexEntry{
+			APIPath:   path,
+			RecordIDs: []string{"r"},
+			Times:     []time.Time{ts},
+		}
+	}
+
+	timestamps, totalCount, sampled := collectTimestamps(index, 5)
+	if totalCount != 20 {
+		t.Fatalf("expected total_count=20, got %d", totalCount)
+	}
+	if !sampled {
+		t.Fatal("expected sampled=true")
+	}
+	if len(timestamps) != 5 {
+		t.Fatalf("expected 5 sampled timestamps, got %d", len(timestamps))
+	}
+	if timestamps[0] != base.Format(time.RFC3339) {
+		t.Fatalf("expected first timestamp preserved, got %q", timestamps[0])
+	}
+	if timestamps[len(timestamps)-1] != base.Add(19*time.Minute).Format(time.RFC3339) {
+		t.Fatalf("expected last timestamp preserved, got %q", timestamps[len(timestamps)-1])
+	}
+	for i := 1; i < len(timestamps); i++ {
+		if timestamps[i] <= timestamps[i-1] {
+			t.Fatalf("expected strictly increasing timestamps, got %v", timestamps)
+		}
 	}
 }
 

@@ -53,6 +53,8 @@ type timestampsResponse struct {
 	CapturedAt    time.Time `json:"captured_at"`
 	CapturedUntil time.Time `json:"captured_until"`
 	DefaultAt     string    `json:"default_at,omitempty"`
+	TotalCount    int       `json:"total_count"`
+	Sampled       bool      `json:"sampled"`
 	Timestamps    []string  `json:"timestamps"`
 }
 
@@ -273,10 +275,12 @@ func (h *explorerHandler) serveDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *explorerHandler) serveTimestamps(w http.ResponseWriter, r *http.Request) {
-	times := collectTimestamps(h.store.Index)
+	times, totalCount, sampled := collectTimestamps(h.store.Index, 180)
 	resp := timestampsResponse{
 		CapturedAt:    h.store.Metadata.CapturedAt,
 		CapturedUntil: h.store.Metadata.CapturedUntil,
+		TotalCount:    totalCount,
+		Sampled:       sampled,
 		Timestamps:    times,
 	}
 	if !h.at.IsZero() {
@@ -861,9 +865,9 @@ func (h *explorerHandler) responseBodiesAt(path string, at time.Time) ([][]byte,
 	return bodies, true
 }
 
-func collectTimestamps(index capture.Index) []string {
+func collectTimestamps(index capture.Index, limit int) ([]string, int, bool) {
 	if len(index) == 0 {
-		return nil
+		return nil, 0, false
 	}
 	uniq := make(map[time.Time]struct{})
 	for _, entry := range index {
@@ -879,11 +883,49 @@ func collectTimestamps(index capture.Index) []string {
 		out = append(out, t)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Before(out[j]) })
+	totalCount := len(out)
+	if limit > 0 && len(out) > limit {
+		out = sampleTimes(out, limit)
+	}
 	rfc := make([]string, 0, len(out))
 	for _, t := range out {
 		rfc = append(rfc, t.Format(time.RFC3339))
 	}
-	return rfc
+	return rfc, totalCount, totalCount > len(rfc)
+}
+
+func sampleTimes(times []time.Time, limit int) []time.Time {
+	if limit <= 0 || len(times) <= limit {
+		return append([]time.Time(nil), times...)
+	}
+	if limit == 1 {
+		return []time.Time{times[len(times)-1]}
+	}
+
+	selected := make([]time.Time, 0, limit)
+	seen := make(map[time.Time]struct{}, limit)
+	lastIdx := len(times) - 1
+	for i := 0; i < limit; i++ {
+		idx := (i * lastIdx) / (limit - 1)
+		t := times[idx]
+		if _, ok := seen[t]; ok {
+			continue
+		}
+		seen[t] = struct{}{}
+		selected = append(selected, t)
+	}
+	if len(selected) == 0 || !selected[0].Equal(times[0]) {
+		selected = append([]time.Time{times[0]}, selected...)
+	}
+	if !selected[len(selected)-1].Equal(times[len(times)-1]) {
+		selected = append(selected, times[len(times)-1])
+	}
+	sort.Slice(selected, func(i, j int) bool { return selected[i].Before(selected[j]) })
+	if len(selected) > limit {
+		selected = selected[len(selected)-limit:]
+		sort.Slice(selected, func(i, j int) bool { return selected[i].Before(selected[j]) })
+	}
+	return selected
 }
 
 func (h *explorerHandler) readRecordBody(id string) ([]byte, bool) {
@@ -1014,6 +1056,7 @@ const indexHTML = `<!doctype html>
 	.snapshot-nav { display:flex; align-items:center; gap:6px; }
 	.snapshot-select { min-width:220px; max-width:340px; box-sizing:border-box; padding:6px 8px; border:1px solid #334155; border-radius:8px; background:#0f172a; color:var(--text); }
 	.snapshot-label { color:var(--muted); font-size:12px; }
+	.snapshot-hint { color:var(--muted); font-size:11px; white-space:nowrap; }
 	.snapshot-btn { padding:6px 10px; border-radius:8px; border:1px solid #334155; background:#0f172a; color:#cbd5e1; cursor:pointer; font-size:12px; }
 	.snapshot-btn:hover { border-color:#64748b; }
 	.snapshot-btn:disabled { opacity:.45; cursor:not-allowed; border-color:#1f2937; }
@@ -1084,6 +1127,7 @@ const indexHTML = `<!doctype html>
 				<select id="snapshotAt" class="snapshot-select" title="Select capture timestamp"></select>
 				<button id="snapshotNext" class="snapshot-btn" type="button" title="Jump to newer snapshot">Next</button>
 			</div>
+			<div id="snapshotHint" class="snapshot-hint"></div>
 			<div id="meta" class="muted"></div>
 		</div>
   </header>
@@ -1161,6 +1205,7 @@ const indexHTML = `<!doctype html>
 			snapshotPrev: document.getElementById('snapshotPrev'),
 			snapshotAt: document.getElementById('snapshotAt'),
 			snapshotNext: document.getElementById('snapshotNext'),
+			snapshotHint: document.getElementById('snapshotHint'),
 			toasts: document.getElementById('toasts')
     };
 
@@ -1258,7 +1303,7 @@ const indexHTML = `<!doctype html>
 		el.meta.textContent = 'capture ' + start + ' to ' + end + ' | view: ' + atLabel;
 	}
 
-	function renderSnapshotSelector(times, defaultAt) {
+	function renderSnapshotSelector(times, defaultAt, totalCount, sampled) {
 		const opts = Array.isArray(times) ? times.slice().reverse() : [];
 		const unique = [];
 		const seen = new Set();
@@ -1294,6 +1339,13 @@ const indexHTML = `<!doctype html>
 			el.snapshotAt.appendChild(opt);
 		}
 		el.snapshotAt.value = currentAt;
+		if (sampled && totalCount > opts.length) {
+			el.snapshotHint.textContent = 'showing ' + opts.length + ' sampled of ' + totalCount;
+		} else if (totalCount > 0) {
+			el.snapshotHint.textContent = totalCount + ' snapshot' + (totalCount === 1 ? '' : 's');
+		} else {
+			el.snapshotHint.textContent = '';
+		}
 		syncSnapshotButtons();
 	}
 
@@ -1752,7 +1804,7 @@ const indexHTML = `<!doctype html>
 				const msg = (data && data.error) ? data.error : ('request failed with status ' + res.status);
 				throw new Error(msg);
 			}
-			renderSnapshotSelector(data.timestamps || [], data.default_at || '');
+			renderSnapshotSelector(data.timestamps || [], data.default_at || '', data.total_count || 0, !!data.sampled);
 			syncAtInURL();
 		}
 
