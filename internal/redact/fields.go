@@ -2,8 +2,14 @@ package redact
 
 import (
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
+
+	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/labels"
 
 	"github.com/phenixblue/k8shark/internal/config"
 )
@@ -22,6 +28,23 @@ type pathToken struct {
 	kind  tokenKind
 	key   string // tokenKey only
 	index int    // tokenIndex only
+}
+
+var schemaKindTypes = map[string]reflect.Type{
+	"Pod":                   reflect.TypeOf(corev1.Pod{}),
+	"Deployment":            reflect.TypeOf(appsv1.Deployment{}),
+	"DaemonSet":             reflect.TypeOf(appsv1.DaemonSet{}),
+	"StatefulSet":           reflect.TypeOf(appsv1.StatefulSet{}),
+	"ReplicaSet":            reflect.TypeOf(appsv1.ReplicaSet{}),
+	"Job":                   reflect.TypeOf(batchv1.Job{}),
+	"CronJob":               reflect.TypeOf(batchv1.CronJob{}),
+	"ConfigMap":             reflect.TypeOf(corev1.ConfigMap{}),
+	"Secret":                reflect.TypeOf(corev1.Secret{}),
+	"Service":               reflect.TypeOf(corev1.Service{}),
+	"Namespace":             reflect.TypeOf(corev1.Namespace{}),
+	"Node":                  reflect.TypeOf(corev1.Node{}),
+	"PersistentVolume":      reflect.TypeOf(corev1.PersistentVolume{}),
+	"PersistentVolumeClaim": reflect.TypeOf(corev1.PersistentVolumeClaim{}),
 }
 
 // tokenizePath converts a field path string into a slice of pathTokens.
@@ -134,12 +157,112 @@ func convertReplacement(replacement, valueType string) (interface{}, error) {
 	}
 }
 
+func jsonTypeFromReflect(t reflect.Type) (string, bool) {
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+
+	switch t.Kind() {
+	case reflect.String:
+		return "string", true
+	case reflect.Bool:
+		return "bool", true
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return "integer", true
+	case reflect.Float32, reflect.Float64:
+		return "number", true
+	case reflect.Slice, reflect.Array:
+		return "array", true
+	case reflect.Struct, reflect.Map:
+		return "object", true
+	default:
+		return "", false
+	}
+}
+
+func fieldByJSONName(t reflect.Type, name string) (reflect.Type, bool) {
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		jsonTag := f.Tag.Get("json")
+		if jsonTag == "-" {
+			continue
+		}
+		tagName := strings.Split(jsonTag, ",")[0]
+		if tagName == "" {
+			tagName = f.Name
+		}
+		if tagName == name {
+			return f.Type, true
+		}
+	}
+	return nil, false
+}
+
+func schemaTypeForPath(kind, fieldPath string) (string, bool) {
+	if kind == "" {
+		return "", false
+	}
+	if strings.HasSuffix(kind, "List") {
+		kind = strings.TrimSuffix(kind, "List")
+	}
+	root, ok := schemaKindTypes[kind]
+	if !ok {
+		return "", false
+	}
+
+	tokens, err := tokenizePath(fieldPath)
+	if err != nil || len(tokens) == 0 {
+		return "", false
+	}
+
+	t := root
+	for i := range tokens {
+		tok := tokens[i]
+		for t.Kind() == reflect.Pointer {
+			t = t.Elem()
+		}
+
+		switch tok.kind {
+		case tokenRecursive:
+			return "", false
+		case tokenWildcard, tokenIndex:
+			if t.Kind() != reflect.Slice && t.Kind() != reflect.Array {
+				return "", false
+			}
+			t = t.Elem()
+		case tokenKey:
+			switch t.Kind() {
+			case reflect.Struct:
+				next, ok := fieldByJSONName(t, tok.key)
+				if !ok {
+					return "", false
+				}
+				t = next
+			case reflect.Map:
+				t = t.Elem()
+			default:
+				return "", false
+			}
+		}
+	}
+
+	return jsonTypeFromReflect(t)
+}
+
 // typedReplacement returns the typed replacement value for a given rule and the
 // current field value.
-func typedReplacement(current interface{}, rule *config.RedactionRule) (interface{}, error) {
+func typedReplacement(current interface{}, kind, fieldPath string, rule *config.RedactionRule) (interface{}, error) {
 	t := rule.ValueType
 	if t == "" {
-		t = inferType(current)
+		if schemaType, ok := schemaTypeForPath(kind, fieldPath); ok {
+			t = schemaType
+		} else {
+			t = inferType(current)
+		}
 	}
 	return convertReplacement(rule.Replacement, t)
 }
@@ -275,9 +398,47 @@ func extractNestedString(m map[string]interface{}, key1, key2 string) string {
 	return s
 }
 
+func extractNestedLabels(m map[string]interface{}) map[string]string {
+	v, ok := m["metadata"]
+	if !ok {
+		return nil
+	}
+	meta, ok := v.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	lv, ok := meta["labels"]
+	if !ok {
+		return nil
+	}
+	lm, ok := lv.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	out := make(map[string]string, len(lm))
+	for k, raw := range lm {
+		s, ok := raw.(string)
+		if ok {
+			out[k] = s
+		}
+	}
+	return out
+}
+
+func ruleMatchesLabels(rule *config.RedactionRule, labelsMap map[string]string) (bool, error) {
+	if strings.TrimSpace(rule.LabelSelector) == "" {
+		return true, nil
+	}
+	sel, err := labels.Parse(rule.LabelSelector)
+	if err != nil {
+		return false, fmt.Errorf("invalid labelSelector %q: %w", rule.LabelSelector, err)
+	}
+	return sel.Matches(labels.Set(labelsMap)), nil
+}
+
 // applyRuleToObj applies a single redaction rule to a decoded JSON object (one
 // resource, not a list). Returns true if any modification was made.
-func applyRuleToObj(obj map[string]interface{}, rule *config.RedactionRule) (bool, error) {
+func applyRuleToObj(obj map[string]interface{}, kind string, rule *config.RedactionRule) (bool, error) {
 	tokens, err := tokenizePath(rule.FieldPath)
 	if err != nil {
 		return false, fmt.Errorf("parsing field path %q: %w", rule.FieldPath, err)
@@ -287,7 +448,7 @@ func applyRuleToObj(obj map[string]interface{}, rule *config.RedactionRule) (boo
 	}
 
 	replaceFn := func(current interface{}) (interface{}, error) {
-		return typedReplacement(current, rule)
+		return typedReplacement(current, kind, rule.FieldPath, rule)
 	}
 
 	_, changed, err := walk(obj, tokens, replaceFn)
@@ -342,6 +503,10 @@ func ApplyRules(obj map[string]interface{}, rules []config.RedactionRule) (bool,
 				if !ok {
 					continue
 				}
+				itemKind := extractString(itemMap, "kind")
+				if itemKind == "" {
+					itemKind = strings.TrimSuffix(kind, "List")
+				}
 				// Namespace scoping on individual items
 				if rule.Namespace != "" {
 					itemNS := extractNestedString(itemMap, "metadata", "namespace")
@@ -349,7 +514,14 @@ func ApplyRules(obj map[string]interface{}, rules []config.RedactionRule) (bool,
 						continue
 					}
 				}
-				changed, err := applyRuleToObj(itemMap, rule)
+				labelsMatch, err := ruleMatchesLabels(rule, extractNestedLabels(itemMap))
+				if err != nil {
+					return false, err
+				}
+				if !labelsMatch {
+					continue
+				}
+				changed, err := applyRuleToObj(itemMap, itemKind, rule)
 				if err != nil {
 					return false, fmt.Errorf("applying rule %q to list item %d: %w", rule.FieldPath, j, err)
 				}
@@ -369,7 +541,15 @@ func ApplyRules(obj map[string]interface{}, rules []config.RedactionRule) (bool,
 			continue
 		}
 
-		changed, err := applyRuleToObj(obj, rule)
+		labelsMatch, err := ruleMatchesLabels(rule, extractNestedLabels(obj))
+		if err != nil {
+			return false, err
+		}
+		if !labelsMatch {
+			continue
+		}
+
+		changed, err := applyRuleToObj(obj, kind, rule)
 		if err != nil {
 			return false, fmt.Errorf("applying rule %q: %w", rule.FieldPath, err)
 		}

@@ -340,6 +340,7 @@ k8shark can redact sensitive field values after capture, producing a sanitised a
 | `fieldPath` | string | yes | JSONPath-like expression targeting the field(s) to redact. |
 | `kind` | string | no | Resource kind to match, e.g. `Pod`, `ConfigMap`. Use `*` or omit to match all kinds. |
 | `namespace` | string | no | Only apply rule to resources in this namespace. Omit to match all namespaces. |
+| `labelSelector` | string | no | Kubernetes label selector used to scope matching resources (for example `app=sensitive,tier in (backend)`). |
 | `replacement` | string | yes | Value to write in place of the redacted field. Converted to the appropriate JSON type. |
 | `valueType` | string | no | Force a specific type for the replacement: `string`, `integer`, `number`, `bool`, `array`, `object`. Inferred from actual value when omitted. |
 
@@ -364,7 +365,12 @@ Redacted values preserve the original field's JSON type so the archive remains s
 | `[...]` (array) with `valueType: array` | any | `[]` |
 | `{...}` (object) with `valueType: object` | any | `{}` |
 
-When `valueType` is omitted the engine infers the type from the captured value. Invalid replacements (e.g. `"not-a-number"` for an integer field) fail early with a clear error.
+When `valueType` is omitted the engine infers the type in this order:
+
+1. known Kubernetes schema for the matched `kind` + `fieldPath`
+2. runtime type from the captured value (fallback)
+
+Invalid replacements (e.g. `"not-a-number"` for an integer field) fail early with a clear error.
 
 ### Example: unified config with redaction
 
@@ -414,6 +420,7 @@ redaction:
     - fieldPath: "data.db-password"
       kind: ConfigMap
       namespace: production
+      labelSelector: "app=sensitive"
       replacement: "REDACTED"
 ```
 

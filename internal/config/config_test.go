@@ -212,10 +212,11 @@ func TestRedactionConfig_ParsesCorrectly(t *testing.T) {
 			AllowSecrets:  []string{"default/app-secret"},
 			Rules: []RedactionRule{
 				{
-					FieldPath:   "data.api-key",
-					Kind:        "ConfigMap",
-					Replacement: "REDACTED",
-					ValueType:   "string",
+					FieldPath:     "data.api-key",
+					Kind:          "ConfigMap",
+					LabelSelector: "app=sensitive",
+					Replacement:   "REDACTED",
+					ValueType:     "string",
 				},
 				{
 					FieldPath:   "spec.containers[*].env[*].value",
@@ -244,6 +245,9 @@ func TestRedactionConfig_ParsesCorrectly(t *testing.T) {
 	}
 	if cfg.Redaction.Rules[0].Kind != "ConfigMap" {
 		t.Errorf("expected kind ConfigMap, got %q", cfg.Redaction.Rules[0].Kind)
+	}
+	if cfg.Redaction.Rules[0].LabelSelector != "app=sensitive" {
+		t.Errorf("expected labelSelector app=sensitive, got %q", cfg.Redaction.Rules[0].LabelSelector)
 	}
 	if cfg.Redaction.Rules[0].ValueType != "string" {
 		t.Errorf("expected valueType string, got %q", cfg.Redaction.Rules[0].ValueType)

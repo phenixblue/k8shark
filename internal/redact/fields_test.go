@@ -101,7 +101,7 @@ func TestTokenizePath_NumericIndex(t *testing.T) {
 
 func TestTypedReplacement_StringDefault(t *testing.T) {
 	rule := &config.RedactionRule{Replacement: "REDACTED"}
-	got, err := typedReplacement("original", rule)
+	got, err := typedReplacement("original", "ConfigMap", "data.api-key", rule)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func TestTypedReplacement_StringDefault(t *testing.T) {
 
 func TestTypedReplacement_NumberInference(t *testing.T) {
 	rule := &config.RedactionRule{Replacement: "0"}
-	got, err := typedReplacement(float64(42), rule)
+	got, err := typedReplacement(float64(42), "Deployment", "spec.replicas", rule)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +123,7 @@ func TestTypedReplacement_NumberInference(t *testing.T) {
 
 func TestTypedReplacement_BoolInference(t *testing.T) {
 	rule := &config.RedactionRule{Replacement: "false"}
-	got, err := typedReplacement(true, rule)
+	got, err := typedReplacement(true, "Pod", "spec.automountServiceAccountToken", rule)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,7 @@ func TestTypedReplacement_BoolInference(t *testing.T) {
 
 func TestTypedReplacement_ExplicitIntegerHint(t *testing.T) {
 	rule := &config.RedactionRule{Replacement: "99", ValueType: "integer"}
-	got, err := typedReplacement("ignored", rule)
+	got, err := typedReplacement("ignored", "Deployment", "spec.replicas", rule)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func TestTypedReplacement_ExplicitIntegerHint(t *testing.T) {
 
 func TestTypedReplacement_ExplicitBoolHint(t *testing.T) {
 	rule := &config.RedactionRule{Replacement: "False", ValueType: "bool"}
-	got, err := typedReplacement("ignored", rule)
+	got, err := typedReplacement("ignored", "Pod", "spec.automountServiceAccountToken", rule)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +156,7 @@ func TestTypedReplacement_ExplicitBoolHint(t *testing.T) {
 
 func TestTypedReplacement_ArrayHint(t *testing.T) {
 	rule := &config.RedactionRule{Replacement: "ignored", ValueType: "array"}
-	got, err := typedReplacement([]interface{}{"a", "b"}, rule)
+	got, err := typedReplacement([]interface{}{"a", "b"}, "Pod", "spec.containers", rule)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,9 +168,17 @@ func TestTypedReplacement_ArrayHint(t *testing.T) {
 
 func TestTypedReplacement_InvalidIntHint(t *testing.T) {
 	rule := &config.RedactionRule{Replacement: "not-a-number", ValueType: "integer"}
-	_, err := typedReplacement("x", rule)
+	_, err := typedReplacement("x", "Deployment", "spec.replicas", rule)
 	if err == nil {
 		t.Error("expected error for non-numeric replacement with integer hint")
+	}
+}
+
+func TestTypedReplacement_UsesSchemaTypeBeforeRuntimeFallback(t *testing.T) {
+	rule := &config.RedactionRule{Replacement: "not-an-int"}
+	_, err := typedReplacement("string-runtime-value", "Deployment", "spec.replicas", rule)
+	if err == nil {
+		t.Fatal("expected schema-based integer validation error")
 	}
 }
 
@@ -179,7 +187,7 @@ func TestTypedReplacement_InvalidIntHint(t *testing.T) {
 func TestApplyRule_ExactPath(t *testing.T) {
 	obj := mustDecode(t, `{"data":{"api-key":"secret123"}}`)
 	rule := &config.RedactionRule{FieldPath: "data.api-key", Replacement: "REDACTED"}
-	changed, err := applyRuleToObj(obj, rule)
+	changed, err := applyRuleToObj(obj, "ConfigMap", rule)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +212,7 @@ func TestApplyRule_ArrayWildcard(t *testing.T) {
 		FieldPath:   "spec.containers[*].env[*].value",
 		Replacement: "REDACTED",
 	}
-	changed, err := applyRuleToObj(obj, rule)
+	changed, err := applyRuleToObj(obj, "Pod", rule)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,7 +245,7 @@ func TestApplyRule_RecursiveDescent(t *testing.T) {
 		}
 	}`)
 	rule := &config.RedactionRule{FieldPath: "**.password", Replacement: "REDACTED"}
-	changed, err := applyRuleToObj(obj, rule)
+	changed, err := applyRuleToObj(obj, "Pod", rule)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +268,7 @@ func TestApplyRule_RecursiveDescent(t *testing.T) {
 func TestApplyRule_NonExistentPath_NoChange(t *testing.T) {
 	obj := mustDecode(t, `{"spec":{"containers":[]}}`)
 	rule := &config.RedactionRule{FieldPath: "spec.nonexistent.field", Replacement: "REDACTED"}
-	changed, err := applyRuleToObj(obj, rule)
+	changed, err := applyRuleToObj(obj, "Pod", rule)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,7 +280,7 @@ func TestApplyRule_NonExistentPath_NoChange(t *testing.T) {
 func TestApplyRule_MaintainsNumberType(t *testing.T) {
 	obj := mustDecode(t, `{"spec":{"replicas":3}}`)
 	rule := &config.RedactionRule{FieldPath: "spec.replicas", Replacement: "0"}
-	changed, err := applyRuleToObj(obj, rule)
+	changed, err := applyRuleToObj(obj, "Deployment", rule)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +296,7 @@ func TestApplyRule_MaintainsNumberType(t *testing.T) {
 func TestApplyRule_MaintainsBoolType(t *testing.T) {
 	obj := mustDecode(t, `{"spec":{"automountServiceAccountToken":true}}`)
 	rule := &config.RedactionRule{FieldPath: "spec.automountServiceAccountToken", Replacement: "false"}
-	changed, err := applyRuleToObj(obj, rule)
+	changed, err := applyRuleToObj(obj, "Pod", rule)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -394,6 +402,87 @@ func TestApplyRules_NamespaceScoping_NoMatch(t *testing.T) {
 	}
 	if changed {
 		t.Error("rule scoped to production should not match staging namespace")
+	}
+}
+
+func TestApplyRules_LabelSelector_Matches(t *testing.T) {
+	obj := mustDecode(t, `{
+		"kind":"ConfigMap",
+		"metadata":{"name":"app","namespace":"production","labels":{"app":"sensitive","tier":"backend"}},
+		"data":{"api-key":"secret"}
+	}`)
+	rules := []config.RedactionRule{
+		{FieldPath: "data.api-key", Kind: "ConfigMap", LabelSelector: "app=sensitive,tier=backend", Replacement: "REDACTED"},
+	}
+	changed, err := ApplyRules(obj, rules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("expected rule match for label selector")
+	}
+	data := obj["data"].(map[string]interface{})
+	if data["api-key"] != "REDACTED" {
+		t.Errorf("expected REDACTED, got %v", data["api-key"])
+	}
+}
+
+func TestApplyRules_LabelSelector_NoMatch(t *testing.T) {
+	obj := mustDecode(t, `{
+		"kind":"ConfigMap",
+		"metadata":{"name":"app","namespace":"production","labels":{"app":"public"}},
+		"data":{"api-key":"secret"}
+	}`)
+	rules := []config.RedactionRule{
+		{FieldPath: "data.api-key", Kind: "ConfigMap", LabelSelector: "app=sensitive", Replacement: "REDACTED"},
+	}
+	changed, err := ApplyRules(obj, rules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed {
+		t.Fatal("expected no rule match for non-matching label selector")
+	}
+}
+
+func TestApplyRules_LabelSelector_Invalid(t *testing.T) {
+	obj := mustDecode(t, `{
+		"kind":"ConfigMap",
+		"metadata":{"name":"app","namespace":"production","labels":{"app":"sensitive"}},
+		"data":{"api-key":"secret"}
+	}`)
+	rules := []config.RedactionRule{
+		{FieldPath: "data.api-key", Kind: "ConfigMap", LabelSelector: "app in (", Replacement: "REDACTED"},
+	}
+	_, err := ApplyRules(obj, rules)
+	if err == nil {
+		t.Fatal("expected parse error for invalid label selector")
+	}
+}
+
+func TestSchemaTypeForPath_KnownKinds(t *testing.T) {
+	typeName, ok := schemaTypeForPath("Deployment", "spec.replicas")
+	if !ok {
+		t.Fatal("expected schema type for Deployment.spec.replicas")
+	}
+	if typeName != "integer" {
+		t.Fatalf("expected integer, got %q", typeName)
+	}
+
+	typeName, ok = schemaTypeForPath("Pod", "spec.automountServiceAccountToken")
+	if !ok {
+		t.Fatal("expected schema type for Pod.spec.automountServiceAccountToken")
+	}
+	if typeName != "bool" {
+		t.Fatalf("expected bool, got %q", typeName)
+	}
+
+	typeName, ok = schemaTypeForPath("ConfigMap", "data.api-key")
+	if !ok {
+		t.Fatal("expected schema type for ConfigMap.data.api-key")
+	}
+	if typeName != "string" {
+		t.Fatalf("expected string, got %q", typeName)
 	}
 }
 

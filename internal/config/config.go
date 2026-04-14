@@ -62,6 +62,10 @@ type RedactionRule struct {
 	// Namespace restricts the rule to resources in a specific namespace.
 	// Omit to match all namespaces.
 	Namespace string `mapstructure:"namespace"`
+	// LabelSelector restricts the rule to resources whose metadata.labels match
+	// the selector expression (for example: "app=api,tier in (backend)").
+	// Omit to match all labels.
+	LabelSelector string `mapstructure:"labelSelector"`
 	// Replacement is the string value written in place of the redacted field.
 	// It will be converted to the appropriate JSON type (see ValueType).
 	Replacement string `mapstructure:"replacement"`

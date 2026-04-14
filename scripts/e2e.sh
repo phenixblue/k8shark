@@ -449,6 +449,79 @@ if [[ -n "$INLINE_SERVER_PID" ]]; then
 fi
 rm -f "$INLINE_REDACTED_FILE" "$INLINE_SERVER_LOG"
 
+# ── Phase 6d: inline capture with --redact-field ─────────────────────────────
+log "Testing kshrk capture --redact-field (inline field-level redaction)"
+INLINE_FIELD_FILE="${CAPTURE_FILE%.tar.gz}-inline-field.tar.gz"
+INLINE_FIELD_SERVER_LOG="/tmp/k8shark-inline-field-server-$$.log"
+INLINE_FIELD_KC="/tmp/k8shark-inline-field-kc-$$.yaml"
+INLINE_FIELD_SERVER_PID=""
+
+# Capture with --redact-field targeting ConfigMap data.env; leave data.log-level
+# untouched so we can assert field-level selectivity.
+"$BINARY" --config "$CAPTURE_CONFIG" capture \
+  --redact-field "data.env:ConfigMap:REDACTED" \
+  --output "$INLINE_FIELD_FILE"
+
+if [[ -s "$INLINE_FIELD_FILE" ]]; then
+  pass "capture --redact-field: output archive created"
+else
+  fail "capture --redact-field: output archive missing or empty"
+fi
+
+"$BINARY" open "$INLINE_FIELD_FILE" --kubeconfig-out "$INLINE_FIELD_KC" \
+  >"$INLINE_FIELD_SERVER_LOG" 2>&1 &
+INLINE_FIELD_SERVER_PID=$!
+for i in $(seq 1 30); do
+  if [[ -s "$INLINE_FIELD_KC" ]]; then break; fi
+  sleep 0.5
+done
+
+if [[ ! -s "$INLINE_FIELD_KC" ]]; then
+  fail "capture --redact-field: mock server did not start within 15s"
+else
+  pass "capture --redact-field: mock server started"
+  for i in $(seq 1 20); do
+    if kubectl --kubeconfig "$INLINE_FIELD_KC" --request-timeout=2s \
+        get namespaces </dev/null &>/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.5
+  done
+
+  # data.env should be replaced.
+  env_val=$(kubectl --kubeconfig "$INLINE_FIELD_KC" --request-timeout=10s \
+    get configmap app-config -n k8shark-test \
+    -o jsonpath='{.data.env}' 2>/dev/null || echo "")
+  assert_equals "capture --redact-field: data.env replaced with REDACTED" \
+    "$env_val" "REDACTED"
+
+  # data.log-level should be untouched (not covered by the rule).
+  loglevel_val=$(kubectl --kubeconfig "$INLINE_FIELD_KC" --request-timeout=10s \
+    get configmap app-config -n k8shark-test \
+    -o jsonpath='{.data.log-level}' 2>/dev/null || echo "")
+  assert_equals "capture --redact-field: data.log-level preserved (not in rule)" \
+    "$loglevel_val" "info"
+
+  # Secrets should NOT be redacted (no --redact-secrets flag used).
+  REDACTED_B64_INLINE="UkVEQUNURUQ="
+  app_val=$(kubectl --kubeconfig "$INLINE_FIELD_KC" --request-timeout=10s \
+    get secret app-secret -n k8shark-test \
+    -o jsonpath='{.data.db-password}' 2>/dev/null || echo "")
+  if [[ -n "$app_val" && "$app_val" != "$REDACTED_B64_INLINE" ]]; then
+    pass "capture --redact-field: secret data NOT redacted (no --redact-secrets)"
+  elif [[ -z "$app_val" ]]; then
+    info "capture --redact-field: could not read secret data (may be ok)"
+  else
+    fail "capture --redact-field: secret was unexpectedly redacted"
+  fi
+fi
+
+if [[ -n "$INLINE_FIELD_SERVER_PID" ]]; then
+  kill "$INLINE_FIELD_SERVER_PID" 2>/dev/null || true
+  wait "$INLINE_FIELD_SERVER_PID" 2>/dev/null || true
+fi
+rm -f "$INLINE_FIELD_FILE" "$INLINE_FIELD_SERVER_LOG" "$INLINE_FIELD_KC"
+
 # ── Phase 7: Start mock server ─────────────────────────────────────────────────
 log "Starting kshrk open (mock server)"
 "$BINARY" open "$CAPTURE_FILE" >"$SERVER_LOG" 2>&1 &
@@ -654,6 +727,199 @@ if [[ -n "$REDACTED_SERVER_PID" ]]; then
   wait "$REDACTED_SERVER_PID" 2>/dev/null || true
 fi
 rm -f "$REDACTED_FILE" "$REDACTED_SERVER_LOG" "$REDACTED_KC"
+
+# ── Phase 8d: kshrk redact --redact-field (CLI field-level redaction) ─────────
+log "Testing kshrk redact --redact-field (field-level redaction via CLI)"
+FIELD_REDACTED_FILE="${CAPTURE_FILE%.tar.gz}-field-redacted.tar.gz"
+FIELD_REDACTED_SERVER_LOG="/tmp/k8shark-field-redacted-server-$$.log"
+FIELD_REDACTED_KC="/tmp/k8shark-field-redacted-kc-$$.yaml"
+FIELD_REDACTED_SERVER_PID=""
+
+# Target only data.env in ConfigMaps; leave data.log-level and all secrets alone.
+field_redact_out=$("$BINARY" redact \
+  --in "$CAPTURE_FILE" \
+  --out "$FIELD_REDACTED_FILE" \
+  --redact-field "data.env:ConfigMap:REDACTED" \
+  2>&1) || true
+
+assert_contains "field-redact: success message present"   "$field_redact_out" "Redacted"
+assert_contains "field-redact: field count in output"     "$field_redact_out" "field"
+if [[ -s "$FIELD_REDACTED_FILE" ]]; then
+  pass "field-redact: output archive created"
+else
+  fail "field-redact: output archive missing or empty"
+fi
+
+FIELD_COUNT=$(echo "$field_redact_out" | grep -oE '[0-9]+[[:space:]]+field' \
+  | grep -oE '^[0-9]+' || echo "0")
+if [[ "$FIELD_COUNT" -gt 0 ]]; then
+  pass "field-redact: $FIELD_COUNT field(s) reported redacted"
+else
+  fail "field-redact: expected > 0 fields redacted, got 0"
+fi
+
+"$BINARY" open "$FIELD_REDACTED_FILE" --kubeconfig-out "$FIELD_REDACTED_KC" \
+  >"$FIELD_REDACTED_SERVER_LOG" 2>&1 &
+FIELD_REDACTED_SERVER_PID=$!
+for i in $(seq 1 30); do
+  if [[ -s "$FIELD_REDACTED_KC" ]]; then break; fi
+  sleep 0.5
+done
+
+if [[ ! -s "$FIELD_REDACTED_KC" ]]; then
+  fail "field-redact: mock server did not start within 15s"
+else
+  pass "field-redact: mock server started"
+  for i in $(seq 1 20); do
+    if kubectl --kubeconfig "$FIELD_REDACTED_KC" --request-timeout=2s \
+        get namespaces </dev/null &>/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.5
+  done
+
+  # data.env should be overwritten by the rule.
+  env_val=$(kubectl --kubeconfig "$FIELD_REDACTED_KC" --request-timeout=10s \
+    get configmap app-config -n k8shark-test \
+    -o jsonpath='{.data.env}' 2>/dev/null || echo "")
+  assert_equals "field-redact: data.env replaced with REDACTED" "$env_val" "REDACTED"
+
+  # data.log-level is NOT in the rule and must remain intact.
+  loglevel_val=$(kubectl --kubeconfig "$FIELD_REDACTED_KC" --request-timeout=10s \
+    get configmap app-config -n k8shark-test \
+    -o jsonpath='{.data.log-level}' 2>/dev/null || echo "")
+  assert_equals "field-redact: data.log-level preserved (not in rule)" \
+    "$loglevel_val" "info"
+
+  # No --redact-secrets flag → secret data must NOT be redacted.
+  REDACTED_B64_FTEST="UkVEQUNURUQ="
+  secret_val=$(kubectl --kubeconfig "$FIELD_REDACTED_KC" --request-timeout=10s \
+    get secret app-secret -n k8shark-test \
+    -o jsonpath='{.data.db-password}' 2>/dev/null || echo "")
+  if [[ -n "$secret_val" && "$secret_val" != "$REDACTED_B64_FTEST" ]]; then
+    pass "field-redact: secret data NOT redacted (no --redact-secrets)"
+  elif [[ -z "$secret_val" ]]; then
+    info "field-redact: could not read secret data to verify"
+  else
+    fail "field-redact: secret was unexpectedly redacted"
+  fi
+fi
+
+if [[ -n "$FIELD_REDACTED_SERVER_PID" ]]; then
+  kill "$FIELD_REDACTED_SERVER_PID" 2>/dev/null || true
+  wait "$FIELD_REDACTED_SERVER_PID" 2>/dev/null || true
+fi
+rm -f "$FIELD_REDACTED_FILE" "$FIELD_REDACTED_SERVER_LOG" "$FIELD_REDACTED_KC"
+
+# ── Phase 8e: kshrk redact --config with redaction.rules ──────────────────────
+log "Testing kshrk redact --config (config-driven redaction.rules + redactSecrets)"
+CFGREDACT_FILE="${CAPTURE_FILE%.tar.gz}-cfgredact.tar.gz"
+CFGREDACT_CONFIG="/tmp/k8shark-cfgredact-$$.yaml"
+CFGREDACT_SERVER_LOG="/tmp/k8shark-cfgredact-server-$$.log"
+CFGREDACT_KC="/tmp/k8shark-cfgredact-kc-$$.yaml"
+CFGREDACT_SERVER_PID=""
+
+# Redact data.log-level in ConfigMaps (via rules), redact all secrets except
+# app-secret (which is allowlisted); leave data.env untouched.
+cat > "$CFGREDACT_CONFIG" <<YAML
+duration: 5m
+resources: []
+redaction:
+  redactSecrets: true
+  allowSecrets:
+    - k8shark-test/app-secret
+  rules:
+    - fieldPath: "data.log-level"
+      kind: ConfigMap
+      replacement: SANITIZED
+YAML
+pass "config-redact: redaction config written"
+
+cfg_redact_out=$("$BINARY" redact \
+  --in "$CAPTURE_FILE" \
+  --out "$CFGREDACT_FILE" \
+  --config "$CFGREDACT_CONFIG" \
+  2>&1) || true
+
+assert_contains "config-redact: success message present" "$cfg_redact_out" "Redacted"
+if [[ -s "$CFGREDACT_FILE" ]]; then
+  pass "config-redact: output archive created"
+else
+  fail "config-redact: output archive missing or empty"
+fi
+
+"$BINARY" open "$CFGREDACT_FILE" --kubeconfig-out "$CFGREDACT_KC" \
+  >"$CFGREDACT_SERVER_LOG" 2>&1 &
+CFGREDACT_SERVER_PID=$!
+for i in $(seq 1 30); do
+  if [[ -s "$CFGREDACT_KC" ]]; then break; fi
+  sleep 0.5
+done
+
+if [[ ! -s "$CFGREDACT_KC" ]]; then
+  fail "config-redact: mock server did not start within 15s"
+else
+  pass "config-redact: mock server started"
+  for i in $(seq 1 20); do
+    if kubectl --kubeconfig "$CFGREDACT_KC" --request-timeout=2s \
+        get namespaces </dev/null &>/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.5
+  done
+
+  # data.log-level should be replaced by the config rule.
+  loglevel_val=$(kubectl --kubeconfig "$CFGREDACT_KC" --request-timeout=10s \
+    get configmap app-config -n k8shark-test \
+    -o jsonpath='{.data.log-level}' 2>/dev/null || echo "")
+  assert_equals "config-redact: data.log-level replaced via config rule" \
+    "$loglevel_val" "SANITIZED"
+
+  # data.env is NOT in the rules and must remain "production".
+  env_val=$(kubectl --kubeconfig "$CFGREDACT_KC" --request-timeout=10s \
+    get configmap app-config -n k8shark-test \
+    -o jsonpath='{.data.env}' 2>/dev/null || echo "")
+  assert_equals "config-redact: data.env preserved (not in rules)" \
+    "$env_val" "production"
+
+  # app-secret is allowlisted → its data must be preserved.
+  REDACTED_B64_CFG="UkVEQUNURUQ="
+  app_val=$(kubectl --kubeconfig "$CFGREDACT_KC" --request-timeout=10s \
+    get secret app-secret -n k8shark-test \
+    -o jsonpath='{.data.db-password}' 2>/dev/null || echo "")
+  if [[ -n "$app_val" && "$app_val" != "$REDACTED_B64_CFG" ]]; then
+    pass "config-redact: allowlisted app-secret data preserved"
+  elif [[ -z "$app_val" ]]; then
+    fail "config-redact: could not read app-secret data"
+  else
+    fail "config-redact: app-secret redacted despite allowSecrets in config"
+  fi
+
+  # A non-allowlisted secret (if any exists in k8shark-test) should be redacted.
+  other_secret=$(kubectl --kubeconfig "$CFGREDACT_KC" --request-timeout=10s \
+    get secrets -n k8shark-test -o name 2>/dev/null \
+    | grep -v "app-secret" | head -1 || echo "")
+  if [[ -n "$other_secret" ]]; then
+    other_data=$(kubectl --kubeconfig "$CFGREDACT_KC" --request-timeout=10s \
+      get "$other_secret" -n k8shark-test \
+      -o jsonpath='{range .data.*}{@}{"\n"}{end}' 2>/dev/null | head -1 || echo "")
+    if [[ "$other_data" == "$REDACTED_B64_CFG" ]]; then
+      pass "config-redact: non-allowlisted secret data redacted (redactSecrets: true)"
+    elif [[ -z "$other_data" ]]; then
+      info "config-redact: other secret had no data fields to verify"
+    else
+      fail "config-redact: non-allowlisted secret not redacted (got '$other_data')"
+    fi
+  else
+    info "config-redact: no other secrets in k8shark-test to verify redactSecrets"
+  fi
+fi
+
+if [[ -n "$CFGREDACT_SERVER_PID" ]]; then
+  kill "$CFGREDACT_SERVER_PID" 2>/dev/null || true
+  wait "$CFGREDACT_SERVER_PID" 2>/dev/null || true
+fi
+rm -f "$CFGREDACT_FILE" "$CFGREDACT_CONFIG" "$CFGREDACT_SERVER_LOG" "$CFGREDACT_KC"
 
 # ── Phase 8c: kubectl logs ────────────────────────────────────────────────────
 log "Testing kubectl logs via mock server"
