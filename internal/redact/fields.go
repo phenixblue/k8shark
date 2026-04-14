@@ -206,9 +206,7 @@ func schemaTypeForPath(kind, fieldPath string) (string, bool) {
 	if kind == "" {
 		return "", false
 	}
-	if strings.HasSuffix(kind, "List") {
-		kind = strings.TrimSuffix(kind, "List")
-	}
+	kind = strings.TrimSuffix(kind, "List")
 	root, ok := schemaKindTypes[kind]
 	if !ok {
 		return "", false
