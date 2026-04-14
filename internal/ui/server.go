@@ -221,7 +221,7 @@ func (h *explorerHandler) serveDetail(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("name")
 	var (
 		body []byte
-		code = http.StatusOK
+		code int
 		err  error
 	)
 	if name != "" {
@@ -256,7 +256,7 @@ func (h *explorerHandler) serveDetail(w http.ResponseWriter, r *http.Request) {
 	prettyJSON := body
 	var out bytes.Buffer
 	if err := json.Indent(&out, body, "", "  "); err == nil {
-		prettyJSON = []byte(out.String())
+		prettyJSON = out.Bytes()
 	}
 	var obj any
 	if err := json.Unmarshal(body, &obj); err != nil {
@@ -643,41 +643,6 @@ func kindFromResource(resource string) string {
 	return strings.ToUpper(s[:1]) + s[1:]
 }
 
-func buildPathCandidates(index map[string]*capture.IndexEntry) map[string][]string {
-	pathsByBase := make(map[string][]string)
-	for path := range index {
-		base := baseAPIPath(path)
-		if _, _, resource, _, _ := parseAPIPath(base); resource == "" {
-			continue
-		}
-		pathsByBase[base] = append(pathsByBase[base], path)
-	}
-	for base := range pathsByBase {
-		sort.Slice(pathsByBase[base], func(i, j int) bool {
-			pi := pathPriority(pathsByBase[base][i])
-			pj := pathPriority(pathsByBase[base][j])
-			if pi == pj {
-				return pathsByBase[base][i] < pathsByBase[base][j]
-			}
-			return pi < pj
-		})
-	}
-	return pathsByBase
-}
-
-func sortedKeys(m map[string][]string) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
-}
-
-func (h *explorerHandler) loadResourceItems(candidates []string) ([]listItem, bool) {
-	return h.loadResourceItemsAt(candidates, h.at)
-}
-
 func (h *explorerHandler) loadResourceItemsAt(candidates []string, at time.Time) ([]listItem, bool) {
 	sorted := append([]string(nil), candidates...)
 	sort.Slice(sorted, func(i, j int) bool {
@@ -803,10 +768,6 @@ func itemIdentityKey(item map[string]any) string {
 	return firstNonEmpty(asString(item["kind"]), "?") + "/" + asString(meta["namespace"]) + "/" + asString(meta["name"])
 }
 
-func (h *explorerHandler) findResourceBody(path, name string) ([]byte, int, error) {
-	return h.findResourceBodyAt(path, name, h.at)
-}
-
 func (h *explorerHandler) findResourceBodyAt(path, name string, at time.Time) ([]byte, int, error) {
 	bodies, ok := h.responseBodiesAt(path, at)
 	if !ok {
@@ -822,10 +783,6 @@ func (h *explorerHandler) findResourceBodyAt(path, name string, at time.Time) ([
 		}
 	}
 	return nil, http.StatusNotFound, nil
-}
-
-func (h *explorerHandler) responseBodies(path string) ([][]byte, bool) {
-	return h.responseBodiesAt(path, h.at)
 }
 
 func (h *explorerHandler) responseBodiesAt(path string, at time.Time) ([][]byte, bool) {
