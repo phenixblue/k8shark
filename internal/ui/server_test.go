@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -149,6 +150,68 @@ func TestBuildTree_IncludesTableRows(t *testing.T) {
 	ns := tree.Namespaces[0]
 	if len(ns.Resources) != 1 || ns.Resources[0].Name != "table-config" {
 		t.Fatalf("expected table row object to appear, got %+v", ns.Resources)
+	}
+}
+
+func TestServeTimestamps(t *testing.T) {
+	store := buildMultiSnapshotStore(t)
+	h := &explorerHandler{store: store}
+	req := httptest.NewRequest(http.MethodGet, "/api/ui/timestamps", nil)
+	rr := httptest.NewRecorder()
+	h.serveTimestamps(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	raw, ok := body["timestamps"].([]any)
+	if !ok {
+		t.Fatalf("expected timestamps array, got %T", body["timestamps"])
+	}
+	if len(raw) != 2 {
+		t.Fatalf("expected 2 timestamps, got %d", len(raw))
+	}
+	first, _ := raw[0].(string)
+	second, _ := raw[1].(string)
+	if !(strings.HasSuffix(first, "Z") && strings.HasSuffix(second, "Z")) {
+		t.Fatalf("expected RFC3339 timestamps, got %q and %q", first, second)
+	}
+}
+
+func TestServeTree_AtOverride(t *testing.T) {
+	store := buildMultiSnapshotStore(t)
+	h := &explorerHandler{store: store}
+	target := time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC).Format(time.RFC3339)
+	req := httptest.NewRequest(http.MethodGet, "/api/ui/tree?at="+target, nil)
+	rr := httptest.NewRecorder()
+	h.serveTree(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	var tree treeResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &tree); err != nil {
+		t.Fatalf("unmarshal tree: %v", err)
+	}
+	if len(tree.Namespaces) != 1 || len(tree.Namespaces[0].Pods) != 1 {
+		t.Fatalf("expected one namespace with one pod, got %+v", tree.Namespaces)
+	}
+	if tree.Namespaces[0].Pods[0].Name != "demo-old" {
+		t.Fatalf("expected older pod at selected timestamp, got %q", tree.Namespaces[0].Pods[0].Name)
+	}
+}
+
+func TestServeTree_AtInvalid(t *testing.T) {
+	store := buildTestStore(t)
+	h := &explorerHandler{store: store}
+	req := httptest.NewRequest(http.MethodGet, "/api/ui/tree?at=not-a-time", nil)
+	rr := httptest.NewRecorder()
+	h.serveTree(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rr.Code)
 	}
 }
 
@@ -372,6 +435,46 @@ func buildTableOnlyStore(t *testing.T) *server.CaptureStore {
 		},
 	}
 	meta := &capture.CaptureMetadata{CaptureID: "ui-table-only-test", CapturedAt: now.Add(-2 * time.Minute), CapturedUntil: now, RecordCount: len(recs)}
+	if err := archive.Write(out, meta, recs, idx); err != nil {
+		t.Fatalf("archive.Write: %v", err)
+	}
+
+	extractDir := filepath.Join(dir, "extract")
+	if err := os.MkdirAll(extractDir, 0o750); err != nil {
+		t.Fatalf("mkdir extract: %v", err)
+	}
+	if err := archive.Open(out, extractDir); err != nil {
+		t.Fatalf("archive.Open: %v", err)
+	}
+	store, err := server.LoadStore(extractDir)
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	return store
+}
+
+func buildMultiSnapshotStore(t *testing.T) *server.CaptureStore {
+	t.Helper()
+	dir := t.TempDir()
+	out := filepath.Join(dir, "capture-multi-snapshot.tar.gz")
+	t1 := time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC)
+	t2 := t1.Add(5 * time.Minute)
+
+	podListOld := `{"apiVersion":"v1","kind":"PodList","items":[{"apiVersion":"v1","kind":"Pod","metadata":{"name":"demo-old","namespace":"default","uid":"pod-old"},"spec":{"containers":[{"name":"main"}]},"status":{"phase":"Running"}}]}`
+	podListNew := `{"apiVersion":"v1","kind":"PodList","items":[{"apiVersion":"v1","kind":"Pod","metadata":{"name":"demo-new","namespace":"default","uid":"pod-new"},"spec":{"containers":[{"name":"main"}]},"status":{"phase":"Running"}}]}`
+
+	recs := []*capture.Record{
+		{ID: "s1", CapturedAt: t1, APIPath: "/api/v1/namespaces/default/pods", HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(podListOld)},
+		{ID: "s2", CapturedAt: t2, APIPath: "/api/v1/namespaces/default/pods", HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(podListNew)},
+	}
+	idx := capture.Index{
+		"/api/v1/namespaces/default/pods": {
+			APIPath:   "/api/v1/namespaces/default/pods",
+			RecordIDs: []string{"s1", "s2"},
+			Times:     []time.Time{t1, t2},
+		},
+	}
+	meta := &capture.CaptureMetadata{CaptureID: "ui-multi-snapshot-test", CapturedAt: t1, CapturedUntil: t2, RecordCount: len(recs)}
 	if err := archive.Write(out, meta, recs, idx); err != nil {
 		t.Fatalf("archive.Write: %v", err)
 	}

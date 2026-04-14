@@ -49,6 +49,13 @@ type treeResponse struct {
 	ResourceKinds []string        `json:"resource_kinds"`
 }
 
+type timestampsResponse struct {
+	CapturedAt    time.Time `json:"captured_at"`
+	CapturedUntil time.Time `json:"captured_until"`
+	DefaultAt     string    `json:"default_at,omitempty"`
+	Timestamps    []string  `json:"timestamps"`
+}
+
 type namespaceNode struct {
 	Name      string         `json:"name"`
 	Workloads []workloadNode `json:"workloads"`
@@ -134,6 +141,7 @@ func Open(opts OpenOptions) (*Server, error) {
 	mux.HandleFunc("/", h.serveIndex)
 	mux.HandleFunc("/api/ui/tree", h.serveTree)
 	mux.HandleFunc("/api/ui/detail", h.serveDetail)
+	mux.HandleFunc("/api/ui/timestamps", h.serveTimestamps)
 
 	httpSrv := &http.Server{Handler: mux}
 	done := make(chan struct{})
@@ -181,7 +189,13 @@ func (h *explorerHandler) serveIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *explorerHandler) serveTree(w http.ResponseWriter, r *http.Request) {
-	resp, err := h.buildTree()
+	at, err := h.resolveRequestAt(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	resp, err := h.buildTreeAt(at)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -190,6 +204,12 @@ func (h *explorerHandler) serveTree(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *explorerHandler) serveDetail(w http.ResponseWriter, r *http.Request) {
+	at, atErr := h.resolveRequestAt(r)
+	if atErr != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": atErr.Error()})
+		return
+	}
+
 	path := r.URL.Query().Get("path")
 	if path == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing path query parameter"})
@@ -203,7 +223,7 @@ func (h *explorerHandler) serveDetail(w http.ResponseWriter, r *http.Request) {
 		err  error
 	)
 	if name != "" {
-		body, code, err = h.findResourceBody(path, name)
+		body, code, err = h.findResourceBodyAt(path, name, at)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
@@ -213,7 +233,7 @@ func (h *explorerHandler) serveDetail(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		body, code, err = h.store.Latest(path, h.at)
+		body, code, err = h.store.Latest(path, at)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
@@ -250,6 +270,30 @@ func (h *explorerHandler) serveDetail(w http.ResponseWriter, r *http.Request) {
 		"yaml":        string(yml),
 		"inferred":    inferred,
 	})
+}
+
+func (h *explorerHandler) serveTimestamps(w http.ResponseWriter, r *http.Request) {
+	times := collectTimestamps(h.store.Index)
+	resp := timestampsResponse{
+		CapturedAt:    h.store.Metadata.CapturedAt,
+		CapturedUntil: h.store.Metadata.CapturedUntil,
+		Timestamps:    times,
+	}
+	if !h.at.IsZero() {
+		resp.DefaultAt = h.at.UTC().Format(time.RFC3339)
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *explorerHandler) resolveRequestAt(r *http.Request) (time.Time, error) {
+	raw := strings.TrimSpace(r.URL.Query().Get("at"))
+	if raw == "" {
+		return h.at, nil
+	}
+	if strings.EqualFold(raw, "latest") {
+		return time.Time{}, nil
+	}
+	return parseReplayAt(h.store.Metadata.CapturedAt, h.store.Metadata.CapturedUntil, raw)
 }
 
 func normalizeDetailBody(body []byte, path string) ([]byte, map[string]bool, error) {
@@ -289,6 +333,10 @@ func normalizeDetailBody(body []byte, path string) ([]byte, map[string]bool, err
 }
 
 func (h *explorerHandler) buildTree() (*treeResponse, error) {
+	return h.buildTreeAt(h.at)
+}
+
+func (h *explorerHandler) buildTreeAt(at time.Time) (*treeResponse, error) {
 	nsMap := map[string]*namespaceNode{}
 	clusterScoped := make([]resourceNode, 0)
 	kindSet := map[string]bool{}
@@ -315,7 +363,7 @@ func (h *explorerHandler) buildTree() (*treeResponse, error) {
 	}
 	for ns, resMap := range byNSRes {
 		for resource, candidates := range resMap {
-			items, ok := h.loadResourceItems(candidates)
+			items, ok := h.loadResourceItemsAt(candidates, at)
 			if !ok {
 				continue
 			}
@@ -623,6 +671,10 @@ func sortedKeys(m map[string][]string) []string {
 }
 
 func (h *explorerHandler) loadResourceItems(candidates []string) ([]listItem, bool) {
+	return h.loadResourceItemsAt(candidates, h.at)
+}
+
+func (h *explorerHandler) loadResourceItemsAt(candidates []string, at time.Time) ([]listItem, bool) {
 	sorted := append([]string(nil), candidates...)
 	sort.Slice(sorted, func(i, j int) bool {
 		pi := pathPriority(sorted[i])
@@ -638,7 +690,7 @@ func (h *explorerHandler) loadResourceItems(candidates []string) ([]listItem, bo
 	itemsByKey := make(map[string]listItem)
 	var itemOrder []string
 	for _, candidate := range sorted {
-		bodies, ok := h.responseBodies(candidate)
+		bodies, ok := h.responseBodiesAt(candidate, at)
 		if !ok {
 			continue
 		}
@@ -748,7 +800,11 @@ func itemIdentityKey(item map[string]any) string {
 }
 
 func (h *explorerHandler) findResourceBody(path, name string) ([]byte, int, error) {
-	bodies, ok := h.responseBodies(path)
+	return h.findResourceBodyAt(path, name, h.at)
+}
+
+func (h *explorerHandler) findResourceBodyAt(path, name string, at time.Time) ([]byte, int, error) {
+	bodies, ok := h.responseBodiesAt(path, at)
 	if !ok {
 		return nil, http.StatusNotFound, nil
 	}
@@ -765,15 +821,19 @@ func (h *explorerHandler) findResourceBody(path, name string) ([]byte, int, erro
 }
 
 func (h *explorerHandler) responseBodies(path string) ([][]byte, bool) {
+	return h.responseBodiesAt(path, h.at)
+}
+
+func (h *explorerHandler) responseBodiesAt(path string, at time.Time) ([][]byte, bool) {
 	entry, ok := h.store.Index[path]
 	if !ok || len(entry.RecordIDs) == 0 {
 		return nil, false
 	}
 
-	if !h.at.IsZero() {
+	if !at.IsZero() {
 		index := -1
 		for i, t := range entry.Times {
-			if !t.After(h.at) {
+			if !t.After(at) {
 				index = i
 			}
 		}
@@ -799,6 +859,31 @@ func (h *explorerHandler) responseBodies(path string) ([][]byte, bool) {
 		return nil, false
 	}
 	return bodies, true
+}
+
+func collectTimestamps(index capture.Index) []string {
+	if len(index) == 0 {
+		return nil
+	}
+	uniq := make(map[time.Time]struct{})
+	for _, entry := range index {
+		for _, t := range entry.Times {
+			if t.IsZero() {
+				continue
+			}
+			uniq[t.UTC()] = struct{}{}
+		}
+	}
+	out := make([]time.Time, 0, len(uniq))
+	for t := range uniq {
+		out = append(out, t)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Before(out[j]) })
+	rfc := make([]string, 0, len(out))
+	for _, t := range out {
+		rfc = append(rfc, t.Format(time.RFC3339))
+	}
+	return rfc
 }
 
 func (h *explorerHandler) readRecordBody(id string) ([]byte, bool) {
@@ -924,7 +1009,10 @@ const indexHTML = `<!doctype html>
   <style>
     :root { --bg:#0b0f14; --panel:#111827; --text:#e5e7eb; --muted:#94a3b8; --line:#1f2937; --ok:#16a34a; --warn:#f59e0b; --bad:#dc2626; --accent:#22c55e; }
     body { margin:0; font-family: ui-sans-serif, -apple-system, Segoe UI, sans-serif; background:linear-gradient(145deg,#0b0f14,#0f172a); color:var(--text); }
-    header { padding:14px 18px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; }
+	header { padding:14px 18px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; gap:12px; }
+	.head-right { display:flex; align-items:center; gap:10px; }
+	.snapshot-select { min-width:220px; max-width:340px; box-sizing:border-box; padding:6px 8px; border:1px solid #334155; border-radius:8px; background:#0f172a; color:var(--text); }
+	.snapshot-label { color:var(--muted); font-size:12px; }
     .layout { display:grid; grid-template-columns:260px 1fr 40%; min-height:calc(100vh - 56px); }
     .panel { border-right:1px solid var(--line); overflow:auto; }
     .panel:last-child { border-right:none; border-left:1px solid var(--line); }
@@ -985,7 +1073,11 @@ const indexHTML = `<!doctype html>
 <body>
   <header>
     <div><strong>kshrk capture explorer</strong></div>
-    <div id="meta" class="muted"></div>
+		<div class="head-right">
+			<span class="snapshot-label">Snapshot</span>
+			<select id="snapshotAt" class="snapshot-select" title="Select capture timestamp"></select>
+			<div id="meta" class="muted"></div>
+		</div>
   </header>
   <div class="layout">
     <aside class="panel side">
@@ -1039,6 +1131,7 @@ const indexHTML = `<!doctype html>
 	const storageKindsKey = 'kshrk.ui.activeKinds.v1';
 	const storageExpandedKey = 'kshrk.ui.expandedSections.v1';
 	let expandedSections = {};
+	let currentAt = '';
 
     const el = {
       tree: document.getElementById('tree'),
@@ -1057,6 +1150,7 @@ const indexHTML = `<!doctype html>
 			toggleNone: document.getElementById('toggleNone'),
 			expandAll: document.getElementById('expandAll'),
 			collapseAll: document.getElementById('collapseAll'),
+			snapshotAt: document.getElementById('snapshotAt'),
 			toasts: document.getElementById('toasts')
     };
 
@@ -1069,7 +1163,93 @@ const indexHTML = `<!doctype html>
 		el.toggleNone.onclick = () => setAllKinds(false);
 	el.expandAll.onclick = () => setAllTreeDetails(true);
 	el.collapseAll.onclick = () => setAllTreeDetails(false);
+	el.snapshotAt.onchange = () => {
+		currentAt = el.snapshotAt.value || '';
+		syncAtInURL();
+		refreshTree();
+	};
 	document.addEventListener('keydown', onTreeKeyDown);
+
+	function syncAtInURL() {
+		const u = new URL(window.location.href);
+		if (currentAt) {
+			u.searchParams.set('at', currentAt);
+		} else {
+			u.searchParams.delete('at');
+		}
+		window.history.replaceState({}, '', u.toString());
+	}
+
+	function initAtFromURL() {
+		const u = new URL(window.location.href);
+		const at = (u.searchParams.get('at') || '').trim();
+		if (at) {
+			currentAt = at;
+		}
+	}
+
+	function withAtQuery(params) {
+		if (currentAt) {
+			params.set('at', currentAt);
+		}
+		return params;
+	}
+
+	function formatAtLabel(v) {
+		if (!v || v === 'latest') return 'Latest available';
+		const d = new Date(v);
+		if (Number.isNaN(d.getTime())) return v;
+		return d.toISOString();
+	}
+
+	function updateMetaLine() {
+		if (!treeData) {
+			el.meta.textContent = 'capture unavailable';
+			return;
+		}
+		const start = new Date(treeData.captured_at).toISOString();
+		const end = new Date(treeData.captured_until).toISOString();
+		const atLabel = formatAtLabel(currentAt);
+		el.meta.textContent = 'capture ' + start + ' to ' + end + ' | view: ' + atLabel;
+	}
+
+	function renderSnapshotSelector(times, defaultAt) {
+		const opts = Array.isArray(times) ? times.slice() : [];
+		const unique = [];
+		const seen = new Set();
+		for (const ts of opts) {
+			if (!ts || seen.has(ts)) continue;
+			seen.add(ts);
+			unique.push(ts);
+		}
+
+		el.snapshotAt.innerHTML = '';
+		const latest = document.createElement('option');
+		latest.value = 'latest';
+		latest.textContent = 'Latest available';
+		el.snapshotAt.appendChild(latest);
+
+		for (const ts of unique) {
+			const opt = document.createElement('option');
+			opt.value = ts;
+			opt.textContent = formatAtLabel(ts);
+			el.snapshotAt.appendChild(opt);
+		}
+
+		if (!currentAt && defaultAt) {
+			currentAt = defaultAt;
+		}
+		if (!currentAt) {
+			currentAt = 'latest';
+		}
+		if (currentAt !== 'latest' && !seen.has(currentAt)) {
+			const opt = document.createElement('option');
+			opt.value = currentAt;
+			opt.textContent = formatAtLabel(currentAt);
+			el.snapshotAt.appendChild(opt);
+		}
+		el.snapshotAt.value = currentAt;
+	}
 
     function setTab(tab) {
       activeTab = tab;
@@ -1342,7 +1522,7 @@ const indexHTML = `<!doctype html>
       el.detailTitle.textContent = node.kind + ' ' + node.name;
 			el.detailBody.textContent = 'Loading detail...';
 			try {
-				const q = new URLSearchParams({ path: node.list_path, name: node.name });
+				const q = withAtQuery(new URLSearchParams({ path: node.list_path, name: node.name }));
 				const res = await fetch('/api/ui/detail?' + q.toString());
 				const data = await res.json();
 				if (!res.ok) {
@@ -1517,20 +1697,45 @@ const indexHTML = `<!doctype html>
 			persistExpandedSections();
 		}
 
-    async function init() {
+		async function loadTimestamps() {
+			const q = withAtQuery(new URLSearchParams());
+			const url = q.toString() ? ('/api/ui/timestamps?' + q.toString()) : '/api/ui/timestamps';
+			const res = await fetch(url);
+			const data = await res.json();
+			if (!res.ok) {
+				const msg = (data && data.error) ? data.error : ('request failed with status ' + res.status);
+				throw new Error(msg);
+			}
+			renderSnapshotSelector(data.timestamps || [], data.default_at || '');
+			syncAtInURL();
+		}
+
+		async function refreshTree() {
+			setTreeState('loading', 'Loading captured resources...');
+			const q = withAtQuery(new URLSearchParams());
+			const url = q.toString() ? ('/api/ui/tree?' + q.toString()) : '/api/ui/tree';
+			const res = await fetch(url);
+			const data = await res.json();
+			if (!res.ok) {
+				const msg = (data && data.error) ? data.error : ('request failed with status ' + res.status);
+				throw new Error(msg);
+			}
+			treeData = data;
+			updateMetaLine();
+			renderToggles((treeData.resource_kinds || []).concat(['Container']));
+			render();
+			if (selected && selected.node) {
+				showDetail(selected.node, selected.crumbs || ['Cluster']);
+			}
+		}
+
+		async function init() {
 			setTreeState('loading', 'Loading captured resources...');
 			try {
 				loadPreferences();
-				const res = await fetch('/api/ui/tree');
-				const data = await res.json();
-				if (!res.ok) {
-					const msg = (data && data.error) ? data.error : ('request failed with status ' + res.status);
-					throw new Error(msg);
-				}
-				treeData = data;
-				el.meta.textContent = 'capture ' + new Date(treeData.captured_at).toISOString() + ' to ' + new Date(treeData.captured_until).toISOString();
-				renderToggles((treeData.resource_kinds || []).concat(['Container']));
-				render();
+				initAtFromURL();
+				await loadTimestamps();
+				await refreshTree();
 			} catch (err) {
 				const msg = (err && err.message ? err.message : String(err));
 				setTreeState('error', 'Failed to load capture tree: ' + msg);
