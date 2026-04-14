@@ -1011,8 +1011,12 @@ const indexHTML = `<!doctype html>
     body { margin:0; font-family: ui-sans-serif, -apple-system, Segoe UI, sans-serif; background:linear-gradient(145deg,#0b0f14,#0f172a); color:var(--text); }
 	header { padding:14px 18px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; gap:12px; }
 	.head-right { display:flex; align-items:center; gap:10px; }
+	.snapshot-nav { display:flex; align-items:center; gap:6px; }
 	.snapshot-select { min-width:220px; max-width:340px; box-sizing:border-box; padding:6px 8px; border:1px solid #334155; border-radius:8px; background:#0f172a; color:var(--text); }
 	.snapshot-label { color:var(--muted); font-size:12px; }
+	.snapshot-btn { padding:6px 10px; border-radius:8px; border:1px solid #334155; background:#0f172a; color:#cbd5e1; cursor:pointer; font-size:12px; }
+	.snapshot-btn:hover { border-color:#64748b; }
+	.snapshot-btn:disabled { opacity:.45; cursor:not-allowed; border-color:#1f2937; }
     .layout { display:grid; grid-template-columns:260px 1fr 40%; min-height:calc(100vh - 56px); }
     .panel { border-right:1px solid var(--line); overflow:auto; }
     .panel:last-child { border-right:none; border-left:1px solid var(--line); }
@@ -1075,7 +1079,11 @@ const indexHTML = `<!doctype html>
     <div><strong>kshrk capture explorer</strong></div>
 		<div class="head-right">
 			<span class="snapshot-label">Snapshot</span>
-			<select id="snapshotAt" class="snapshot-select" title="Select capture timestamp"></select>
+			<div class="snapshot-nav">
+				<button id="snapshotPrev" class="snapshot-btn" type="button" title="Jump to older snapshot">Prev</button>
+				<select id="snapshotAt" class="snapshot-select" title="Select capture timestamp"></select>
+				<button id="snapshotNext" class="snapshot-btn" type="button" title="Jump to newer snapshot">Next</button>
+			</div>
 			<div id="meta" class="muted"></div>
 		</div>
   </header>
@@ -1150,7 +1158,9 @@ const indexHTML = `<!doctype html>
 			toggleNone: document.getElementById('toggleNone'),
 			expandAll: document.getElementById('expandAll'),
 			collapseAll: document.getElementById('collapseAll'),
+			snapshotPrev: document.getElementById('snapshotPrev'),
 			snapshotAt: document.getElementById('snapshotAt'),
+			snapshotNext: document.getElementById('snapshotNext'),
 			toasts: document.getElementById('toasts')
     };
 
@@ -1163,11 +1173,14 @@ const indexHTML = `<!doctype html>
 		el.toggleNone.onclick = () => setAllKinds(false);
 	el.expandAll.onclick = () => setAllTreeDetails(true);
 	el.collapseAll.onclick = () => setAllTreeDetails(false);
+	el.snapshotPrev.onclick = () => stepSnapshot(1);
 	el.snapshotAt.onchange = () => {
 		currentAt = el.snapshotAt.value || '';
+		syncSnapshotButtons();
 		syncAtInURL();
 		refreshTree();
 	};
+	el.snapshotNext.onclick = () => stepSnapshot(-1);
 	document.addEventListener('keydown', onTreeKeyDown);
 
 	function syncAtInURL() {
@@ -1202,6 +1215,38 @@ const indexHTML = `<!doctype html>
 		return d.toISOString();
 	}
 
+	function snapshotSequence() {
+		return Array.from(el.snapshotAt.options).map((opt) => opt.value);
+	}
+
+	function syncSnapshotButtons() {
+		const sequence = snapshotSequence();
+		const idx = sequence.indexOf(currentAt || 'latest');
+		el.snapshotPrev.disabled = idx < 0 || idx >= sequence.length - 1;
+		el.snapshotNext.disabled = idx <= 0;
+	}
+
+	function stepSnapshot(delta) {
+		const sequence = snapshotSequence();
+		if (sequence.length === 0) {
+			return;
+		}
+		const current = currentAt || 'latest';
+		const idx = sequence.indexOf(current);
+		if (idx < 0) {
+			return;
+		}
+		const nextIdx = Math.max(0, Math.min(sequence.length - 1, idx + delta));
+		if (nextIdx === idx) {
+			return;
+		}
+		currentAt = sequence[nextIdx];
+		el.snapshotAt.value = currentAt;
+		syncSnapshotButtons();
+		syncAtInURL();
+		refreshTree();
+	}
+
 	function updateMetaLine() {
 		if (!treeData) {
 			el.meta.textContent = 'capture unavailable';
@@ -1214,7 +1259,7 @@ const indexHTML = `<!doctype html>
 	}
 
 	function renderSnapshotSelector(times, defaultAt) {
-		const opts = Array.isArray(times) ? times.slice() : [];
+		const opts = Array.isArray(times) ? times.slice().reverse() : [];
 		const unique = [];
 		const seen = new Set();
 		for (const ts of opts) {
@@ -1249,6 +1294,7 @@ const indexHTML = `<!doctype html>
 			el.snapshotAt.appendChild(opt);
 		}
 		el.snapshotAt.value = currentAt;
+		syncSnapshotButtons();
 	}
 
     function setTab(tab) {
