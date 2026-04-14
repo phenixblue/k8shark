@@ -659,7 +659,8 @@ REDACTED_SERVER_PID=""
 # all secrets (including app-secret) are redacted.
 redact_out=$("$BINARY" redact \
   --in "$CAPTURE_FILE" \
-  --out "$REDACTED_FILE" 2>&1) || true
+  --out "$REDACTED_FILE" \
+  --redact-secrets 2>&1) || true
 assert_contains "redact: success message present"       "$redact_out" "Redacted"
 assert_contains "redact: reported secrets redacted"     "$redact_out" "secret"
 if [[ -s "$REDACTED_FILE" ]]; then
