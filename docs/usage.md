@@ -60,11 +60,21 @@ Capture complete
 | `--output` | `-o` | `./k8shark-<timestamp>.tar.gz` | Output archive path |
 | `--duration` | | from config | Override capture duration (e.g. `5m`) |
 | `--kubeconfig` | | `$KUBECONFIG` / `~/.kube/config` | Source cluster kubeconfig |
+| `--auto-discover` | | false | Auto-discover and capture all available API resources |
 | `--verbose` | `-v` | false | Log every API path as it is fetched |
 | `--redact-secrets` | | false | Redact Secret `data`/`stringData` values from the archive after capture |
 | `--allow-secret` | | | `namespace/name` of secret to preserve when `--redact-secrets` is set (repeatable) |
 
 The `--config` flag auto-discovers `./k8shark.yaml` if not specified.
+
+For full-cluster capture without enumerating resources manually, prefer config syntax:
+
+```yaml
+resources:
+  - all: true
+```
+
+`--auto-discover` is a convenience override that enables global discovery mode.
 
 ---
 

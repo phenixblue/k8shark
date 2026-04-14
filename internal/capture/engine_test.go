@@ -490,6 +490,7 @@ func autoDiscoverServer(t *testing.T, reqPaths chan<- string) *httptest.Server {
 		"resources":[
 			{"name":"virtualservices","namespaced":true,"kind":"VirtualService"},
 			{"name":"gateways","namespaced":true,"kind":"Gateway"},
+			{"name":"meshconfigs","namespaced":false,"kind":"MeshConfig"},
 			{"name":"virtualservices/status","namespaced":true,"kind":"VirtualService"}
 		]
 	}`
@@ -622,6 +623,92 @@ func TestAutoDiscover_ExcludeGroupsOverride(t *testing.T) {
 		if r.Group == "networking.istio.io" {
 			t.Errorf("networking.istio.io should be excluded via AutoDiscoverExcludeGroups, but found %v", r)
 		}
+	}
+}
+
+func TestAutoDiscover_AllDirectiveNamespacedScope(t *testing.T) {
+	srv := autoDiscoverServer(t, nil)
+	defer srv.Close()
+
+	outDir := t.TempDir()
+	cfg := &config.Config{
+		DurationRaw: "500ms",
+		Duration:    500 * time.Millisecond,
+		Output:      filepath.Join(outDir, "capture.tar.gz"),
+		Resources: []config.Resource{
+			{All: true, Scope: "namespaced", Namespaces: []string{"team-a"}, IntervalRaw: "200ms", Interval: 200 * time.Millisecond},
+		},
+	}
+
+	eng := newEngineWith(cfg, srv.Client(), srv.URL, false)
+	ss := &sliceSink{}
+	eng.sink = ss
+	if _, err := eng.Run(); err != nil {
+		t.Fatalf("engine.Run() error: %v", err)
+	}
+
+	seenMeshConfig := false
+	seenVirtualService := false
+	for _, r := range cfg.Resources {
+		if r.All {
+			continue
+		}
+		if r.Resource == "meshconfigs" {
+			seenMeshConfig = true
+		}
+		if r.Resource == "virtualservices" {
+			seenVirtualService = true
+			if len(r.Namespaces) != 1 || r.Namespaces[0] != "team-a" {
+				t.Fatalf("expected virtualservices namespaces from all directive, got %+v", r.Namespaces)
+			}
+		}
+	}
+	if seenMeshConfig {
+		t.Fatal("cluster-scoped meshconfigs should not be discovered for scope=namespaced")
+	}
+	if !seenVirtualService {
+		t.Fatal("expected namespaced resources to be discovered for scope=namespaced")
+	}
+}
+
+func TestAutoDiscover_AllDirectiveClusterScope(t *testing.T) {
+	srv := autoDiscoverServer(t, nil)
+	defer srv.Close()
+
+	outDir := t.TempDir()
+	cfg := &config.Config{
+		DurationRaw: "500ms",
+		Duration:    500 * time.Millisecond,
+		Output:      filepath.Join(outDir, "capture.tar.gz"),
+		Resources: []config.Resource{
+			{All: true, Scope: "cluster", IntervalRaw: "200ms", Interval: 200 * time.Millisecond},
+		},
+	}
+
+	eng := newEngineWith(cfg, srv.Client(), srv.URL, false)
+	ss := &sliceSink{}
+	eng.sink = ss
+	if _, err := eng.Run(); err != nil {
+		t.Fatalf("engine.Run() error: %v", err)
+	}
+
+	seenMeshConfig := false
+	for _, r := range cfg.Resources {
+		if r.All {
+			continue
+		}
+		if r.Resource == "meshconfigs" {
+			seenMeshConfig = true
+			if len(r.Namespaces) != 0 {
+				t.Fatalf("cluster-scoped discovered resource should not have namespaces, got %+v", r.Namespaces)
+			}
+		}
+		if r.Resource == "virtualservices" || r.Resource == "gateways" {
+			t.Fatalf("namespaced resource %q should not be discovered for scope=cluster", r.Resource)
+		}
+	}
+	if !seenMeshConfig {
+		t.Fatal("expected meshconfigs to be discovered for scope=cluster")
 	}
 }
 
