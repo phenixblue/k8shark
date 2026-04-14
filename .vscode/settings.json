@@ -11,6 +11,7 @@
         "git add": true,
         "git commit": true,
         "gh": true,
-        "git rev-parse": true
+        "git rev-parse": true,
+        "golangci-lint": true
     }
 }
