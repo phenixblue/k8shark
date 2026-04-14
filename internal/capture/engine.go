@@ -125,24 +125,30 @@ func (e *Engine) Run() (*CaptureSummary, error) {
 		}
 	}
 
-	// Expand wildcard namespaces before polling begins.
-	if err := e.expandWildcardNamespaces(ctx); err != nil {
-		return nil, err
-	}
-
 	// Collect server version for metadata.
 	kVersion, serverAddr := e.fetchServerVersion(ctx)
 
 	// Capture API discovery endpoints so the mock server can replay them faithfully.
 	e.fetchDiscovery(ctx)
 
-	// Auto-discover CRD-backed and non-core resources from /apis if requested.
-	if e.cfg.AutoDiscover {
+	// Auto-discover CRD-backed and non-core resources from /apis when
+	// explicitly requested or when all=true directives are present.
+	if e.cfg.AutoDiscover || hasAllDirective(e.cfg.Resources) {
 		e.autoDiscoverResources(ctx)
+	}
+
+	// Expand wildcard namespaces before polling begins. This must happen after
+	// auto-discovery because all=true directives add namespaced resources with
+	// Namespaces=["*"] by default.
+	if err := e.expandWildcardNamespaces(ctx); err != nil {
+		return nil, err
 	}
 
 	var wg sync.WaitGroup
 	for _, res := range e.cfg.Resources {
+		if res.All {
+			continue
+		}
 		wg.Add(1)
 		go func(r config.Resource) {
 			defer wg.Done()
@@ -162,6 +168,9 @@ func (e *Engine) Run() (*CaptureSummary, error) {
 	// all polling so we capture the most recent log state. A short background
 	// context is used because the main capture context has already expired.
 	for _, res := range e.cfg.Resources {
+		if res.All {
+			continue
+		}
 		if res.Logs > 0 && res.Resource == "pods" {
 			logCtx, logCancel := context.WithTimeout(context.Background(), 30*time.Second)
 			e.fetchPodsLogs(logCtx, res)
@@ -433,9 +442,18 @@ func (e *Engine) autoDiscoverResources(ctx context.Context) {
 	// we don't add duplicates.
 	type gvr struct{ group, version, resource string }
 	configured := make(map[gvr]bool, len(e.cfg.Resources))
+	directives := make([]config.Resource, 0)
 	for _, r := range e.cfg.Resources {
+		if r.All {
+			directives = append(directives, r)
+			continue
+		}
 		configured[gvr{r.Group, r.Version, r.Resource}] = true
 	}
+	if len(directives) == 0 && e.cfg.AutoDiscover {
+		directives = append(directives, config.Resource{All: true, IntervalRaw: "30s", Interval: 30 * time.Second})
+	}
+	discoverCore := len(directives) > 0
 
 	apisBody := e.discoveryCache["/apis"]
 	if apisBody == nil {
@@ -498,22 +516,108 @@ func (e *Engine) autoDiscoverResources(ctx context.Context) {
 				if configured[key] {
 					continue
 				}
-				newRes := config.Resource{
-					Group:       group,
-					Version:     version,
-					Resource:    res.Name,
-					IntervalRaw: "30s",
-					Interval:    30 * time.Second,
+
+				for _, d := range directives {
+					if d.Scope == "cluster" && res.Namespaced {
+						continue
+					}
+					if d.Scope == "namespaced" && !res.Namespaced {
+						continue
+					}
+
+					newRes := config.Resource{
+						Group:       group,
+						Version:     version,
+						Resource:    res.Name,
+						IntervalRaw: d.IntervalRaw,
+						Interval:    d.Interval,
+						Dedup:       d.Dedup,
+						Watch:       d.Watch,
+					}
+					if newRes.Interval == 0 {
+						newRes.Interval = 30 * time.Second
+						newRes.IntervalRaw = "30s"
+					}
+					if res.Namespaced {
+						if len(d.Namespaces) > 0 {
+							newRes.Namespaces = append([]string(nil), d.Namespaces...)
+						} else {
+							newRes.Namespaces = []string{"*"}
+						}
+					}
+
+					e.cfg.Resources = append(e.cfg.Resources, newRes)
+					configured[key] = true
+					added++
+					if e.verbose {
+						fmt.Fprintf(os.Stdout, "  [auto-discover] added %s/%s/%s (namespaced=%v, scope=%s)\n",
+							group, version, res.Name, res.Namespaced, firstNonEmpty(d.Scope, "all"))
+					}
+					break
 				}
-				if res.Namespaced {
-					newRes.Namespaces = []string{"*"}
-				}
-				e.cfg.Resources = append(e.cfg.Resources, newRes)
-				configured[key] = true
-				added++
-				if e.verbose {
-					fmt.Fprintf(os.Stdout, "  [auto-discover] added %s/%s/%s (namespaced=%v)\n",
-						group, version, res.Name, res.Namespaced)
+			}
+		}
+	}
+
+	// all=true directives represent "capture all", which includes core/v1
+	// resources like pods, services, configmaps, and nodes.
+	if discoverCore {
+		coreBody := e.discoveryCache["/api/v1"]
+		if coreBody != nil {
+			var coreList struct {
+				Resources []struct {
+					Name       string `json:"name"`
+					Namespaced bool   `json:"namespaced"`
+				} `json:"resources"`
+			}
+			if err := json.Unmarshal(coreBody, &coreList); err == nil {
+				for _, res := range coreList.Resources {
+					if strings.Contains(res.Name, "/") {
+						continue
+					}
+					key := gvr{"", "v1", res.Name}
+					if configured[key] {
+						continue
+					}
+
+					for _, d := range directives {
+						if d.Scope == "cluster" && res.Namespaced {
+							continue
+						}
+						if d.Scope == "namespaced" && !res.Namespaced {
+							continue
+						}
+
+						newRes := config.Resource{
+							Group:       "",
+							Version:     "v1",
+							Resource:    res.Name,
+							IntervalRaw: d.IntervalRaw,
+							Interval:    d.Interval,
+							Dedup:       d.Dedup,
+							Watch:       d.Watch,
+						}
+						if newRes.Interval == 0 {
+							newRes.Interval = 30 * time.Second
+							newRes.IntervalRaw = "30s"
+						}
+						if res.Namespaced {
+							if len(d.Namespaces) > 0 {
+								newRes.Namespaces = append([]string(nil), d.Namespaces...)
+							} else {
+								newRes.Namespaces = []string{"*"}
+							}
+						}
+
+						e.cfg.Resources = append(e.cfg.Resources, newRes)
+						configured[key] = true
+						added++
+						if e.verbose {
+							fmt.Fprintf(os.Stdout, "  [auto-discover] added %s/%s/%s (namespaced=%v, scope=%s)\n",
+								"core", "v1", res.Name, res.Namespaced, firstNonEmpty(d.Scope, "all"))
+						}
+						break
+					}
 				}
 			}
 		}
@@ -522,6 +626,24 @@ func (e *Engine) autoDiscoverResources(ctx context.Context) {
 	if e.verbose {
 		fmt.Fprintf(os.Stdout, "  [auto-discover] added %d resource types\n", added)
 	}
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func hasAllDirective(resources []config.Resource) bool {
+	for _, r := range resources {
+		if r.All {
+			return true
+		}
+	}
+	return false
 }
 
 // fetchDiscovery captures the Kubernetes API discovery endpoints so the mock
@@ -533,7 +655,10 @@ func (e *Engine) autoDiscoverResources(ctx context.Context) {
 func (e *Engine) fetchDiscovery(ctx context.Context) {
 	// Core discovery paths.
 	e.doFetch(ctx, "/api", "", true)
-	e.doFetch(ctx, "/api/v1", "", true)
+	apiV1Body, _ := e.doFetch(ctx, "/api/v1", "", true)
+	if apiV1Body != nil {
+		e.discoveryCache["/api/v1"] = apiV1Body
+	}
 	apisBody, _ := e.doFetch(ctx, "/apis", "", true)
 	if apisBody != nil {
 		e.discoveryCache["/apis"] = apisBody

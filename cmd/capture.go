@@ -26,11 +26,13 @@ func init() {
 	captureCmd.Flags().StringP("output", "o", "", "output file path (default: ./k8shark-<timestamp>.tar.gz)")
 	captureCmd.Flags().String("kubeconfig", "", "path to kubeconfig (defaults to KUBECONFIG env, then ~/.kube/config)")
 	captureCmd.Flags().String("duration", "", "capture duration, overrides config file value (e.g. 10m, 1h)")
+	captureCmd.Flags().Bool("auto-discover", false, "auto-discover and capture all available API resources")
 	captureCmd.Flags().Bool("redact-secrets", false, "redact Secret data and stringData values from the archive after capture")
 	captureCmd.Flags().StringArray("allow-secret", nil, "namespace/name of secret to preserve when --redact-secrets is set (repeatable)")
 	_ = viper.BindPFlag("output", captureCmd.Flags().Lookup("output"))
 	_ = viper.BindPFlag("kubeconfig", captureCmd.Flags().Lookup("kubeconfig"))
 	_ = viper.BindPFlag("duration", captureCmd.Flags().Lookup("duration"))
+	_ = viper.BindPFlag("auto_discover", captureCmd.Flags().Lookup("auto-discover"))
 }
 
 func runCapture(cmd *cobra.Command, args []string) error {
@@ -47,6 +49,10 @@ func runCapture(cmd *cobra.Command, args []string) error {
 	}
 	if v, _ := cmd.Flags().GetString("duration"); v != "" {
 		cfg.DurationRaw = v
+	}
+	if cmd.Flags().Changed("auto-discover") {
+		v, _ := cmd.Flags().GetBool("auto-discover")
+		cfg.AutoDiscover = v
 	}
 
 	if err := cfg.Validate(); err != nil {

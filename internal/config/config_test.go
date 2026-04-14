@@ -169,3 +169,35 @@ func TestResourceDedupEnabled_ExplicitFalse(t *testing.T) {
 		t.Fatal("expected dedup disabled when dedup is explicitly false")
 	}
 }
+
+func TestValidate_AllDirective_NoResourceFieldsRequired(t *testing.T) {
+	cfg := &Config{
+		DurationRaw: "10m",
+		Output:      "/tmp/k8shark-test-out.tar.gz",
+		Resources: []Resource{{
+			All:        true,
+			Scope:      "namespaced",
+			Namespaces: []string{"default"},
+		}},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if got := cfg.Resources[0].Interval; got != 30*time.Second {
+		t.Fatalf("expected default interval 30s, got %s", got)
+	}
+}
+
+func TestValidate_AllDirective_InvalidScope(t *testing.T) {
+	cfg := &Config{
+		DurationRaw: "10m",
+		Output:      "/tmp/k8shark-test-out.tar.gz",
+		Resources: []Resource{{
+			All:   true,
+			Scope: "invalid-scope",
+		}},
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected error for invalid all=true scope, got nil")
+	}
+}

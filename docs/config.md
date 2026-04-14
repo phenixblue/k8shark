@@ -10,11 +10,14 @@ k8shark reads a YAML config file that controls what gets captured, from which na
 | `output` | string | `./k8shark-<timestamp>.tar.gz` | Path for the output archive. |
 | `kubeconfig` | string | `$KUBECONFIG` → `~/.kube/config` | Path to the kubeconfig for the source cluster. |
 | `resources` | list | required | Resource types to capture. See below. |
+| `auto_discover` | bool | `false` | Legacy global discovery toggle. Prefer `resources: - all: true` for fine-grained control. |
 
 ## Resource entry fields
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
+| `all` | bool | no | If `true`, this entry is a discovery directive. k8shark discovers API resources and expands them into concrete capture entries. |
+| `scope` | string | no | Used with `all: true`. Allowed values: `namespaced`, `cluster`, or omitted (both). |
 | `group` | string | yes | API group. Use `""` (empty string) for core group resources (`pods`, `nodes`, etc.). |
 | `version` | string | yes | API version, e.g. `v1`, `v1beta1`. |
 | `resource` | string | yes | Plural resource name, e.g. `pods`, `deployments`. |
@@ -22,6 +25,50 @@ k8shark reads a YAML config file that controls what gets captured, from which na
 | `interval` | duration string | `30s` | How often to re-poll this resource during the capture window. |
 | `dedup` | bool | `true` | Skip writing a record when the response body is identical to the previous poll for the same API path. Set `false` to force writing every poll. |
 | `watch` | bool | `false` | Start a Kubernetes watch stream (`?watch=1`) for this resource in addition to polling. Watch events are recorded with an `event_type` field. |
+
+When `all: true` is set, `group`/`version`/`resource` are not required for that entry.
+
+### Simplified discovery with `all: true`
+
+Use `all: true` to auto-discover resources via Kubernetes API discovery (including CRDs):
+
+```yaml
+duration: 10m
+output: ./cluster-snapshot.tar.gz
+
+resources:
+  - all: true
+```
+
+Scope filtering:
+
+```yaml
+resources:
+  - all: true
+    scope: namespaced  # or cluster
+```
+
+Discovery with namespace restriction for namespaced resources:
+
+```yaml
+resources:
+  - all: true
+    scope: namespaced
+    namespaces: [production, staging]
+    interval: 20s
+```
+
+Mix discovered entries with explicit overrides:
+
+```yaml
+resources:
+  - all: true
+  - group: mygroup.io
+    version: v1
+    resource: widgets
+    namespaces: [default]
+    interval: 10s
+```
 
 ### Namespaced vs. cluster-scoped resources
 

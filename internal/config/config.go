@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/viper"
@@ -10,6 +11,13 @@ import (
 
 // Resource describes a single Kubernetes resource type to capture.
 type Resource struct {
+	// All enables auto-discovery expansion for this resource entry. When true,
+	// Group/Version/Resource are ignored and discovered resources are added
+	// according to Scope and Namespaces.
+	All bool `mapstructure:"all"`
+	// Scope filters discovered resources when All=true: "namespaced" or
+	// "cluster". Empty means both.
+	Scope string `mapstructure:"scope"`
 	// Group is the API group (empty string = core group).
 	Group string `mapstructure:"group"`
 	// Version is the API version (e.g. "v1", "v1beta1").
@@ -110,6 +118,24 @@ func (c *Config) Validate() error {
 
 	for i := range c.Resources {
 		r := &c.Resources[i]
+		if r.All {
+			r.Scope = strings.ToLower(strings.TrimSpace(r.Scope))
+			if r.Scope != "" && r.Scope != "namespaced" && r.Scope != "cluster" {
+				return fmt.Errorf("resources[%d]: invalid scope %q for all=true (must be namespaced, cluster, or empty)", i, r.Scope)
+			}
+			if r.IntervalRaw == "" {
+				r.IntervalRaw = "30s"
+			}
+			iv, err := time.ParseDuration(r.IntervalRaw)
+			if err != nil {
+				return fmt.Errorf("resources[%d] (all=true): invalid interval %q: %w", i, r.IntervalRaw, err)
+			}
+			r.Interval = iv
+			if r.Logs < 0 {
+				return fmt.Errorf("resources[%d] (all=true): 'logs' must be >= 0", i)
+			}
+			continue
+		}
 		if r.Resource == "" {
 			return fmt.Errorf("resources[%d]: 'resource' field is required", i)
 		}
@@ -180,7 +206,10 @@ func Warnings(cfg *Config) []string {
 		if r.Interval > 0 && r.Interval < 5*time.Second {
 			ws = append(ws, fmt.Sprintf(
 				"resources[%d] (%s): interval %s is very short and may produce a large archive",
-				i, r.Resource, r.Interval))
+				i, firstNonEmpty(r.Resource, "all"), r.Interval))
+		}
+		if r.All {
+			continue
 		}
 		if knownClusterScoped[r.Resource] && len(r.Namespaces) > 0 {
 			ws = append(ws, fmt.Sprintf(
@@ -198,4 +227,13 @@ func Warnings(cfg *Config) []string {
 		}
 	}
 	return ws
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
 }
