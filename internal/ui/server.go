@@ -1060,6 +1060,8 @@ const indexHTML = `<!doctype html>
 	.snapshot-btn { padding:6px 10px; border-radius:8px; border:1px solid #334155; background:#0f172a; color:#cbd5e1; cursor:pointer; font-size:12px; }
 	.snapshot-btn:hover { border-color:#64748b; }
 	.snapshot-btn:disabled { opacity:.45; cursor:not-allowed; border-color:#1f2937; }
+	body.loading-snapshot .snapshot-select,
+	body.loading-snapshot .snapshot-btn { opacity:.7; }
     .layout { display:grid; grid-template-columns:260px 1fr 40%; min-height:calc(100vh - 56px); }
     .panel { border-right:1px solid var(--line); overflow:auto; }
     .panel:last-child { border-right:none; border-left:1px solid var(--line); }
@@ -1322,7 +1324,7 @@ const indexHTML = `<!doctype html>
 		for (const ts of unique) {
 			const opt = document.createElement('option');
 			opt.value = ts;
-			opt.textContent = formatAtLabel(ts);
+			opt.textContent = sampled ? (formatAtLabel(ts) + ' (sampled)') : formatAtLabel(ts);
 			el.snapshotAt.appendChild(opt);
 		}
 
@@ -1335,7 +1337,7 @@ const indexHTML = `<!doctype html>
 		if (currentAt !== 'latest' && !seen.has(currentAt)) {
 			const opt = document.createElement('option');
 			opt.value = currentAt;
-			opt.textContent = formatAtLabel(currentAt);
+			opt.textContent = formatAtLabel(currentAt) + ' (custom)';
 			el.snapshotAt.appendChild(opt);
 		}
 		el.snapshotAt.value = currentAt;
@@ -1441,6 +1443,16 @@ const indexHTML = `<!doctype html>
 			el.toasts.appendChild(toast);
 			const ttl = timeoutMs || (type === 'error' ? 7000 : 3000);
 			window.setTimeout(() => toast.remove(), ttl);
+		}
+
+		function setSnapshotLoading(loading) {
+			document.body.classList.toggle('loading-snapshot', !!loading);
+			el.snapshotAt.disabled = !!loading;
+			el.snapshotPrev.disabled = !!loading || el.snapshotPrev.disabled;
+			el.snapshotNext.disabled = !!loading || el.snapshotNext.disabled;
+			if (loading) {
+				el.snapshotHint.textContent = 'loading snapshot...';
+			}
 		}
 
 		function updateDetailSummary(data, node) {
@@ -1561,6 +1573,7 @@ const indexHTML = `<!doctype html>
 			d.innerHTML = kindChip + nodeName + badge + (node.age ? ' <span class="muted">' + node.age + '</span>' : '');
 			d._node = node;
 			d._crumbs = crumbs;
+			d._nodeKey = nodeIdentity(node);
       d.onclick = () => activateNodeElement(d, true);
 			d.onkeydown = (ev) => {
 				if (ev.key === 'Enter' || ev.key === ' ') {
@@ -1592,6 +1605,19 @@ const indexHTML = `<!doctype html>
 			const idx = visibleNodes.indexOf(nodeEl);
 			if (idx >= 0) selectNodeAt(idx, keepFocus);
 			showDetail(nodeEl._node, nodeEl._crumbs);
+		}
+
+		function nodeIdentity(node) {
+			if (!node) return '';
+			return [node.list_path || '', node.kind || '', node.name || ''].join('|');
+		}
+
+		function restoreSelectionByKey(nodeKey) {
+			if (!nodeKey || visibleNodes.length === 0) return false;
+			const idx = visibleNodes.findIndex((n) => n._nodeKey === nodeKey);
+			if (idx < 0) return false;
+			selectNodeAt(idx, false);
+			return true;
 		}
 
 		function onTreeKeyDown(ev) {
@@ -1644,6 +1670,7 @@ const indexHTML = `<!doctype html>
 				setTreeState('loading', 'Loading captured resources...');
 				return;
 			}
+		const desiredKey = selected && selected.node ? nodeIdentity(selected.node) : '';
       el.tree.innerHTML = '';
       const q = el.search.value.trim().toLowerCase();
 			let renderedNodes = 0;
@@ -1739,6 +1766,9 @@ const indexHTML = `<!doctype html>
 			if (activeNodeIdx < 0 || activeNodeIdx >= visibleNodes.length) {
 				activeNodeIdx = 0;
 			}
+			if (restoreSelectionByKey(desiredKey)) {
+				return;
+			}
 			selectNodeAt(activeNodeIdx, false);
     }
 
@@ -1809,21 +1839,35 @@ const indexHTML = `<!doctype html>
 		}
 
 		async function refreshTree() {
+			const previousSelectionKey = selected && selected.node ? nodeIdentity(selected.node) : '';
 			setTreeState('loading', 'Loading captured resources...');
+			setSnapshotLoading(true);
 			const q = withAtQuery(new URLSearchParams());
 			const url = q.toString() ? ('/api/ui/tree?' + q.toString()) : '/api/ui/tree';
-			const res = await fetch(url);
-			const data = await res.json();
-			if (!res.ok) {
-				const msg = (data && data.error) ? data.error : ('request failed with status ' + res.status);
-				throw new Error(msg);
-			}
-			treeData = data;
-			updateMetaLine();
-			renderToggles((treeData.resource_kinds || []).concat(['Container']));
-			render();
-			if (selected && selected.node) {
-				showDetail(selected.node, selected.crumbs || ['Cluster']);
+			try {
+				const res = await fetch(url);
+				const data = await res.json();
+				if (!res.ok) {
+					const msg = (data && data.error) ? data.error : ('request failed with status ' + res.status);
+					throw new Error(msg);
+				}
+				treeData = data;
+				updateMetaLine();
+				renderToggles((treeData.resource_kinds || []).concat(['Container']));
+				render();
+				if (restoreSelectionByKey(previousSelectionKey)) {
+					const nodeEl = visibleNodes[activeNodeIdx];
+					if (nodeEl) {
+						showDetail(nodeEl._node, nodeEl._crumbs || ['Cluster']);
+						return;
+					}
+				}
+				if (selected && selected.node) {
+					showDetail(selected.node, selected.crumbs || ['Cluster']);
+				}
+			} finally {
+				setSnapshotLoading(false);
+				syncSnapshotButtons();
 			}
 		}
 
