@@ -29,6 +29,7 @@ func init() {
 	captureCmd.Flags().Bool("auto-discover", false, "auto-discover and capture all available API resources")
 	captureCmd.Flags().Bool("redact-secrets", false, "redact Secret data and stringData values from the archive after capture")
 	captureCmd.Flags().StringArray("allow-secret", nil, "namespace/name of secret to preserve when --redact-secrets is set (repeatable)")
+	captureCmd.Flags().StringArray("redact-field", nil, "field redaction rule applied after capture: <fieldPath>:<Kind>:<replacement>[:<valueType>] (repeatable)")
 	_ = viper.BindPFlag("output", captureCmd.Flags().Lookup("output"))
 	_ = viper.BindPFlag("kubeconfig", captureCmd.Flags().Lookup("kubeconfig"))
 	_ = viper.BindPFlag("duration", captureCmd.Flags().Lookup("duration"))
@@ -82,25 +83,50 @@ func runCapture(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(os.Stdout, "  Records:   %d across %d resource path(s)\n", sum.RecordCount, sum.ResourceCount)
 	fmt.Fprintf(os.Stdout, "  Duration:  %s\n", sum.Duration)
 
-	// Optional in-place redaction of Secret values.
-	if doRedact, _ := cmd.Flags().GetBool("redact-secrets"); doRedact {
-		allows, _ := cmd.Flags().GetStringArray("allow-secret")
-		allowList := make(map[string]bool, len(allows))
-		for _, a := range allows {
-			allowList[a] = true
+	// Post-capture redaction: merge --redact-secrets / --redact-field CLI flags
+	// with any redaction.rules defined in the config file.
+	doRedactSecrets, _ := cmd.Flags().GetBool("redact-secrets")
+	if cfg.Redaction.RedactSecrets {
+		doRedactSecrets = true
+	}
+	allows, _ := cmd.Flags().GetStringArray("allow-secret")
+	allowList := make(map[string]bool, len(allows))
+	for _, a := range allows {
+		allowList[a] = true
+	}
+	for _, a := range cfg.Redaction.AllowSecrets {
+		allowList[a] = true
+	}
+	redactFields, _ := cmd.Flags().GetStringArray("redact-field")
+	var fieldRules []config.RedactionRule
+	fieldRules = append(fieldRules, cfg.Redaction.Rules...)
+	for _, rf := range redactFields {
+		rule, err := parseRedactField(rf)
+		if err != nil {
+			return err
 		}
+		fieldRules = append(fieldRules, rule)
+	}
 
+	if doRedactSecrets || len(fieldRules) > 0 {
 		tmpPath := sum.OutputPath + ".redacting"
-		n, err := redact.Archive(sum.OutputPath, tmpPath, allowList)
+		result, err := redact.Archive(sum.OutputPath, tmpPath, redact.Options{
+			RedactSecrets: doRedactSecrets,
+			AllowList:     allowList,
+			Rules:         fieldRules,
+		})
 		if err != nil {
 			_ = os.Remove(tmpPath)
-			return fmt.Errorf("redacting secrets: %w", err)
+			return fmt.Errorf("redacting archive: %w", err)
 		}
 		if err := os.Rename(tmpPath, sum.OutputPath); err != nil {
 			_ = os.Remove(tmpPath)
 			return fmt.Errorf("replacing archive with redacted version: %w", err)
 		}
-		fmt.Fprintf(os.Stdout, "  Redacted:  %d secret(s) scrubbed from archive\n", n)
+		if result.SecretsRedacted > 0 || result.FieldsRedacted > 0 {
+			fmt.Fprintf(os.Stdout, "  Redacted:  %d secret(s), %d record(s) with field rules applied\n",
+				result.SecretsRedacted, result.FieldsRedacted)
+		}
 	}
 
 	return nil

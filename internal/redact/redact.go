@@ -10,43 +10,62 @@ import (
 
 	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/capture"
+	"github.com/phenixblue/k8shark/internal/config"
 )
 
 // redactedB64 is "REDACTED" base64-encoded.  Kubernetes Secret data values are
 // base64 strings, so we replace with another valid base64 string.
 var redactedB64 = base64.StdEncoding.EncodeToString([]byte("REDACTED"))
 
-// Archive reads srcPath, redacts all Secret records, and writes to dstPath.
-// allowList is a set of "namespace/name" keys whose data is preserved unchanged.
-func Archive(srcPath, dstPath string, allowList map[string]bool) (int, error) {
+// Options controls what Archive() redacts.
+type Options struct {
+	// RedactSecrets, when true, replaces all Kubernetes Secret data and
+	// stringData values with "REDACTED".
+	RedactSecrets bool
+	// AllowList is a set of "namespace/name" secret keys whose data is preserved
+	// even when RedactSecrets is true.
+	AllowList map[string]bool
+	// Rules is the list of field-level redaction rules to apply to every record.
+	Rules []config.RedactionRule
+}
+
+// Result reports how many redactions were performed.
+type Result struct {
+	SecretsRedacted int
+	FieldsRedacted  int
+}
+
+// Archive reads srcPath, applies redaction options, and writes to dstPath.
+// The original archive is not modified.
+func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 	// Extract the source archive to a temp dir.
 	tmpDir, err := os.MkdirTemp("", "k8shark-redact-*")
 	if err != nil {
-		return 0, fmt.Errorf("creating temp dir: %w", err)
+		return Result{}, fmt.Errorf("creating temp dir: %w", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
 	if err := archive.Open(srcPath, tmpDir); err != nil {
-		return 0, fmt.Errorf("opening archive: %w", err)
+		return Result{}, fmt.Errorf("opening archive: %w", err)
 	}
 
 	// Load metadata and index.
 	metaBytes, err := os.ReadFile(filepath.Join(tmpDir, "k8shark-capture", "metadata.json"))
 	if err != nil {
-		return 0, fmt.Errorf("reading metadata: %w", err)
+		return Result{}, fmt.Errorf("reading metadata: %w", err)
 	}
 	var meta capture.CaptureMetadata
 	if err := json.Unmarshal(metaBytes, &meta); err != nil {
-		return 0, fmt.Errorf("parsing metadata: %w", err)
+		return Result{}, fmt.Errorf("parsing metadata: %w", err)
 	}
 
 	idxBytes, err := os.ReadFile(filepath.Join(tmpDir, "k8shark-capture", "index.json"))
 	if err != nil {
-		return 0, fmt.Errorf("reading index: %w", err)
+		return Result{}, fmt.Errorf("reading index: %w", err)
 	}
 	var idx capture.Index
 	if err := json.Unmarshal(idxBytes, &idx); err != nil {
-		return 0, fmt.Errorf("parsing index: %w", err)
+		return Result{}, fmt.Errorf("parsing index: %w", err)
 	}
 
 	// Walk all records, collect unique IDs, and redact as needed.
@@ -58,34 +77,72 @@ func Archive(srcPath, dstPath string, allowList map[string]bool) (int, error) {
 	}
 
 	var records []*capture.Record
-	redactedCount := 0
+	result := Result{}
 
 	for id := range seen {
 		recPath := filepath.Join(tmpDir, "k8shark-capture", "records", id+".json")
 		data, err := os.ReadFile(recPath)
 		if err != nil {
-			return 0, fmt.Errorf("reading record %s: %w", id, err)
+			return Result{}, fmt.Errorf("reading record %s: %w", id, err)
 		}
 		var rec capture.Record
 		if err := json.Unmarshal(data, &rec); err != nil {
-			return 0, fmt.Errorf("parsing record %s: %w", id, err)
+			return Result{}, fmt.Errorf("parsing record %s: %w", id, err)
 		}
 
-		redacted, err := redactRecord(&rec, allowList)
-		if err != nil {
-			return 0, fmt.Errorf("redacting record %s: %w", id, err)
+		// Secret redaction pass
+		if opts.RedactSecrets {
+			secretsRedacted, err := redactRecord(&rec, opts.AllowList)
+			if err != nil {
+				return Result{}, fmt.Errorf("redacting record %s: %w", id, err)
+			}
+			if secretsRedacted {
+				result.SecretsRedacted++
+			}
 		}
-		if redacted {
-			redactedCount++
+
+		// Field-level redaction pass
+		if len(opts.Rules) > 0 {
+			fieldsRedacted, err := redactFieldsInRecord(&rec, opts.Rules)
+			if err != nil {
+				return Result{}, fmt.Errorf("field-redacting record %s: %w", id, err)
+			}
+			result.FieldsRedacted += fieldsRedacted
 		}
+
 		records = append(records, &rec)
 	}
 
 	if err := archive.Write(dstPath, &meta, records, idx); err != nil {
-		return 0, fmt.Errorf("writing redacted archive: %w", err)
+		return Result{}, fmt.Errorf("writing redacted archive: %w", err)
 	}
 
-	return redactedCount, nil
+	return result, nil
+}
+
+// redactFieldsInRecord applies field-level redaction rules to rec in-place.
+// Returns the count of fields modified.
+func redactFieldsInRecord(rec *capture.Record, rules []config.RedactionRule) (int, error) {
+	var obj map[string]interface{}
+	if err := json.Unmarshal(rec.ResponseBody, &obj); err != nil {
+		// Not a JSON object (e.g. Table format) — skip.
+		return 0, nil
+	}
+
+	changed, err := ApplyRules(obj, rules)
+	if err != nil {
+		return 0, err
+	}
+	if !changed {
+		return 0, nil
+	}
+
+	newBody, err := json.Marshal(obj)
+	if err != nil {
+		return 0, fmt.Errorf("re-marshalling record: %w", err)
+	}
+	rec.ResponseBody = newBody
+	return 1, nil
 }
 
 // redactRecord modifies rec in-place if it contains Secret data.

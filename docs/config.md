@@ -11,6 +11,7 @@ k8shark reads a YAML config file that controls what gets captured, from which na
 | `kubeconfig` | string | `$KUBECONFIG` → `~/.kube/config` | Path to the kubeconfig for the source cluster. |
 | `resources` | list | required | Resource types to capture. See below. |
 | `auto_discover` | bool | `false` | Legacy global discovery toggle. Prefer `resources: - all: true` for fine-grained control. |
+| `redaction` | object | — | Optional field-level redaction rules applied after capture. See [Redaction](#redaction). |
 
 ## Resource entry fields
 
@@ -317,6 +318,119 @@ resources:
     namespaces: [default, production, staging]
     interval: 60s
 ```
+
+---
+
+## Redaction
+
+k8shark can redact sensitive field values after capture, producing a sanitised archive safe for sharing. Redaction rules live in a top-level `redaction` block and are also applied when running `kshrk redact`.
+
+### `redaction` fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `redactSecrets` | bool | `false` | Redact all Kubernetes `Secret` `data` and `stringData` values (same as `--redact-secrets` on the CLI). |
+| `allowSecrets` | list of strings | `[]` | `namespace/name` keys of secrets to preserve even when `redactSecrets: true`. |
+| `rules` | list | `[]` | Field-level redaction rules. See below. |
+
+### Redaction rule fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `fieldPath` | string | yes | JSONPath-like expression targeting the field(s) to redact. |
+| `kind` | string | no | Resource kind to match, e.g. `Pod`, `ConfigMap`. Use `*` or omit to match all kinds. |
+| `namespace` | string | no | Only apply rule to resources in this namespace. Omit to match all namespaces. |
+| `labelSelector` | string | no | Kubernetes label selector used to scope matching resources (for example `app=sensitive,tier in (backend)`). |
+| `replacement` | string | yes | Value to write in place of the redacted field. Converted to the appropriate JSON type. |
+| `valueType` | string | no | Force a specific type for the replacement: `string`, `integer`, `number`, `bool`, `array`, `object`. Inferred from actual value when omitted. |
+
+### Field path syntax
+
+| Pattern | Meaning |
+|---------|---------|
+| `spec.replicas` | Exact dot-notation path |
+| `spec.containers[*].env[*].value` | Wildcards through arrays |
+| `spec.containers[0].name` | Specific array index |
+| `**.password` | Recursive descent — matches `password` at any depth |
+
+### Type-aware replacement
+
+Redacted values preserve the original field's JSON type so the archive remains schema-compatible with `kubectl` and other tooling.
+
+| Original value | Replacement string | Written as |
+|----------------|--------------------|------------|
+| `"my-token"` (string) | `"REDACTED"` | `"REDACTED"` |
+| `3` (integer) | `"0"` | `0` |
+| `true` (bool) | `"false"` | `false` |
+| `[...]` (array) with `valueType: array` | any | `[]` |
+| `{...}` (object) with `valueType: object` | any | `{}` |
+
+When `valueType` is omitted the engine infers the type in this order:
+
+1. known Kubernetes schema for the matched `kind` + `fieldPath`
+2. runtime type from the captured value (fallback)
+
+Invalid replacements (e.g. `"not-a-number"` for an integer field) fail early with a clear error.
+
+### Example: unified config with redaction
+
+```yaml
+duration: 10m
+output: ./capture.tar.gz
+kubeconfig: ~/.kube/config
+
+resources:
+  - all: true
+
+redaction:
+  redactSecrets: true
+  allowSecrets:
+    - default/app-secret
+
+  rules:
+    # Redact ConfigMap API keys
+    - fieldPath: "data.api-key"
+      kind: ConfigMap
+      replacement: "REDACTED"
+
+    # Redact all Pod env var values
+    - fieldPath: "spec.containers[*].env[*].value"
+      kind: Pod
+      replacement: "REDACTED"
+      valueType: string
+
+    # Recursive descent — any field named "password" anywhere
+    - fieldPath: "**.password"
+      kind: "*"
+      replacement: "REDACTED"
+
+    # Numeric field — preserve integer type
+    - fieldPath: "spec.replicas"
+      kind: Deployment
+      replacement: "0"
+      valueType: integer
+
+    # Boolean field
+    - fieldPath: "spec.automountServiceAccountToken"
+      kind: Pod
+      replacement: "false"
+      valueType: bool
+
+    # Namespace-scoped rule
+    - fieldPath: "data.db-password"
+      kind: ConfigMap
+      namespace: production
+      labelSelector: "app=sensitive"
+      replacement: "REDACTED"
+```
+
+The same config can be passed to `kshrk redact` to apply exactly the same rules to an existing archive:
+
+```bash
+kshrk redact --in capture.tar.gz --out redacted.tar.gz --config k8shark.yaml
+```
+
+---
 
 ## Duration and interval units
 

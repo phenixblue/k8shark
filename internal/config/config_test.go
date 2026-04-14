@@ -201,3 +201,73 @@ func TestValidate_AllDirective_InvalidScope(t *testing.T) {
 		t.Fatal("expected error for invalid all=true scope, got nil")
 	}
 }
+
+func TestRedactionConfig_ParsesCorrectly(t *testing.T) {
+	cfg := &Config{
+		DurationRaw: "5m",
+		Output:      "/tmp/k8shark-test-out.tar.gz",
+		Resources:   []Resource{{Resource: "pods", Version: "v1", IntervalRaw: "30s"}},
+		Redaction: RedactionConfig{
+			RedactSecrets: true,
+			AllowSecrets:  []string{"default/app-secret"},
+			Rules: []RedactionRule{
+				{
+					FieldPath:     "data.api-key",
+					Kind:          "ConfigMap",
+					LabelSelector: "app=sensitive",
+					Replacement:   "REDACTED",
+					ValueType:     "string",
+				},
+				{
+					FieldPath:   "spec.containers[*].env[*].value",
+					Kind:        "Pod",
+					Replacement: "REDACTED",
+				},
+				{
+					FieldPath:   "**.password",
+					Kind:        "*",
+					Replacement: "REDACTED",
+				},
+			},
+		},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if !cfg.Redaction.RedactSecrets {
+		t.Error("expected RedactSecrets=true")
+	}
+	if len(cfg.Redaction.AllowSecrets) != 1 || cfg.Redaction.AllowSecrets[0] != "default/app-secret" {
+		t.Errorf("unexpected AllowSecrets: %v", cfg.Redaction.AllowSecrets)
+	}
+	if len(cfg.Redaction.Rules) != 3 {
+		t.Fatalf("expected 3 redaction rules, got %d", len(cfg.Redaction.Rules))
+	}
+	if cfg.Redaction.Rules[0].Kind != "ConfigMap" {
+		t.Errorf("expected kind ConfigMap, got %q", cfg.Redaction.Rules[0].Kind)
+	}
+	if cfg.Redaction.Rules[0].LabelSelector != "app=sensitive" {
+		t.Errorf("expected labelSelector app=sensitive, got %q", cfg.Redaction.Rules[0].LabelSelector)
+	}
+	if cfg.Redaction.Rules[0].ValueType != "string" {
+		t.Errorf("expected valueType string, got %q", cfg.Redaction.Rules[0].ValueType)
+	}
+}
+
+func TestRedactionConfig_EmptyIsValid(t *testing.T) {
+	cfg := &Config{
+		DurationRaw: "5m",
+		Output:      "/tmp/k8shark-test-out.tar.gz",
+		Resources:   []Resource{{Resource: "pods", Version: "v1", IntervalRaw: "30s"}},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	// zero-value RedactionConfig is fine
+	if cfg.Redaction.RedactSecrets {
+		t.Error("expected RedactSecrets=false by default")
+	}
+	if len(cfg.Redaction.Rules) != 0 {
+		t.Errorf("expected no rules by default, got %d", len(cfg.Redaction.Rules))
+	}
+}
