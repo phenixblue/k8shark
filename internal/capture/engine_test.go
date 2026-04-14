@@ -712,6 +712,139 @@ func TestAutoDiscover_AllDirectiveClusterScope(t *testing.T) {
 	}
 }
 
+func TestAutoDiscover_AllDirectiveExpandsWildcardNamespacesBeforePolling(t *testing.T) {
+	paths := make(chan string, 256)
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case paths <- r.URL.Path:
+		default:
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/version":
+			fmt.Fprint(w, `{"gitVersion":"v1.29.0"}`)
+		case "/api/v1/namespaces":
+			fmt.Fprint(w, `{"kind":"NamespaceList","items":[{"metadata":{"name":"default"}},{"metadata":{"name":"team-a"}}]}`)
+		case "/apis":
+			fmt.Fprint(w, `{"kind":"APIGroupList","apiVersion":"v1","groups":[{"name":"networking.istio.io","versions":[{"groupVersion":"networking.istio.io/v1beta1","version":"v1beta1"}]}]}`)
+		case "/apis/networking.istio.io/v1beta1":
+			fmt.Fprint(w, `{"kind":"APIResourceList","apiVersion":"v1","groupVersion":"networking.istio.io/v1beta1","resources":[{"name":"virtualservices","namespaced":true,"kind":"VirtualService"}]}`)
+		default:
+			fmt.Fprint(w, `{"kind":"List","items":[]}`)
+		}
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		DurationRaw: "500ms",
+		Duration:    500 * time.Millisecond,
+		Output:      filepath.Join(t.TempDir(), "capture.tar.gz"),
+		Resources: []config.Resource{
+			{All: true, Scope: "namespaced", IntervalRaw: "200ms", Interval: 200 * time.Millisecond},
+		},
+	}
+
+	eng := newEngineWith(cfg, srv.Client(), srv.URL, false)
+	ss := &sliceSink{}
+	eng.sink = ss
+	if _, err := eng.Run(); err != nil {
+		t.Fatalf("engine.Run() error: %v", err)
+	}
+
+	close(paths)
+	sawWildcardPath := false
+	sawExpandedPath := false
+	for p := range paths {
+		if p == "/apis/networking.istio.io/v1beta1/namespaces/*/virtualservices" {
+			sawWildcardPath = true
+		}
+		if p == "/apis/networking.istio.io/v1beta1/namespaces/default/virtualservices" ||
+			p == "/apis/networking.istio.io/v1beta1/namespaces/team-a/virtualservices" {
+			sawExpandedPath = true
+		}
+	}
+
+	if sawWildcardPath {
+		t.Fatal("found wildcard namespace API path for discovered namespaced resource; expected expansion to concrete namespaces")
+	}
+	if !sawExpandedPath {
+		t.Fatal("expected at least one concrete namespace API fetch for discovered namespaced resource")
+	}
+}
+
+func TestAutoDiscover_AllDirectiveIncludesCorePods(t *testing.T) {
+	paths := make(chan string, 256)
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case paths <- r.URL.Path:
+		default:
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/version":
+			fmt.Fprint(w, `{"gitVersion":"v1.29.0"}`)
+		case "/api/v1/namespaces":
+			fmt.Fprint(w, `{"kind":"NamespaceList","items":[{"metadata":{"name":"default"}}]}`)
+		case "/api/v1":
+			fmt.Fprint(w, `{"kind":"APIResourceList","groupVersion":"v1","resources":[{"name":"pods","namespaced":true},{"name":"nodes","namespaced":false},{"name":"pods/status","namespaced":true}]}`)
+		case "/apis":
+			fmt.Fprint(w, `{"kind":"APIGroupList","apiVersion":"v1","groups":[]}`)
+		default:
+			fmt.Fprint(w, `{"kind":"List","items":[]}`)
+		}
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		DurationRaw: "500ms",
+		Duration:    500 * time.Millisecond,
+		Output:      filepath.Join(t.TempDir(), "capture.tar.gz"),
+		Resources: []config.Resource{
+			{All: true, IntervalRaw: "200ms", Interval: 200 * time.Millisecond},
+		},
+	}
+
+	eng := newEngineWith(cfg, srv.Client(), srv.URL, false)
+	ss := &sliceSink{}
+	eng.sink = ss
+	if _, err := eng.Run(); err != nil {
+		t.Fatalf("engine.Run() error: %v", err)
+	}
+
+	hasPods := false
+	for _, r := range cfg.Resources {
+		if r.All {
+			continue
+		}
+		if r.Group == "" && r.Version == "v1" && r.Resource == "pods" {
+			hasPods = true
+			if len(r.Namespaces) != 1 || r.Namespaces[0] != "default" {
+				t.Fatalf("expected discovered core pods namespaces to expand to [default], got %v", r.Namespaces)
+			}
+		}
+		if r.Resource == "pods/status" {
+			t.Fatal("sub-resource pods/status should not be discovered")
+		}
+	}
+	if !hasPods {
+		t.Fatal("expected core/v1 pods to be discovered for all=true")
+	}
+
+	close(paths)
+	sawPodFetch := false
+	for p := range paths {
+		if p == "/api/v1/namespaces/default/pods" {
+			sawPodFetch = true
+			break
+		}
+	}
+	if !sawPodFetch {
+		t.Fatal("expected poll fetch for discovered core pods path")
+	}
+}
+
 func TestDoFetch_DedupAllSame_FirstAlwaysWritten(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
