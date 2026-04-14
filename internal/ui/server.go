@@ -1060,8 +1060,12 @@ const indexHTML = `<!doctype html>
 	.snapshot-btn { padding:6px 10px; border-radius:8px; border:1px solid #334155; background:#0f172a; color:#cbd5e1; cursor:pointer; font-size:12px; }
 	.snapshot-btn:hover { border-color:#64748b; }
 	.snapshot-btn:disabled { opacity:.45; cursor:not-allowed; border-color:#1f2937; }
+	.scrub-wrap { display:flex; align-items:center; gap:8px; min-width:240px; }
+	.scrub { width:100%; accent-color:#22c55e; }
+	.scrub-pos { color:var(--muted); font-size:11px; min-width:72px; text-align:right; }
 	body.loading-snapshot .snapshot-select,
-	body.loading-snapshot .snapshot-btn { opacity:.7; }
+	body.loading-snapshot .snapshot-btn,
+	body.loading-snapshot .scrub { opacity:.7; }
     .layout { display:grid; grid-template-columns:260px 1fr 40%; min-height:calc(100vh - 56px); }
     .panel { border-right:1px solid var(--line); overflow:auto; }
     .panel:last-child { border-right:none; border-left:1px solid var(--line); }
@@ -1129,6 +1133,10 @@ const indexHTML = `<!doctype html>
 				<select id="snapshotAt" class="snapshot-select" title="Select capture timestamp"></select>
 				<button id="snapshotNext" class="snapshot-btn" type="button" title="Jump to newer snapshot">Next</button>
 			</div>
+			<div class="scrub-wrap">
+				<input id="timelineScrub" class="scrub" type="range" min="0" max="0" step="1" value="0"/>
+				<span id="timelinePosition" class="scrub-pos"></span>
+			</div>
 			<div id="snapshotHint" class="snapshot-hint"></div>
 			<div id="meta" class="muted"></div>
 		</div>
@@ -1186,6 +1194,8 @@ const indexHTML = `<!doctype html>
 	const storageExpandedKey = 'kshrk.ui.expandedSections.v1';
 	let expandedSections = {};
 	let currentAt = '';
+	let timelinePoints = [];
+	let scrubDebounce = null;
 
     const el = {
       tree: document.getElementById('tree'),
@@ -1207,6 +1217,8 @@ const indexHTML = `<!doctype html>
 			snapshotPrev: document.getElementById('snapshotPrev'),
 			snapshotAt: document.getElementById('snapshotAt'),
 			snapshotNext: document.getElementById('snapshotNext'),
+			timelineScrub: document.getElementById('timelineScrub'),
+			timelinePosition: document.getElementById('timelinePosition'),
 			snapshotHint: document.getElementById('snapshotHint'),
 			toasts: document.getElementById('toasts')
     };
@@ -1224,10 +1236,18 @@ const indexHTML = `<!doctype html>
 	el.snapshotAt.onchange = () => {
 		currentAt = el.snapshotAt.value || '';
 		syncSnapshotButtons();
+		syncScrubber();
 		syncAtInURL();
 		refreshTree();
 	};
 	el.snapshotNext.onclick = () => stepSnapshot(-1);
+	el.timelineScrub.oninput = () => {
+		syncScrubberLabel();
+		if (scrubDebounce) window.clearTimeout(scrubDebounce);
+		scrubDebounce = window.setTimeout(() => {
+			applyScrubberSelection();
+		}, 120);
+	};
 	document.addEventListener('keydown', onTreeKeyDown);
 
 	function syncAtInURL() {
@@ -1273,6 +1293,51 @@ const indexHTML = `<!doctype html>
 		el.snapshotNext.disabled = idx <= 0;
 	}
 
+	function syncScrubberLabel() {
+		if (!timelinePoints.length) {
+			el.timelinePosition.textContent = '';
+			return;
+		}
+		const idx = Number(el.timelineScrub.value || 0);
+		const pos = Math.max(0, Math.min(idx, timelinePoints.length - 1));
+		el.timelinePosition.textContent = (pos + 1) + '/' + timelinePoints.length;
+	}
+
+	function syncScrubber() {
+		if (!timelinePoints.length) {
+			el.timelineScrub.min = '0';
+			el.timelineScrub.max = '0';
+			el.timelineScrub.value = '0';
+			el.timelineScrub.disabled = true;
+			syncScrubberLabel();
+			return;
+		}
+		el.timelineScrub.disabled = false;
+		el.timelineScrub.min = '0';
+		el.timelineScrub.max = String(timelinePoints.length - 1);
+		let target = timelinePoints.length - 1;
+		if (currentAt && currentAt !== 'latest') {
+			const idx = timelinePoints.indexOf(currentAt);
+			if (idx >= 0) target = idx;
+		}
+		el.timelineScrub.value = String(target);
+		syncScrubberLabel();
+	}
+
+	function applyScrubberSelection() {
+		if (!timelinePoints.length) return;
+		const idx = Number(el.timelineScrub.value || 0);
+		const pos = Math.max(0, Math.min(idx, timelinePoints.length - 1));
+		const ts = timelinePoints[pos];
+		const newest = timelinePoints[timelinePoints.length - 1];
+		currentAt = ts === newest ? 'latest' : ts;
+		el.snapshotAt.value = currentAt;
+		syncSnapshotButtons();
+		syncScrubber();
+		syncAtInURL();
+		refreshTree();
+	}
+
 	function stepSnapshot(delta) {
 		const sequence = snapshotSequence();
 		if (sequence.length === 0) {
@@ -1290,6 +1355,7 @@ const indexHTML = `<!doctype html>
 		currentAt = sequence[nextIdx];
 		el.snapshotAt.value = currentAt;
 		syncSnapshotButtons();
+		syncScrubber();
 		syncAtInURL();
 		refreshTree();
 	}
@@ -1306,7 +1372,9 @@ const indexHTML = `<!doctype html>
 	}
 
 	function renderSnapshotSelector(times, defaultAt, totalCount, sampled) {
-		const opts = Array.isArray(times) ? times.slice().reverse() : [];
+		const asc = Array.isArray(times) ? times.slice() : [];
+		timelinePoints = asc.slice();
+		const opts = asc.slice().reverse();
 		const unique = [];
 		const seen = new Set();
 		for (const ts of opts) {
@@ -1341,6 +1409,7 @@ const indexHTML = `<!doctype html>
 			el.snapshotAt.appendChild(opt);
 		}
 		el.snapshotAt.value = currentAt;
+		syncScrubber();
 		if (sampled && totalCount > opts.length) {
 			el.snapshotHint.textContent = 'showing ' + opts.length + ' sampled of ' + totalCount;
 		} else if (totalCount > 0) {
@@ -1448,8 +1517,13 @@ const indexHTML = `<!doctype html>
 		function setSnapshotLoading(loading) {
 			document.body.classList.toggle('loading-snapshot', !!loading);
 			el.snapshotAt.disabled = !!loading;
-			el.snapshotPrev.disabled = !!loading || el.snapshotPrev.disabled;
-			el.snapshotNext.disabled = !!loading || el.snapshotNext.disabled;
+			el.timelineScrub.disabled = !!loading || timelinePoints.length === 0;
+			if (loading) {
+				el.snapshotPrev.disabled = true;
+				el.snapshotNext.disabled = true;
+			} else {
+				syncSnapshotButtons();
+			}
 			if (loading) {
 				el.snapshotHint.textContent = 'loading snapshot...';
 			}
