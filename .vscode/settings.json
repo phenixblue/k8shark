@@ -4,7 +4,13 @@
         "/usr/local/go/bin/go": true,
         "/usr/bin/go": true,
         "brew": true,
-        },
-        "mkdir": true
+        "mkdir": true,
+        "git push": true,
+        "git rebase": true,
+        "make": true,
+        "git add": true,
+        "git commit": true,
+        "gh": true,
+        "git rev-parse": true
     }
 }
