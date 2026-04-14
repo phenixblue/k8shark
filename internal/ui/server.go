@@ -224,7 +224,7 @@ func (h *explorerHandler) serveDetail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	normalizedBody, err := normalizeDetailBody(body, path)
+	normalizedBody, inferred, err := normalizeDetailBody(body, path)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "invalid object body"})
 		return
@@ -248,25 +248,28 @@ func (h *explorerHandler) serveDetail(w http.ResponseWriter, r *http.Request) {
 		"status_code": code,
 		"json":        string(prettyJSON),
 		"yaml":        string(yml),
+		"inferred":    inferred,
 	})
 }
 
-func normalizeDetailBody(body []byte, path string) ([]byte, error) {
+func normalizeDetailBody(body []byte, path string) ([]byte, map[string]bool, error) {
+	inferred := map[string]bool{"apiVersion": false, "kind": false}
 	var obj map[string]any
 	if err := json.Unmarshal(body, &obj); err != nil {
-		return nil, err
+		return nil, inferred, err
 	}
 
 	// Keep list/table/detail envelopes as-is.
 	if _, hasItems := obj["items"]; hasItems {
-		return body, nil
+		return body, inferred, nil
 	}
 	if strings.HasSuffix(asString(obj["kind"]), "Table") {
-		return body, nil
+		return body, inferred, nil
 	}
 
 	group, version, resource, _, _ := parseAPIPath(path)
 	if asString(obj["apiVersion"]) == "" {
+		inferred["apiVersion"] = true
 		if group == "" {
 			obj["apiVersion"] = version
 		} else {
@@ -274,14 +277,15 @@ func normalizeDetailBody(body []byte, path string) ([]byte, error) {
 		}
 	}
 	if asString(obj["kind"]) == "" {
+		inferred["kind"] = true
 		obj["kind"] = kindFromResource(resource)
 	}
 
 	b, err := json.Marshal(obj)
 	if err != nil {
-		return nil, err
+		return nil, inferred, err
 	}
-	return b, nil
+	return b, inferred, nil
 }
 
 func (h *explorerHandler) buildTree() (*treeResponse, error) {
@@ -1174,12 +1178,17 @@ const indexHTML = `<!doctype html>
 			const refs = meta.ownerReferences || [];
 			const owner = refs.length > 0 ? (refs[0].kind + '/' + refs[0].name) : '';
 			const labels = meta.labels ? Object.keys(meta.labels).length : 0;
+			const inferred = data.inferred || {};
+			const completeness = (inferred.apiVersion || inferred.kind)
+				? ('inferred: ' + [inferred.apiVersion ? 'apiVersion' : '', inferred.kind ? 'kind' : ''].filter(Boolean).join(', '))
+				: 'inferred: none';
 			const chips = [
 				['kind', obj.kind || node.kind || ''],
 				['name', meta.name || node.name || ''],
 				['ns', meta.namespace || '-'],
 				['labels', String(labels)],
-				['owner', owner || '-']
+				['owner', owner || '-'],
+				['raw', completeness]
 			];
 			for (const [k, v] of chips) {
 				const chip = document.createElement('span');
