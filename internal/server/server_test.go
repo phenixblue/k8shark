@@ -135,3 +135,64 @@ func TestServer_Open_EndToEnd(t *testing.T) {
 		t.Errorf("expected pod name=nginx, got %v", meta["name"])
 	}
 }
+
+func TestParseReplayAt(t *testing.T) {
+	meta := capture.CaptureMetadata{
+		CapturedAt:    time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC),
+		CapturedUntil: time.Date(2026, 4, 9, 11, 0, 0, 0, time.UTC),
+	}
+
+	t.Run("rfc3339", func(t *testing.T) {
+		got, err := parseReplayAt(meta, "2026-04-09T10:30:00Z")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := time.Date(2026, 4, 9, 10, 30, 0, 0, time.UTC)
+		if !got.Equal(want) {
+			t.Fatalf("got %s, want %s", got, want)
+		}
+	})
+
+	t.Run("relative duration", func(t *testing.T) {
+		got, err := parseReplayAt(meta, "-5m")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		want := time.Date(2026, 4, 9, 10, 55, 0, 0, time.UTC)
+		if !got.Equal(want) {
+			t.Fatalf("got %s, want %s", got, want)
+		}
+	})
+
+	t.Run("invalid", func(t *testing.T) {
+		_, err := parseReplayAt(meta, "not-a-time")
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
+
+	t.Run("before capture", func(t *testing.T) {
+		_, err := parseReplayAt(meta, "2026-04-09T09:59:59Z")
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+		if err != nil && err.Error() == "" {
+			t.Fatal("expected clear error message")
+		}
+	})
+
+	t.Run("after capture", func(t *testing.T) {
+		_, err := parseReplayAt(meta, "1m")
+		if err == nil {
+			t.Fatal("expected error, got nil")
+		}
+	})
+}
+
+func TestServer_Open_RejectsOutOfRangeAt(t *testing.T) {
+	archivePath := buildTestArchive(t)
+	_, err := Open(OpenOptions{ArchivePath: archivePath, At: "1900-01-01T00:00:00Z"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+}

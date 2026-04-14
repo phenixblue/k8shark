@@ -5,12 +5,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -803,5 +805,142 @@ func TestEngine_DedupPerResourceOptOut(t *testing.T) {
 	}
 	if got := len(eventsEntry.RecordIDs); got <= 1 {
 		t.Fatalf("events with dedup:false should keep multiple polls, got %d", got)
+	}
+}
+
+func TestWatchResource_RecordsEvents(t *testing.T) {
+	var watchHits int32
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/namespaces/default/pods":
+			if r.URL.Query().Get("watch") == "1" {
+				atomic.AddInt32(&watchHits, 1)
+				w.WriteHeader(http.StatusOK)
+				_, _ = io.WriteString(w, `{"type":"ADDED","object":{"metadata":{"name":"p1"}}}`+"\n")
+				_, _ = io.WriteString(w, `{"type":"DELETED","object":{"metadata":{"name":"p2"}}}`+"\n")
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+				return
+			}
+			fmt.Fprint(w, `{"kind":"PodList","metadata":{"resourceVersion":"10"},"items":[]}`)
+		case "/version":
+			fmt.Fprint(w, `{"gitVersion":"v1.29.0"}`)
+		default:
+			fmt.Fprint(w, `{"kind":"List","items":[]}`)
+		}
+	}))
+	defer srv.Close()
+
+	eng := newEngineWith(&config.Config{}, srv.Client(), srv.URL, false)
+	ss := &sliceSink{}
+	eng.sink = ss
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	res := config.Resource{Version: "v1", Resource: "pods", Namespaces: []string{"default"}, Watch: true}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		eng.watchResource(ctx, res)
+	}()
+
+	deadline := time.Now().Add(1500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		ss.mu.Lock()
+		count := len(ss.records)
+		ss.mu.Unlock()
+		if count >= 2 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	if atomic.LoadInt32(&watchHits) == 0 {
+		t.Fatal("expected at least one watch connection")
+	}
+
+	seen := map[string]bool{}
+	for _, rec := range ss.records {
+		if rec.APIPath != "/api/v1/namespaces/default/pods" {
+			continue
+		}
+		if rec.EventType != "" {
+			seen[rec.EventType] = true
+		}
+	}
+	if !seen["ADDED"] || !seen["DELETED"] {
+		t.Fatalf("expected ADDED and DELETED watch event types, got %v", seen)
+	}
+}
+
+func TestWatchResource_Reconnects(t *testing.T) {
+	var watchConn int32
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/namespaces/default/pods":
+			if r.URL.Query().Get("watch") == "1" {
+				n := atomic.AddInt32(&watchConn, 1)
+				w.WriteHeader(http.StatusOK)
+				if n == 1 {
+					_, _ = io.WriteString(w, `{"type":"ADDED","object":{"metadata":{"name":"first"}}}`+"\n")
+				} else {
+					_, _ = io.WriteString(w, `{"type":"MODIFIED","object":{"metadata":{"name":"second"}}}`+"\n")
+				}
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+				return
+			}
+			fmt.Fprint(w, `{"kind":"PodList","metadata":{"resourceVersion":"22"},"items":[]}`)
+		case "/version":
+			fmt.Fprint(w, `{"gitVersion":"v1.29.0"}`)
+		default:
+			fmt.Fprint(w, `{"kind":"List","items":[]}`)
+		}
+	}))
+	defer srv.Close()
+
+	eng := newEngineWith(&config.Config{}, srv.Client(), srv.URL, false)
+	ss := &sliceSink{}
+	eng.sink = ss
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	res := config.Resource{Version: "v1", Resource: "pods", Namespaces: []string{"default"}, Watch: true}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		eng.watchResource(ctx, res)
+	}()
+
+	deadline := time.Now().Add(2500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if atomic.LoadInt32(&watchConn) >= 2 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	if atomic.LoadInt32(&watchConn) < 2 {
+		t.Fatalf("expected watch reconnect (>=2 watch connections), got %d", watchConn)
+	}
+
+	seen := map[string]bool{}
+	for _, rec := range ss.records {
+		if rec.EventType != "" {
+			seen[rec.EventType] = true
+		}
+	}
+	if !seen["ADDED"] || !seen["MODIFIED"] {
+		t.Fatalf("expected ADDED and MODIFIED watch events across reconnects, got %v", seen)
 	}
 }

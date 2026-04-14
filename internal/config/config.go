@@ -30,6 +30,9 @@ type Resource struct {
 	// Dedup controls response-body deduplication for this resource. Nil means
 	// enabled by default; set dedup: false to force writing every poll.
 	Dedup *bool `mapstructure:"dedup"`
+	// Watch enables a Kubernetes watch stream for this resource in addition to
+	// polling. Watch events are captured with low-latency timestamps.
+	Watch bool `mapstructure:"watch"`
 }
 
 // DedupEnabled reports whether polling responses for this resource should be

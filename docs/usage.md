@@ -206,9 +206,15 @@ Every captured record is timestamped. `--at` lets you replay the capture as it l
 
 ```sh
 kshrk open capture.tar.gz --at 2026-04-09T10:30:00Z
+kshrk open capture.tar.gz --at -5m
 ```
 
-The timestamp must be in RFC3339 format. Use UTC (`Z`) or include an offset (`+05:30`).
+`--at` accepts either:
+
+- an RFC3339 timestamp, using UTC (`Z`) or an explicit offset (`+05:30`)
+- a relative duration such as `-5m` or `-1h`, interpreted relative to the capture end time
+
+If the requested time is outside the capture window, `kshrk open` exits with a clear error.
 
 This is useful when you have a long capture (e.g. 1h) and want to compare cluster state before and after an incident.
 
@@ -255,6 +261,57 @@ Open this URL in your browser. Press Ctrl+C to stop.
 | `--api-port` | random | Port for the mock API server |
 | `--kubeconfig-out` | `~/.kube/k8shark-<id>.yaml` | Where to write the generated kubeconfig |
 | `--at` | latest records | Pin UI data to a specific timestamp (RFC3339 or relative duration) |
+
+---
+
+## Diff
+
+`kshrk diff` compares either two capture archives or two points in time within the same archive.
+
+Compare two archives:
+
+```sh
+kshrk diff --before before.tar.gz --after after.tar.gz
+```
+
+Compare two points within one archive:
+
+```sh
+kshrk diff --archive capture.tar.gz \
+  --before-at 2026-04-09T10:40:00Z \
+  --after-at -1m
+```
+
+Scope the output:
+
+```sh
+kshrk diff --before before.tar.gz --after after.tar.gz \
+  --resource pods --namespace default
+```
+
+Emit machine-readable JSON instead of unified diff text:
+
+```sh
+kshrk diff --before before.tar.gz --after after.tar.gz --output json
+```
+
+### Diff flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--before` | | Before archive path |
+| `--after` | | After archive path |
+| `--archive` | | Single archive path for intra-archive diff |
+| `--before-at` | | Before snapshot time (RFC3339 or relative duration) |
+| `--after-at` | | After snapshot time (RFC3339 or relative duration) |
+| `--resource` | | Limit diff to one resource type |
+| `--namespace` | | Limit diff to one namespace |
+| `--output`, `-o` | `text` | Output format: `text` or `json` |
+
+Exit codes follow the usual diff convention:
+
+- `0` when no differences are found
+- `1` when differences are found
 
 ---
 

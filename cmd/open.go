@@ -20,7 +20,7 @@ func init() {
 	rootCmd.AddCommand(openCmd)
 	openCmd.Flags().String("port", "0", "port for the mock API server (0 = random available port)")
 	openCmd.Flags().String("kubeconfig-out", "", "where to write the generated kubeconfig (default: ~/.kube/k8shark-<id>)")
-	openCmd.Flags().String("at", "", "pin replay to a specific timestamp (RFC3339, e.g. 2026-04-09T10:00:00Z)")
+	openCmd.Flags().String("at", "", "pin replay to a specific timestamp (RFC3339) or relative duration like -5m")
 }
 
 func runOpen(cmd *cobra.Command, args []string) error {
