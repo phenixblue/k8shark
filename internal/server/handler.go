@@ -605,8 +605,40 @@ func (h *handler) trySingleItemGet(path string, at time.Time) ([]byte, int) {
 }
 
 func (h *handler) handleWatch(w http.ResponseWriter, r *http.Request, path string, at time.Time) {
-	rawBody, code, err := h.store.ReconstructAt(strings.TrimSuffix(path, "/"), at)
-	if err != nil || code != 200 {
+	watchPath := strings.TrimSuffix(path, "/")
+	rawBody, code, err := h.store.ReconstructAt(watchPath, at)
+	if err != nil {
+		h.writeStatus(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	if code == 404 {
+		rawBody, code, err = h.store.AggregateAcrossNamespaces(watchPath, at)
+		if err != nil {
+			h.writeStatus(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+
+	if code == 404 {
+		g, v, resource, _ := parseAPIPath(watchPath)
+		if resource != "" {
+			av := v
+			if g != "" {
+				av = g + "/" + v
+			}
+			emptyList, _ := json.Marshal(map[string]any{
+				"apiVersion": av,
+				"kind":       resourceToKind(resource) + "List",
+				"metadata":   map[string]string{"resourceVersion": "0"},
+				"items":      []any{},
+			})
+			rawBody = emptyList
+			code = 200
+		}
+	}
+
+	if code != 200 {
 		h.writeStatus(w, http.StatusNotFound, fmt.Sprintf("%q not found in capture", path))
 		return
 	}
@@ -615,7 +647,9 @@ func (h *handler) handleWatch(w http.ResponseWriter, r *http.Request, path strin
 	body, _ := applySelectors(rawBody, r.URL.Query().Get("labelSelector"), r.URL.Query().Get("fieldSelector"))
 
 	var list struct {
-		Metadata struct {
+		APIVersion string `json:"apiVersion"`
+		Kind       string `json:"kind"`
+		Metadata   struct {
 			ResourceVersion string `json:"resourceVersion"`
 		} `json:"metadata"`
 		Items []json.RawMessage `json:"items"`
@@ -654,11 +688,21 @@ func (h *handler) handleWatch(w http.ResponseWriter, r *http.Request, path strin
 	}
 
 	// BOOKMARK signals end of initial list; kubectl -w then waits for new events.
+	// The BOOKMARK object must have the same kind as the watched resource
+	// (not "Status"), otherwise client-go reflectors log unexpected type errors.
+	bookmarkKind := strings.TrimSuffix(list.Kind, "List")
+	bookmarkAPIVersion := list.APIVersion
+	if bookmarkKind == "" {
+		bookmarkKind = "Status"
+	}
+	if bookmarkAPIVersion == "" {
+		bookmarkAPIVersion = "v1"
+	}
 	bookmark := map[string]any{
 		"type": "BOOKMARK",
 		"object": map[string]any{
-			"apiVersion": "v1",
-			"kind":       "Status",
+			"apiVersion": bookmarkAPIVersion,
+			"kind":       bookmarkKind,
 			"metadata":   map[string]string{"resourceVersion": rv},
 		},
 	}

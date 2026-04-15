@@ -218,13 +218,16 @@ func TestHandler_Watch(t *testing.T) {
 			hasAdded = true
 		case "BOOKMARK":
 			hasBookmark = true
-			// resourceVersion must be non-empty and not the placeholder "0".
 			if obj, ok := ev["object"].(map[string]any); ok {
 				if meta, ok := obj["metadata"].(map[string]any); ok {
 					rv, _ := meta["resourceVersion"].(string)
 					if rv == "" || rv == "0" {
 						t.Errorf("BOOKMARK resourceVersion should be non-zero, got %q", rv)
 					}
+				}
+				// BOOKMARK kind must match the resource kind, not "Status"
+				if kind, _ := obj["kind"].(string); kind == "Status" || kind == "" {
+					t.Errorf("BOOKMARK object kind should be the resource kind, got %q", kind)
 				}
 			}
 		}
@@ -396,6 +399,95 @@ func TestHandler_Watch_TimeoutSeconds(t *testing.T) {
 	}
 	if !hasBookmark {
 		t.Error("expected a BOOKMARK event")
+	}
+}
+
+func TestHandler_Watch_AggregateAcrossNamespacesPath(t *testing.T) {
+	svcList := `{"apiVersion":"v1","kind":"ServiceList","metadata":{"resourceVersion":"11"},"items":[{"apiVersion":"v1","kind":"Service","metadata":{"name":"nginx","namespace":"default"}}]}`
+	store := buildTestStore(t, map[string][]byte{
+		"/api/v1/namespaces/default/services": []byte(svcList),
+	})
+	h := newHandler(store, time.Time{}, false)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/services?watch=1", nil)
+	ctx, cancel := cancelableContext(req.Context())
+	req = req.WithContext(ctx)
+	rw := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.ServeHTTP(rw, req)
+	}()
+	cancel()
+	<-done
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("expected 200 for aggregated watch, got %d", rw.Code)
+	}
+	lines := strings.Split(strings.TrimSpace(rw.Body.String()), "\n")
+	var hasAdded, hasBookmark bool
+	for _, line := range lines {
+		var ev map[string]any
+		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			continue
+		}
+		switch ev["type"] {
+		case "ADDED":
+			hasAdded = true
+		case "BOOKMARK":
+			hasBookmark = true
+		}
+	}
+	if !hasAdded {
+		t.Error("expected ADDED event for aggregated services watch")
+	}
+	if !hasBookmark {
+		t.Error("expected BOOKMARK event for aggregated services watch")
+	}
+}
+
+func TestHandler_Watch_MissingListPathReturnsEmptyStream(t *testing.T) {
+	store := buildTestStore(t, map[string][]byte{
+		"/api/v1/namespaces/default/pods": []byte(`{"kind":"PodList","items":[]}`),
+	})
+	h := newHandler(store, time.Time{}, false)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/secrets?watch=1", nil)
+	ctx, cancel := cancelableContext(req.Context())
+	req = req.WithContext(ctx)
+	rw := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.ServeHTTP(rw, req)
+	}()
+	cancel()
+	<-done
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("expected 200 for missing list path watch fallback, got %d", rw.Code)
+	}
+	lines := strings.Split(strings.TrimSpace(rw.Body.String()), "\n")
+	var hasAdded, hasBookmark bool
+	for _, line := range lines {
+		var ev map[string]any
+		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			continue
+		}
+		switch ev["type"] {
+		case "ADDED":
+			hasAdded = true
+		case "BOOKMARK":
+			hasBookmark = true
+		}
+	}
+	if hasAdded {
+		t.Error("did not expect ADDED events for missing list path watch fallback")
+	}
+	if !hasBookmark {
+		t.Error("expected BOOKMARK event for missing list path watch fallback")
 	}
 }
 
