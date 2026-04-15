@@ -30,14 +30,42 @@ var validateCmd = &cobra.Command{
 			return err
 		}
 
-		// Count distinct non-empty namespaces across all resources.
+		// Summarize resources, noting auto-discovery entries.
+		var allCount, explicitCount int
+		for _, r := range cfg.Resources {
+			if r.All {
+				allCount++
+			} else {
+				explicitCount++
+			}
+		}
+		var resourceSummary string
+		switch {
+		case allCount > 0 && explicitCount > 0:
+			resourceSummary = fmt.Sprintf("%d explicit + %d auto-discovered", explicitCount, allCount)
+		case allCount > 0:
+			resourceSummary = fmt.Sprintf("%d auto-discovered", allCount)
+		default:
+			resourceSummary = fmt.Sprintf("%d", explicitCount)
+		}
+
+		// Count distinct non-empty namespaces; detect wildcard.
 		nsSet := make(map[string]struct{})
+		wildcardNS := false
 		for _, r := range cfg.Resources {
 			for _, ns := range r.Namespaces {
-				if ns != "" {
+				if ns == "*" {
+					wildcardNS = true
+				} else if ns != "" {
 					nsSet[ns] = struct{}{}
 				}
 			}
+		}
+		var namespaceSummary string
+		if wildcardNS {
+			namespaceSummary = "all namespaces"
+		} else {
+			namespaceSummary = fmt.Sprintf("%d namespace(s)", len(nsSet))
 		}
 
 		// Print warnings to stderr.
@@ -45,8 +73,8 @@ var validateCmd = &cobra.Command{
 			fmt.Fprintf(os.Stderr, "warning: %s\n", w)
 		}
 
-		fmt.Printf("✓ Config valid (%d resources, %d namespaces, duration %s)\n",
-			len(cfg.Resources), len(nsSet), cfg.Duration)
+		fmt.Printf("✓ Config valid (%s resource(s), %s, duration %s)\n",
+			resourceSummary, namespaceSummary, cfg.Duration)
 		return nil
 	},
 }
