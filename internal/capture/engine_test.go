@@ -1318,3 +1318,102 @@ func TestWatchResource_Reconnects(t *testing.T) {
 		t.Fatalf("expected ADDED and MODIFIED watch events across reconnects, got %v", seen)
 	}
 }
+
+// TestFetchResource_AutoDiscoveredSilentFallback verifies that when a resource
+// was added via auto-discovery (AutoDiscovered=true) and every namespace-scoped
+// fetch returns 404, the engine falls back to the cluster-scoped path silently
+// — no warning is written to stderr.
+func TestFetchResource_AutoDiscoveredSilentFallback(t *testing.T) {
+	clusterFetched := false
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/version":
+			fmt.Fprint(w, `{"gitVersion":"v1.29.0"}`)
+		case strings.Contains(r.URL.Path, "/namespaces/"):
+			// All namespace-scoped fetches return 404.
+			w.WriteHeader(http.StatusNotFound)
+			fmt.Fprint(w, `{"kind":"Status","apiVersion":"v1","status":"Failure","code":404}`)
+		case r.URL.Path == "/apis/image.openshift.io/v1/imagestreamimages":
+			clusterFetched = true
+			fmt.Fprint(w, `{"kind":"ImageStreamImageList","apiVersion":"image.openshift.io/v1","items":[]}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	// Capture stderr to assert no warning is emitted.
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	eng := newEngineWith(&config.Config{}, srv.Client(), srv.URL, false)
+	eng.sink = &sliceSink{}
+
+	res := config.Resource{
+		Group:          "image.openshift.io",
+		Version:        "v1",
+		Resource:       "imagestreamimages",
+		Namespaces:     []string{"default", "production"},
+		IntervalRaw:    "500ms",
+		Interval:       500 * time.Millisecond,
+		AutoDiscovered: true,
+	}
+	eng.fetchResource(context.Background(), res)
+
+	w.Close()
+	os.Stderr = oldStderr
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, r)
+	stderrOut := buf.String()
+
+	if strings.Contains(stderrOut, "[warn]") {
+		t.Errorf("expected no [warn] on stderr for auto-discovered resource, got: %s", stderrOut)
+	}
+	if !clusterFetched {
+		t.Error("expected engine to fall back to cluster-scoped path, but it was not fetched")
+	}
+}
+
+// TestFetchResource_ExplicitNamespaceWarnOnAllNotFound verifies that when a
+// manually-configured resource (AutoDiscovered=false) has all namespace-scoped
+// fetches return 404, the warning IS printed to stderr.
+func TestFetchResource_ExplicitNamespaceWarnOnAllNotFound(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/version" {
+			fmt.Fprint(w, `{"gitVersion":"v1.29.0"}`)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"kind":"Status","status":"Failure","code":404}`)
+	}))
+	defer srv.Close()
+
+	oldStderr := os.Stderr
+	r, wPipe, _ := os.Pipe()
+	os.Stderr = wPipe
+
+	eng := newEngineWith(&config.Config{}, srv.Client(), srv.URL, false)
+	eng.sink = &sliceSink{}
+
+	res := config.Resource{
+		Version:        "v1",
+		Resource:       "widgets",
+		Namespaces:     []string{"default"},
+		IntervalRaw:    "500ms",
+		Interval:       500 * time.Millisecond,
+		AutoDiscovered: false,
+	}
+	eng.fetchResource(context.Background(), res)
+
+	wPipe.Close()
+	os.Stderr = oldStderr
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, r)
+
+	if !strings.Contains(buf.String(), "[warn]") {
+		t.Errorf("expected [warn] on stderr for explicit resource with all-404 namespaces, got: %s", buf.String())
+	}
+}

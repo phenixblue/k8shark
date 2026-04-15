@@ -456,11 +456,22 @@ func (e *Engine) fetchResource(ctx context.Context, res config.Resource) {
 
 	if allNotFound {
 		clusterPath := buildAPIPath(res.Group, res.Version, res.Resource, "")
-		fmt.Fprintf(os.Stderr,
-			"  [warn] %s: all namespace-scoped fetches returned 404 — "+
-				"this is likely a cluster-scoped resource; remove 'namespaces:' "+
-				"from its config entry. Fetching cluster-scoped path %s as fallback.\n",
-			res.Resource, clusterPath)
+		// For auto-discovered resources the namespace assignment came from the
+		// Kubernetes discovery API, not from user config. Some resources
+		// (especially OpenShift CRDs) report "namespaced" in discovery but only
+		// serve data at the cluster-scoped path. Silently fall back rather than
+		// printing a misleading "remove 'namespaces:'" hint the user can't act on.
+		if !res.AutoDiscovered {
+			fmt.Fprintf(os.Stderr,
+				"  [warn] %s: all namespace-scoped fetches returned 404 — "+
+					"this is likely a cluster-scoped resource; remove 'namespaces:' "+
+					"from its config entry. Fetching cluster-scoped path %s as fallback.\n",
+				res.Resource, clusterPath)
+		} else if e.verbose {
+			fmt.Fprintf(os.Stderr,
+				"  [debug] %s: all namespace-scoped fetches returned 404; falling back to cluster-scoped path %s\n",
+				res.Resource, clusterPath)
+		}
 		e.doFetch(ctx, clusterPath, "", dedupEnabled)
 		e.doFetch(ctx, clusterPath, tableIndexKeySuffix, dedupEnabled)
 	}
@@ -580,13 +591,14 @@ func (e *Engine) autoDiscoverResources(ctx context.Context) {
 					}
 
 					newRes := config.Resource{
-						Group:       group,
-						Version:     version,
-						Resource:    res.Name,
-						IntervalRaw: d.IntervalRaw,
-						Interval:    d.Interval,
-						Dedup:       d.Dedup,
-						Watch:       d.Watch,
+						Group:          group,
+						Version:        version,
+						Resource:       res.Name,
+						IntervalRaw:    d.IntervalRaw,
+						Interval:       d.Interval,
+						Dedup:          d.Dedup,
+						Watch:          d.Watch,
+						AutoDiscovered: true,
 					}
 					if newRes.Interval == 0 {
 						newRes.Interval = 30 * time.Second
@@ -643,13 +655,14 @@ func (e *Engine) autoDiscoverResources(ctx context.Context) {
 						}
 
 						newRes := config.Resource{
-							Group:       "",
-							Version:     "v1",
-							Resource:    res.Name,
-							IntervalRaw: d.IntervalRaw,
-							Interval:    d.Interval,
-							Dedup:       d.Dedup,
-							Watch:       d.Watch,
+							Group:          "",
+							Version:        "v1",
+							Resource:       res.Name,
+							IntervalRaw:    d.IntervalRaw,
+							Interval:       d.Interval,
+							Dedup:          d.Dedup,
+							Watch:          d.Watch,
+							AutoDiscovered: true,
 						}
 						if newRes.Interval == 0 {
 							newRes.Interval = 30 * time.Second
