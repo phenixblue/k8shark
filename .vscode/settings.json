@@ -14,6 +14,7 @@
         "git rev-parse": true,
         "golangci-lint": true,
         "git checkout": true,
-        "git pull": true
+        "git pull": true,
+        "git tag": true
     }
 }
