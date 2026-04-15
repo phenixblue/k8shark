@@ -450,6 +450,58 @@ func TestHandler_WriteMethodsReturn405(t *testing.T) {
 	})
 }
 
+func TestHandler_SelfSubjectAccessReview_Compatibility(t *testing.T) {
+	store := buildTestStore(t, map[string][]byte{
+		"/api/v1/namespaces/default/pods": []byte(`{"kind":"PodList","items":[]}`),
+	})
+	h := newHandler(store, time.Time{}, false)
+
+	req := httptest.NewRequest(http.MethodPost, "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews", strings.NewReader(`{"kind":"SelfSubjectAccessReview"}`))
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", rw.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rw.Body.Bytes(), &body); err != nil {
+		t.Fatalf("expected JSON body: %v", err)
+	}
+	if body["kind"] != "SelfSubjectAccessReview" {
+		t.Fatalf("expected kind SelfSubjectAccessReview, got %v", body["kind"])
+	}
+	status, _ := body["status"].(map[string]any)
+	if allowed, _ := status["allowed"].(bool); !allowed {
+		t.Fatalf("expected status.allowed=true, got %v", status["allowed"])
+	}
+}
+
+func TestHandler_SelfSubjectRulesReview_Compatibility(t *testing.T) {
+	store := buildTestStore(t, map[string][]byte{
+		"/api/v1/namespaces/default/pods": []byte(`{"kind":"PodList","items":[]}`),
+	})
+	h := newHandler(store, time.Time{}, false)
+
+	req := httptest.NewRequest(http.MethodPost, "/apis/authorization.k8s.io/v1/selfsubjectrulesreviews", strings.NewReader(`{"kind":"SelfSubjectRulesReview"}`))
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", rw.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rw.Body.Bytes(), &body); err != nil {
+		t.Fatalf("expected JSON body: %v", err)
+	}
+	if body["kind"] != "SelfSubjectRulesReview" {
+		t.Fatalf("expected kind SelfSubjectRulesReview, got %v", body["kind"])
+	}
+	status, _ := body["status"].(map[string]any)
+	if incomplete, _ := status["incomplete"].(bool); incomplete {
+		t.Fatalf("expected status.incomplete=false, got true")
+	}
+}
+
 func TestHandler_InteractiveSubResourcesReturn405(t *testing.T) {
 	store := buildTestStore(t, map[string][]byte{
 		"/api/v1/namespaces/default/pods": []byte(`{"kind":"PodList","items":[]}`),

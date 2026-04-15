@@ -56,6 +56,48 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Client compatibility: tools like k9s POST authorization review resources
+	// to determine what actions are available. These requests are read-only
+	// capability checks, not mutating operations, so we synthesize permissive
+	// read-only responses to avoid breaking navigation workflows.
+	if r.Method == http.MethodPost {
+		switch path {
+		case "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews":
+			writeJSON(w, http.StatusCreated, map[string]any{
+				"apiVersion": "authorization.k8s.io/v1",
+				"kind":       "SelfSubjectAccessReview",
+				"status": map[string]any{
+					"allowed": true,
+					"denied":  false,
+					"reason":  "k8shark replay server: read-only access checks allowed for client compatibility",
+				},
+			})
+			return
+		case "/apis/authorization.k8s.io/v1/selfsubjectrulesreviews":
+			writeJSON(w, http.StatusCreated, map[string]any{
+				"apiVersion": "authorization.k8s.io/v1",
+				"kind":       "SelfSubjectRulesReview",
+				"status": map[string]any{
+					"incomplete": false,
+					"resourceRules": []map[string]any{
+						{
+							"verbs":     []string{"get", "list", "watch"},
+							"apiGroups": []string{"*"},
+							"resources": []string{"*"},
+						},
+					},
+					"nonResourceRules": []map[string]any{
+						{
+							"verbs":           []string{"get"},
+							"nonResourceURLs": []string{"*"},
+						},
+					},
+				},
+			})
+			return
+		}
+	}
+
 	// Reject all write operations — k8shark replay is read-only.
 	// RFC 7231 §6.5.5 requires an Allow header with a 405 response.
 	switch r.Method {
