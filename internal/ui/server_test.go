@@ -13,6 +13,7 @@ import (
 	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/capture"
 	"github.com/phenixblue/k8shark/internal/server"
+	"github.com/phenixblue/k8shark/internal/transitions"
 )
 
 func TestBuildTree_Hierarchy(t *testing.T) {
@@ -542,4 +543,95 @@ func contains(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestServeTransitions(t *testing.T) {
+	store := buildTestStore(t)
+	h := &explorerHandler{
+		store: store,
+		allTransitions: []transitions.Transition{
+			{Time: time.Date(2026, 4, 10, 10, 0, 5, 0, time.UTC), EventType: "ADDED", Resource: "pods", Namespace: "default", Name: "nginx"},
+			{Time: time.Date(2026, 4, 10, 10, 0, 10, 0, time.UTC), EventType: "MODIFIED", Resource: "pods", Namespace: "default", Name: "nginx"},
+			{Time: time.Date(2026, 4, 10, 10, 0, 15, 0, time.UTC), EventType: "ADDED", Resource: "deployments", Namespace: "kube-system", Name: "coredns"},
+		},
+	}
+
+	// Unfiltered — returns all 3.
+	req := httptest.NewRequest(http.MethodGet, "/api/ui/transitions", nil)
+	rr := httptest.NewRecorder()
+	h.serveTransitions(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	var markers []map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &markers); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(markers) != 3 {
+		t.Fatalf("expected 3 markers, got %d", len(markers))
+	}
+
+	// Filter by resource.
+	req2 := httptest.NewRequest(http.MethodGet, "/api/ui/transitions?resource=pods", nil)
+	rr2 := httptest.NewRecorder()
+	h.serveTransitions(rr2, req2)
+	var filtered []map[string]any
+	_ = json.Unmarshal(rr2.Body.Bytes(), &filtered)
+	if len(filtered) != 2 {
+		t.Fatalf("expected 2 pod markers, got %d", len(filtered))
+	}
+
+	// Filter by namespace.
+	req3 := httptest.NewRequest(http.MethodGet, "/api/ui/transitions?namespace=kube-system", nil)
+	rr3 := httptest.NewRecorder()
+	h.serveTransitions(rr3, req3)
+	var nsFiltered []map[string]any
+	_ = json.Unmarshal(rr3.Body.Bytes(), &nsFiltered)
+	if len(nsFiltered) != 1 {
+		t.Fatalf("expected 1 kube-system marker, got %d", len(nsFiltered))
+	}
+}
+
+func TestServeObjectHistory(t *testing.T) {
+	store := buildTestStore(t)
+	h := &explorerHandler{
+		store: store,
+		allTransitions: []transitions.Transition{
+			{Time: time.Date(2026, 4, 10, 10, 0, 5, 0, time.UTC), EventType: "ADDED", Resource: "pods", Namespace: "default", Name: "nginx", After: json.RawMessage(`{"metadata":{"name":"nginx"}}`)},
+			{Time: time.Date(2026, 4, 10, 10, 0, 10, 0, time.UTC), EventType: "MODIFIED", Resource: "pods", Namespace: "default", Name: "nginx", Before: json.RawMessage(`{"metadata":{"name":"nginx"}}`), After: json.RawMessage(`{"metadata":{"name":"nginx"},"status":{"phase":"Running"}}`)},
+			{Time: time.Date(2026, 4, 10, 10, 0, 15, 0, time.UTC), EventType: "ADDED", Resource: "pods", Namespace: "default", Name: "redis"},
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/ui/object-history?name=nginx", nil)
+	rr := httptest.NewRecorder()
+	h.serveObjectHistory(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	var entries []map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &entries); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 history entries for nginx, got %d", len(entries))
+	}
+	if entries[0]["event_type"] != "ADDED" || entries[1]["event_type"] != "MODIFIED" {
+		t.Errorf("unexpected event types: %v, %v", entries[0]["event_type"], entries[1]["event_type"])
+	}
+	// MODIFIED entry should have before and after.
+	if entries[1]["before"] == nil || entries[1]["after"] == nil {
+		t.Errorf("expected before/after on MODIFIED entry")
+	}
+}
+
+func TestServeObjectHistory_MissingName(t *testing.T) {
+	store := buildTestStore(t)
+	h := &explorerHandler{store: store}
+	req := httptest.NewRequest(http.MethodGet, "/api/ui/object-history", nil)
+	rr := httptest.NewRecorder()
+	h.serveObjectHistory(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rr.Code)
+	}
 }
