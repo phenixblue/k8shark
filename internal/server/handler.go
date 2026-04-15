@@ -345,6 +345,34 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 	}
 
 	if code == 404 {
+		// Cluster-scoped fallback: if the resource was captured at the cluster
+		// path (e.g. pods with no namespaces: in config, or allNotFound fallback)
+		// but the request targets a specific namespace, try the cluster path and
+		// filter items by metadata.namespace. This makes kubectl get pods -n <ns>
+		// work even when only /api/v1/pods (not per-namespace paths) was captured.
+		g, v, resource, ns := parseAPIPath(path)
+		if ns != "" && resource != "" {
+			var clusterPath string
+			if g == "" {
+				clusterPath = "/api/" + v + "/" + resource
+			} else {
+				clusterPath = "/apis/" + g + "/" + v + "/" + resource
+			}
+			clusterBody, clusterCode, cerr := h.store.ReconstructAt(clusterPath, at)
+			if cerr != nil {
+				writeJSON(w, http.StatusInternalServerError, statusObj(500, cerr.Error()))
+				return
+			}
+			if clusterCode == 200 {
+				filtered, ferr := applySelectors(clusterBody, "", "metadata.namespace="+ns)
+				if ferr == nil {
+					body, code = filtered, 200
+				}
+			}
+		}
+	}
+
+	if code == 404 {
 		// If the path parses as a list-level resource (not an item GET), return
 		// an empty list with a Warning header so kubectl shows
 		// "No resources found" rather than "Error from server: not found".

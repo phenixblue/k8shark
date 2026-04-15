@@ -758,3 +758,36 @@ func TestHandler_ProxySubResource405(t *testing.T) {
 		}
 	}
 }
+
+// TestHandler_NamespaceQueryFallsBackToClusterPath verifies that a request for
+// namespace-scoped pods (e.g. kubectl get pods -n default) returns the correct
+// items even when the capture only stored the cluster-scoped /api/v1/pods path
+// (no per-namespace paths in the index). This matches the behaviour when a
+// config entry for pods omits namespaces: or when the allNotFound fallback fires
+// during auto-discovery.
+func TestHandler_NamespaceQueryFallsBackToClusterPath(t *testing.T) {
+	// Cluster-scoped pod list with pods in two different namespaces.
+	podList := listWithPods([]podSpec{
+		{name: "nginx", namespace: "default"},
+		{name: "redis", namespace: "kube-system"},
+	})
+	// Only the cluster-scoped path is stored — no per-namespace paths.
+	store := buildTestStore(t, map[string][]byte{
+		"/api/v1/pods": podList,
+	})
+	h := newHandler(store, time.Time{}, false)
+
+	// Querying by namespace should still return only pods from that namespace.
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/namespaces/default/pods", nil)
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d\nbody: %s", rw.Code, rw.Body.String())
+	}
+
+	names := itemNames(t, rw.Body.Bytes())
+	if len(names) != 1 || names[0] != "nginx" {
+		t.Errorf("expected [nginx], got %v", names)
+	}
+}
