@@ -516,7 +516,7 @@ func (h *handler) trySingleItemGet(path string, at time.Time) ([]byte, int) {
 	name := path[i+1:]
 	parentPath := path[:i]
 
-	body, code, err := h.store.Latest(parentPath, at)
+	body, code, err := h.store.ReconstructAt(parentPath, at)
 	if err != nil || code != 200 {
 		return nil, 404
 	}

@@ -864,26 +864,14 @@ func (h *explorerHandler) findResourceBodyAt(path, name string, at time.Time) ([
 }
 
 func (h *explorerHandler) responseBodiesAt(path string, at time.Time) ([][]byte, bool) {
+	body, code, err := h.store.ReconstructAt(path, at)
+	if err == nil && code == http.StatusOK && len(body) > 0 {
+		return [][]byte{body}, true
+	}
+
 	entry, ok := h.store.Index[path]
 	if !ok || len(entry.RecordIDs) == 0 {
 		return nil, false
-	}
-
-	if !at.IsZero() {
-		index := -1
-		for i, t := range entry.Times {
-			if !t.After(at) {
-				index = i
-			}
-		}
-		if index < 0 {
-			return nil, false
-		}
-		body, ok := h.readRecordBody(entry.RecordIDs[index])
-		if !ok {
-			return nil, false
-		}
-		return [][]byte{body}, true
 	}
 
 	bodies := make([][]byte, 0, len(entry.RecordIDs))

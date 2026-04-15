@@ -369,6 +369,40 @@ func TestStore_ReconstructAt_Added(t *testing.T) {
 	}
 }
 
+func TestStore_ReconstructAt_WatchOnlyPath(t *testing.T) {
+	path := "/api/v1/namespaces/default/pods"
+	t0 := time.Date(2026, 4, 14, 10, 0, 0, 0, time.UTC)
+	t1 := t0.Add(30 * time.Second)
+
+	newPod := `{"metadata":{"name":"redis","namespace":"default"},"spec":{}}`
+
+	store := buildTestStoreWithWatch(t, nil, []watchTestEvent{
+		{id: "ev-1", apiPath: path, at: t1, eventType: "ADDED", objectBody: newPod},
+	})
+
+	body, code, err := store.ReconstructAt(path, t0.Add(5*time.Second))
+	if err != nil {
+		t.Fatalf("unexpected error before event: %v", err)
+	}
+	if code != 200 {
+		t.Fatalf("expected 200 before event, got %d", code)
+	}
+	if containsString(string(body), "redis") {
+		t.Fatalf("did not expect redis before event, got %s", string(body))
+	}
+
+	body, code, err = store.ReconstructAt(path, t1.Add(time.Second))
+	if err != nil {
+		t.Fatalf("unexpected error after event: %v", err)
+	}
+	if code != 200 {
+		t.Fatalf("expected 200 after event, got %d", code)
+	}
+	if !containsString(string(body), "redis") {
+		t.Fatalf("expected redis after watch-only add, got %s", string(body))
+	}
+}
+
 func TestStore_ReconstructAt_Modified(t *testing.T) {
 	path := "/api/v1/namespaces/default/pods"
 	t0 := time.Date(2026, 4, 14, 10, 0, 0, 0, time.UTC)
