@@ -1237,6 +1237,7 @@ const indexHTML = `<!doctype html>
   <script>
     let treeData = null;
     let activeKinds = new Set();
+	let activeKindsInitialized = false;
     let selected = null;
     let activeTab = 'json';
 	let visibleNodes = [];
@@ -1663,7 +1664,10 @@ const indexHTML = `<!doctype html>
 				const kindsRaw = window.localStorage.getItem(storageKindsKey);
 				if (kindsRaw) {
 					const parsed = JSON.parse(kindsRaw);
-					if (Array.isArray(parsed)) activeKinds = new Set(parsed);
+					if (Array.isArray(parsed)) {
+						activeKinds = new Set(parsed);
+						activeKindsInitialized = true;
+					}
 				}
 			} catch (_) {}
 			try {
@@ -1717,7 +1721,7 @@ const indexHTML = `<!doctype html>
     }
 
     function kindEnabled(kind) {
-      return activeKinds.size === 0 || activeKinds.has(kind);
+		return !activeKindsInitialized || activeKinds.has(kind);
     }
 
 		function kindTone(kind) {
@@ -1777,9 +1781,22 @@ const indexHTML = `<!doctype html>
 			showDetail(nodeEl._node, nodeEl._crumbs);
 		}
 
+		function normalizeListPath(path) {
+			const raw = String(path || '');
+			return raw.split('?')[0];
+		}
+
+		function namespaceFromPath(path) {
+			const match = normalizeListPath(path).match(/\/namespaces\/([^/]+)\//);
+			return match ? match[1] : '';
+		}
+
 		function nodeIdentity(node) {
 			if (!node) return '';
-			return [node.list_path || '', node.kind || '', node.name || ''].join('|');
+			if ((node.kind || '') === 'Container') {
+				return ['container', normalizeListPath(node.list_path), node.name || ''].join('|');
+			}
+			return [namespaceFromPath(node.list_path), node.kind || '', node.name || ''].join('|');
 		}
 
 		function restoreSelectionByKey(nodeKey) {
@@ -1821,8 +1838,12 @@ const indexHTML = `<!doctype html>
 		}
 
     async function showDetail(node, crumbs) {
+			const previousKey = selected && selected.node ? nodeIdentity(selected.node) : '';
+			const nextKey = nodeIdentity(node);
       selected = { node, crumbs };
-      selectedHistoryEntry = null;
+			if (previousKey !== nextKey) {
+				selectedHistoryEntry = null;
+			}
       el.crumbs.textContent = crumbs.join(' / ');
       el.detailTitle.textContent = node.kind + ' ' + node.name;
 			el.detailBody.textContent = 'Loading detail...';
@@ -1881,18 +1902,29 @@ const indexHTML = `<!doctype html>
 				const nsNodes = [];
 
 			for (const w of (ns.workloads || [])) {
-          if (!kindEnabled(w.kind) || !nodeMatches(w, q)) continue;
+				const workloadVisible = kindEnabled(w.kind) && nodeMatches(w, q);
+				if (workloadVisible) {
 					nsNodes.push(mkNode(w, ['Cluster', ns.name, w.kind, w.name], 0, ''));
-          for (const p of (w.pods || [])) {
-            if (!kindEnabled(p.kind) || !nodeMatches(p, q)) continue;
-						nsNodes.push(mkNode(p, ['Cluster', ns.name, w.kind, w.name, 'Pod', p.name], 1, ''));
-            for (const c of (p.containers || [])) {
-              const fake = {kind:'Container',name:c.name,status:'',age:'',labels:{},list_path:p.list_path};
-              if (!kindEnabled('Container') || !nodeMatches(fake, q)) continue;
-							nsNodes.push(mkNode(fake, ['Cluster', ns.name, w.kind, w.name, 'Pod', p.name, 'Container', c.name], 2, ''));
-            }
-          }
-        }
+				}
+				for (const p of (w.pods || [])) {
+					const podVisible = kindEnabled(p.kind) && nodeMatches(p, q);
+					if (podVisible) {
+						const podCrumbs = workloadVisible
+							? ['Cluster', ns.name, w.kind, w.name, 'Pod', p.name]
+							: ['Cluster', ns.name, 'Pod', p.name];
+						nsNodes.push(mkNode(p, podCrumbs, workloadVisible ? 1 : 0, ''));
+					}
+					for (const c of (p.containers || [])) {
+						const fake = {kind:'Container',name:c.name,status:'',age:'',labels:{},list_path:p.list_path};
+						if (!kindEnabled('Container') || !nodeMatches(fake, q)) continue;
+						const containerDepth = workloadVisible ? 2 : (podVisible ? 1 : 0);
+						const containerCrumbs = workloadVisible
+							? ['Cluster', ns.name, w.kind, w.name, 'Pod', p.name, 'Container', c.name]
+							: ['Cluster', ns.name, 'Pod', p.name, 'Container', c.name];
+						nsNodes.push(mkNode(fake, containerCrumbs, containerDepth, ''));
+					}
+				}
+			}
 
 			for (const p of (ns.pods || [])) {
           if (!kindEnabled(p.kind) || !nodeMatches(p, q)) continue;
@@ -1958,8 +1990,9 @@ const indexHTML = `<!doctype html>
     }
 
     function renderToggles(kinds) {
-			if (activeKinds.size === 0) {
+			if (!activeKindsInitialized) {
 				activeKinds = new Set(kinds);
+				activeKindsInitialized = true;
 			} else {
 				const allowed = new Set(kinds);
 				activeKinds = new Set(Array.from(activeKinds).filter((k) => allowed.has(k)));
@@ -1986,6 +2019,7 @@ const indexHTML = `<!doctype html>
 		function setAllKinds(enabled) {
 			const inputs = el.toggles.querySelectorAll('input[type="checkbox"]');
 			for (const input of inputs) input.checked = enabled;
+			activeKindsInitialized = true;
 			if (enabled) {
 				const kinds = Array.from(inputs).map((input) => input.dataset.kind || '').filter(Boolean);
 				activeKinds = new Set(kinds);
@@ -2071,6 +2105,8 @@ const indexHTML = `<!doctype html>
 			el.historyPane.innerHTML = '<div class="history-empty">Loading history...</div>';
 			try {
 				const q = new URLSearchParams({name: node.name});
+				const ns = namespaceFromPath(node.list_path);
+				if (ns) q.set('namespace', ns);
 				if (node.kind) {
 					const res2kind = {Pod:'pods',Deployment:'deployments',StatefulSet:'statefulsets',DaemonSet:'daemonsets',Job:'jobs',ReplicaSet:'replicasets',Service:'services',Node:'nodes',ConfigMap:'configmaps',Secret:'secrets'};
 					const r = Object.entries(res2kind).find(([k]) => k === node.kind);
@@ -2231,9 +2267,22 @@ const indexHTML = `<!doctype html>
 						return;
 					}
 				}
-				if (selected && selected.node) {
-					showDetail(selected.node, selected.crumbs || ['Cluster']);
+				if ((activeTab === 'history' || activeTab === 'diff') && selectedHistoryEntry) {
+					// Keep the selected transition context even when the object is
+					// absent at this exact timeline position (e.g. deleted events).
+					if (activeTab === 'diff') {
+						renderDiffPane();
+					}
+					return;
 				}
+				selected = null;
+				selectedHistoryEntry = null;
+				el.crumbs.textContent = '';
+				el.detailTitle.textContent = 'Select a resource';
+				el.detailSummary.innerHTML = '';
+				el.detailBody.textContent = 'No resource is available at the selected time.';
+				el.historyPane.innerHTML = '<div class="history-empty">No resource is selected.</div>';
+				el.diffPane.innerHTML = '<div class="history-empty">Select an event in the History tab to view its diff.</div>';
 			} finally {
 				if (token === refreshToken) {
 					setSnapshotLoading(false);
