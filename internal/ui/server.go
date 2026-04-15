@@ -762,6 +762,12 @@ func (h *explorerHandler) loadResourceItemsAt(candidates []string, at time.Time)
 				foundFallback = true
 			}
 		}
+		// Once we have concrete items from the regular (non-table) path,
+		// skip remaining candidates — the ?as=Table path would only duplicate
+		// the same items at the cost of additional disk reads.
+		if len(itemOrder) > 0 && pathPriority(candidate) == 0 {
+			break
+		}
 	}
 	if len(itemOrder) > 0 {
 		merged := make([]listItem, 0, len(itemOrder))
@@ -1244,6 +1250,8 @@ const indexHTML = `<!doctype html>
 	let activeNodeIdx = -1;
 	const namespacePageSize = 120;
 	let namespaceVisibleLimit = {};
+	const namespacesPageSize = 50;
+	let namespacesVisibleLimit = namespacesPageSize;
 	const storageKindsKey = 'kshrk.ui.activeKinds.v1';
 	const storageExpandedKey = 'kshrk.ui.expandedSections.v1';
 	let expandedSections = {};
@@ -1892,9 +1900,10 @@ const indexHTML = `<!doctype html>
       }
       el.tree.appendChild(cs);
 
-      for (const ns of treeData.namespaces) {
+      const visibleNamespaces = q ? treeData.namespaces : treeData.namespaces.slice(0, namespacesVisibleLimit);
+      for (const ns of visibleNamespaces) {
         const ds = document.createElement('details');
-				ds.open = sectionOpen('ns:' + ns.name, true);
+				ds.open = sectionOpen('ns:' + ns.name, treeData.namespaces.length <= 20);
 				const nsCount = (ns.workloads || []).length + (ns.pods || []).length + (ns.resources || []).length;
 				ds.innerHTML = '<summary>Namespace: <strong>' + ns.name + '</strong> <span class="muted">(' + nsCount + ')</span></summary>';
 				bindSectionState(ds, 'ns:' + ns.name);
@@ -1964,6 +1973,21 @@ const indexHTML = `<!doctype html>
 				}
         el.tree.appendChild(ds);
       }
+
+			if (!q && treeData.namespaces.length > namespacesVisibleLimit) {
+				const nsPager = document.createElement('div');
+				nsPager.className = 'ns-pager';
+				const nsMeta = document.createElement('span');
+				nsMeta.className = 'muted';
+				nsMeta.textContent = (treeData.namespaces.length - namespacesVisibleLimit) + ' more namespaces hidden';
+				const nsBtn = document.createElement('button');
+				nsBtn.type = 'button';
+				nsBtn.textContent = 'Show more namespaces';
+				nsBtn.onclick = () => { namespacesVisibleLimit += namespacesPageSize; render(); };
+				nsPager.appendChild(nsMeta);
+				nsPager.appendChild(nsBtn);
+				el.tree.appendChild(nsPager);
+			}
 
 			if (renderedNodes === 0) {
 				const msg = q
@@ -2256,6 +2280,7 @@ const indexHTML = `<!doctype html>
 					throw new Error(msg);
 				}
 				treeData = data;
+				namespacesVisibleLimit = namespacesPageSize;
 				lastLoadedAt = normalizedAt();
 				updateMetaLine();
 				renderToggles((treeData.resource_kinds || []).concat(['Container']));
