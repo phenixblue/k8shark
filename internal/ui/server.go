@@ -18,6 +18,7 @@ import (
 	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/capture"
 	"github.com/phenixblue/k8shark/internal/server"
+	"github.com/phenixblue/k8shark/internal/transitions"
 	"gopkg.in/yaml.v3"
 )
 
@@ -36,9 +37,11 @@ type Server struct {
 }
 
 type explorerHandler struct {
-	store   *server.CaptureStore
-	at      time.Time
-	verbose bool
+	store          *server.CaptureStore
+	at             time.Time
+	verbose        bool
+	archivePath    string
+	allTransitions []transitions.Transition
 }
 
 type treeResponse struct {
@@ -138,12 +141,17 @@ func Open(opts OpenOptions) (*Server, error) {
 		return nil, fmt.Errorf("listening: %w", err)
 	}
 
-	h := &explorerHandler{store: store, at: at, verbose: opts.Verbose}
+	// Pre-compute transitions for the archive (best-effort; empty on error).
+	allTrans, _ := transitions.LoadTransitions(opts.ArchivePath, transitions.FilterOpts{})
+
+	h := &explorerHandler{store: store, at: at, verbose: opts.Verbose, archivePath: opts.ArchivePath, allTransitions: allTrans}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", h.serveIndex)
 	mux.HandleFunc("/api/ui/tree", h.serveTree)
 	mux.HandleFunc("/api/ui/detail", h.serveDetail)
 	mux.HandleFunc("/api/ui/timestamps", h.serveTimestamps)
+	mux.HandleFunc("/api/ui/transitions", h.serveTransitions)
+	mux.HandleFunc("/api/ui/object-history", h.serveObjectHistory)
 
 	httpSrv := &http.Server{Handler: mux}
 	done := make(chan struct{})
@@ -287,6 +295,76 @@ func (h *explorerHandler) serveTimestamps(w http.ResponseWriter, r *http.Request
 		resp.DefaultAt = h.at.UTC().Format(time.RFC3339)
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// transitionMarker is a lightweight summary of a transition for the timeline.
+type transitionMarker struct {
+	Time      string `json:"time"`
+	EventType string `json:"event_type"`
+	Resource  string `json:"resource"`
+	Namespace string `json:"namespace,omitempty"`
+	Name      string `json:"name"`
+}
+
+func (h *explorerHandler) serveTransitions(w http.ResponseWriter, r *http.Request) {
+	resource := r.URL.Query().Get("resource")
+	namespace := r.URL.Query().Get("namespace")
+
+	markers := make([]transitionMarker, 0, len(h.allTransitions))
+	for _, t := range h.allTransitions {
+		if resource != "" && !strings.Contains(t.Resource, resource) {
+			continue
+		}
+		if namespace != "" && t.Namespace != namespace {
+			continue
+		}
+		markers = append(markers, transitionMarker{
+			Time:      t.Time.UTC().Format(time.RFC3339),
+			EventType: t.EventType,
+			Resource:  t.Resource,
+			Namespace: t.Namespace,
+			Name:      t.Name,
+		})
+	}
+	writeJSON(w, http.StatusOK, markers)
+}
+
+// objectHistoryEntry represents one transition for a specific object.
+type objectHistoryEntry struct {
+	Time      string          `json:"time"`
+	EventType string          `json:"event_type"`
+	Before    json.RawMessage `json:"before,omitempty"`
+	After     json.RawMessage `json:"after,omitempty"`
+}
+
+func (h *explorerHandler) serveObjectHistory(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing name query parameter"})
+		return
+	}
+	resource := r.URL.Query().Get("resource")
+	namespace := r.URL.Query().Get("namespace")
+
+	entries := make([]objectHistoryEntry, 0)
+	for _, t := range h.allTransitions {
+		if t.Name != name {
+			continue
+		}
+		if resource != "" && !strings.Contains(t.Resource, resource) {
+			continue
+		}
+		if namespace != "" && t.Namespace != namespace {
+			continue
+		}
+		entries = append(entries, objectHistoryEntry{
+			Time:      t.Time.UTC().Format(time.RFC3339),
+			EventType: t.EventType,
+			Before:    t.Before,
+			After:     t.After,
+		})
+	}
+	writeJSON(w, http.StatusOK, entries)
 }
 
 func (h *explorerHandler) resolveRequestAt(r *http.Request) (time.Time, error) {
@@ -786,26 +864,14 @@ func (h *explorerHandler) findResourceBodyAt(path, name string, at time.Time) ([
 }
 
 func (h *explorerHandler) responseBodiesAt(path string, at time.Time) ([][]byte, bool) {
+	body, code, err := h.store.ReconstructAt(path, at)
+	if err == nil && code == http.StatusOK && len(body) > 0 {
+		return [][]byte{body}, true
+	}
+
 	entry, ok := h.store.Index[path]
 	if !ok || len(entry.RecordIDs) == 0 {
 		return nil, false
-	}
-
-	if !at.IsZero() {
-		index := -1
-		for i, t := range entry.Times {
-			if !t.After(at) {
-				index = i
-			}
-		}
-		if index < 0 {
-			return nil, false
-		}
-		body, ok := h.readRecordBody(entry.RecordIDs[index])
-		if !ok {
-			return nil, false
-		}
-		return [][]byte{body}, true
 	}
 
 	bodies := make([][]byte, 0, len(entry.RecordIDs))
@@ -1078,6 +1144,29 @@ const indexHTML = `<!doctype html>
 		.ns-pager { margin:6px 10px 10px; display:flex; align-items:center; gap:8px; }
 		.ns-pager button { padding:3px 8px; border-radius:6px; border:1px solid #334155; background:#0f172a; color:#cbd5e1; font-size:11px; cursor:pointer; }
 		.ns-pager button:hover { border-color:#64748b; }
+		.scrub-track { position:relative; flex:1; height:24px; display:flex; align-items:center; }
+		.scrub-track .scrub { position:relative; z-index:2; }
+		.marker-layer { position:absolute; left:8px; right:8px; top:0; bottom:0; pointer-events:none; z-index:1; }
+		.marker-dot { position:absolute; width:6px; height:6px; border-radius:50%; transform:translate(-50%,-50%); top:50%; pointer-events:auto; cursor:pointer; opacity:.85; }
+		.marker-dot:hover { opacity:1; transform:translate(-50%,-50%) scale(1.6); }
+		.marker-dot.ev-added { background:#22c55e; }
+		.marker-dot.ev-modified { background:#f59e0b; }
+		.marker-dot.ev-deleted { background:#ef4444; }
+		.marker-tooltip { position:absolute; bottom:calc(100% + 6px); left:50%; transform:translateX(-50%); background:#1e293b; border:1px solid #334155; border-radius:6px; padding:4px 8px; font-size:11px; color:#e2e8f0; white-space:nowrap; pointer-events:none; z-index:10; }
+		.history-list { margin:0; padding:0; list-style:none; }
+		.history-item { padding:8px 10px; border-bottom:1px solid #1f2937; cursor:pointer; display:flex; align-items:center; gap:8px; }
+		.history-item:hover { background:#0f172a; }
+		.history-item.active { background:rgba(34,197,94,.12); border-left:3px solid #22c55e; }
+		.history-event { font-size:11px; font-weight:700; letter-spacing:.4px; text-transform:uppercase; padding:2px 6px; border-radius:999px; }
+		.history-event.ev-added { background:rgba(34,197,94,.2); color:#86efac; }
+		.history-event.ev-modified { background:rgba(245,158,11,.2); color:#fcd34d; }
+		.history-event.ev-deleted { background:rgba(239,68,68,.2); color:#fca5a5; }
+		.history-time { color:var(--muted); font-size:12px; }
+		.diff-block { white-space:pre-wrap; font-family:ui-monospace,SFMono-Regular,monospace; font-size:12px; line-height:1.6; }
+		.diff-line-add { color:#86efac; }
+		.diff-line-del { color:#fca5a5; }
+		.diff-line-hdr { color:#94a3b8; }
+		.history-empty { padding:16px; color:var(--muted); font-size:13px; }
   </style>
 </head>
 <body>
@@ -1091,7 +1180,10 @@ const indexHTML = `<!doctype html>
 				<button id="snapshotNext" class="snapshot-btn" type="button" title="Jump to newer snapshot">Next</button>
 			</div>
 			<div class="scrub-wrap">
-				<input id="timelineScrub" class="scrub" type="range" min="0" max="0" step="1" value="0"/>
+				<div class="scrub-track">
+					<div id="markerLayer" class="marker-layer"></div>
+					<input id="timelineScrub" class="scrub" type="range" min="0" max="0" step="1" value="0"/>
+				</div>
 				<span id="timelinePosition" class="scrub-pos"></span>
 			</div>
 			<div id="snapshotHint" class="snapshot-hint"></div>
@@ -1128,6 +1220,8 @@ const indexHTML = `<!doctype html>
 				<span class="tabs-left">
 					<button id="tabJson" class="active">JSON</button>
 					<button id="tabYaml">YAML</button>
+					<button id="tabHistory">History</button>
+					<button id="tabDiff">Diff</button>
 				</span>
 				<span class="detail-actions">
 					<button id="copyDetail" class="copy-btn" type="button">Copy JSON</button>
@@ -1135,12 +1229,15 @@ const indexHTML = `<!doctype html>
 				</span>
       </div>
       <pre id="detailBody">Click a node in the tree to inspect details.</pre>
+      <div id="historyPane" style="display:none"></div>
+      <div id="diffPane" style="display:none"></div>
     </section>
   </div>
 	<div id="toasts" class="toast-stack" aria-live="polite"></div>
   <script>
     let treeData = null;
     let activeKinds = new Set();
+	let activeKindsInitialized = false;
     let selected = null;
     let activeTab = 'json';
 	let visibleNodes = [];
@@ -1155,6 +1252,8 @@ const indexHTML = `<!doctype html>
 	let scrubDebounce = null;
 	let lastLoadedAt = '';
 	let refreshToken = 0;
+	let allTransitions = [];
+	let objectHistory = [];
 
     const el = {
       tree: document.getElementById('tree'),
@@ -1179,11 +1278,18 @@ const indexHTML = `<!doctype html>
 			timelineScrub: document.getElementById('timelineScrub'),
 			timelinePosition: document.getElementById('timelinePosition'),
 			snapshotHint: document.getElementById('snapshotHint'),
-			toasts: document.getElementById('toasts')
+			toasts: document.getElementById('toasts'),
+			tabHistory: document.getElementById('tabHistory'),
+			tabDiff: document.getElementById('tabDiff'),
+			historyPane: document.getElementById('historyPane'),
+			diffPane: document.getElementById('diffPane'),
+			markerLayer: document.getElementById('markerLayer')
     };
 
     el.tabJson.onclick = () => setTab('json');
     el.tabYaml.onclick = () => setTab('yaml');
+	el.tabHistory.onclick = () => setTab('history');
+	el.tabDiff.onclick = () => setTab('diff');
 	el.copyDetail.onclick = () => copyActiveDetail();
 	el.downloadDetail.onclick = () => downloadActiveDetail();
     el.search.oninput = render;
@@ -1400,10 +1506,25 @@ const indexHTML = `<!doctype html>
       activeTab = tab;
       el.tabJson.classList.toggle('active', tab === 'json');
       el.tabYaml.classList.toggle('active', tab === 'yaml');
-			el.copyDetail.textContent = tab === 'yaml' ? 'Copy YAML' : 'Copy JSON';
-			el.downloadDetail.textContent = tab === 'yaml' ? 'Download YAML' : 'Download JSON';
-      if (selected && selected.detail) {
-        el.detailBody.textContent = selected.detail[activeTab] || '';
+      el.tabHistory.classList.toggle('active', tab === 'history');
+      el.tabDiff.classList.toggle('active', tab === 'diff');
+      el.detailBody.style.display = (tab === 'json' || tab === 'yaml') ? '' : 'none';
+      el.historyPane.style.display = tab === 'history' ? '' : 'none';
+      el.diffPane.style.display = tab === 'diff' ? '' : 'none';
+			el.copyDetail.style.display = (tab === 'json' || tab === 'yaml') ? '' : 'none';
+			el.downloadDetail.style.display = (tab === 'json' || tab === 'yaml') ? '' : 'none';
+			if (tab === 'json' || tab === 'yaml') {
+				el.copyDetail.textContent = tab === 'yaml' ? 'Copy YAML' : 'Copy JSON';
+				el.downloadDetail.textContent = tab === 'yaml' ? 'Download YAML' : 'Download JSON';
+			}
+      if ((tab === 'json' || tab === 'yaml') && selected && selected.detail) {
+        el.detailBody.textContent = selected.detail[tab] || '';
+      }
+      if (tab === 'history' && selected && selected.node) {
+        loadObjectHistory(selected.node);
+      }
+      if (tab === 'diff') {
+        renderDiffPane();
       }
     }
 
@@ -1543,7 +1664,10 @@ const indexHTML = `<!doctype html>
 				const kindsRaw = window.localStorage.getItem(storageKindsKey);
 				if (kindsRaw) {
 					const parsed = JSON.parse(kindsRaw);
-					if (Array.isArray(parsed)) activeKinds = new Set(parsed);
+					if (Array.isArray(parsed)) {
+						activeKinds = new Set(parsed);
+						activeKindsInitialized = true;
+					}
 				}
 			} catch (_) {}
 			try {
@@ -1597,7 +1721,7 @@ const indexHTML = `<!doctype html>
     }
 
     function kindEnabled(kind) {
-      return activeKinds.size === 0 || activeKinds.has(kind);
+		return !activeKindsInitialized || activeKinds.has(kind);
     }
 
 		function kindTone(kind) {
@@ -1657,9 +1781,22 @@ const indexHTML = `<!doctype html>
 			showDetail(nodeEl._node, nodeEl._crumbs);
 		}
 
+		function normalizeListPath(path) {
+			const raw = String(path || '');
+			return raw.split('?')[0];
+		}
+
+		function namespaceFromPath(path) {
+			const match = normalizeListPath(path).match(/\/namespaces\/([^/]+)\//);
+			return match ? match[1] : '';
+		}
+
 		function nodeIdentity(node) {
 			if (!node) return '';
-			return [node.list_path || '', node.kind || '', node.name || ''].join('|');
+			if ((node.kind || '') === 'Container') {
+				return ['container', normalizeListPath(node.list_path), node.name || ''].join('|');
+			}
+			return [namespaceFromPath(node.list_path), node.kind || '', node.name || ''].join('|');
 		}
 
 		function restoreSelectionByKey(nodeKey) {
@@ -1701,7 +1838,12 @@ const indexHTML = `<!doctype html>
 		}
 
     async function showDetail(node, crumbs) {
+			const previousKey = selected && selected.node ? nodeIdentity(selected.node) : '';
+			const nextKey = nodeIdentity(node);
       selected = { node, crumbs };
+			if (previousKey !== nextKey) {
+				selectedHistoryEntry = null;
+			}
       el.crumbs.textContent = crumbs.join(' / ');
       el.detailTitle.textContent = node.kind + ' ' + node.name;
 			el.detailBody.textContent = 'Loading detail...';
@@ -1715,7 +1857,9 @@ const indexHTML = `<!doctype html>
 				}
 				selected.detail = data;
 				updateDetailSummary(data, node);
-				el.detailBody.textContent = data[activeTab] || JSON.stringify(data, null, 2);
+				if (activeTab === 'json' || activeTab === 'yaml') {
+					el.detailBody.textContent = data[activeTab] || JSON.stringify(data, null, 2);
+				}
 			} catch (err) {
 				selected.detail = null;
 				el.detailSummary.innerHTML = '';
@@ -1723,6 +1867,8 @@ const indexHTML = `<!doctype html>
 				el.detailBody.textContent = 'Failed to load detail: ' + msg;
 				showToast('error', 'Detail request failed: ' + msg);
 			}
+			if (activeTab === 'history') loadObjectHistory(node);
+			if (activeTab === 'diff') renderDiffPane();
     }
 
     function render() {
@@ -1756,18 +1902,29 @@ const indexHTML = `<!doctype html>
 				const nsNodes = [];
 
 			for (const w of (ns.workloads || [])) {
-          if (!kindEnabled(w.kind) || !nodeMatches(w, q)) continue;
+				const workloadVisible = kindEnabled(w.kind) && nodeMatches(w, q);
+				if (workloadVisible) {
 					nsNodes.push(mkNode(w, ['Cluster', ns.name, w.kind, w.name], 0, ''));
-          for (const p of (w.pods || [])) {
-            if (!kindEnabled(p.kind) || !nodeMatches(p, q)) continue;
-						nsNodes.push(mkNode(p, ['Cluster', ns.name, w.kind, w.name, 'Pod', p.name], 1, ''));
-            for (const c of (p.containers || [])) {
-              const fake = {kind:'Container',name:c.name,status:'',age:'',labels:{},list_path:p.list_path};
-              if (!kindEnabled('Container') || !nodeMatches(fake, q)) continue;
-							nsNodes.push(mkNode(fake, ['Cluster', ns.name, w.kind, w.name, 'Pod', p.name, 'Container', c.name], 2, ''));
-            }
-          }
-        }
+				}
+				for (const p of (w.pods || [])) {
+					const podVisible = kindEnabled(p.kind) && nodeMatches(p, q);
+					if (podVisible) {
+						const podCrumbs = workloadVisible
+							? ['Cluster', ns.name, w.kind, w.name, 'Pod', p.name]
+							: ['Cluster', ns.name, 'Pod', p.name];
+						nsNodes.push(mkNode(p, podCrumbs, workloadVisible ? 1 : 0, ''));
+					}
+					for (const c of (p.containers || [])) {
+						const fake = {kind:'Container',name:c.name,status:'',age:'',labels:{},list_path:p.list_path};
+						if (!kindEnabled('Container') || !nodeMatches(fake, q)) continue;
+						const containerDepth = workloadVisible ? 2 : (podVisible ? 1 : 0);
+						const containerCrumbs = workloadVisible
+							? ['Cluster', ns.name, w.kind, w.name, 'Pod', p.name, 'Container', c.name]
+							: ['Cluster', ns.name, 'Pod', p.name, 'Container', c.name];
+						nsNodes.push(mkNode(fake, containerCrumbs, containerDepth, ''));
+					}
+				}
+			}
 
 			for (const p of (ns.pods || [])) {
           if (!kindEnabled(p.kind) || !nodeMatches(p, q)) continue;
@@ -1833,8 +1990,9 @@ const indexHTML = `<!doctype html>
     }
 
     function renderToggles(kinds) {
-			if (activeKinds.size === 0) {
+			if (!activeKindsInitialized) {
 				activeKinds = new Set(kinds);
+				activeKindsInitialized = true;
 			} else {
 				const allowed = new Set(kinds);
 				activeKinds = new Set(Array.from(activeKinds).filter((k) => allowed.has(k)));
@@ -1861,6 +2019,7 @@ const indexHTML = `<!doctype html>
 		function setAllKinds(enabled) {
 			const inputs = el.toggles.querySelectorAll('input[type="checkbox"]');
 			for (const input of inputs) input.checked = enabled;
+			activeKindsInitialized = true;
 			if (enabled) {
 				const kinds = Array.from(inputs).map((input) => input.dataset.kind || '').filter(Boolean);
 				activeKinds = new Set(kinds);
@@ -1898,6 +2057,184 @@ const indexHTML = `<!doctype html>
 			syncAtInURL();
 		}
 
+		async function loadTransitions() {
+			try {
+				const res = await fetch('/api/ui/transitions');
+				if (res.ok) {
+					allTransitions = await res.json();
+				}
+			} catch (_) {
+				allTransitions = [];
+			}
+		}
+
+		function renderTimelineMarkers() {
+			el.markerLayer.innerHTML = '';
+			if (!allTransitions.length || !timelinePoints.length) return;
+			const first = new Date(timelinePoints[0]).getTime();
+			const last = new Date(timelinePoints[timelinePoints.length - 1]).getTime();
+			const span = last - first;
+			if (span <= 0) return;
+			for (const t of allTransitions) {
+				const ms = new Date(t.time).getTime();
+				if (ms < first || ms > last) continue;
+				const pct = ((ms - first) / span) * 100;
+				const dot = document.createElement('div');
+				dot.className = 'marker-dot ev-' + t.event_type.toLowerCase();
+				dot.style.left = pct + '%';
+				dot.title = t.time + ' ' + t.event_type + ' ' + t.resource + '/' + (t.namespace ? t.namespace + '/' : '') + t.name;
+				dot.onclick = (e) => {
+					e.stopPropagation();
+					seekToTime(t.time);
+				};
+				el.markerLayer.appendChild(dot);
+			}
+		}
+
+		function seekToTime(ts) {
+			if (!timelinePoints.length) return;
+			let best = 0;
+			for (let i = 0; i < timelinePoints.length; i++) {
+				if (timelinePoints[i] <= ts) best = i;
+			}
+			el.timelineScrub.value = String(best);
+			applyScrubberSelection(true);
+		}
+
+		async function loadObjectHistory(node) {
+			el.historyPane.innerHTML = '<div class="history-empty">Loading history...</div>';
+			try {
+				const q = new URLSearchParams({name: node.name});
+				const ns = namespaceFromPath(node.list_path);
+				if (ns) q.set('namespace', ns);
+				if (node.kind) {
+					const res2kind = {Pod:'pods',Deployment:'deployments',StatefulSet:'statefulsets',DaemonSet:'daemonsets',Job:'jobs',ReplicaSet:'replicasets',Service:'services',Node:'nodes',ConfigMap:'configmaps',Secret:'secrets'};
+					const r = Object.entries(res2kind).find(([k]) => k === node.kind);
+					if (r) q.set('resource', r[1]);
+				}
+				const res = await fetch('/api/ui/object-history?' + q.toString());
+				if (!res.ok) throw new Error('status ' + res.status);
+				objectHistory = await res.json();
+			} catch (err) {
+				objectHistory = [];
+				el.historyPane.innerHTML = '<div class="history-empty">Failed to load history: ' + (err.message || err) + '</div>';
+				return;
+			}
+			renderHistoryList();
+		}
+
+		function renderHistoryList() {
+			el.historyPane.innerHTML = '';
+			if (!objectHistory.length) {
+				el.historyPane.innerHTML = '<div class="history-empty">No transitions detected for this object.</div>';
+				return;
+			}
+			const ul = document.createElement('ul');
+			ul.className = 'history-list';
+			for (let i = 0; i < objectHistory.length; i++) {
+				const entry = objectHistory[i];
+				const li = document.createElement('li');
+				li.className = 'history-item';
+				li.innerHTML = '<span class="history-event ev-' + entry.event_type.toLowerCase() + '">' + entry.event_type + '</span>' +
+					'<span class="history-time">' + entry.time + '</span>';
+				li.onclick = () => {
+					for (const item of ul.children) item.classList.remove('active');
+					li.classList.add('active');
+					seekToTime(entry.time);
+					showHistoryDiff(entry);
+				};
+				ul.appendChild(li);
+			}
+			el.historyPane.appendChild(ul);
+		}
+
+		function showHistoryDiff(entry) {
+			selectedHistoryEntry = entry;
+			if (activeTab === 'diff') renderDiffPane();
+		}
+
+		let selectedHistoryEntry = null;
+
+		function renderDiffPane() {
+			el.diffPane.innerHTML = '';
+			if (!selectedHistoryEntry) {
+				el.diffPane.innerHTML = '<div class="history-empty">Select an event in the History tab to view its diff.</div>';
+				return;
+			}
+			const entry = selectedHistoryEntry;
+			const header = document.createElement('div');
+			header.style.cssText = 'margin-bottom:8px;font-size:13px;color:#cbd5e1;';
+			header.innerHTML = '<span class="history-event ev-' + entry.event_type.toLowerCase() + '">' + entry.event_type + '</span> at ' + entry.time;
+			el.diffPane.appendChild(header);
+
+			if (entry.event_type === 'ADDED') {
+				const block = document.createElement('pre');
+				block.className = 'diff-block';
+				block.innerHTML = colorizeJSON(entry.after, 'diff-line-add');
+				el.diffPane.appendChild(block);
+			} else if (entry.event_type === 'DELETED') {
+				const block = document.createElement('pre');
+				block.className = 'diff-block';
+				block.innerHTML = colorizeJSON(entry.before, 'diff-line-del');
+				el.diffPane.appendChild(block);
+			} else if (entry.event_type === 'MODIFIED') {
+				const beforeLines = prettyJSONLines(entry.before);
+				const afterLines = prettyJSONLines(entry.after);
+				const diffLines = simpleDiff(beforeLines, afterLines);
+				const block = document.createElement('pre');
+				block.className = 'diff-block';
+				block.innerHTML = diffLines.map(renderDiffLine).join('\n');
+				el.diffPane.appendChild(block);
+			}
+		}
+
+		function prettyJSONLines(raw) {
+			if (!raw) return [];
+			try {
+				return JSON.stringify(JSON.parse(typeof raw === 'string' ? raw : JSON.stringify(raw)), null, 2).split('\n');
+			} catch (_) {
+				return String(raw).split('\n');
+			}
+		}
+
+		function colorizeJSON(raw, cls) {
+			const lines = prettyJSONLines(raw);
+			return lines.map((l) => '<span class="' + cls + '">' + escapeHTML(l) + '</span>').join('\n');
+		}
+
+		function escapeHTML(s) {
+			return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+		}
+
+		function simpleDiff(a, b) {
+			const out = [];
+			const max = Math.max(a.length, b.length);
+			let ai = 0, bi = 0;
+			while (ai < a.length || bi < b.length) {
+				if (ai < a.length && bi < b.length && a[ai] === b[bi]) {
+					out.push({type:'ctx', text:a[ai]});
+					ai++; bi++;
+				} else if (ai < a.length && (bi >= b.length || !b.includes(a[ai]))) {
+					out.push({type:'del', text:a[ai]});
+					ai++;
+				} else if (bi < b.length && (ai >= a.length || !a.includes(b[bi]))) {
+					out.push({type:'add', text:b[bi]});
+					bi++;
+				} else {
+					out.push({type:'del', text:a[ai]});
+					out.push({type:'add', text:b[bi]});
+					ai++; bi++;
+				}
+			}
+			return out;
+		}
+
+		function renderDiffLine(line) {
+			const prefix = line.type === 'add' ? '+' : line.type === 'del' ? '-' : ' ';
+			const cls = line.type === 'add' ? 'diff-line-add' : line.type === 'del' ? 'diff-line-del' : '';
+			return '<span class="' + cls + '">' + escapeHTML(prefix + ' ' + line.text) + '</span>';
+		}
+
 		async function refreshTree(forceRefresh) {
 			const previousSelectionKey = selected && selected.node ? nodeIdentity(selected.node) : '';
 			if (!forceRefresh && normalizedAt() === lastLoadedAt) {
@@ -1930,9 +2267,22 @@ const indexHTML = `<!doctype html>
 						return;
 					}
 				}
-				if (selected && selected.node) {
-					showDetail(selected.node, selected.crumbs || ['Cluster']);
+				if ((activeTab === 'history' || activeTab === 'diff') && selectedHistoryEntry) {
+					// Keep the selected transition context even when the object is
+					// absent at this exact timeline position (e.g. deleted events).
+					if (activeTab === 'diff') {
+						renderDiffPane();
+					}
+					return;
 				}
+				selected = null;
+				selectedHistoryEntry = null;
+				el.crumbs.textContent = '';
+				el.detailTitle.textContent = 'Select a resource';
+				el.detailSummary.innerHTML = '';
+				el.detailBody.textContent = 'No resource is available at the selected time.';
+				el.historyPane.innerHTML = '<div class="history-empty">No resource is selected.</div>';
+				el.diffPane.innerHTML = '<div class="history-empty">Select an event in the History tab to view its diff.</div>';
 			} finally {
 				if (token === refreshToken) {
 					setSnapshotLoading(false);
@@ -1947,7 +2297,9 @@ const indexHTML = `<!doctype html>
 				loadPreferences();
 				initAtFromURL();
 				await loadTimestamps();
+				await loadTransitions();
 				await refreshTree(true);
+				renderTimelineMarkers();
 			} catch (err) {
 				const msg = (err && err.message ? err.message : String(err));
 				setTreeState('error', 'Failed to load capture tree: ' + msg);

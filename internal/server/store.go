@@ -221,21 +221,30 @@ func (s *CaptureStore) ReconstructAt(apiPath string, at time.Time) ([]byte, int,
 	if err != nil {
 		return nil, 500, err
 	}
-	if snapCode != 200 {
-		// No snapshot at all — can't reconstruct.
-		return nil, 404, nil
-	}
-
-	// Parse snapshot into an ordered item map (preserves insertion order).
 	var snapList struct {
 		APIVersion string            `json:"apiVersion"`
 		Kind       string            `json:"kind"`
 		Metadata   json.RawMessage   `json:"metadata"`
 		Items      []json.RawMessage `json:"items"`
 	}
-	if err := json.Unmarshal(snapBody, &snapList); err != nil {
-		// Snapshot not a list body (e.g. single object) — fall through unchanged.
-		return snapBody, snapCode, nil
+	if snapCode == 200 {
+		// Parse snapshot into an ordered item map (preserves insertion order).
+		if err := json.Unmarshal(snapBody, &snapList); err != nil {
+			// Snapshot not a list body (e.g. single object) — fall through unchanged.
+			return snapBody, snapCode, nil
+		}
+	} else {
+		group, version, resource, _ := parseAPIPath(apiPath)
+		if resource == "" {
+			return nil, 404, nil
+		}
+		if group == "" {
+			snapList.APIVersion = version
+		} else {
+			snapList.APIVersion = group + "/" + version
+		}
+		snapList.Kind = resourceToKind(resource) + "List"
+		snapList.Metadata = json.RawMessage(`{"resourceVersion":"0"}`)
 	}
 
 	// Build ordered key list and object map from snapshot items.
@@ -342,7 +351,7 @@ func (s *CaptureStore) AggregateAcrossNamespaces(clusterPath string, at time.Tim
 		if !strings.HasPrefix(indexPath, pathPrefix) || !strings.HasSuffix(indexPath, suffix) {
 			continue
 		}
-		body, code, err := s.Latest(indexPath, at)
+		body, code, err := s.ReconstructAt(indexPath, at)
 		if err != nil || code != 200 {
 			continue
 		}

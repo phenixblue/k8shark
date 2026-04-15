@@ -13,6 +13,7 @@ import (
 	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/capture"
 	"github.com/phenixblue/k8shark/internal/server"
+	"github.com/phenixblue/k8shark/internal/transitions"
 )
 
 func TestBuildTree_Hierarchy(t *testing.T) {
@@ -53,6 +54,42 @@ func TestServeDetail_ItemFromList(t *testing.T) {
 	}
 	if body["json"] == nil || body["yaml"] == nil {
 		t.Fatalf("expected json and yaml in response, got %v", body)
+	}
+}
+
+func TestServeDetail_ItemFromWatchOnlyAddedResource(t *testing.T) {
+	store := buildWatchOnlyStore(t)
+	h := &explorerHandler{store: store}
+	req := httptest.NewRequest(http.MethodGet, "/api/ui/detail?path=/api/v1/namespaces/default/pods&name=redis&at=2026-04-10T10:00:31Z", nil)
+	rr := httptest.NewRecorder()
+	h.serveDetail(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	jsonBody, _ := body["json"].(string)
+	if !strings.Contains(jsonBody, "redis") {
+		t.Fatalf("expected redis in detail response, got %s", jsonBody)
+	}
+}
+
+func TestBuildTree_IncludesWatchOnlyAddedResource(t *testing.T) {
+	store := buildWatchOnlyStore(t)
+	h := &explorerHandler{store: store}
+	tree, err := h.buildTreeAt(time.Date(2026, 4, 10, 10, 0, 31, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("buildTreeAt: %v", err)
+	}
+	if len(tree.Namespaces) != 1 || tree.Namespaces[0].Name != "default" {
+		t.Fatalf("expected one default namespace, got %+v", tree.Namespaces)
+	}
+	ns := tree.Namespaces[0]
+	if len(ns.Pods) != 1 || ns.Pods[0].Name != "redis" {
+		t.Fatalf("expected watch-only pod to appear, got %+v", ns.Pods)
 	}
 }
 
@@ -535,6 +572,67 @@ func buildMultiSnapshotStore(t *testing.T) *server.CaptureStore {
 	return store
 }
 
+func buildWatchOnlyStore(t *testing.T) *server.CaptureStore {
+	t.Helper()
+	dir := t.TempDir()
+	base := filepath.Join(dir, "k8shark-capture")
+	recDir := filepath.Join(base, "records")
+	if err := os.MkdirAll(recDir, 0o750); err != nil {
+		t.Fatalf("mkdir records: %v", err)
+	}
+
+	t0 := time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC)
+	t1 := t0.Add(30 * time.Second)
+	rec := capture.Record{
+		ID:           "watch-1",
+		CapturedAt:   t1,
+		APIPath:      "/api/v1/namespaces/default/pods",
+		EventType:    "ADDED",
+		HTTPMethod:   http.MethodGet,
+		ResponseCode: http.StatusOK,
+		ResponseBody: json.RawMessage(`{"apiVersion":"v1","kind":"Pod","metadata":{"name":"redis","namespace":"default","uid":"pod-redis"},"spec":{"containers":[{"name":"main"}]},"status":{"phase":"Running"}}`),
+	}
+	recData, _ := json.Marshal(rec)
+	if err := os.WriteFile(filepath.Join(recDir, rec.ID+".json"), recData, 0o644); err != nil {
+		t.Fatalf("write record: %v", err)
+	}
+
+	meta := capture.CaptureMetadata{CaptureID: "ui-watch-only-test", CapturedAt: t0, CapturedUntil: t1.Add(time.Second), RecordCount: 1}
+	metaData, _ := json.Marshal(meta)
+	if err := os.WriteFile(filepath.Join(base, "metadata.json"), metaData, 0o644); err != nil {
+		t.Fatalf("write metadata: %v", err)
+	}
+
+	indexData, _ := json.Marshal(capture.Index{
+		"/api/v1/namespaces/default/pods": {
+			APIPath:   "/api/v1/namespaces/default/pods",
+			RecordIDs: []string{},
+			Times:     []time.Time{},
+		},
+	})
+	if err := os.WriteFile(filepath.Join(base, "index.json"), indexData, 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+
+	watchIndexData, _ := json.Marshal(capture.WatchIndex{
+		"/api/v1/namespaces/default/pods": {
+			APIPath:    "/api/v1/namespaces/default/pods",
+			RecordIDs:  []string{"watch-1"},
+			Times:      []time.Time{t1},
+			EventTypes: []string{"ADDED"},
+		},
+	})
+	if err := os.WriteFile(filepath.Join(base, "watch-index.json"), watchIndexData, 0o644); err != nil {
+		t.Fatalf("write watch-index: %v", err)
+	}
+
+	store, err := server.LoadStore(dir)
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	return store
+}
+
 func contains(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
@@ -542,4 +640,95 @@ func contains(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestServeTransitions(t *testing.T) {
+	store := buildTestStore(t)
+	h := &explorerHandler{
+		store: store,
+		allTransitions: []transitions.Transition{
+			{Time: time.Date(2026, 4, 10, 10, 0, 5, 0, time.UTC), EventType: "ADDED", Resource: "pods", Namespace: "default", Name: "nginx"},
+			{Time: time.Date(2026, 4, 10, 10, 0, 10, 0, time.UTC), EventType: "MODIFIED", Resource: "pods", Namespace: "default", Name: "nginx"},
+			{Time: time.Date(2026, 4, 10, 10, 0, 15, 0, time.UTC), EventType: "ADDED", Resource: "deployments", Namespace: "kube-system", Name: "coredns"},
+		},
+	}
+
+	// Unfiltered — returns all 3.
+	req := httptest.NewRequest(http.MethodGet, "/api/ui/transitions", nil)
+	rr := httptest.NewRecorder()
+	h.serveTransitions(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	var markers []map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &markers); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(markers) != 3 {
+		t.Fatalf("expected 3 markers, got %d", len(markers))
+	}
+
+	// Filter by resource.
+	req2 := httptest.NewRequest(http.MethodGet, "/api/ui/transitions?resource=pods", nil)
+	rr2 := httptest.NewRecorder()
+	h.serveTransitions(rr2, req2)
+	var filtered []map[string]any
+	_ = json.Unmarshal(rr2.Body.Bytes(), &filtered)
+	if len(filtered) != 2 {
+		t.Fatalf("expected 2 pod markers, got %d", len(filtered))
+	}
+
+	// Filter by namespace.
+	req3 := httptest.NewRequest(http.MethodGet, "/api/ui/transitions?namespace=kube-system", nil)
+	rr3 := httptest.NewRecorder()
+	h.serveTransitions(rr3, req3)
+	var nsFiltered []map[string]any
+	_ = json.Unmarshal(rr3.Body.Bytes(), &nsFiltered)
+	if len(nsFiltered) != 1 {
+		t.Fatalf("expected 1 kube-system marker, got %d", len(nsFiltered))
+	}
+}
+
+func TestServeObjectHistory(t *testing.T) {
+	store := buildTestStore(t)
+	h := &explorerHandler{
+		store: store,
+		allTransitions: []transitions.Transition{
+			{Time: time.Date(2026, 4, 10, 10, 0, 5, 0, time.UTC), EventType: "ADDED", Resource: "pods", Namespace: "default", Name: "nginx", After: json.RawMessage(`{"metadata":{"name":"nginx"}}`)},
+			{Time: time.Date(2026, 4, 10, 10, 0, 10, 0, time.UTC), EventType: "MODIFIED", Resource: "pods", Namespace: "default", Name: "nginx", Before: json.RawMessage(`{"metadata":{"name":"nginx"}}`), After: json.RawMessage(`{"metadata":{"name":"nginx"},"status":{"phase":"Running"}}`)},
+			{Time: time.Date(2026, 4, 10, 10, 0, 15, 0, time.UTC), EventType: "ADDED", Resource: "pods", Namespace: "default", Name: "redis"},
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/ui/object-history?name=nginx", nil)
+	rr := httptest.NewRecorder()
+	h.serveObjectHistory(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	var entries []map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &entries); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("expected 2 history entries for nginx, got %d", len(entries))
+	}
+	if entries[0]["event_type"] != "ADDED" || entries[1]["event_type"] != "MODIFIED" {
+		t.Errorf("unexpected event types: %v, %v", entries[0]["event_type"], entries[1]["event_type"])
+	}
+	// MODIFIED entry should have before and after.
+	if entries[1]["before"] == nil || entries[1]["after"] == nil {
+		t.Errorf("expected before/after on MODIFIED entry")
+	}
+}
+
+func TestServeObjectHistory_MissingName(t *testing.T) {
+	store := buildTestStore(t)
+	h := &explorerHandler{store: store}
+	req := httptest.NewRequest(http.MethodGet, "/api/ui/object-history", nil)
+	rr := httptest.NewRecorder()
+	h.serveObjectHistory(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rr.Code)
+	}
 }
