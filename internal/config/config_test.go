@@ -202,6 +202,56 @@ func TestValidate_AllDirective_InvalidScope(t *testing.T) {
 	}
 }
 
+func TestValidate_DiscoveryStartup_TooShortDuration_WithAllDirective(t *testing.T) {
+	cfg := &Config{
+		DurationRaw: "2s",
+		Output:      "/tmp/k8shark-test-out.tar.gz",
+		Resources: []Resource{{
+			All: true,
+		}},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected duration guard error, got nil")
+	}
+	if !contains(err.Error(), "duration") || !contains(err.Error(), "too short") {
+		t.Fatalf("expected short-duration guard error, got: %v", err)
+	}
+}
+
+func TestValidate_DiscoveryStartup_TooShortDuration_WithWildcardNamespaces(t *testing.T) {
+	cfg := &Config{
+		DurationRaw: "2s",
+		Output:      "/tmp/k8shark-test-out.tar.gz",
+		Resources: []Resource{{
+			Version:    "v1",
+			Resource:   "pods",
+			Namespaces: []string{"*"},
+		}},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected duration guard error, got nil")
+	}
+	if !contains(err.Error(), "duration") || !contains(err.Error(), "too short") {
+		t.Fatalf("expected short-duration guard error, got: %v", err)
+	}
+}
+
+func TestValidate_DiscoveryStartup_NormalResource_AllowsShortDuration(t *testing.T) {
+	cfg := &Config{
+		DurationRaw: "2s",
+		Output:      "/tmp/k8shark-test-out.tar.gz",
+		Resources: []Resource{{
+			Version:  "v1",
+			Resource: "pods",
+		}},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected short duration without discovery startup to validate, got: %v", err)
+	}
+}
+
 func TestRedactionConfig_ParsesCorrectly(t *testing.T) {
 	cfg := &Config{
 		DurationRaw: "5m",

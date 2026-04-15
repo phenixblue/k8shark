@@ -39,11 +39,14 @@ type Engine struct {
 	baseURL        string
 	mu             sync.Mutex
 	index          Index
+	watchIndex     WatchIndex
 	sink           archive.RecordSink // set by Run(); exposed for tests
 	discoveryCache map[string][]byte  // bodies saved by fetchDiscovery for autoDiscoverResources
 	lastHash       map[string][32]byte
 	dedupSkipped   int
 }
+
+const maxConcurrentWatchStreams = 256
 
 // NewEngine creates a capture Engine from validated config.
 func NewEngine(cfg *config.Config, verbose bool) (*Engine, error) {
@@ -73,6 +76,7 @@ func NewEngine(cfg *config.Config, verbose bool) (*Engine, error) {
 		httpClient:     httpClient,
 		baseURL:        restCfg.Host,
 		index:          make(Index),
+		watchIndex:     make(WatchIndex),
 		discoveryCache: make(map[string][]byte),
 		lastHash:       make(map[string][32]byte),
 	}, nil
@@ -87,6 +91,7 @@ func newEngineWith(cfg *config.Config, client *http.Client, baseURL string, verb
 		httpClient:     client,
 		baseURL:        baseURL,
 		index:          make(Index),
+		watchIndex:     make(WatchIndex),
 		discoveryCache: make(map[string][]byte),
 		lastHash:       make(map[string][32]byte),
 	}
@@ -144,6 +149,10 @@ func (e *Engine) Run() (*CaptureSummary, error) {
 		return nil, err
 	}
 
+	if err := e.validateWatchConcurrency(); err != nil {
+		return nil, err
+	}
+
 	var wg sync.WaitGroup
 	for _, res := range e.cfg.Resources {
 		if res.All {
@@ -192,7 +201,7 @@ func (e *Engine) Run() (*CaptureSummary, error) {
 		fmt.Fprintf(os.Stdout, "  captured %d records\n", e.sink.RecordCount())
 	}
 
-	if err := e.sink.Finish(meta, e.index); err != nil {
+	if err := e.sink.Finish(meta, e.index, e.watchIndex); err != nil {
 		return nil, err
 	}
 
@@ -352,11 +361,12 @@ func (e *Engine) streamWatch(ctx context.Context, apiPath, resourceVersion strin
 		}
 
 		e.mu.Lock()
-		if _, ok := e.index[apiPath]; !ok {
-			e.index[apiPath] = &IndexEntry{APIPath: apiPath}
+		if _, ok := e.watchIndex[apiPath]; !ok {
+			e.watchIndex[apiPath] = &WatchIndexEntry{APIPath: apiPath}
 		}
-		e.index[apiPath].RecordIDs = append(e.index[apiPath].RecordIDs, rec.ID)
-		e.index[apiPath].Times = append(e.index[apiPath].Times, rec.CapturedAt)
+		e.watchIndex[apiPath].RecordIDs = append(e.watchIndex[apiPath].RecordIDs, rec.ID)
+		e.watchIndex[apiPath].Times = append(e.watchIndex[apiPath].Times, rec.CapturedAt)
+		e.watchIndex[apiPath].EventTypes = append(e.watchIndex[apiPath].EventTypes, rec.EventType)
 		e.mu.Unlock()
 	}
 }
@@ -644,6 +654,29 @@ func hasAllDirective(resources []config.Resource) bool {
 		}
 	}
 	return false
+}
+
+func (e *Engine) validateWatchConcurrency() error {
+	watchStreams := 0
+	for _, r := range e.cfg.Resources {
+		if !r.Watch || r.All {
+			continue
+		}
+		if len(r.Namespaces) == 0 {
+			watchStreams++
+			continue
+		}
+		watchStreams += len(r.Namespaces)
+	}
+
+	if watchStreams > maxConcurrentWatchStreams {
+		return fmt.Errorf(
+			"capture config expands to %d concurrent watch streams (max %d); reduce watch usage, narrow namespaces, or avoid all=true with watch=true",
+			watchStreams,
+			maxConcurrentWatchStreams,
+		)
+	}
+	return nil
 }
 
 // fetchDiscovery captures the Kubernetes API discovery endpoints so the mock
@@ -963,7 +996,16 @@ func (e *Engine) expandWildcardNamespaces(ctx context.Context) error {
 	// Fetch the namespace list from the cluster.
 	nsBody, code := e.doFetch(ctx, "/api/v1/namespaces", "", true)
 	if code != http.StatusOK || nsBody == nil {
-		return fmt.Errorf("namespace discovery failed (HTTP %d): check cluster permissions", code)
+		if code == 0 {
+			if err := ctx.Err(); err != nil {
+				return fmt.Errorf("namespace discovery failed: request cancelled before completion (try a longer --duration): %w", err)
+			}
+			return fmt.Errorf("namespace discovery failed (HTTP 0): request could not be completed; check kubeconfig/context and cluster connectivity")
+		}
+		if code == http.StatusForbidden {
+			return fmt.Errorf("namespace discovery failed (HTTP %d): check cluster permissions", code)
+		}
+		return fmt.Errorf("namespace discovery failed (HTTP %d): unable to list namespaces", code)
 	}
 	var nsList struct {
 		Items []struct {

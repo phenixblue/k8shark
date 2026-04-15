@@ -36,7 +36,7 @@ func (s *sliceSink) WriteRecord(rec any) error {
 	s.mu.Unlock()
 	return nil
 }
-func (s *sliceSink) Finish(_, _ any) error { return nil }
+func (s *sliceSink) Finish(_, _, _ any) error { return nil }
 func (s *sliceSink) RecordCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -466,6 +466,91 @@ func TestExpandWildcard_DiscoveryFailure(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "namespace discovery failed") {
 		t.Errorf("expected 'namespace discovery failed' in error, got: %v", err)
+	}
+}
+
+func TestExpandWildcard_DiscoveryCancelledByDuration(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/namespaces":
+			// Ensure the run context times out before this response is returned.
+			time.Sleep(100 * time.Millisecond)
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"kind":"NamespaceList","items":[]}`)
+		case "/version":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"gitVersion":"v1.29.0"}`)
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"kind":"List","items":[]}`)
+		}
+	}))
+	defer srv.Close()
+
+	outDir := t.TempDir()
+	cfg := &config.Config{
+		DurationRaw: "50ms",
+		Duration:    50 * time.Millisecond,
+		Output:      filepath.Join(outDir, "capture.tar.gz"),
+		Resources: []config.Resource{
+			{Version: "v1", Resource: "pods", Namespaces: []string{"*"}, IntervalRaw: "200ms", Interval: 200 * time.Millisecond},
+		},
+	}
+
+	eng := newEngineWith(cfg, srv.Client(), srv.URL, false)
+	_, err := eng.Run()
+	if err == nil {
+		t.Fatal("expected timeout/cancellation error, got nil")
+	}
+	if !strings.Contains(err.Error(), "request cancelled before completion") {
+		t.Errorf("expected cancellation hint in error, got: %v", err)
+	}
+}
+
+func TestRun_FailsWhenWatchConcurrencyTooHigh(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/version":
+			fmt.Fprint(w, `{"gitVersion":"v1.29.0"}`)
+		case "/api":
+			fmt.Fprint(w, `{"versions":["v1"]}`)
+		case "/api/v1":
+			fmt.Fprint(w, `{"kind":"APIResourceList","resources":[]}`)
+		case "/apis":
+			fmt.Fprint(w, `{"kind":"APIGroupList","groups":[]}`)
+		case "/openapi/v2":
+			fmt.Fprint(w, `{}`)
+		case "/openapi/v3":
+			fmt.Fprint(w, `{"paths":{}}`)
+		default:
+			fmt.Fprint(w, `{"kind":"List","items":[]}`)
+		}
+	}))
+	defer srv.Close()
+
+	ns := make([]string, 0, maxConcurrentWatchStreams+1)
+	for i := 0; i < maxConcurrentWatchStreams+1; i++ {
+		ns = append(ns, fmt.Sprintf("ns-%d", i))
+	}
+
+	outDir := t.TempDir()
+	cfg := &config.Config{
+		DurationRaw: "30s",
+		Duration:    30 * time.Second,
+		Output:      filepath.Join(outDir, "capture.tar.gz"),
+		Resources: []config.Resource{
+			{Version: "v1", Resource: "pods", Namespaces: ns, Watch: true, IntervalRaw: "30s", Interval: 30 * time.Second},
+		},
+	}
+
+	eng := newEngineWith(cfg, srv.Client(), srv.URL, false)
+	_, err := eng.Run()
+	if err == nil {
+		t.Fatal("expected watch concurrency guard error, got nil")
+	}
+	if !strings.Contains(err.Error(), "concurrent watch streams") {
+		t.Fatalf("expected watch concurrency guard error, got: %v", err)
 	}
 }
 

@@ -282,7 +282,7 @@ func (h *handler) serveGroupResourceList(w http.ResponseWriter, path string) {
 }
 
 func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path string, at time.Time) {
-	body, code, err := h.store.Latest(path, at)
+	body, code, err := h.store.ReconstructAt(path, at)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, statusObj(500, err.Error()))
 		return
@@ -563,7 +563,7 @@ func (h *handler) trySingleItemGet(path string, at time.Time) ([]byte, int) {
 }
 
 func (h *handler) handleWatch(w http.ResponseWriter, r *http.Request, path string, at time.Time) {
-	rawBody, code, err := h.store.Latest(strings.TrimSuffix(path, "/"), at)
+	rawBody, code, err := h.store.ReconstructAt(strings.TrimSuffix(path, "/"), at)
 	if err != nil || code != 200 {
 		h.writeStatus(w, http.StatusNotFound, fmt.Sprintf("%q not found in capture", path))
 		return

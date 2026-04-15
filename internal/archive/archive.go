@@ -15,7 +15,9 @@ import (
 // It decouples the engine from the specific output format (tar.gz vs NDJSON).
 type RecordSink interface {
 	WriteRecord(rec any) error
-	Finish(meta, index any) error
+	// Finish writes metadata.json, index.json, and (when watchIndex is non-nil)
+	// watch-index.json, then closes the archive.
+	Finish(meta, index, watchIndex any) error
 	RecordCount() int
 }
 
@@ -63,8 +65,9 @@ func (w *StreamWriter) WriteRecord(rec any) error {
 	return nil
 }
 
-// Finish writes metadata.json and index.json then closes the archive.
-func (w *StreamWriter) Finish(meta, index any) error {
+// Finish writes metadata.json, index.json, and (when watchIndex is non-nil)
+// watch-index.json, then closes the archive.
+func (w *StreamWriter) Finish(meta, index, watchIndex any) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if err := writeJSON(w.tw, "k8shark-capture/metadata.json", meta); err != nil {
@@ -72,6 +75,11 @@ func (w *StreamWriter) Finish(meta, index any) error {
 	}
 	if err := writeJSON(w.tw, "k8shark-capture/index.json", index); err != nil {
 		return err
+	}
+	if watchIndex != nil {
+		if err := writeJSON(w.tw, "k8shark-capture/watch-index.json", watchIndex); err != nil {
+			return err
+		}
 	}
 	if err := w.tw.Close(); err != nil {
 		return fmt.Errorf("closing tar: %w", err)
@@ -115,7 +123,7 @@ func (w *NDJSONWriter) WriteRecord(rec any) error {
 }
 
 // Finish is a no-op for NDJSONWriter.
-func (w *NDJSONWriter) Finish(_, _ any) error { return nil }
+func (w *NDJSONWriter) Finish(_, _, _ any) error { return nil }
 
 // RecordCount returns the number of records written so far.
 func (w *NDJSONWriter) RecordCount() int {
