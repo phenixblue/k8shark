@@ -117,6 +117,10 @@ func (e *Engine) Run() (*CaptureSummary, error) {
 		}
 	}()
 
+	if err := e.preflight(ctx); err != nil {
+		return nil, err
+	}
+
 	// Create the record sink (only if not pre-set by tests).
 	var err error
 	if e.sink == nil {
@@ -219,6 +223,46 @@ func (e *Engine) Run() (*CaptureSummary, error) {
 		ResourceCount: len(e.index),
 		Duration:      time.Since(start).Truncate(time.Second),
 	}, nil
+}
+
+// preflight validates that the configured kubeconfig/context can reach the
+// target API server before any archive writer is initialized.
+func (e *Engine) preflight(ctx context.Context) error {
+	timeout := 5 * time.Second
+	if e.cfg != nil && e.cfg.Duration > 0 && e.cfg.Duration < timeout {
+		timeout = e.cfg.Duration
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(checkCtx, http.MethodGet, e.baseURL+"/version", nil)
+	if err != nil {
+		return fmt.Errorf("capture preflight failed (kubeconfig=%s, server=%s): building version request: %w", kubeconfigLabel(e.cfg), e.baseURL, err)
+	}
+
+	resp, err := e.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("capture preflight failed (kubeconfig=%s, server=%s): %w", kubeconfigLabel(e.cfg), e.baseURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		detail := strings.TrimSpace(string(body))
+		if detail == "" {
+			detail = http.StatusText(resp.StatusCode)
+		}
+		return fmt.Errorf("capture preflight failed (kubeconfig=%s, server=%s): GET /version returned %d: %s", kubeconfigLabel(e.cfg), e.baseURL, resp.StatusCode, detail)
+	}
+
+	return nil
+}
+
+func kubeconfigLabel(cfg *config.Config) string {
+	if cfg != nil && strings.TrimSpace(cfg.Kubeconfig) != "" {
+		return cfg.Kubeconfig
+	}
+	return "default"
 }
 
 // pollResource polls a single resource kind at its configured interval until ctx is done.
