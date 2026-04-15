@@ -239,10 +239,6 @@ func (s *CaptureStore) ReconstructAt(apiPath string, at time.Time) ([]byte, int,
 	}
 
 	// Build ordered key list and object map from snapshot items.
-	type itemEntry struct {
-		key string
-		raw json.RawMessage
-	}
 	itemOrder := make([]string, 0, len(snapList.Items))
 	items := make(map[string]json.RawMessage, len(snapList.Items))
 	for _, item := range snapList.Items {
