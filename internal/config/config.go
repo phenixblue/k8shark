@@ -43,6 +43,9 @@ type Resource struct {
 	// Watch enables a Kubernetes watch stream for this resource in addition to
 	// polling. Watch events are captured with low-latency timestamps.
 	Watch bool `mapstructure:"watch"`
+	// AutoDiscovered is set to true by the engine when this entry was generated
+	// via auto-discovery (all: true). It is not a user-facing config field.
+	AutoDiscovered bool `mapstructure:"-"`
 }
 
 // DedupEnabled reports whether polling responses for this resource should be
