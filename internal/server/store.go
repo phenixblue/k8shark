@@ -17,6 +17,7 @@ type CaptureStore struct {
 	Dir          string
 	Metadata     capture.CaptureMetadata
 	Index        capture.Index
+	WatchIndex   capture.WatchIndex
 	resourceInfo map[string]*ResourceInfo
 }
 
@@ -54,8 +55,19 @@ func LoadStore(dir string) (*CaptureStore, error) {
 		Dir:          dir,
 		Metadata:     meta,
 		Index:        idx,
+		WatchIndex:   make(capture.WatchIndex),
 		resourceInfo: make(map[string]*ResourceInfo),
 	}
+
+	// Load watch-index.json if present. Older archives without it are treated
+	// as snapshot-only — this is the primary backward-compatibility mechanism.
+	if wiData, rerr := os.ReadFile(filepath.Join(dir, "k8shark-capture", "watch-index.json")); rerr == nil {
+		var wi capture.WatchIndex
+		if jerr := json.Unmarshal(wiData, &wi); jerr == nil && wi != nil {
+			s.WatchIndex = wi
+		}
+	}
+
 	s.buildResourceInfo()
 	return s, nil
 }
@@ -130,6 +142,180 @@ func (s *CaptureStore) Latest(apiPath string, at time.Time) ([]byte, int, error)
 		return nil, 500, fmt.Errorf("parsing record %s: %w", id, err)
 	}
 	return rec.ResponseBody, rec.ResponseCode, nil
+}
+
+// readRecord reads and parses a single capture.Record by ID from the archive.
+func (s *CaptureStore) readRecord(id string) (capture.Record, error) {
+	data, err := os.ReadFile(filepath.Join(s.Dir, "k8shark-capture", "records", id+".json"))
+	if err != nil {
+		return capture.Record{}, fmt.Errorf("reading record %s: %w", id, err)
+	}
+	var rec capture.Record
+	if err := json.Unmarshal(data, &rec); err != nil {
+		return capture.Record{}, fmt.Errorf("parsing record %s: %w", id, err)
+	}
+	return rec, nil
+}
+
+// SnapshotAt returns the body, HTTP code, and capture time of the most recent
+// snapshot record (i.e. non-watch-event record) for apiPath at or before at.
+// Returns (nil, 404, time.Time{}, nil) when no snapshot exists.
+func (s *CaptureStore) SnapshotAt(apiPath string, at time.Time) ([]byte, int, time.Time, error) {
+	entry, ok := s.Index[apiPath]
+	if !ok || len(entry.RecordIDs) == 0 {
+		return nil, 404, time.Time{}, nil
+	}
+
+	id := entry.RecordIDs[len(entry.RecordIDs)-1]
+	snapTime := entry.Times[len(entry.Times)-1]
+	if !at.IsZero() && len(entry.Times) == len(entry.RecordIDs) && len(entry.Times) > 0 {
+		idx := sort.Search(len(entry.Times), func(i int) bool {
+			return entry.Times[i].After(at)
+		})
+		if idx == 0 {
+			return nil, 404, time.Time{}, nil
+		}
+		id = entry.RecordIDs[idx-1]
+		snapTime = entry.Times[idx-1]
+	}
+
+	rec, err := s.readRecord(id)
+	if err != nil {
+		return nil, 500, time.Time{}, err
+	}
+	return rec.ResponseBody, rec.ResponseCode, snapTime, nil
+}
+
+// objectKey returns the stable identity key for a Kubernetes object JSON blob.
+// Namespaced objects use "namespace/name"; cluster-scoped use "name".
+func objectKey(raw json.RawMessage) string {
+	var meta struct {
+		Metadata struct {
+			Name      string `json:"name"`
+			Namespace string `json:"namespace"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		return ""
+	}
+	if meta.Metadata.Namespace != "" {
+		return meta.Metadata.Namespace + "/" + meta.Metadata.Name
+	}
+	return meta.Metadata.Name
+}
+
+// ReconstructAt returns the reconstructed list body for apiPath at time T.
+// If a WatchIndex entry exists for the path, it applies ADDED/MODIFIED/DELETED
+// watch events from (snapshot_time, T] on top of the latest snapshot.
+// Falls back to Latest for paths without watch events.
+func (s *CaptureStore) ReconstructAt(apiPath string, at time.Time) ([]byte, int, error) {
+	wi, hasWatch := s.WatchIndex[apiPath]
+	if !hasWatch || len(wi.RecordIDs) == 0 {
+		// No watch events for this path — fall back to snapshot lookup.
+		body, code, err := s.Latest(apiPath, at)
+		return body, code, err
+	}
+
+	// Get the latest snapshot at or before T.
+	snapBody, snapCode, snapTime, err := s.SnapshotAt(apiPath, at)
+	if err != nil {
+		return nil, 500, err
+	}
+	if snapCode != 200 {
+		// No snapshot at all — can't reconstruct.
+		return nil, 404, nil
+	}
+
+	// Parse snapshot into an ordered item map (preserves insertion order).
+	var snapList struct {
+		APIVersion string            `json:"apiVersion"`
+		Kind       string            `json:"kind"`
+		Metadata   json.RawMessage   `json:"metadata"`
+		Items      []json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(snapBody, &snapList); err != nil {
+		// Snapshot not a list body (e.g. single object) — fall through unchanged.
+		return snapBody, snapCode, nil
+	}
+
+	// Build ordered key list and object map from snapshot items.
+	type itemEntry struct {
+		key string
+		raw json.RawMessage
+	}
+	itemOrder := make([]string, 0, len(snapList.Items))
+	items := make(map[string]json.RawMessage, len(snapList.Items))
+	for _, item := range snapList.Items {
+		k := objectKey(item)
+		if k == "" {
+			continue
+		}
+		items[k] = item
+		itemOrder = append(itemOrder, k)
+	}
+
+	// Collect watch events from (snapTime, at] in index order.
+	for i, id := range wi.RecordIDs {
+		if i >= len(wi.Times) || i >= len(wi.EventTypes) {
+			break
+		}
+		evTime := wi.Times[i]
+		if evTime.IsZero() || !evTime.After(snapTime) {
+			continue
+		}
+		if !at.IsZero() && evTime.After(at) {
+			break
+		}
+
+		eventType := wi.EventTypes[i]
+		rec, rerr := s.readRecord(id)
+		if rerr != nil {
+			continue
+		}
+		k := objectKey(rec.ResponseBody)
+		if k == "" {
+			continue
+		}
+
+		switch eventType {
+		case "ADDED":
+			if _, exists := items[k]; !exists {
+				itemOrder = append(itemOrder, k)
+			}
+			items[k] = rec.ResponseBody
+		case "MODIFIED":
+			if _, exists := items[k]; !exists {
+				itemOrder = append(itemOrder, k)
+			}
+			items[k] = rec.ResponseBody
+		case "DELETED":
+			delete(items, k)
+		}
+	}
+
+	// Reconstruct ordered items list (skip deleted).
+	reconstructed := make([]json.RawMessage, 0, len(itemOrder))
+	seen := make(map[string]bool, len(itemOrder))
+	for _, k := range itemOrder {
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		if raw, ok := items[k]; ok {
+			reconstructed = append(reconstructed, raw)
+		}
+	}
+
+	out, err := json.Marshal(map[string]any{
+		"apiVersion": snapList.APIVersion,
+		"kind":       snapList.Kind,
+		"metadata":   snapList.Metadata,
+		"items":      reconstructed,
+	})
+	if err != nil {
+		return nil, 500, err
+	}
+	return out, 200, nil
 }
 
 // AggregateAcrossNamespaces aggregates list items from all namespaced paths

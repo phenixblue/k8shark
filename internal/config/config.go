@@ -9,6 +9,8 @@ import (
 	"github.com/spf13/viper"
 )
 
+const minDiscoveryStartupDuration = 5 * time.Second
+
 // Resource describes a single Kubernetes resource type to capture.
 type Resource struct {
 	// All enables auto-discovery expansion for this resource entry. When true,
@@ -157,6 +159,14 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("no resources defined in config; add at least one entry under 'resources:' or set 'auto_discover: true'")
 	}
 
+	if c.requiresDiscoveryStartup() && c.Duration < minDiscoveryStartupDuration {
+		return fmt.Errorf(
+			"duration %q is too short when using discovery/wildcard capture; set duration >= %s or disable auto_discover, all=true, and namespaces ['*']",
+			c.DurationRaw,
+			minDiscoveryStartupDuration,
+		)
+	}
+
 	for i := range c.Resources {
 		r := &c.Resources[i]
 		if r.All {
@@ -197,6 +207,23 @@ func (c *Config) Validate() error {
 	}
 
 	return nil
+}
+
+func (c *Config) requiresDiscoveryStartup() bool {
+	if c.AutoDiscover {
+		return true
+	}
+	for _, r := range c.Resources {
+		if r.All {
+			return true
+		}
+		for _, ns := range r.Namespaces {
+			if ns == "*" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // knownClusterScoped is the set of well-known cluster-scoped resource kinds.

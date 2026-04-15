@@ -38,3 +38,18 @@ type IndexEntry struct {
 // Index is the top-level index.json written inside the archive.
 // Key is the canonical API path.
 type Index map[string]*IndexEntry
+
+// WatchIndexEntry maps an API path to the ordered watch events captured for it.
+// Each watch event is a separate record with event_type ADDED, MODIFIED, or DELETED.
+// EventTypes is kept in sync with RecordIDs and Times for fast filtering without
+// reading every record file.
+type WatchIndexEntry struct {
+	APIPath    string      `json:"api_path"`
+	RecordIDs  []string    `json:"record_ids"`
+	Times      []time.Time `json:"times"`
+	EventTypes []string    `json:"event_types"`
+}
+
+// WatchIndex is the top-level watch-index.json written inside the archive.
+// Key is the canonical API path. Only present in archives captured with watch: true.
+type WatchIndex map[string]*WatchIndexEntry

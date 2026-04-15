@@ -38,7 +38,7 @@ func BenchmarkStreamWriter_WriteRecord(b *testing.B) {
 		}
 	}
 	b.StopTimer()
-	_ = w.Finish(nil, nil)
+	_ = w.Finish(nil, nil, nil)
 }
 
 // BenchmarkStreamWriter_RoundTrip measures the full write→finish→open cycle
@@ -59,7 +59,7 @@ func BenchmarkStreamWriter_RoundTrip(b *testing.B) {
 						b.Fatal(err)
 					}
 				}
-				if err := w.Finish(map[string]any{"capture_id": "bench"}, map[string]any{}); err != nil {
+				if err := w.Finish(map[string]any{"capture_id": "bench"}, map[string]any{}, nil); err != nil {
 					b.Fatal(err)
 				}
 				if err := Open(path, b.TempDir()); err != nil {
