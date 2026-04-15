@@ -588,7 +588,28 @@ func (h *handler) trySingleItemGet(path string, at time.Time) ([]byte, int) {
 
 	body, code, err := h.store.ReconstructAt(parentPath, at)
 	if err != nil || code != 200 {
-		return nil, 404
+		// Namespace-scoped single-item GET whose per-namespace list was not
+		// captured: fall back to the cluster-scoped list and filter by namespace.
+		g, v, resource, ns := parseAPIPath(parentPath)
+		if ns != "" && resource != "" {
+			var clusterParent string
+			if g == "" {
+				clusterParent = "/api/" + v + "/" + resource
+			} else {
+				clusterParent = "/apis/" + g + "/" + v + "/" + resource
+			}
+			clusterBody, clusterCode, cerr := h.store.ReconstructAt(clusterParent, at)
+			if cerr == nil && clusterCode == 200 {
+				// Filter to the requested namespace before doing the name lookup.
+				filtered, ferr := applySelectors(clusterBody, "", "metadata.namespace="+ns)
+				if ferr == nil {
+					body, code = filtered, 200
+				}
+			}
+		}
+		if code != 200 {
+			return nil, 404
+		}
 	}
 
 	var list struct {

@@ -791,3 +791,42 @@ func TestHandler_NamespaceQueryFallsBackToClusterPath(t *testing.T) {
 		t.Errorf("expected [nginx], got %v", names)
 	}
 }
+
+// TestHandler_SingleItemGetFallsBackToClusterPath verifies that a single-item
+// GET (e.g. kubectl get pod nginx -n default) works when the capture only
+// stored the cluster-scoped /api/v1/pods path.
+func TestHandler_SingleItemGetFallsBackToClusterPath(t *testing.T) {
+	podList := listWithPods([]podSpec{
+		{name: "nginx", namespace: "default"},
+		{name: "redis", namespace: "kube-system"},
+	})
+	store := buildTestStore(t, map[string][]byte{
+		"/api/v1/pods": podList,
+	})
+	h := newHandler(store, time.Time{}, false)
+
+	// Single-item GET for the nginx pod in default — must resolve from cluster path.
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/namespaces/default/pods/nginx", nil)
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d\nbody: %s", rw.Code, rw.Body.String())
+	}
+	var obj map[string]any
+	if err := json.Unmarshal(rw.Body.Bytes(), &obj); err != nil {
+		t.Fatalf("expected JSON body: %v", err)
+	}
+	meta, _ := obj["metadata"].(map[string]any)
+	if meta == nil || meta["name"] != "nginx" {
+		t.Errorf("expected metadata.name=nginx, got: %v", obj)
+	}
+
+	// redis is in kube-system — looking it up in default must return 404.
+	req2 := httptest.NewRequest(http.MethodGet, "/api/v1/namespaces/default/pods/redis", nil)
+	rw2 := httptest.NewRecorder()
+	h.ServeHTTP(rw2, req2)
+	if rw2.Code == http.StatusOK {
+		t.Errorf("expected non-200 for redis in default, got 200: %s", rw2.Body.String())
+	}
+}
