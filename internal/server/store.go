@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/phenixblue/k8shark/internal/capture"
@@ -19,6 +20,7 @@ type CaptureStore struct {
 	Index        capture.Index
 	WatchIndex   capture.WatchIndex
 	resourceInfo map[string]*ResourceInfo
+	recordCache  sync.Map // key: record ID string → capture.Record
 }
 
 // ResourceInfo describes a single captured resource type.
@@ -133,19 +135,19 @@ func (s *CaptureStore) Latest(apiPath string, at time.Time) ([]byte, int, error)
 		id = entry.RecordIDs[idx-1]
 	}
 
-	data, err := os.ReadFile(filepath.Join(s.Dir, "k8shark-capture", "records", id+".json"))
+	rec, err := s.readRecord(id)
 	if err != nil {
-		return nil, 500, fmt.Errorf("reading record %s: %w", id, err)
-	}
-	var rec capture.Record
-	if err := json.Unmarshal(data, &rec); err != nil {
-		return nil, 500, fmt.Errorf("parsing record %s: %w", id, err)
+		return nil, 500, err
 	}
 	return rec.ResponseBody, rec.ResponseCode, nil
 }
 
 // readRecord reads and parses a single capture.Record by ID from the archive.
+// Results are cached in memory so repeated reads of the same record are free.
 func (s *CaptureStore) readRecord(id string) (capture.Record, error) {
+	if v, ok := s.recordCache.Load(id); ok {
+		return v.(capture.Record), nil
+	}
 	data, err := os.ReadFile(filepath.Join(s.Dir, "k8shark-capture", "records", id+".json"))
 	if err != nil {
 		return capture.Record{}, fmt.Errorf("reading record %s: %w", id, err)
@@ -154,6 +156,7 @@ func (s *CaptureStore) readRecord(id string) (capture.Record, error) {
 	if err := json.Unmarshal(data, &rec); err != nil {
 		return capture.Record{}, fmt.Errorf("parsing record %s: %w", id, err)
 	}
+	s.recordCache.Store(id, rec)
 	return rec, nil
 }
 
