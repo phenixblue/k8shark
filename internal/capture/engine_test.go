@@ -20,7 +20,6 @@ import (
 	"github.com/phenixblue/k8shark/internal/config"
 )
 
-// sliceSink is a test RecordSink that accumulates records in memory.
 type sliceSink struct {
 	mu      sync.Mutex
 	records []*Record
@@ -551,6 +550,76 @@ func TestRun_FailsWhenWatchConcurrencyTooHigh(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "concurrent watch streams") {
 		t.Fatalf("expected watch concurrency guard error, got: %v", err)
+	}
+}
+
+func TestRun_FailsPreflightOnUnauthorized(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/version" {
+			w.WriteHeader(http.StatusUnauthorized)
+			fmt.Fprint(w, `{"kind":"Status","message":"unauthorized"}`)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"kind":"List","items":[]}`)
+	}))
+	defer srv.Close()
+
+	out := filepath.Join(t.TempDir(), "capture.tar.gz")
+	cfg := &config.Config{
+		DurationRaw: "2s",
+		Duration:    2 * time.Second,
+		Output:      out,
+		Resources: []config.Resource{
+			{Version: "v1", Resource: "pods", Namespaces: []string{"default"}, IntervalRaw: "500ms", Interval: 500 * time.Millisecond},
+		},
+	}
+
+	eng := newEngineWith(cfg, srv.Client(), srv.URL, false)
+	_, err := eng.Run()
+	if err == nil {
+		t.Fatal("expected preflight error, got nil")
+	}
+	if !strings.Contains(err.Error(), "capture preflight failed") {
+		t.Fatalf("expected preflight prefix in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "GET /version returned 401") {
+		t.Fatalf("expected 401 detail in error, got: %v", err)
+	}
+	if _, statErr := os.Stat(out); !os.IsNotExist(statErr) {
+		t.Fatalf("expected no output archive on preflight failure, stat err: %v", statErr)
+	}
+}
+
+func TestRun_FailsPreflightOnUnreachableServer(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"gitVersion":"v1.29.0"}`)
+	}))
+	serverURL := srv.URL
+	client := srv.Client()
+	srv.Close()
+
+	out := filepath.Join(t.TempDir(), "capture.tar.gz")
+	cfg := &config.Config{
+		DurationRaw: "2s",
+		Duration:    2 * time.Second,
+		Output:      out,
+		Resources: []config.Resource{
+			{Version: "v1", Resource: "pods", Namespaces: []string{"default"}, IntervalRaw: "500ms", Interval: 500 * time.Millisecond},
+		},
+	}
+
+	eng := newEngineWith(cfg, client, serverURL, false)
+	_, err := eng.Run()
+	if err == nil {
+		t.Fatal("expected preflight connectivity error, got nil")
+	}
+	if !strings.Contains(err.Error(), "capture preflight failed") {
+		t.Fatalf("expected preflight prefix in error, got: %v", err)
+	}
+	if _, statErr := os.Stat(out); !os.IsNotExist(statErr) {
+		t.Fatalf("expected no output archive on preflight failure, stat err: %v", statErr)
 	}
 }
 
