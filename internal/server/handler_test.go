@@ -830,3 +830,31 @@ func TestHandler_SingleItemGetFallsBackToClusterPath(t *testing.T) {
 		t.Errorf("expected non-200 for redis in default, got 200: %s", rw2.Body.String())
 	}
 }
+
+// TestHandler_WatchFallsBackToClusterPath verifies that a namespace-scoped
+// watch (e.g. from k9s pod/container watchers) returns the correct items when
+// the capture only stored the cluster-scoped list path.
+func TestHandler_WatchFallsBackToClusterPath(t *testing.T) {
+	podList := listWithPods([]podSpec{
+		{name: "nginx", namespace: "default"},
+		{name: "redis", namespace: "kube-system"},
+	})
+	store := buildTestStore(t, map[string][]byte{
+		"/api/v1/pods": podList,
+	})
+	h := newHandler(store, time.Time{}, false)
+
+	// Watch for pods in default — must receive an ADDED event for nginx only.
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/v1/namespaces/default/pods?watch=1&timeoutSeconds=1", nil)
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, req)
+
+	body := rw.Body.String()
+	if !strings.Contains(body, `"nginx"`) {
+		t.Errorf("expected nginx in watch stream, got: %s", body)
+	}
+	if strings.Contains(body, `"redis"`) {
+		t.Errorf("redis (kube-system) must not appear in default namespace watch")
+	}
+}
