@@ -515,18 +515,25 @@ func (s *CaptureStore) reconstructAt(apiPath string, at time.Time) ([]byte, int,
 }
 
 // itemDedupeKey returns a short string that uniquely identifies a raw JSON
-// item by uid (preferred) or namespace/name fallback. Used to deduplicate
-// items when aggregating across namespaces.
+// item by uid (preferred) or name-only fallback. Used to deduplicate items
+// when aggregating across namespaces.
+//
+// Name-only (not namespace/name) is intentional for the no-UID case: OLM
+// resources like PackageManifests have no uid and are stamped with the
+// requested namespace on every namespace-scoped response, so the same package
+// appears as "adani/prometheus-operator", "kube-system/prometheus-operator",
+// etc. Using just the name correctly collapses these duplicates. Resources that
+// have genuinely distinct same-named items in different namespaces (pods,
+// services…) always carry a uid and therefore never hit this fallback.
 func itemDedupeKey(raw json.RawMessage) string {
 	var obj struct {
 		Metadata struct {
-			UID       string `json:"uid"`
-			Namespace string `json:"namespace"`
-			Name      string `json:"name"`
+			UID  string `json:"uid"`
+			Name string `json:"name"`
 		} `json:"metadata"`
 	}
 	if err := json.Unmarshal(raw, &obj); err != nil || obj.Metadata.UID == "" {
-		return obj.Metadata.Namespace + "/" + obj.Metadata.Name
+		return obj.Metadata.Name
 	}
 	return obj.Metadata.UID
 }

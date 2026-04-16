@@ -839,7 +839,10 @@ func computeClusterSpanningResources(store *server.CaptureStore) map[string]bool
 		resNS[resource][ns] = struct{}{}
 		totalNS[ns] = struct{}{}
 	}
-	threshold := len(totalNS) / 2
+	// Use 30% of namespaces as the spanning threshold. 50% was too high: OLM's
+	// packagemanifests appear in ~45% of namespaces in typical OpenShift captures
+	// (because OLM queries it for every namespace it manages) but not quite 50%.
+	threshold := len(totalNS) * 30 / 100
 	if threshold < 3 {
 		threshold = 3
 	}
