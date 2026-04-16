@@ -1378,8 +1378,52 @@ func TestFetchResource_AutoDiscoveredSilentFallback(t *testing.T) {
 
 // TestFetchResource_ExplicitNamespaceWarnOnAllNotFound verifies that when a
 // manually-configured resource (AutoDiscovered=false) has all namespace-scoped
-// fetches return 404, the warning IS printed to stderr.
+// fetches return 404, the warning IS printed to stderr when --verbose is set,
+// and is suppressed when --verbose is not set.
 func TestFetchResource_ExplicitNamespaceWarnOnAllNotFound(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/version" {
+			fmt.Fprint(w, `{"gitVersion":"v1.29.0"}`)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"kind":"Status","status":"Failure","code":404}`)
+	}))
+	defer srv.Close()
+
+	oldStderr := os.Stderr
+	r, wPipe, _ := os.Pipe()
+	os.Stderr = wPipe
+
+	// verbose=true: warnings for explicit (non-auto-discovered) resources must
+	// appear when --verbose is set.
+	eng := newEngineWith(&config.Config{}, srv.Client(), srv.URL, true)
+	eng.sink = &sliceSink{}
+
+	res := config.Resource{
+		Version:        "v1",
+		Resource:       "widgets",
+		Namespaces:     []string{"default"},
+		IntervalRaw:    "500ms",
+		Interval:       500 * time.Millisecond,
+		AutoDiscovered: false,
+	}
+	eng.fetchResource(context.Background(), res)
+
+	wPipe.Close()
+	os.Stderr = oldStderr
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, r)
+
+	if !strings.Contains(buf.String(), "[warn]") {
+		t.Errorf("expected [warn] on stderr for explicit resource with all-404 namespaces, got: %s", buf.String())
+	}
+}
+
+// TestFetchResource_ExplicitNamespaceNoWarnWithoutVerbose verifies that the
+// allNotFound fallback warning is suppressed when verbose=false.
+func TestFetchResource_ExplicitNamespaceNoWarnWithoutVerbose(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/version" {
@@ -1413,7 +1457,52 @@ func TestFetchResource_ExplicitNamespaceWarnOnAllNotFound(t *testing.T) {
 	var buf bytes.Buffer
 	_, _ = io.Copy(&buf, r)
 
-	if !strings.Contains(buf.String(), "[warn]") {
-		t.Errorf("expected [warn] on stderr for explicit resource with all-404 namespaces, got: %s", buf.String())
+	if strings.Contains(buf.String(), "[warn]") {
+		t.Errorf("expected NO [warn] on stderr when verbose=false, got: %s", buf.String())
+	}
+}
+
+// TestFetchResource_ExplicitNamespaceWarnDedup verifies that the same
+// allNotFound warning is emitted at most once per unique cluster-scoped path
+// within a single engine run.
+func TestFetchResource_ExplicitNamespaceWarnDedup(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/version" {
+			fmt.Fprint(w, `{"gitVersion":"v1.29.0"}`)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"kind":"Status","status":"Failure","code":404}`)
+	}))
+	defer srv.Close()
+
+	oldStderr := os.Stderr
+	r, wPipe, _ := os.Pipe()
+	os.Stderr = wPipe
+
+	eng := newEngineWith(&config.Config{}, srv.Client(), srv.URL, true)
+	eng.sink = &sliceSink{}
+
+	res := config.Resource{
+		Version:        "v1",
+		Resource:       "widgets",
+		Namespaces:     []string{"default"},
+		IntervalRaw:    "500ms",
+		Interval:       500 * time.Millisecond,
+		AutoDiscovered: false,
+	}
+	// Call fetchResource twice for the same resource — warning must appear only once.
+	eng.fetchResource(context.Background(), res)
+	eng.fetchResource(context.Background(), res)
+
+	wPipe.Close()
+	os.Stderr = oldStderr
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, r)
+
+	count := strings.Count(buf.String(), "[warn]")
+	if count != 1 {
+		t.Errorf("expected exactly 1 [warn] for duplicate resource, got %d:\n%s", count, buf.String())
 	}
 }
