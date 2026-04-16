@@ -16,6 +16,9 @@ on:
       - '.github/*.yml'
       - '.github/*.yaml'
 
+permissions:
+  contents: read
+
 jobs:
   e2e:
     runs-on: ubuntu-latest
