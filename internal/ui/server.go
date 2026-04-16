@@ -533,31 +533,48 @@ func (h *explorerHandler) buildNamespaceAt(targetNS string, at time.Time) (*name
 	}
 
 	// Collect candidate paths for this namespace.
-	// For a named namespace we include both namespace-scoped paths
-	// (/api/v1/namespaces/<ns>/pods) AND cluster-wide list paths
-	// (/apis/apps/v1/deployments) — the latter are filtered by item
-	// metadata.namespace when the records are loaded below.
-	// For the synthetic cluster-scoped view (targetNS == "") we only
-	// include paths that have no /namespaces/ segment.
+	// For a named namespace:
+	//   - Always include namespace-scoped paths (/api/v1/namespaces/<ns>/pods).
+	//   - Include cluster-wide paths (/apis/apps/v1/deployments) ONLY for
+	//     resource types that have no namespace-scoped path for this namespace
+	//     in the index (e.g. portworx resources captured only at cluster scope).
+	//     This prevents truly cluster-scoped resources (ClusterRoles, Nodes…)
+	//     from appearing in the namespace drill-down.
+	// For the cluster-scoped view (targetNS == ""):
+	//   - Only include paths with no /namespaces/ segment.
 	byRes := map[string][]string{}
-	for path := range h.store.Index {
-		_, _, resource, ns, _ := parseAPIPath(baseAPIPath(path))
-		if resource == "" {
-			continue
-		}
-		if targetNS == "" {
-			// cluster-scoped view: only true cluster-wide paths
-			if ns != "" {
+	if targetNS == "" {
+		// cluster-scoped: only true cluster-wide paths
+		for path := range h.store.Index {
+			_, _, resource, ns, _ := parseAPIPath(baseAPIPath(path))
+			if resource == "" || ns != "" {
 				continue
 			}
-		} else {
-			// named namespace: accept namespace-scoped paths for this ns
-			// OR cluster-wide paths (ns=="") that may contain our items
-			if ns != "" && ns != targetNS {
+			byRes[resource] = append(byRes[resource], path)
+		}
+	} else {
+		// named namespace: first pass — collect namespace-scoped paths
+		nsScopedResources := map[string]bool{}
+		for path := range h.store.Index {
+			_, _, resource, ns, _ := parseAPIPath(baseAPIPath(path))
+			if resource == "" || ns != targetNS {
 				continue
 			}
+			byRes[resource] = append(byRes[resource], path)
+			nsScopedResources[resource] = true
 		}
-		byRes[resource] = append(byRes[resource], path)
+		// second pass — add cluster-wide paths only for resources not already
+		// found via namespace-scoped paths
+		for path := range h.store.Index {
+			_, _, resource, ns, _ := parseAPIPath(baseAPIPath(path))
+			if resource == "" || ns != "" {
+				continue
+			}
+			if nsScopedResources[resource] {
+				continue // already covered by ns-scoped path; skip to avoid cluster-scoped pollution
+			}
+			byRes[resource] = append(byRes[resource], path)
+		}
 	}
 
 	node := &namespaceDetailResponse{
