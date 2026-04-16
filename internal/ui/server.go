@@ -2056,7 +2056,11 @@ const indexHTML = `<!doctype html>
 				activeKindsInitialized = true;
 			} else {
 				const allowed = new Set(kinds);
+				// Remove stale kinds; add newly-seen kinds as enabled by default.
 				activeKinds = new Set(Array.from(activeKinds).filter((k) => allowed.has(k)));
+				for (const k of kinds) {
+					if (!activeKinds.has(k)) activeKinds.add(k);
+				}
 			}
       el.toggles.innerHTML = '';
       for (const kind of kinds) {

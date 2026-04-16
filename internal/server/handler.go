@@ -295,8 +295,17 @@ func (h *handler) serveAPIResourceList(w http.ResponseWriter, group, version str
 			"kind":       ri.Kind,
 			"verbs":      []string{"get", "list", "watch"},
 		}
-		if sn := shortNamesFor(ri.Resource); len(sn) > 0 {
+		// Prefer short names from the captured discovery document; fall back to
+		// the built-in static map for well-known Kubernetes types.
+		sn := ri.ShortNames
+		if len(sn) == 0 {
+			sn = shortNamesFor(ri.Resource)
+		}
+		if len(sn) > 0 {
 			entry["shortNames"] = sn
+		}
+		if ri.SingularName != "" {
+			entry["singularName"] = ri.SingularName
 		}
 		resources = append(resources, entry)
 	}

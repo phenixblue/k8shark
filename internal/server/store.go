@@ -25,11 +25,13 @@ type CaptureStore struct {
 
 // ResourceInfo describes a single captured resource type.
 type ResourceInfo struct {
-	Group      string
-	Version    string
-	Resource   string
-	Kind       string
-	Namespaced bool
+	Group        string
+	Version      string
+	Resource     string
+	Kind         string
+	Namespaced   bool
+	ShortNames   []string
+	SingularName string
 }
 
 // LoadStore reads metadata.json and index.json from an extracted archive
@@ -101,6 +103,89 @@ func (s *CaptureStore) buildResourceInfo() {
 			Resource:   r,
 			Kind:       resourceToKind(r),
 			Namespaced: ns != "",
+		}
+	}
+	// Second pass: enrich ResourceInfo from captured /apis/<group>/<version>
+	// discovery records. This gives us real shortNames, singularName, and kind
+	// for CRD-backed resources that the static maps in handler.go don't cover.
+	s.enrichResourceInfoFromDiscovery()
+}
+
+// enrichResourceInfoFromDiscovery reads captured APIResourceList bodies from
+// the index (paths matching /apis/<g>/<v> and /api/v1) and updates
+// ShortNames, SingularName, and Kind for each known ResourceInfo entry.
+func (s *CaptureStore) enrichResourceInfoFromDiscovery() {
+	type apiResourceEntry struct {
+		Name         string   `json:"name"`
+		SingularName string   `json:"singularName"`
+		Kind         string   `json:"kind"`
+		ShortNames   []string `json:"shortNames"`
+	}
+	type apiResourceList struct {
+		Kind      string             `json:"kind"`
+		Resources []apiResourceEntry `json:"resources"`
+	}
+
+	for path, entry := range s.Index {
+		// Only process group-version discovery paths, not resource paths.
+		if strings.Contains(path, "?") {
+			continue
+		}
+		var g, v string
+		parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
+		switch {
+		case path == "/api/v1":
+			g, v = "", "v1"
+		case len(parts) == 3 && parts[0] == "apis":
+			g, v = parts[1], parts[2]
+		default:
+			continue
+		}
+
+		if len(entry.RecordIDs) == 0 {
+			continue
+		}
+		// Use the latest record that we can read.
+		var body []byte
+		for i := len(entry.RecordIDs) - 1; i >= 0; i-- {
+			rec, err := s.readRecord(entry.RecordIDs[i])
+			if err != nil || rec.ResponseCode != 200 {
+				continue
+			}
+			body = rec.ResponseBody
+			break
+		}
+		if body == nil {
+			continue
+		}
+
+		var resList apiResourceList
+		if err := json.Unmarshal(body, &resList); err != nil {
+			continue
+		}
+		if resList.Kind != "APIResourceList" {
+			continue
+		}
+
+		for _, res := range resList.Resources {
+			// Skip sub-resources (they have '/' in the name).
+			if strings.Contains(res.Name, "/") {
+				continue
+			}
+			key := g + "/" + v + "/" + res.Name
+			ri, ok := s.resourceInfo[key]
+			if !ok {
+				continue
+			}
+			if res.Kind != "" {
+				ri.Kind = res.Kind
+			}
+			if res.SingularName != "" {
+				ri.SingularName = res.SingularName
+			}
+			if len(res.ShortNames) > 0 {
+				ri.ShortNames = res.ShortNames
+			}
 		}
 	}
 }
