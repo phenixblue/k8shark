@@ -1295,12 +1295,30 @@ const indexHTML = `<!doctype html>
   <script>
     let treeData = null;
     let nsCache = {};
-    async function loadNsDetail(nsName) {
+    const nsFetchConcurrency = 3;
+    let nsFetchActive = 0;
+    const nsFetchQueue = [];
+    function loadNsDetail(nsName) {
       if (nsCache[nsName] && !nsCache[nsName]._loading) return;
+      if (nsCache[nsName] && nsCache[nsName]._loading) return; // already queued/in-flight
       nsCache[nsName] = { _loading: true };
+      nsFetchQueue.push(nsName);
+      nsDrainQueue();
+    }
+    function nsDrainQueue() {
+      while (nsFetchActive < nsFetchConcurrency && nsFetchQueue.length > 0) {
+        const nsName = nsFetchQueue.shift();
+        nsFetchActive++;
+        nsFetchOne(nsName).finally(() => {
+          nsFetchActive--;
+          nsDrainQueue();
+        });
+      }
+    }
+    async function nsFetchOne(nsName) {
       try {
         const q = withAtQuery(new URLSearchParams());
-        q.set('ns', nsName === '' ? ':cluster' : nsName);
+        q.set('ns', nsName === ':cluster' ? ':cluster' : nsName);
         const res = await fetch('/api/ui/tree/namespace?' + q.toString());
         const data = await res.json();
         nsCache[nsName] = data;
@@ -2383,6 +2401,7 @@ const indexHTML = `<!doctype html>
 				}
 				treeData = data;
 				nsCache = {};
+				nsFetchQueue.length = 0;
 				namespacesVisibleLimit = namespacesPageSize;
 				lastLoadedAt = normalizedAt();
 				updateMetaLine();
