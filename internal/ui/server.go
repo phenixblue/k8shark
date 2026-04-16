@@ -210,6 +210,16 @@ func (h *explorerHandler) serveTree(w http.ResponseWriter, r *http.Request) {
 			nsSet[ns] = struct{}{}
 		}
 	}
+	// Also collect namespaces from watch-event paths, which are always
+	// namespace-scoped and may reveal namespaces absent from the REST index
+	// (e.g. when resources were only captured via cluster-wide list endpoints).
+	for path := range h.store.WatchIndex {
+		_, _, resource, ns, _ := parseAPIPath(baseAPIPath(path))
+		if resource == "" || ns == "" {
+			continue
+		}
+		nsSet[ns] = struct{}{}
+	}
 	namespaces := make([]namespaceNode, 0, len(nsSet))
 	for ns := range nsSet {
 		namespaces = append(namespaces, namespaceNode{Name: ns})
@@ -523,14 +533,29 @@ func (h *explorerHandler) buildNamespaceAt(targetNS string, at time.Time) (*name
 	}
 
 	// Collect candidate paths for this namespace.
+	// For a named namespace we include both namespace-scoped paths
+	// (/api/v1/namespaces/<ns>/pods) AND cluster-wide list paths
+	// (/apis/apps/v1/deployments) — the latter are filtered by item
+	// metadata.namespace when the records are loaded below.
+	// For the synthetic cluster-scoped view (targetNS == "") we only
+	// include paths that have no /namespaces/ segment.
 	byRes := map[string][]string{}
 	for path := range h.store.Index {
 		_, _, resource, ns, _ := parseAPIPath(baseAPIPath(path))
 		if resource == "" {
 			continue
 		}
-		if ns != targetNS {
-			continue
+		if targetNS == "" {
+			// cluster-scoped view: only true cluster-wide paths
+			if ns != "" {
+				continue
+			}
+		} else {
+			// named namespace: accept namespace-scoped paths for this ns
+			// OR cluster-wide paths (ns=="") that may contain our items
+			if ns != "" && ns != targetNS {
+				continue
+			}
 		}
 		byRes[resource] = append(byRes[resource], path)
 	}
@@ -549,6 +574,11 @@ func (h *explorerHandler) buildNamespaceAt(targetNS string, at time.Time) (*name
 		}
 		for _, entry := range items {
 			itemNS := getMetaNamespace(entry.item)
+			// cluster-scoped view: skip any item that belongs to a namespace
+			if targetNS == "" && itemNS != "" {
+				continue
+			}
+			// named-namespace view: skip items from a different namespace
 			if targetNS != "" && itemNS != "" && itemNS != targetNS {
 				continue
 			}
@@ -1986,10 +2016,7 @@ const indexHTML = `<!doctype html>
 				const chips = document.createElement('div');
 				chips.className = 'ns-card-chips';
 				if (!loaded) {
-					const c = document.createElement('span');
-					c.className = 'ns-card-chip';
-					c.textContent = 'loading…';
-					chips.appendChild(c);
+					// show nothing until the user opens this namespace
 				} else {
 					if (workloads) { const c = document.createElement('span'); c.className = 'ns-card-chip'; c.textContent = workloads + ' workload' + (workloads !== 1 ? 's' : ''); chips.appendChild(c); }
 					if (pods)      { const c = document.createElement('span'); c.className = 'ns-card-chip'; c.textContent = pods + ' pod' + (pods !== 1 ? 's' : '');      chips.appendChild(c); }
@@ -2005,9 +2032,6 @@ const indexHTML = `<!doctype html>
 				card.onkeydown = (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openNS(); } };
 				grid.appendChild(card);
 				shown++;
-
-				// trigger background fetch so chips populate as cards render
-				if (!nsCache[ns.name]) loadNsDetail(ns.name);
 			}
 
 			if (shown === 0) {
