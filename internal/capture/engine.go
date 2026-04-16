@@ -1126,33 +1126,49 @@ func (e *Engine) expandWildcardNamespaces(ctx context.Context) error {
 		return nil
 	}
 
-	// Fetch the namespace list from the cluster.
-	nsBody, code := e.doFetch(ctx, "/api/v1/namespaces", "", true)
-	if code != http.StatusOK || nsBody == nil {
-		if code == 0 {
-			if err := ctx.Err(); err != nil {
-				return fmt.Errorf("namespace discovery failed: request cancelled before completion (try a longer --duration): %w", err)
+	// Fetch the namespace list from the cluster, following pagination tokens so
+	// that clusters with more than 500 namespaces are fully enumerated.
+	// (Kubernetes defaults to a page size of 500 when no ?limit= is specified.)
+	var allNS []string
+	continueToken := ""
+	for {
+		path := "/api/v1/namespaces?limit=500"
+		if continueToken != "" {
+			path += "&continue=" + continueToken
+		}
+		nsBody, code := e.doFetch(ctx, path, "", true)
+		if code != http.StatusOK || nsBody == nil {
+			if code == 0 {
+				if err := ctx.Err(); err != nil {
+					return fmt.Errorf("namespace discovery failed: request cancelled before completion (try a longer --duration): %w", err)
+				}
+				return fmt.Errorf("namespace discovery failed (HTTP 0): request could not be completed; check kubeconfig/context and cluster connectivity")
 			}
-			return fmt.Errorf("namespace discovery failed (HTTP 0): request could not be completed; check kubeconfig/context and cluster connectivity")
+			if code == http.StatusForbidden {
+				return fmt.Errorf("namespace discovery failed (HTTP %d): check cluster permissions", code)
+			}
+			return fmt.Errorf("namespace discovery failed (HTTP %d): unable to list namespaces", code)
 		}
-		if code == http.StatusForbidden {
-			return fmt.Errorf("namespace discovery failed (HTTP %d): check cluster permissions", code)
-		}
-		return fmt.Errorf("namespace discovery failed (HTTP %d): unable to list namespaces", code)
-	}
-	var nsList struct {
-		Items []struct {
+		var nsList struct {
 			Metadata struct {
-				Name string `json:"name"`
+				Continue string `json:"continue"`
 			} `json:"metadata"`
-		} `json:"items"`
-	}
-	if err := json.Unmarshal(nsBody, &nsList); err != nil {
-		return fmt.Errorf("parsing namespace list: %w", err)
-	}
-	allNS := make([]string, 0, len(nsList.Items))
-	for _, item := range nsList.Items {
-		allNS = append(allNS, item.Metadata.Name)
+			Items []struct {
+				Metadata struct {
+					Name string `json:"name"`
+				} `json:"metadata"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(nsBody, &nsList); err != nil {
+			return fmt.Errorf("parsing namespace list: %w", err)
+		}
+		for _, item := range nsList.Items {
+			allNS = append(allNS, item.Metadata.Name)
+		}
+		continueToken = nsList.Metadata.Continue
+		if continueToken == "" {
+			break
+		}
 	}
 
 	// Expand each resource entry that contains "*".
