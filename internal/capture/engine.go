@@ -44,6 +44,7 @@ type Engine struct {
 	discoveryCache map[string][]byte  // bodies saved by fetchDiscovery for autoDiscoverResources
 	lastHash       map[string][32]byte
 	dedupSkipped   int
+	warnedFallback map[string]bool // dedup set for allNotFound cluster-scoped fallback warnings
 }
 
 const maxConcurrentWatchStreams = 256
@@ -79,6 +80,7 @@ func NewEngine(cfg *config.Config, verbose bool) (*Engine, error) {
 		watchIndex:     make(WatchIndex),
 		discoveryCache: make(map[string][]byte),
 		lastHash:       make(map[string][32]byte),
+		warnedFallback: make(map[string]bool),
 	}, nil
 }
 
@@ -94,6 +96,7 @@ func newEngineWith(cfg *config.Config, client *http.Client, baseURL string, verb
 		watchIndex:     make(WatchIndex),
 		discoveryCache: make(map[string][]byte),
 		lastHash:       make(map[string][32]byte),
+		warnedFallback: make(map[string]bool),
 	}
 }
 
@@ -461,16 +464,33 @@ func (e *Engine) fetchResource(ctx context.Context, res config.Resource) {
 		// (especially OpenShift CRDs) report "namespaced" in discovery but only
 		// serve data at the cluster-scoped path. Silently fall back rather than
 		// printing a misleading "remove 'namespaces:'" hint the user can't act on.
-		if !res.AutoDiscovered {
-			fmt.Fprintf(os.Stderr,
-				"  [warn] %s: all namespace-scoped fetches returned 404 — "+
-					"this is likely a cluster-scoped resource; remove 'namespaces:' "+
-					"from its config entry. Fetching cluster-scoped path %s as fallback.\n",
-				res.Resource, clusterPath)
-		} else if e.verbose {
-			fmt.Fprintf(os.Stderr,
-				"  [debug] %s: all namespace-scoped fetches returned 404; falling back to cluster-scoped path %s\n",
-				res.Resource, clusterPath)
+		if !res.AutoDiscovered && e.verbose {
+			// Deduplicate: only warn once per unique cluster-scoped path per run.
+			e.mu.Lock()
+			alreadyWarned := e.warnedFallback[clusterPath]
+			if !alreadyWarned {
+				e.warnedFallback[clusterPath] = true
+			}
+			e.mu.Unlock()
+			if !alreadyWarned {
+				fmt.Fprintf(os.Stderr,
+					"  [warn] %s: all namespace-scoped fetches returned 404 — "+
+						"this is likely a cluster-scoped resource; remove 'namespaces:' "+
+						"from its config entry. Fetching cluster-scoped path %s as fallback.\n",
+					res.Resource, clusterPath)
+			}
+		} else if res.AutoDiscovered && e.verbose {
+			e.mu.Lock()
+			alreadyWarned := e.warnedFallback[clusterPath]
+			if !alreadyWarned {
+				e.warnedFallback[clusterPath] = true
+			}
+			e.mu.Unlock()
+			if !alreadyWarned {
+				fmt.Fprintf(os.Stderr,
+					"  [debug] %s: all namespace-scoped fetches returned 404; falling back to cluster-scoped path %s\n",
+					res.Resource, clusterPath)
+			}
 		}
 		e.doFetch(ctx, clusterPath, "", dedupEnabled)
 		e.doFetch(ctx, clusterPath, tableIndexKeySuffix, dedupEnabled)
