@@ -638,6 +638,24 @@ func (s *CaptureStore) AggregateAcrossNamespaces(clusterPath string, at time.Tim
 	return out, 200, nil
 }
 
+// tableRowDedupeKey returns a deduplication key for a Table row using the
+// embedded object's uid (preferred) or name-only fallback. Mirrors the logic
+// of itemDedupeKey for Table-format responses.
+func tableRowDedupeKey(row json.RawMessage) string {
+	var r struct {
+		Object struct {
+			Metadata struct {
+				UID  string `json:"uid"`
+				Name string `json:"name"`
+			} `json:"metadata"`
+		} `json:"object"`
+	}
+	if err := json.Unmarshal(row, &r); err != nil || r.Object.Metadata.UID == "" {
+		return r.Object.Metadata.Name
+	}
+	return r.Object.Metadata.UID
+}
+
 // AggregateTableAcrossNamespaces merges per-namespace Table responses.
 func (s *CaptureStore) AggregateTableAcrossNamespaces(clusterPath string, at time.Time) ([]byte, int, error) {
 	g, v, resource, _ := parseAPIPath(clusterPath)
@@ -653,6 +671,7 @@ func (s *CaptureStore) AggregateTableAcrossNamespaces(clusterPath string, at tim
 		allRows []json.RawMessage
 		colDefs json.RawMessage
 		found   bool
+		seen    = make(map[string]struct{})
 	)
 
 	for indexPath := range s.Index {
@@ -674,7 +693,14 @@ func (s *CaptureStore) AggregateTableAcrossNamespaces(clusterPath string, at tim
 			colDefs = table.ColumnDefinitions
 			found = true
 		}
-		allRows = append(allRows, table.Rows...)
+		for _, row := range table.Rows {
+			key := tableRowDedupeKey(row)
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+			allRows = append(allRows, row)
+		}
 	}
 
 	if !found {
