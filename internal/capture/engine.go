@@ -503,7 +503,6 @@ func (e *Engine) fetchResource(ctx context.Context, res config.Resource) {
 var defaultAutoDiscoverExcludeGroups = map[string]bool{
 	"metrics.k8s.io":         true,
 	"apiregistration.k8s.io": true,
-	"apiextensions.k8s.io":   true,
 	"authentication.k8s.io":  true,
 	"authorization.k8s.io":   true,
 }
@@ -542,13 +541,22 @@ func (e *Engine) autoDiscoverResources(ctx context.Context) {
 
 	apisBody := e.discoveryCache["/apis"]
 	if apisBody == nil {
-		if e.verbose {
-			fmt.Fprintln(os.Stderr, "  [auto-discover] /apis not in discovery cache; skipping")
+		// Resilience: retry /apis once if initial discovery capture missed it
+		// (e.g. transient API error). Without this, whole API groups can be
+		// silently skipped from auto-discovery.
+		if fetched, code := e.doFetch(ctx, "/apis", "", true); code == http.StatusOK && fetched != nil {
+			apisBody = fetched
+			e.discoveryCache["/apis"] = fetched
+		} else {
+			if e.verbose {
+				fmt.Fprintln(os.Stderr, "  [auto-discover] /apis not in discovery cache; skipping")
+			}
+			return
 		}
-		return
 	}
 
 	var groupList struct {
+		Kind   string `json:"kind"`
 		Groups []struct {
 			Name     string `json:"name"`
 			Versions []struct {
@@ -557,8 +565,16 @@ func (e *Engine) autoDiscoverResources(ctx context.Context) {
 			} `json:"versions"`
 		} `json:"groups"`
 	}
-	if err := json.Unmarshal(apisBody, &groupList); err != nil {
-		return
+	if err := json.Unmarshal(apisBody, &groupList); err != nil || (groupList.Kind != "" && groupList.Kind != "APIGroupList") {
+		if fetched, code := e.doFetch(ctx, "/apis", "", true); code == http.StatusOK && fetched != nil {
+			apisBody = fetched
+			e.discoveryCache["/apis"] = fetched
+			if err := json.Unmarshal(apisBody, &groupList); err != nil || (groupList.Kind != "" && groupList.Kind != "APIGroupList") {
+				return
+			}
+		} else {
+			return
+		}
 	}
 
 	added := 0
@@ -570,19 +586,32 @@ func (e *Engine) autoDiscoverResources(ctx context.Context) {
 			gvPath := "/apis/" + gv.GroupVersion
 			gvBody := e.discoveryCache[gvPath]
 			if gvBody == nil {
-				// Not in cache (e.g. an older capture); skip — we never fetch
-				// again here to avoid duplicate records in the archive.
-				continue
+				// Resilience: retry this group-version once if missing from cache.
+				if fetched, code := e.doFetch(ctx, gvPath, "", true); code == http.StatusOK && fetched != nil {
+					gvBody = fetched
+					e.discoveryCache[gvPath] = fetched
+				} else {
+					continue
+				}
 			}
 
 			var resList struct {
+				Kind      string `json:"kind"`
 				Resources []struct {
 					Name       string `json:"name"`
 					Namespaced bool   `json:"namespaced"`
 				} `json:"resources"`
 			}
-			if err := json.Unmarshal(gvBody, &resList); err != nil {
-				continue
+			if err := json.Unmarshal(gvBody, &resList); err != nil || (resList.Kind != "" && resList.Kind != "APIResourceList") {
+				if fetched, code := e.doFetch(ctx, gvPath, "", true); code == http.StatusOK && fetched != nil {
+					gvBody = fetched
+					e.discoveryCache[gvPath] = fetched
+					if err := json.Unmarshal(gvBody, &resList); err != nil || (resList.Kind != "" && resList.Kind != "APIResourceList") {
+						continue
+					}
+				} else {
+					continue
+				}
 			}
 
 			parts := strings.SplitN(gv.GroupVersion, "/", 2)
@@ -649,14 +678,21 @@ func (e *Engine) autoDiscoverResources(ctx context.Context) {
 	// resources like pods, services, configmaps, and nodes.
 	if discoverCore {
 		coreBody := e.discoveryCache["/api/v1"]
+		if coreBody == nil {
+			if fetched, code := e.doFetch(ctx, "/api/v1", "", true); code == http.StatusOK && fetched != nil {
+				coreBody = fetched
+				e.discoveryCache["/api/v1"] = fetched
+			}
+		}
 		if coreBody != nil {
 			var coreList struct {
+				Kind      string `json:"kind"`
 				Resources []struct {
 					Name       string `json:"name"`
 					Namespaced bool   `json:"namespaced"`
 				} `json:"resources"`
 			}
-			if err := json.Unmarshal(coreBody, &coreList); err == nil {
+			if err := json.Unmarshal(coreBody, &coreList); err == nil && (coreList.Kind == "" || coreList.Kind == "APIResourceList") {
 				for _, res := range coreList.Resources {
 					if strings.Contains(res.Name, "/") {
 						continue

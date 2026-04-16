@@ -34,6 +34,7 @@ type ResourceSummary struct {
 	Namespaced bool     `json:"namespaced"`
 	Namespaces []string `json:"namespaces,omitempty"`
 	Records    int      `json:"record_count"`
+	Items      int      `json:"item_count"`
 }
 
 // Run extracts archivePath to a temp dir, reads metadata and index, and returns
@@ -74,7 +75,8 @@ func Run(archivePath string) (*Report, error) {
 		return nil, fmt.Errorf("parsing index: %w", err)
 	}
 
-	resources := summariseResources(idx)
+	recordsDir := filepath.Join(tmpDir, "k8shark-capture", "records")
+	resources := summariseResources(idx, recordsDir)
 
 	return &Report{
 		CaptureID:         meta.CaptureID,
@@ -90,12 +92,15 @@ func Run(archivePath string) (*Report, error) {
 }
 
 // summariseResources aggregates per-resource information from the index.
-func summariseResources(idx capture.Index) []ResourceSummary {
+// recordsDir is the path to the extracted records directory; if non-empty,
+// item counts are read from the latest record for each path.
+func summariseResources(idx capture.Index, recordsDir string) []ResourceSummary {
 	type key struct{ group, version, resource string }
 	type accum struct {
 		namespaced bool
 		nsSeen     map[string]bool
 		records    int
+		items      int
 	}
 	byKey := map[key]*accum{}
 
@@ -119,6 +124,22 @@ func summariseResources(idx capture.Index) []ResourceSummary {
 			a.nsSeen[ns] = true
 		}
 		a.records += len(entry.RecordIDs)
+
+		// Count items in the latest record for this path.
+		if recordsDir != "" && len(entry.RecordIDs) > 0 {
+			latestID := entry.RecordIDs[len(entry.RecordIDs)-1]
+			if data, err := os.ReadFile(filepath.Join(recordsDir, latestID+".json")); err == nil {
+				var rec capture.Record
+				if jerr := json.Unmarshal(data, &rec); jerr == nil && rec.ResponseCode == 200 {
+					var list struct {
+						Items []json.RawMessage `json:"items"`
+					}
+					if jerr2 := json.Unmarshal(rec.ResponseBody, &list); jerr2 == nil {
+						a.items += len(list.Items)
+					}
+				}
+			}
+		}
 	}
 
 	summaries := make([]ResourceSummary, 0, len(byKey))
@@ -135,6 +156,7 @@ func summariseResources(idx capture.Index) []ResourceSummary {
 			Namespaced: a.namespaced,
 			Namespaces: nsList,
 			Records:    a.records,
+			Items:      a.items,
 		})
 	}
 

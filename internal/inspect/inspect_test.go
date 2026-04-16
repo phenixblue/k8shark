@@ -169,7 +169,7 @@ func TestRun_TableKeysSkipped(t *testing.T) {
 			Times:     []time.Time{time.Now()},
 		},
 	}
-	summaries := summariseResources(idx)
+	summaries := summariseResources(idx, "")
 	if len(summaries) != 1 {
 		t.Errorf("expected 1 summary (Table key excluded), got %d", len(summaries))
 	}
