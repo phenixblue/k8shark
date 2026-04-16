@@ -1294,6 +1294,22 @@ const indexHTML = `<!doctype html>
 	<div id="toasts" class="toast-stack" aria-live="polite"></div>
   <script>
     let treeData = null;
+    let nsCache = {};
+    async function loadNsDetail(nsName) {
+      if (nsCache[nsName] && !nsCache[nsName]._loading) return;
+      nsCache[nsName] = { _loading: true };
+      try {
+        const q = withAtQuery(new URLSearchParams());
+        q.set('ns', nsName === '' ? ':cluster' : nsName);
+        const res = await fetch('/api/ui/tree/namespace?' + q.toString());
+        const data = await res.json();
+        nsCache[nsName] = data;
+      } catch (_) {
+        delete nsCache[nsName];
+        return;
+      }
+      render();
+    }
     let activeKinds = new Set();
 	let activeKindsInitialized = false;
     let selected = null;
@@ -1952,10 +1968,15 @@ const indexHTML = `<!doctype html>
 
 			const cs = document.createElement('details');
 			cs.open = sectionOpen('cluster-scoped', true);
-			cs.innerHTML = '<summary>Cluster-scoped resources <span class="muted">(' + treeData.cluster_scoped.length + ')</span></summary>';
+			const csDetail = nsCache[':cluster'] || {};
+			const csCount = (csDetail.resources || []).length;
+			const csLabel = csDetail._loading ? '...' : csCount;
+			cs.innerHTML = '<summary>Cluster-scoped resources <span class="muted">(' + csLabel + ')</span></summary>';
 			bindSectionState(cs, 'cluster-scoped');
+			cs.addEventListener('toggle', () => { if (cs.open) loadNsDetail(':cluster'); });
+			if (cs.open) loadNsDetail(':cluster');
 			let clusterShown = 0;
-      for (const node of treeData.cluster_scoped) {
+      for (const node of (csDetail.resources || [])) {
 				if (!kindEnabled(node.kind) || !nodeMatches(node, q, '')) continue;
 				cs.appendChild(mkNode(node, ['Cluster', node.kind, node.name], 0, ''));
 				renderedNodes++;
@@ -1971,13 +1992,17 @@ const indexHTML = `<!doctype html>
 				const nsMatches = !!q && ns.name.toLowerCase().includes(q);
         const ds = document.createElement('details');
 				ds.open = sectionOpen('ns:' + ns.name, treeData.namespaces.length <= 20);
-				const nsCount = (ns.workloads || []).length + (ns.pods || []).length + (ns.resources || []).length;
-				ds.innerHTML = '<summary>Namespace: <strong>' + ns.name + '</strong> <span class="muted">(' + nsCount + ')</span></summary>';
+				const nsDetail = nsCache[ns.name] || {};
+				const nsCount = (nsDetail.workloads || []).length + (nsDetail.pods || []).length + (nsDetail.resources || []).length;
+				const nsLabel = nsDetail._loading ? '...' : nsCount;
+				ds.innerHTML = '<summary>Namespace: <strong>' + ns.name + '</strong> <span class="muted">(' + nsLabel + ')</span></summary>';
 				bindSectionState(ds, 'ns:' + ns.name);
+				ds.addEventListener('toggle', () => { if (ds.open) loadNsDetail(ns.name); });
+				if (ds.open) loadNsDetail(ns.name);
 
 				const nsNodes = [];
 
-			for (const w of (ns.workloads || [])) {
+			for (const w of (nsDetail.workloads || [])) {
 				const workloadVisible = kindEnabled(w.kind) && (nsMatches || nodeMatches(w, q, ns.name));
 				if (workloadVisible) {
 					nsNodes.push(mkNode(w, ['Cluster', ns.name, w.kind, w.name], 0, ''));
@@ -2002,7 +2027,7 @@ const indexHTML = `<!doctype html>
 				}
 			}
 
-			for (const p of (ns.pods || [])) {
+			for (const p of (nsDetail.pods || [])) {
 				if (!kindEnabled(p.kind) || !(nsMatches || nodeMatches(p, q, ns.name))) continue;
 					nsNodes.push(mkNode(p, ['Cluster', ns.name, 'Pod', p.name], 0, ''));
           for (const c of (p.containers || [])) {
@@ -2012,7 +2037,7 @@ const indexHTML = `<!doctype html>
           }
         }
 
-			for (const r of (ns.resources || [])) {
+			for (const r of (nsDetail.resources || [])) {
 				if (!kindEnabled(r.kind) || !(nsMatches || nodeMatches(r, q, ns.name))) continue;
 					nsNodes.push(mkNode(r, ['Cluster', ns.name, r.kind, r.name], 0, ''));
         }
@@ -2357,6 +2382,7 @@ const indexHTML = `<!doctype html>
 					throw new Error(msg);
 				}
 				treeData = data;
+				nsCache = {};
 				namespacesVisibleLimit = namespacesPageSize;
 				lastLoadedAt = normalizedAt();
 				updateMetaLine();
