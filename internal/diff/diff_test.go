@@ -124,7 +124,7 @@ func TestRun_NoDiff(t *testing.T) {
 
 func buildArchive(t *testing.T, entries map[string][]capture.Record) string {
 	t.Helper()
-	out := filepath.Join(t.TempDir(), "capture.tar.gz")
+	out := filepath.Join(t.TempDir(), "capture.khsrk")
 	index := make(capture.Index)
 	var capturedAt, capturedUntil time.Time
 	totalCount := 0

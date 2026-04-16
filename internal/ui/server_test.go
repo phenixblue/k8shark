@@ -328,7 +328,7 @@ func buildStoreFromArchive(t *testing.T, out string, recs []*capture.Record, idx
 func buildTestStore(t *testing.T) *server.CaptureStore {
 	t.Helper()
 	dir := t.TempDir()
-	out := filepath.Join(dir, "capture.tar.gz")
+	out := filepath.Join(dir, "capture.khsrk")
 	now := time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC)
 
 	deployList := `{"apiVersion":"apps/v1","kind":"DeploymentList","items":[{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"demo-deploy","namespace":"default","labels":{"app":"demo"}}}]}`
@@ -352,7 +352,7 @@ func buildTestStore(t *testing.T) *server.CaptureStore {
 func buildQueryOnlyStore(t *testing.T) *server.CaptureStore {
 	t.Helper()
 	dir := t.TempDir()
-	out := filepath.Join(dir, "capture-query-only.tar.gz")
+	out := filepath.Join(dir, "capture-query-only.khsrk")
 	now := time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC)
 
 	configMapList := `{"apiVersion":"v1","kind":"ConfigMapList","items":[{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"demo-config","namespace":"default","labels":{"app":"demo"}}}]}`
@@ -374,7 +374,7 @@ func buildQueryOnlyStore(t *testing.T) *server.CaptureStore {
 func buildPreferredQueryStore(t *testing.T) *server.CaptureStore {
 	t.Helper()
 	dir := t.TempDir()
-	out := filepath.Join(dir, "capture-preferred-query.tar.gz")
+	out := filepath.Join(dir, "capture-preferred-query.khsrk")
 	now := time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC)
 
 	emptyPodList := `{"apiVersion":"v1","kind":"PodList","items":[]}`
@@ -403,7 +403,7 @@ func buildPreferredQueryStore(t *testing.T) *server.CaptureStore {
 func buildMergedQueryStore(t *testing.T) *server.CaptureStore {
 	t.Helper()
 	dir := t.TempDir()
-	out := filepath.Join(dir, "capture-merged-query.tar.gz")
+	out := filepath.Join(dir, "capture-merged-query.khsrk")
 	now := time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC)
 
 	queryA := `{"apiVersion":"v1","kind":"PodList","items":[{"apiVersion":"v1","kind":"Pod","metadata":{"name":"demo-a","namespace":"default","uid":"uid-a","labels":{"app":"demo-a"}},"spec":{"containers":[{"name":"main"}]},"status":{"phase":"Running"}}]}`
@@ -432,7 +432,7 @@ func buildMergedQueryStore(t *testing.T) *server.CaptureStore {
 func buildItemOnlyStore(t *testing.T) *server.CaptureStore {
 	t.Helper()
 	dir := t.TempDir()
-	out := filepath.Join(dir, "capture-item-only.tar.gz")
+	out := filepath.Join(dir, "capture-item-only.khsrk")
 	now := time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC)
 
 	configMap := `{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"demo-config","namespace":"default","uid":"cfg-1","labels":{"app":"demo"}},"data":{"k":"v"}}`
@@ -454,7 +454,7 @@ func buildItemOnlyStore(t *testing.T) *server.CaptureStore {
 func buildTableOnlyStore(t *testing.T) *server.CaptureStore {
 	t.Helper()
 	dir := t.TempDir()
-	out := filepath.Join(dir, "capture-table-only.tar.gz")
+	out := filepath.Join(dir, "capture-table-only.khsrk")
 	now := time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC)
 
 	table := `{"apiVersion":"meta.k8s.io/v1","kind":"Table","columnDefinitions":[],"rows":[{"object":{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"table-config","namespace":"default","uid":"tbl-1"}}}]}`
@@ -476,7 +476,7 @@ func buildTableOnlyStore(t *testing.T) *server.CaptureStore {
 func buildMultiSnapshotStore(t *testing.T) *server.CaptureStore {
 	t.Helper()
 	dir := t.TempDir()
-	out := filepath.Join(dir, "capture-multi-snapshot.tar.gz")
+	out := filepath.Join(dir, "capture-multi-snapshot.khsrk")
 	t1 := time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC)
 	t2 := t1.Add(5 * time.Minute)
 
@@ -501,7 +501,7 @@ func buildMultiSnapshotStore(t *testing.T) *server.CaptureStore {
 func buildWatchOnlyStore(t *testing.T) *server.CaptureStore {
 	t.Helper()
 	dir := t.TempDir()
-	out := filepath.Join(dir, "capture-watch-only.tar.gz")
+	out := filepath.Join(dir, "capture-watch-only.khsrk")
 
 	t0 := time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC)
 	t1 := t0.Add(30 * time.Second)

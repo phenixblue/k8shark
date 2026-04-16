@@ -71,7 +71,7 @@ func TestEngine_CaptureToArchive(t *testing.T) {
 	defer fake.Close()
 
 	outDir := t.TempDir()
-	outFile := filepath.Join(outDir, "capture.tar.gz")
+	outFile := filepath.Join(outDir, "capture.khsrk")
 
 	cfg := &config.Config{
 		DurationRaw: "2s",
@@ -154,7 +154,7 @@ func TestEngine_FetchPodsLogs(t *testing.T) {
 	cfg := &config.Config{
 		DurationRaw: "1s",
 		Duration:    1 * time.Second,
-		Output:      filepath.Join(outDir, "capture.tar.gz"),
+		Output:      filepath.Join(outDir, "capture.khsrk"),
 		Resources: []config.Resource{
 			{
 				Version: "v1", Resource: "pods",
@@ -229,7 +229,7 @@ func TestEngine_NoLogsWhenDisabled(t *testing.T) {
 	cfg := &config.Config{
 		DurationRaw: "1s",
 		Duration:    1 * time.Second,
-		Output:      filepath.Join(outDir, "capture.tar.gz"),
+		Output:      filepath.Join(outDir, "capture.khsrk"),
 		Resources: []config.Resource{
 			// Logs: 0 (default) — log capture disabled.
 			{Version: "v1", Resource: "pods", Namespaces: []string{"default"}, IntervalRaw: "500ms", Interval: 500 * time.Millisecond},
@@ -319,7 +319,7 @@ func TestExpandWildcard_NoWildcard(t *testing.T) {
 	cfg := &config.Config{
 		DurationRaw: "500ms",
 		Duration:    500 * time.Millisecond,
-		Output:      filepath.Join(outDir, "capture.tar.gz"),
+		Output:      filepath.Join(outDir, "capture.khsrk"),
 		Resources: []config.Resource{
 			{Version: "v1", Resource: "pods", Namespaces: []string{"default"}, IntervalRaw: "200ms", Interval: 200 * time.Millisecond},
 		},
@@ -353,7 +353,7 @@ func TestExpandWildcard_AllNamespaces(t *testing.T) {
 	cfg := &config.Config{
 		DurationRaw: "500ms",
 		Duration:    500 * time.Millisecond,
-		Output:      filepath.Join(outDir, "capture.tar.gz"),
+		Output:      filepath.Join(outDir, "capture.khsrk"),
 		Resources: []config.Resource{
 			{Version: "v1", Resource: "pods", Namespaces: []string{"*"}, IntervalRaw: "200ms", Interval: 200 * time.Millisecond},
 		},
@@ -384,7 +384,7 @@ func TestExpandWildcard_Mixed(t *testing.T) {
 	cfg := &config.Config{
 		DurationRaw: "500ms",
 		Duration:    500 * time.Millisecond,
-		Output:      filepath.Join(outDir, "capture.tar.gz"),
+		Output:      filepath.Join(outDir, "capture.khsrk"),
 		Resources: []config.Resource{
 			// "production" explicit first, then wildcard — production must not be duplicated.
 			{Version: "v1", Resource: "pods", Namespaces: []string{"production", "*"}, IntervalRaw: "200ms", Interval: 200 * time.Millisecond},
@@ -422,7 +422,7 @@ func TestExpandWildcard_ClusterScoped(t *testing.T) {
 	cfg := &config.Config{
 		DurationRaw: "500ms",
 		Duration:    500 * time.Millisecond,
-		Output:      filepath.Join(outDir, "capture.tar.gz"),
+		Output:      filepath.Join(outDir, "capture.khsrk"),
 		Resources: []config.Resource{
 			{Version: "v1", Resource: "nodes", Namespaces: []string{"*"}, IntervalRaw: "200ms", Interval: 200 * time.Millisecond},
 		},
@@ -455,7 +455,7 @@ func TestExpandWildcard_DiscoveryFailure(t *testing.T) {
 	cfg := &config.Config{
 		DurationRaw: "500ms",
 		Duration:    500 * time.Millisecond,
-		Output:      filepath.Join(outDir, "capture.tar.gz"),
+		Output:      filepath.Join(outDir, "capture.khsrk"),
 		Resources: []config.Resource{
 			{Version: "v1", Resource: "pods", Namespaces: []string{"*"}, IntervalRaw: "200ms", Interval: 200 * time.Millisecond},
 		},
@@ -493,7 +493,7 @@ func TestExpandWildcard_DiscoveryCancelledByDuration(t *testing.T) {
 	cfg := &config.Config{
 		DurationRaw: "50ms",
 		Duration:    50 * time.Millisecond,
-		Output:      filepath.Join(outDir, "capture.tar.gz"),
+		Output:      filepath.Join(outDir, "capture.khsrk"),
 		Resources: []config.Resource{
 			{Version: "v1", Resource: "pods", Namespaces: []string{"*"}, IntervalRaw: "200ms", Interval: 200 * time.Millisecond},
 		},
@@ -540,7 +540,7 @@ func TestRun_FailsWhenWatchConcurrencyTooHigh(t *testing.T) {
 	cfg := &config.Config{
 		DurationRaw: "30s",
 		Duration:    30 * time.Second,
-		Output:      filepath.Join(outDir, "capture.tar.gz"),
+		Output:      filepath.Join(outDir, "capture.khsrk"),
 		Resources: []config.Resource{
 			{Version: "v1", Resource: "pods", Namespaces: ns, Watch: true, IntervalRaw: "30s", Interval: 30 * time.Second},
 		},
@@ -568,7 +568,7 @@ func TestRun_FailsPreflightOnUnauthorized(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	out := filepath.Join(t.TempDir(), "capture.tar.gz")
+	out := filepath.Join(t.TempDir(), "capture.khsrk")
 	cfg := &config.Config{
 		DurationRaw: "2s",
 		Duration:    2 * time.Second,
@@ -603,7 +603,7 @@ func TestRun_FailsPreflightOnUnreachableServer(t *testing.T) {
 	client := srv.Client()
 	srv.Close()
 
-	out := filepath.Join(t.TempDir(), "capture.tar.gz")
+	out := filepath.Join(t.TempDir(), "capture.khsrk")
 	cfg := &config.Config{
 		DurationRaw: "2s",
 		Duration:    2 * time.Second,
@@ -689,7 +689,7 @@ func TestAutoDiscover_AddsResources(t *testing.T) {
 	cfg := &config.Config{
 		DurationRaw:  "500ms",
 		Duration:     500 * time.Millisecond,
-		Output:       filepath.Join(outDir, "capture.tar.gz"),
+		Output:       filepath.Join(outDir, "capture.khsrk"),
 		AutoDiscover: true,
 		// No explicit resources — auto-discover should populate them.
 	}
@@ -728,7 +728,7 @@ func TestAutoDiscover_SkipsAlreadyConfigured(t *testing.T) {
 	cfg := &config.Config{
 		DurationRaw:  "500ms",
 		Duration:     500 * time.Millisecond,
-		Output:       filepath.Join(outDir, "capture.tar.gz"),
+		Output:       filepath.Join(outDir, "capture.khsrk"),
 		AutoDiscover: true,
 		Resources: []config.Resource{
 			// Pre-configured virtualservices — must not be duplicated.
@@ -764,7 +764,7 @@ func TestAutoDiscover_ExcludeGroupsOverride(t *testing.T) {
 	cfg := &config.Config{
 		DurationRaw:               "500ms",
 		Duration:                  500 * time.Millisecond,
-		Output:                    filepath.Join(outDir, "capture.tar.gz"),
+		Output:                    filepath.Join(outDir, "capture.khsrk"),
 		AutoDiscover:              true,
 		AutoDiscoverExcludeGroups: []string{"networking.istio.io"},
 	}
@@ -824,7 +824,7 @@ func TestAutoDiscover_RetriesMissingGroupVersionDiscovery(t *testing.T) {
 	cfg := &config.Config{
 		DurationRaw:  "500ms",
 		Duration:     500 * time.Millisecond,
-		Output:       filepath.Join(outDir, "capture.tar.gz"),
+		Output:       filepath.Join(outDir, "capture.khsrk"),
 		AutoDiscover: true,
 	}
 
@@ -857,7 +857,7 @@ func TestAutoDiscover_AllDirectiveNamespacedScope(t *testing.T) {
 	cfg := &config.Config{
 		DurationRaw: "500ms",
 		Duration:    500 * time.Millisecond,
-		Output:      filepath.Join(outDir, "capture.tar.gz"),
+		Output:      filepath.Join(outDir, "capture.khsrk"),
 		Resources: []config.Resource{
 			{All: true, Scope: "namespaced", Namespaces: []string{"team-a"}, IntervalRaw: "200ms", Interval: 200 * time.Millisecond},
 		},
@@ -902,7 +902,7 @@ func TestAutoDiscover_AllDirectiveClusterScope(t *testing.T) {
 	cfg := &config.Config{
 		DurationRaw: "500ms",
 		Duration:    500 * time.Millisecond,
-		Output:      filepath.Join(outDir, "capture.tar.gz"),
+		Output:      filepath.Join(outDir, "capture.khsrk"),
 		Resources: []config.Resource{
 			{All: true, Scope: "cluster", IntervalRaw: "200ms", Interval: 200 * time.Millisecond},
 		},
@@ -962,7 +962,7 @@ func TestAutoDiscover_AllDirectiveExpandsWildcardNamespacesBeforePolling(t *test
 	cfg := &config.Config{
 		DurationRaw: "500ms",
 		Duration:    500 * time.Millisecond,
-		Output:      filepath.Join(t.TempDir(), "capture.tar.gz"),
+		Output:      filepath.Join(t.TempDir(), "capture.khsrk"),
 		Resources: []config.Resource{
 			{All: true, Scope: "namespaced", IntervalRaw: "200ms", Interval: 200 * time.Millisecond},
 		},
@@ -1023,7 +1023,7 @@ func TestAutoDiscover_AllDirectiveIncludesCorePods(t *testing.T) {
 	cfg := &config.Config{
 		DurationRaw: "500ms",
 		Duration:    500 * time.Millisecond,
-		Output:      filepath.Join(t.TempDir(), "capture.tar.gz"),
+		Output:      filepath.Join(t.TempDir(), "capture.khsrk"),
 		Resources: []config.Resource{
 			{All: true, IntervalRaw: "200ms", Interval: 200 * time.Millisecond},
 		},
@@ -1167,7 +1167,7 @@ func TestEngine_MetadataIncludesDeduplicatedCount(t *testing.T) {
 	defer srv.Close()
 
 	outDir := t.TempDir()
-	outFile := filepath.Join(outDir, "capture.tar.gz")
+	outFile := filepath.Join(outDir, "capture.khsrk")
 	cfg := &config.Config{
 		DurationRaw: "1200ms",
 		Duration:    1200 * time.Millisecond,
@@ -1227,7 +1227,7 @@ func TestEngine_DedupPerResourceOptOut(t *testing.T) {
 	cfg := &config.Config{
 		DurationRaw: "1200ms",
 		Duration:    1200 * time.Millisecond,
-		Output:      filepath.Join(t.TempDir(), "capture.tar.gz"),
+		Output:      filepath.Join(t.TempDir(), "capture.khsrk"),
 		Resources: []config.Resource{
 			{Version: "v1", Resource: "pods", Namespaces: []string{"default"}, IntervalRaw: "200ms", Interval: 200 * time.Millisecond},
 			{Version: "v1", Resource: "events", Namespaces: []string{"default"}, IntervalRaw: "200ms", Interval: 200 * time.Millisecond, Dedup: &falseVal},

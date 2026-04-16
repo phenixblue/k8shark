@@ -55,7 +55,7 @@ func TestResourceToKind(t *testing.T) {
 func buildTestStore(t *testing.T, records map[string][]byte) *CaptureStore {
 	t.Helper()
 	dir := t.TempDir()
-	outPath := filepath.Join(dir, "test.kshrk")
+	outPath := filepath.Join(dir, "test.khsrk")
 
 	sw, err := archive.NewStreamWriter(outPath)
 	if err != nil {
@@ -143,7 +143,7 @@ func TestStore_Latest_NotFound(t *testing.T) {
 
 func TestStore_Latest_AtTimestamp(t *testing.T) {
 	dir := t.TempDir()
-	outPath := filepath.Join(dir, "test.kshrk")
+	outPath := filepath.Join(dir, "test.khsrk")
 
 	path := "/api/v1/namespaces/default/pods"
 	t1 := time.Date(2026, 4, 9, 10, 40, 0, 0, time.UTC)
@@ -229,7 +229,7 @@ func containsString(s, sub string) bool { return strings.Contains(s, sub) }
 func buildTestStoreWithWatch(t *testing.T, snapshots map[string]watchTestRecord, events []watchTestEvent) *CaptureStore {
 	t.Helper()
 	dir := t.TempDir()
-	outPath := filepath.Join(dir, "test.kshrk")
+	outPath := filepath.Join(dir, "test.khsrk")
 
 	sw, err := archive.NewStreamWriter(outPath)
 	if err != nil {

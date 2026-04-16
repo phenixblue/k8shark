@@ -304,7 +304,7 @@ func TestHandler_FieldSelector(t *testing.T) {
 
 func TestHandler_ReplayAtTimestamp(t *testing.T) {
 	dir := t.TempDir()
-	outPath := filepath.Join(dir, "test.kshrk")
+	outPath := filepath.Join(dir, "test.khsrk")
 
 	path := "/api/v1/namespaces/default/pods"
 	t1 := time.Date(2026, 4, 9, 10, 40, 0, 0, time.UTC)
