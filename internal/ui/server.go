@@ -39,6 +39,12 @@ type explorerHandler struct {
 	at          time.Time
 	verbose     bool
 	archivePath string
+	// clusterSpanning is the set of resource names (plural, lowercase) that
+	// appear as namespace-scoped index paths in the majority of namespaces.
+	// These are OLM-style resources (e.g. packagemanifests) that technically
+	// have a namespace scope but return the full cluster list for any namespace.
+	// They are excluded from individual namespace drill-downs.
+	clusterSpanning map[string]bool
 }
 
 type treeResponse struct {
@@ -138,6 +144,7 @@ func Open(opts OpenOptions) (*Server, error) {
 	}
 
 	h := &explorerHandler{store: store, at: at, verbose: opts.Verbose, archivePath: opts.ArchivePath}
+	h.clusterSpanning = computeClusterSpanningResources(store)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", h.serveIndex)
 	mux.HandleFunc("/api/ui/tree", h.serveTree)
@@ -560,6 +567,11 @@ func (h *explorerHandler) buildNamespaceAt(targetNS string, at time.Time) (*name
 			if resource == "" || ns != targetNS {
 				continue
 			}
+			// Skip OLM-style resources that appear across the majority of
+			// namespaces — they belong only in the cluster-scoped card.
+			if h.clusterSpanning[resource] {
+				continue
+			}
 			byRes[resource] = append(byRes[resource], path)
 			nsScopedResources[resource] = true
 		}
@@ -804,6 +816,40 @@ func getOwner(item map[string]any) (string, string) {
 		}
 	}
 	return "", ""
+}
+
+// computeClusterSpanningResources scans the index and returns the set of
+// resource names (plural, lowercase) that appear as namespace-scoped paths in
+// at least half of all discovered namespaces. These are resources like
+// PackageManifests (OLM) that technically have a namespace scope but return
+// the full cluster-wide list for any namespace. We exclude them from
+// individual namespace drill-downs to avoid every namespace showing the same
+// huge list.
+func computeClusterSpanningResources(store *server.CaptureStore) map[string]bool {
+	resNS := map[string]map[string]struct{}{} // resource → distinct namespaces
+	totalNS := map[string]struct{}{}
+	for path := range store.Index {
+		_, _, resource, ns, _ := parseAPIPath(baseAPIPath(path))
+		if resource == "" || ns == "" {
+			continue
+		}
+		if resNS[resource] == nil {
+			resNS[resource] = map[string]struct{}{}
+		}
+		resNS[resource][ns] = struct{}{}
+		totalNS[ns] = struct{}{}
+	}
+	threshold := len(totalNS) / 2
+	if threshold < 3 {
+		threshold = 3
+	}
+	out := map[string]bool{}
+	for res, nsSet := range resNS {
+		if len(nsSet) >= threshold {
+			out[res] = true
+		}
+	}
+	return out
 }
 
 func kindFromResource(resource string) string {

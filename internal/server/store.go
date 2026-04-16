@@ -514,6 +514,23 @@ func (s *CaptureStore) reconstructAt(apiPath string, at time.Time) ([]byte, int,
 	return out, 200, nil
 }
 
+// itemDedupeKey returns a short string that uniquely identifies a raw JSON
+// item by uid (preferred) or namespace/name fallback. Used to deduplicate
+// items when aggregating across namespaces.
+func itemDedupeKey(raw json.RawMessage) string {
+	var obj struct {
+		Metadata struct {
+			UID       string `json:"uid"`
+			Namespace string `json:"namespace"`
+			Name      string `json:"name"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(raw, &obj); err != nil || obj.Metadata.UID == "" {
+		return obj.Metadata.Namespace + "/" + obj.Metadata.Name
+	}
+	return obj.Metadata.UID
+}
+
 // AggregateAcrossNamespaces aggregates list items from all namespaced paths.
 func (s *CaptureStore) AggregateAcrossNamespaces(clusterPath string, at time.Time) ([]byte, int, error) {
 	g, v, resource, _ := parseAPIPath(clusterPath)
@@ -525,11 +542,20 @@ func (s *CaptureStore) AggregateAcrossNamespaces(clusterPath string, at time.Tim
 	}
 	suffix := "/" + resource
 
+	// Safety cap: resources like packagemanifests return the full cluster list
+	// for every namespace (OLM behaviour). Aggregating across all namespaces
+	// would multiply the item count by the number of namespaces and materialise
+	// hundreds of millions of items. Cap the aggregate at 10 000 unique items
+	// (keyed by uid or name) to prevent unbounded memory use.
+	const aggregateItemCap = 10_000
+
 	var (
 		allItems   []json.RawMessage
 		listKind   string
 		apiVersion string
 		found      bool
+		seen       = make(map[string]struct{})
+		capped     bool
 	)
 
 	for indexPath := range s.Index {
@@ -553,7 +579,25 @@ func (s *CaptureStore) AggregateAcrossNamespaces(clusterPath string, at time.Tim
 			apiVersion = list.APIVersion
 			found = true
 		}
-		allItems = append(allItems, list.Items...)
+		for _, raw := range list.Items {
+			if capped {
+				break
+			}
+			// Deduplicate by uid or name so OLM-style resources that return the
+			// full cluster list for every namespace don't multiply item count.
+			key := itemDedupeKey(raw)
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+			allItems = append(allItems, raw)
+			if len(allItems) >= aggregateItemCap {
+				capped = true
+			}
+		}
+		if capped {
+			break
+		}
 	}
 
 	if !found {
