@@ -16,6 +16,9 @@ on:
       - '.github/*.yml'
       - '.github/*.yaml'
 
+permissions:
+  contents: read
+
 jobs:
   contract:
     runs-on: ubuntu-latest
