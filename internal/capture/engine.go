@@ -32,6 +32,12 @@ type CaptureSummary struct {
 }
 
 // Engine orchestrates the capture loop.
+// maxConcurrentFetches limits the number of goroutines simultaneously reading
+// HTTP response bodies during a poll pass.  Bounding this caps peak in-flight
+// memory (each body can be several MB for large list responses) regardless of
+// how many resources are configured or auto-discovered.
+const maxConcurrentFetches = 32
+
 type Engine struct {
 	cfg            *config.Config
 	verbose        bool
@@ -46,6 +52,7 @@ type Engine struct {
 	dedupSkipped   int
 	warnedFallback map[string]bool // dedup set for allNotFound cluster-scoped fallback warnings
 	pathSeq        map[string]int  // per-path record sequence counter (matches archive on-disk seq)
+	fetchSem       chan struct{}   // semaphore bounding concurrent body reads
 }
 
 const maxConcurrentWatchStreams = 256
@@ -83,6 +90,7 @@ func NewEngine(cfg *config.Config, verbose bool) (*Engine, error) {
 		lastHash:       make(map[string][32]byte),
 		warnedFallback: make(map[string]bool),
 		pathSeq:        make(map[string]int),
+		fetchSem:       make(chan struct{}, maxConcurrentFetches),
 	}, nil
 }
 
@@ -100,6 +108,7 @@ func newEngineWith(cfg *config.Config, client *http.Client, baseURL string, verb
 		lastHash:       make(map[string][32]byte),
 		warnedFallback: make(map[string]bool),
 		pathSeq:        make(map[string]int),
+		fetchSem:       make(chan struct{}, maxConcurrentFetches),
 	}
 }
 
@@ -885,7 +894,9 @@ func (e *Engine) doFetch(ctx context.Context, apiPath, tableKeySuffix string, de
 		return nil, 0
 	}
 
+	e.fetchSem <- struct{}{}
 	body, err := io.ReadAll(resp.Body)
+	<-e.fetchSem
 	resp.Body.Close()
 	if err != nil {
 		if e.verbose {
