@@ -227,6 +227,27 @@ func (h *explorerHandler) serveTree(w http.ResponseWriter, r *http.Request) {
 		}
 		nsSet[ns] = struct{}{}
 	}
+	// Also enumerate namespaces from the captured /api/v1/namespaces list.
+	// This surfaces namespaces that exist in the cluster but have no per-resource
+	// paths in the capture (e.g. empty namespaces or ones not included in the
+	// capture config). We do a best-effort read; if the record is absent we
+	// gracefully skip.
+	if nsListBody, code, err := h.store.ReconstructAt("/api/v1/namespaces", h.at); err == nil && code == 200 {
+		var nsList struct {
+			Items []struct {
+				Metadata struct {
+					Name string `json:"name"`
+				} `json:"metadata"`
+			} `json:"items"`
+		}
+		if json.Unmarshal(nsListBody, &nsList) == nil {
+			for _, item := range nsList.Items {
+				if item.Metadata.Name != "" {
+					nsSet[item.Metadata.Name] = struct{}{}
+				}
+			}
+		}
+	}
 	namespaces := make([]namespaceNode, 0, len(nsSet))
 	for ns := range nsSet {
 		namespaces = append(namespaces, namespaceNode{Name: ns})
