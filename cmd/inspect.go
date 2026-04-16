@@ -67,7 +67,7 @@ func printInspectTable(cmd *cobra.Command, r *inspect.Report) {
 	}
 
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "RESOURCE\tGROUP\tVERSION\tNAMESPACED\tNAMESPACES\tRECORDS")
+	fmt.Fprintln(tw, "RESOURCE\tGROUP\tVERSION\tNAMESPACED\tITEMS\tNAMESPACES\tRECORDS")
 	for _, rs := range r.Resources {
 		ns := strings.Join(rs.Namespaces, ",")
 		if !rs.Namespaced {
@@ -77,8 +77,8 @@ func printInspectTable(cmd *cobra.Command, r *inspect.Report) {
 		if rs.Namespaced {
 			namespaced = "yes"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%d\n",
-			rs.Resource, rs.Group, rs.Version, namespaced, ns, rs.Records)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%s\t%d\n",
+			rs.Resource, rs.Group, rs.Version, namespaced, rs.Items, ns, rs.Records)
 	}
 	_ = tw.Flush()
 }
