@@ -780,6 +780,72 @@ func TestAutoDiscover_ExcludeGroupsOverride(t *testing.T) {
 	}
 }
 
+func TestAutoDiscover_RetriesMissingGroupVersionDiscovery(t *testing.T) {
+	t.Helper()
+
+	var mu sync.Mutex
+	gvCalls := 0
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/version":
+			fmt.Fprint(w, `{"gitVersion":"v1.29.0"}`)
+		case "/api", "/api/v1":
+			fmt.Fprint(w, `{"kind":"APIResourceList","apiVersion":"v1","resources":[]}`)
+		case "/apis":
+			fmt.Fprint(w, `{"kind":"APIGroupList","apiVersion":"v1","groups":[{"name":"kubevirt.io","versions":[{"groupVersion":"kubevirt.io/v1","version":"v1"}]}]}`)
+		case "/apis/kubevirt.io/v1":
+			mu.Lock()
+			gvCalls++
+			call := gvCalls
+			mu.Unlock()
+			if call == 1 {
+				// Simulate transient discovery failure during fetchDiscovery.
+				w.WriteHeader(http.StatusInternalServerError)
+				fmt.Fprint(w, `{"kind":"Status","status":"Failure","code":500}`)
+				return
+			}
+			fmt.Fprint(w, `{"kind":"APIResourceList","apiVersion":"v1","groupVersion":"kubevirt.io/v1","resources":[{"name":"virtualmachines","namespaced":true,"kind":"VirtualMachine"},{"name":"virtualmachineinstances","namespaced":true,"kind":"VirtualMachineInstance"}]}`)
+		case "/apis/kubevirt.io/v1/virtualmachines":
+			fmt.Fprint(w, `{"apiVersion":"kubevirt.io/v1","kind":"VirtualMachineList","items":[]}`)
+		case "/apis/kubevirt.io/v1/virtualmachineinstances":
+			fmt.Fprint(w, `{"apiVersion":"kubevirt.io/v1","kind":"VirtualMachineInstanceList","items":[]}`)
+		default:
+			fmt.Fprint(w, `{"kind":"List","apiVersion":"v1","items":[]}`)
+		}
+	}))
+	defer srv.Close()
+
+	outDir := t.TempDir()
+	cfg := &config.Config{
+		DurationRaw:  "500ms",
+		Duration:     500 * time.Millisecond,
+		Output:       filepath.Join(outDir, "capture.tar.gz"),
+		AutoDiscover: true,
+	}
+
+	eng := newEngineWith(cfg, srv.Client(), srv.URL, false)
+	eng.sink = &sliceSink{}
+	if _, err := eng.Run(); err != nil {
+		t.Fatalf("engine.Run() error: %v", err)
+	}
+
+	haveVM := false
+	haveVMI := false
+	for _, r := range cfg.Resources {
+		if r.Group == "kubevirt.io" && r.Version == "v1" && r.Resource == "virtualmachines" {
+			haveVM = true
+		}
+		if r.Group == "kubevirt.io" && r.Version == "v1" && r.Resource == "virtualmachineinstances" {
+			haveVMI = true
+		}
+	}
+	if !haveVM || !haveVMI {
+		t.Fatalf("expected kubevirt virtualmachines and virtualmachineinstances to be auto-discovered, got: %+v", cfg.Resources)
+	}
+}
+
 func TestAutoDiscover_AllDirectiveNamespacedScope(t *testing.T) {
 	srv := autoDiscoverServer(t, nil)
 	defer srv.Close()
