@@ -1225,6 +1225,21 @@ const indexHTML = `<!doctype html>
 		.diff-line-del { color:#fca5a5; }
 		.diff-line-hdr { color:#94a3b8; }
 		.history-empty { padding:16px; color:var(--muted); font-size:13px; }
+
+	/* --- namespace card grid --- */
+	.ns-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:12px; padding:14px; }
+	.ns-card { background:rgba(15,23,42,.75); border:1px solid #1f2937; border-radius:10px; padding:14px 16px; cursor:pointer; transition:border-color .15s,box-shadow .15s; user-select:none; }
+	.ns-card:hover { border-color:#334155; box-shadow:0 2px 12px rgba(0,0,0,.35); }
+	.ns-card:focus-visible { outline:none; border-color:#22c55e; box-shadow:0 0 0 2px rgba(34,197,94,.2); }
+	.ns-card.cluster { border-color:rgba(59,130,246,.3); background:rgba(15,23,42,.9); }
+	.ns-card-name { font-weight:700; font-size:14px; margin-bottom:8px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+	.ns-card-chips { display:flex; flex-wrap:wrap; gap:4px; }
+	.ns-card-chip { font-size:10px; padding:2px 6px; border-radius:999px; background:#1f2937; color:var(--muted); }
+	.ns-back { display:inline-flex; align-items:center; gap:6px; padding:5px 10px; border-radius:7px; border:1px solid #334155; background:#0f172a; color:#cbd5e1; cursor:pointer; font-size:12px; margin:10px 12px 2px; }
+	.ns-back:hover { border-color:#64748b; }
+	.ns-drilldown { padding-bottom:12px; }
+	.ns-section { margin:0 12px 8px; }
+	.ns-section-header { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.6px; padding:6px 0 4px; border-bottom:1px solid #1f2937; margin-bottom:4px; }
   </style>
 </head>
 <body>
@@ -1262,11 +1277,7 @@ const indexHTML = `<!doctype html>
     </aside>
     <main class="panel tree">
 			<div class="tree-head">
-				<span class="toggle-head-title">Tree</span>
-				<span class="tree-actions">
-					<button id="expandAll" type="button">Expand All</button>
-					<button id="collapseAll" type="button">Collapse All</button>
-				</span>
+				<span class="toggle-head-title" id="treeHeadLabel">Namespaces</span>
 			</div>
       <div class="crumbs" id="crumbs">Cluster</div>
       <div id="tree"></div>
@@ -1334,14 +1345,9 @@ const indexHTML = `<!doctype html>
     let activeTab = 'json';
 	let visibleNodes = [];
 	let activeNodeIdx = -1;
-	const namespacePageSize = 120;
-	let namespaceVisibleLimit = {};
-	const namespacesPageSize = 50;
-	let namespacesVisibleLimit = namespacesPageSize;
 	const storageKindsKey = 'kshrk.ui.activeKinds.v1';
-	const storageExpandedKey = 'kshrk.ui.expandedSections.v1';
-	let expandedSections = {};
 	let currentAt = '';
+	let currentNS = null; // null = card grid, ':cluster' = cluster-scoped, string = namespace name
 	let timelinePoints = [];
 	let scrubDebounce = null;
 	let lastLoadedAt = '';
@@ -1364,8 +1370,7 @@ const indexHTML = `<!doctype html>
 			downloadDetail: document.getElementById('downloadDetail'),
 			toggleAll: document.getElementById('toggleAll'),
 			toggleNone: document.getElementById('toggleNone'),
-			expandAll: document.getElementById('expandAll'),
-			collapseAll: document.getElementById('collapseAll'),
+			treeHeadLabel: document.getElementById('treeHeadLabel'),
 			snapshotPrev: document.getElementById('snapshotPrev'),
 			snapshotAt: document.getElementById('snapshotAt'),
 			snapshotNext: document.getElementById('snapshotNext'),
@@ -1389,8 +1394,6 @@ const indexHTML = `<!doctype html>
     el.search.oninput = render;
 		el.toggleAll.onclick = () => setAllKinds(true);
 		el.toggleNone.onclick = () => setAllKinds(false);
-	el.expandAll.onclick = () => setAllTreeDetails(true);
-	el.collapseAll.onclick = () => setAllTreeDetails(false);
 	el.snapshotPrev.onclick = () => stepSnapshot(1);
 	el.snapshotAt.onchange = () => {
 		currentAt = el.snapshotAt.value || '';
@@ -1686,16 +1689,6 @@ const indexHTML = `<!doctype html>
 			el.tree.appendChild(box);
 		}
 
-		function namespaceLimit(name) {
-			if (!namespaceVisibleLimit[name]) namespaceVisibleLimit[name] = namespacePageSize;
-			return namespaceVisibleLimit[name];
-		}
-
-		function showMoreNamespace(name) {
-			namespaceVisibleLimit[name] = namespaceLimit(name) + namespacePageSize;
-			render();
-		}
-
 		function showToast(type, message, timeoutMs) {
 			const toast = document.createElement('div');
 			toast.className = 'toast ' + type;
@@ -1764,40 +1757,12 @@ const indexHTML = `<!doctype html>
 					}
 				}
 			} catch (_) {}
-			try {
-				const expandedRaw = window.localStorage.getItem(storageExpandedKey);
-				if (expandedRaw) {
-					const parsed = JSON.parse(expandedRaw);
-					if (parsed && typeof parsed === 'object') expandedSections = parsed;
-				}
-			} catch (_) {}
 		}
 
 		function persistKinds() {
 			try {
 				window.localStorage.setItem(storageKindsKey, JSON.stringify(Array.from(activeKinds)));
 			} catch (_) {}
-		}
-
-		function persistExpandedSections() {
-			try {
-				window.localStorage.setItem(storageExpandedKey, JSON.stringify(expandedSections));
-			} catch (_) {}
-		}
-
-		function sectionOpen(sectionKey, fallbackOpen) {
-			if (Object.prototype.hasOwnProperty.call(expandedSections, sectionKey)) {
-				return !!expandedSections[sectionKey];
-			}
-			return fallbackOpen;
-		}
-
-		function bindSectionState(details, sectionKey) {
-			details.onToggle = null;
-			details.addEventListener('toggle', () => {
-				expandedSections[sectionKey] = details.open;
-				persistExpandedSections();
-			});
 		}
 
     function statusClass(status) {
@@ -1978,156 +1943,205 @@ const indexHTML = `<!doctype html>
 				setTreeState('loading', 'Loading captured resources...');
 				return;
 			}
-		const desiredKey = selected && selected.node ? nodeIdentity(selected.node) : '';
-      el.tree.innerHTML = '';
-      const q = el.search.value.trim().toLowerCase();
-			let renderedNodes = 0;
-			let renderedSections = 0;
-
-			const cs = document.createElement('details');
-			cs.open = sectionOpen('cluster-scoped', true);
-			const csDetail = nsCache[':cluster'] || {};
-			const csCount = (csDetail.resources || []).length;
-			const csLabel = !nsCache[':cluster'] ? '-' : (csDetail._loading ? '...' : csCount);
-			cs.innerHTML = '<summary>Cluster-scoped resources <span class="muted">(' + csLabel + ')</span></summary>';
-			bindSectionState(cs, 'cluster-scoped');
-			cs.addEventListener('toggle', () => { if (cs.open) loadNsDetail(':cluster'); });
-			if (cs.open) loadNsDetail(':cluster');
-			let clusterShown = 0;
-      for (const node of (csDetail.resources || [])) {
-				if (!kindEnabled(node.kind) || !nodeMatches(node, q, '')) continue;
-				cs.appendChild(mkNode(node, ['Cluster', node.kind, node.name], 0, ''));
-				renderedNodes++;
-				clusterShown++;
-      }
-			if (!q || clusterShown > 0) {
-				el.tree.appendChild(cs);
-				renderedSections++;
+			el.tree.innerHTML = '';
+			if (currentNS === null) {
+				renderCardGrid();
+			} else {
+				renderNsDrilldown();
 			}
+		}
 
-      const visibleNamespaces = q ? treeData.namespaces : treeData.namespaces.slice(0, namespacesVisibleLimit);
-			for (const ns of visibleNamespaces) {
-				const nsMatches = !!q && ns.name.toLowerCase().includes(q);
-        const ds = document.createElement('details');
-				ds.open = sectionOpen('ns:' + ns.name, treeData.namespaces.length <= 20);
-				const nsDetail = nsCache[ns.name] || {};
-				const nsCount = (nsDetail.workloads || []).length + (nsDetail.pods || []).length + (nsDetail.resources || []).length;
-				const nsLabel = !nsCache[ns.name] ? '-' : (nsDetail._loading ? '...' : nsCount);
-				ds.innerHTML = '<summary>Namespace: <strong>' + ns.name + '</strong> <span class="muted">(' + nsLabel + ')</span></summary>';
-				bindSectionState(ds, 'ns:' + ns.name);
-				ds.addEventListener('toggle', () => { if (ds.open) loadNsDetail(ns.name); });
-				if (ds.open) loadNsDetail(ns.name);
+		// ── card grid ────────────────────────────────────────────────────────────
+		function renderCardGrid() {
+			el.treeHeadLabel.textContent = 'Namespaces';
+			el.crumbs.textContent = 'Cluster';
+			const q = el.search.value.trim().toLowerCase();
 
-				const nsNodes = [];
+			const grid = document.createElement('div');
+			grid.className = 'ns-grid';
 
-			for (const w of (nsDetail.workloads || [])) {
-				const workloadVisible = kindEnabled(w.kind) && (nsMatches || nodeMatches(w, q, ns.name));
-				if (workloadVisible) {
-					nsNodes.push(mkNode(w, ['Cluster', ns.name, w.kind, w.name], 0, ''));
-				}
-				for (const p of (w.pods || [])) {
-					const podVisible = kindEnabled(p.kind) && (nsMatches || nodeMatches(p, q, ns.name));
-					if (podVisible) {
-						const podCrumbs = workloadVisible
-							? ['Cluster', ns.name, w.kind, w.name, 'Pod', p.name]
-							: ['Cluster', ns.name, 'Pod', p.name];
-						nsNodes.push(mkNode(p, podCrumbs, workloadVisible ? 1 : 0, ''));
-					}
-					for (const c of (p.containers || [])) {
-						const fake = {kind:'Container',name:c.name,status:'',age:'',labels:{},list_path:p.list_path};
-						if (!kindEnabled('Container') || !(nsMatches || nodeMatches(fake, q, ns.name))) continue;
-						const containerDepth = workloadVisible ? 2 : (podVisible ? 1 : 0);
-						const containerCrumbs = workloadVisible
-							? ['Cluster', ns.name, w.kind, w.name, 'Pod', p.name, 'Container', c.name]
-							: ['Cluster', ns.name, 'Pod', p.name, 'Container', c.name];
-						nsNodes.push(mkNode(fake, containerCrumbs, containerDepth, ''));
+			// cluster-scoped card
+			const allNS = [{ name: ':cluster', _cluster: true }].concat(treeData.namespaces || []);
+			let shown = 0;
+			for (const ns of allNS) {
+				const label = ns._cluster ? 'Cluster-scoped' : ns.name;
+				if (q && !label.toLowerCase().includes(q)) continue;
+				const detail = nsCache[ns.name] || {};
+				const workloads = (detail.workloads || []).length;
+				const pods = (detail.pods || []).length;
+				const resources = (detail.resources || []).length;
+				const loaded = nsCache[ns.name] && !detail._loading;
+
+				const card = document.createElement('div');
+				card.className = 'ns-card' + (ns._cluster ? ' cluster' : '');
+				card.tabIndex = 0;
+				card.setAttribute('role', 'button');
+				card.title = 'Open ' + label;
+
+				const nameEl = document.createElement('div');
+				nameEl.className = 'ns-card-name';
+				nameEl.textContent = label;
+				card.appendChild(nameEl);
+
+				const chips = document.createElement('div');
+				chips.className = 'ns-card-chips';
+				if (!loaded) {
+					const c = document.createElement('span');
+					c.className = 'ns-card-chip';
+					c.textContent = 'loading…';
+					chips.appendChild(c);
+				} else {
+					if (workloads) { const c = document.createElement('span'); c.className = 'ns-card-chip'; c.textContent = workloads + ' workload' + (workloads !== 1 ? 's' : ''); chips.appendChild(c); }
+					if (pods)      { const c = document.createElement('span'); c.className = 'ns-card-chip'; c.textContent = pods + ' pod' + (pods !== 1 ? 's' : '');      chips.appendChild(c); }
+					if (resources) { const c = document.createElement('span'); c.className = 'ns-card-chip'; c.textContent = resources + ' resource' + (resources !== 1 ? 's' : ''); chips.appendChild(c); }
+					if (!workloads && !pods && !resources) {
+						const c = document.createElement('span'); c.className = 'ns-card-chip'; c.textContent = 'empty'; chips.appendChild(c);
 					}
 				}
+				card.appendChild(chips);
+
+				const openNS = () => navigateToNS(ns.name);
+				card.onclick = openNS;
+				card.onkeydown = (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openNS(); } };
+				grid.appendChild(card);
+				shown++;
+
+				// trigger background fetch so chips populate as cards render
+				if (!nsCache[ns.name]) loadNsDetail(ns.name);
 			}
 
-			for (const p of (nsDetail.pods || [])) {
-				if (!kindEnabled(p.kind) || !(nsMatches || nodeMatches(p, q, ns.name))) continue;
-					nsNodes.push(mkNode(p, ['Cluster', ns.name, 'Pod', p.name], 0, ''));
-          for (const c of (p.containers || [])) {
-            const fake = {kind:'Container',name:c.name,status:'',age:'',labels:{},list_path:p.list_path};
-					if (!kindEnabled('Container') || !(nsMatches || nodeMatches(fake, q, ns.name))) continue;
-						nsNodes.push(mkNode(fake, ['Cluster', ns.name, 'Pod', p.name, 'Container', c.name], 1, ''));
-          }
-        }
-
-			for (const r of (nsDetail.resources || [])) {
-				if (!kindEnabled(r.kind) || !(nsMatches || nodeMatches(r, q, ns.name))) continue;
-					nsNodes.push(mkNode(r, ['Cluster', ns.name, r.kind, r.name], 0, ''));
-        }
-
-				if (q && nsNodes.length === 0 && !nsMatches) {
-					continue;
-				}
-
-				const limit = q ? nsNodes.length : namespaceLimit(ns.name);
-				const shown = nsNodes.slice(0, limit);
-				for (const nodeEl of shown) {
-					ds.appendChild(nodeEl);
-					renderedNodes++;
-				}
-				if (!q && nsNodes.length > shown.length) {
-					const pager = document.createElement('div');
-					pager.className = 'ns-pager';
-					const hidden = nsNodes.length - shown.length;
-					const meta = document.createElement('span');
-					meta.className = 'muted';
-					meta.textContent = hidden + ' more hidden';
-					const btn = document.createElement('button');
-					btn.type = 'button';
-					btn.textContent = 'Show more';
-					btn.onclick = () => showMoreNamespace(ns.name);
-					pager.appendChild(meta);
-					pager.appendChild(btn);
-					ds.appendChild(pager);
-				}
-        el.tree.appendChild(ds);
-				renderedSections++;
-      }
-
-			if (!q && treeData.namespaces.length > namespacesVisibleLimit) {
-				const nsPager = document.createElement('div');
-				nsPager.className = 'ns-pager';
-				const nsMeta = document.createElement('span');
-				nsMeta.className = 'muted';
-				nsMeta.textContent = (treeData.namespaces.length - namespacesVisibleLimit) + ' more namespaces hidden';
-				const nsBtn = document.createElement('button');
-				nsBtn.type = 'button';
-				nsBtn.textContent = 'Show more namespaces';
-				nsBtn.onclick = () => { namespacesVisibleLimit += namespacesPageSize; render(); };
-				nsPager.appendChild(nsMeta);
-				nsPager.appendChild(nsBtn);
-				el.tree.appendChild(nsPager);
-				renderedSections++;
+			if (shown === 0) {
+				setTreeState('empty', q ? 'No namespaces match "' + q + '".' : 'No namespaces found in this capture.');
+				visibleNodes = [];
+				activeNodeIdx = -1;
+				return;
 			}
+			el.tree.appendChild(grid);
+			visibleNodes = [];
+			activeNodeIdx = -1;
+		}
 
-			if (renderedNodes === 0 && renderedSections === 0) {
-				const msg = q
-					? 'No resources match the current search/filter selection.'
-					: 'No resources were found in this capture at the selected time.';
-				setTreeState('empty', msg);
+		function navigateToNS(nsName) {
+			currentNS = nsName;
+			render();
+		}
+
+		function navigateBack() {
+			currentNS = null;
+			render();
+		}
+
+		// ── ns drill-down ─────────────────────────────────────────────────────────
+		function renderNsDrilldown() {
+			const nsLabel = currentNS === ':cluster' ? 'Cluster-scoped' : currentNS;
+			el.treeHeadLabel.textContent = nsLabel;
+			el.crumbs.textContent = 'Cluster / ' + nsLabel;
+
+			// back button
+			const back = document.createElement('button');
+			back.className = 'ns-back';
+			back.type = 'button';
+			back.innerHTML = '&#8592; All namespaces';
+			back.onclick = navigateBack;
+			el.tree.appendChild(back);
+
+			const detail = nsCache[currentNS];
+			if (!detail || detail._loading) {
+				loadNsDetail(currentNS);
+				setTreeState('loading', 'Loading ' + nsLabel + '…');
+				el.tree.appendChild(document.querySelector('.tree-state') || document.createElement('div'));
 				visibleNodes = [];
 				activeNodeIdx = -1;
 				return;
 			}
 
-			visibleNodes = Array.from(el.tree.querySelectorAll('.node'));
-			if (visibleNodes.length === 0) {
+			const q = el.search.value.trim().toLowerCase();
+			const desiredKey = selected && selected.node ? nodeIdentity(selected.node) : '';
+			const drilldown = document.createElement('div');
+			drilldown.className = 'ns-drilldown';
+
+			const workloads = detail.workloads || [];
+			const pods = detail.pods || [];
+			const resources = detail.resources || [];
+			let renderedNodes = 0;
+
+			// helper: build a section for a group of nodes
+			function appendSection(title, items) {
+				if (items.length === 0) return;
+				const sec = document.createElement('div');
+				sec.className = 'ns-section';
+				const hdr = document.createElement('div');
+				hdr.className = 'ns-section-header';
+				hdr.textContent = title + ' (' + items.length + ')';
+				sec.appendChild(hdr);
+				for (const el of items) {
+					sec.appendChild(el);
+					renderedNodes++;
+				}
+				drilldown.appendChild(sec);
+			}
+
+			// workloads (with nested pods)
+			const workloadNodes = [];
+			for (const w of workloads) {
+				const visible = kindEnabled(w.kind) && nodeMatches(w, q, currentNS === ':cluster' ? '' : currentNS);
+				if (visible) workloadNodes.push(mkNode(w, ['Cluster', nsLabel, w.kind, w.name], 0, ''));
+				for (const p of (w.pods || [])) {
+					if (!kindEnabled(p.kind) || !nodeMatches(p, q, currentNS === ':cluster' ? '' : currentNS)) continue;
+					const podCrumbs = visible
+						? ['Cluster', nsLabel, w.kind, w.name, 'Pod', p.name]
+						: ['Cluster', nsLabel, 'Pod', p.name];
+					workloadNodes.push(mkNode(p, podCrumbs, visible ? 1 : 0, ''));
+					for (const c of (p.containers || [])) {
+						const fake = { kind:'Container', name:c.name, status:'', age:'', labels:{}, list_path:p.list_path };
+						if (!kindEnabled('Container') || !nodeMatches(fake, q, currentNS === ':cluster' ? '' : currentNS)) continue;
+						const depth = visible ? 2 : 1;
+						const cc = visible ? ['Cluster', nsLabel, w.kind, w.name, 'Pod', p.name, 'Container', c.name] : ['Cluster', nsLabel, 'Pod', p.name, 'Container', c.name];
+						workloadNodes.push(mkNode(fake, cc, depth, ''));
+					}
+				}
+			}
+			appendSection('Workloads', workloadNodes);
+
+			// standalone pods
+			const podNodes = [];
+			for (const p of pods) {
+				if (!kindEnabled(p.kind) || !nodeMatches(p, q, currentNS === ':cluster' ? '' : currentNS)) continue;
+				podNodes.push(mkNode(p, ['Cluster', nsLabel, 'Pod', p.name], 0, ''));
+				for (const c of (p.containers || [])) {
+					const fake = { kind:'Container', name:c.name, status:'', age:'', labels:{}, list_path:p.list_path };
+					if (!kindEnabled('Container') || !nodeMatches(fake, q, currentNS === ':cluster' ? '' : currentNS)) continue;
+					podNodes.push(mkNode(fake, ['Cluster', nsLabel, 'Pod', p.name, 'Container', c.name], 1, ''));
+				}
+			}
+			appendSection('Pods', podNodes);
+
+			// remaining resources grouped by kind
+			const byKind = {};
+			for (const r of resources) {
+				if (!kindEnabled(r.kind) || !nodeMatches(r, q, currentNS === ':cluster' ? '' : currentNS)) continue;
+				(byKind[r.kind] = byKind[r.kind] || []).push(mkNode(r, ['Cluster', nsLabel, r.kind, r.name], 0, ''));
+			}
+			for (const kind of Object.keys(byKind).sort()) {
+				appendSection(kind, byKind[kind]);
+			}
+
+			if (renderedNodes === 0) {
+				const msg = q ? 'No resources match "' + q + '" in ' + nsLabel + '.' : nsLabel + ' has no resources at this snapshot.';
+				setTreeState('empty', msg);
+				el.tree.appendChild(drilldown);
+				visibleNodes = [];
 				activeNodeIdx = -1;
 				return;
 			}
-			if (activeNodeIdx < 0 || activeNodeIdx >= visibleNodes.length) {
-				activeNodeIdx = 0;
-			}
-			if (restoreSelectionByKey(desiredKey)) {
-				return;
-			}
+
+			el.tree.appendChild(drilldown);
+			visibleNodes = Array.from(el.tree.querySelectorAll('.node'));
+			if (visibleNodes.length === 0) { activeNodeIdx = -1; return; }
+			if (activeNodeIdx < 0 || activeNodeIdx >= visibleNodes.length) activeNodeIdx = 0;
+			if (restoreSelectionByKey(desiredKey)) return;
 			selectNodeAt(activeNodeIdx, false);
-    }
+		}
 
     function renderToggles(kinds) {
 			if (!activeKindsInitialized) {
@@ -2172,20 +2186,6 @@ const indexHTML = `<!doctype html>
 			}
 			persistKinds();
 			render();
-		}
-
-		function setAllTreeDetails(open) {
-			for (const details of el.tree.querySelectorAll('details')) {
-				details.open = open;
-				const summary = details.querySelector('summary');
-				if (summary && summary.textContent.startsWith('Namespace:')) {
-					const strong = summary.querySelector('strong');
-					if (strong) expandedSections['ns:' + strong.textContent] = open;
-				} else {
-					expandedSections['cluster-scoped'] = open;
-				}
-			}
-			persistExpandedSections();
 		}
 
 		async function loadTimestamps() {
@@ -2402,7 +2402,7 @@ const indexHTML = `<!doctype html>
 				treeData = data;
 				nsCache = {};
 				nsFetchQueue.length = 0;
-				namespacesVisibleLimit = namespacesPageSize;
+				currentNS = null;
 				lastLoadedAt = normalizedAt();
 				updateMetaLine();
 				renderToggles((treeData.resource_kinds || []).concat(['Container']));
