@@ -22,18 +22,26 @@ type CaptureStore struct {
 	WatchIndex   capture.WatchIndex
 	resourceInfo map[string]*ResourceInfo
 
-	// Record LRU cache (bounded by recordCacheMax entries).
-	recordCacheMu   sync.Mutex
-	recordCacheMap  map[recordKey]*list.Element
-	recordCacheList *list.List
+	// Record LRU cache (bounded by recordCacheMaxBytes total body bytes).
+	recordCacheMu    sync.Mutex
+	recordCacheMap   map[recordKey]*list.Element
+	recordCacheList  *list.List
+	recordCacheBytes int64
 
 	// Response cache: (path, at) → marshalled body + code.
-	// Entries are valid for responseCacheTTL.
-	responseCacheMu  sync.RWMutex
-	responseCacheMap map[responseCacheKey]*responseCacheEntry
+	// Entries are valid for responseCacheTTL, bounded by responseCacheMaxBytes.
+	responseCacheMu    sync.RWMutex
+	responseCacheMap   map[responseCacheKey]*responseCacheEntry
+	responseCacheBytes int64
 }
 
-const recordCacheMax = 2048
+// recordCacheMaxBytes caps the total in-memory size of cached record bodies.
+// Large cluster captures can have response bodies of hundreds of KB each;
+// a count-based cap of 2048 was the primary driver of the v0.2.0 memory regression.
+const recordCacheMaxBytes = 128 * 1024 * 1024 // 128 MiB
+
+// responseCacheMaxBytes caps the total in-memory size of cached response bodies.
+const responseCacheMaxBytes = 32 * 1024 * 1024 // 32 MiB
 
 type recordKey struct {
 	apiPath string
@@ -54,8 +62,9 @@ type responseCacheEntry struct {
 const responseCacheTTL = 10 * time.Second
 
 type recordCacheEntry struct {
-	key recordKey
-	rec capture.Record
+	key  recordKey
+	rec  capture.Record
+	size int64 // len(rec.ResponseBody)
 }
 
 // ResourceInfo describes a single captured resource type.
@@ -266,18 +275,23 @@ func (s *CaptureStore) readRecord(apiPath string, seq int) (capture.Record, erro
 		return capture.Record{}, fmt.Errorf("parsing record path=%s seq=%d: %w", apiPath, seq, err)
 	}
 
+	entry := &recordCacheEntry{key: k, rec: rec, size: int64(len(rec.ResponseBody))}
+
 	s.recordCacheMu.Lock()
-	// Evict LRU entry if at capacity.
-	for s.recordCacheList.Len() >= recordCacheMax {
+	// Evict LRU entries until the new entry fits within the byte budget.
+	for s.recordCacheBytes+entry.size > recordCacheMaxBytes {
 		back := s.recordCacheList.Back()
 		if back == nil {
 			break
 		}
+		evicted := back.Value.(*recordCacheEntry)
 		s.recordCacheList.Remove(back)
-		delete(s.recordCacheMap, back.Value.(*recordCacheEntry).key)
+		delete(s.recordCacheMap, evicted.key)
+		s.recordCacheBytes -= evicted.size
 	}
-	el := s.recordCacheList.PushFront(&recordCacheEntry{key: k, rec: rec})
+	el := s.recordCacheList.PushFront(entry)
 	s.recordCacheMap[k] = el
+	s.recordCacheBytes += entry.size
 	s.recordCacheMu.Unlock()
 
 	return rec, nil
@@ -356,11 +370,13 @@ func (s *CaptureStore) ReconstructAt(apiPath string, at time.Time) ([]byte, int,
 	// Cache the result.
 	s.responseCacheMu.Lock()
 	s.responseCacheMap[cacheKey] = &responseCacheEntry{body: body, code: code, created: time.Now()}
-	// Simple TTL cleanup on writes — keep map bounded.
-	if len(s.responseCacheMap) > 512 {
+	s.responseCacheBytes += int64(len(body))
+	// Evict expired entries when over the byte budget.
+	if s.responseCacheBytes > responseCacheMaxBytes {
 		now := time.Now()
 		for k, v := range s.responseCacheMap {
 			if now.Sub(v.created) > responseCacheTTL {
+				s.responseCacheBytes -= int64(len(v.body))
 				delete(s.responseCacheMap, k)
 			}
 		}
