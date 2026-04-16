@@ -1970,7 +1970,7 @@ const indexHTML = `<!doctype html>
 			cs.open = sectionOpen('cluster-scoped', true);
 			const csDetail = nsCache[':cluster'] || {};
 			const csCount = (csDetail.resources || []).length;
-			const csLabel = csDetail._loading ? '...' : csCount;
+			const csLabel = !nsCache[':cluster'] ? '-' : (csDetail._loading ? '...' : csCount);
 			cs.innerHTML = '<summary>Cluster-scoped resources <span class="muted">(' + csLabel + ')</span></summary>';
 			bindSectionState(cs, 'cluster-scoped');
 			cs.addEventListener('toggle', () => { if (cs.open) loadNsDetail(':cluster'); });
@@ -1994,7 +1994,7 @@ const indexHTML = `<!doctype html>
 				ds.open = sectionOpen('ns:' + ns.name, treeData.namespaces.length <= 20);
 				const nsDetail = nsCache[ns.name] || {};
 				const nsCount = (nsDetail.workloads || []).length + (nsDetail.pods || []).length + (nsDetail.resources || []).length;
-				const nsLabel = nsDetail._loading ? '...' : nsCount;
+				const nsLabel = !nsCache[ns.name] ? '-' : (nsDetail._loading ? '...' : nsCount);
 				ds.innerHTML = '<summary>Namespace: <strong>' + ns.name + '</strong> <span class="muted">(' + nsLabel + ')</span></summary>';
 				bindSectionState(ds, 'ns:' + ns.name);
 				ds.addEventListener('toggle', () => { if (ds.open) loadNsDetail(ns.name); });
