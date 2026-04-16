@@ -503,7 +503,6 @@ func (e *Engine) fetchResource(ctx context.Context, res config.Resource) {
 var defaultAutoDiscoverExcludeGroups = map[string]bool{
 	"metrics.k8s.io":         true,
 	"apiregistration.k8s.io": true,
-	"apiextensions.k8s.io":   true,
 	"authentication.k8s.io":  true,
 	"authorization.k8s.io":   true,
 }
