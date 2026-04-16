@@ -2,14 +2,21 @@
 
 ## How releases are created
 
-Releases are cut by pushing a version tag to `main`. The tag triggers the [release workflow](.github/workflows/release.yml) which runs [GoReleaser](https://goreleaser.com) to build and publish everything.
+Releases are cut by pushing a version tag to `main`. The tag triggers the [release workflow](../.github/workflows/release.yml) which runs [GoReleaser](https://goreleaser.com) to build and publish everything.
 
 ```sh
-git tag v1.2.3
-git push origin v1.2.3
+git tag v0.2.0-rc.1
+git push origin v0.2.0-rc.1
 ```
 
-Use [semantic versioning](https://semver.org): `vMAJOR.MINOR.PATCH`. Tags that contain a pre-release identifier (e.g. `v1.2.3-rc.1`) are automatically marked as pre-release on GitHub.
+Use [semantic versioning](https://semver.org): `vMAJOR.MINOR.PATCH`. Tags that contain a pre-release identifier (e.g. `v0.2.0-rc.1`) are automatically marked as pre-release on GitHub.
+
+### Current versioning policy (pre-1.0)
+
+While `k8shark` is pre-`v1.0.0`, backward-incompatible changes are released by bumping the **minor** version. The current line is:
+
+- `v0.2.0-rc.N` for release candidates
+- `v0.2.0` for GA
 
 ## What the release workflow does
 
@@ -47,7 +54,7 @@ The cosign signing uses GitHub's OIDC token — no additional secret is needed.
 
 ```sh
 # Download the release artifacts
-gh release download v1.2.3 --repo phenixblue/k8shark
+gh release download v0.2.0-rc.1 --repo phenixblue/k8shark
 
 # Verify the cosign signature
 cosign verify-blob \
@@ -87,7 +94,7 @@ Both commands place output in `./dist/`. Requires `goreleaser` in your PATH (`go
 
 ## CI pipeline (non-release)
 
-Every push to `main` and every pull request runs the [CI workflow](.github/workflows/ci.yml):
+Every push to `main` and every pull request runs the [CI workflow](../.github/workflows/ci.yml):
 
 ```
 contract ──┬── test ── build

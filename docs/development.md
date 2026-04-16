@@ -13,7 +13,7 @@
 
 ```sh
 make build          # compiles ./kshrk
-make build VERSION=v0.1.2-dev  # embed a specific version string
+make build VERSION=v0.2.0-rc.1  # embed a specific version string
 ```
 
 The binary embeds the version via `-ldflags -X github.com/phenixblue/k8shark/cmd.Version=...`. The default when building with `make` is `dev`.
@@ -40,7 +40,7 @@ The CI `contract` job enforces that `gofmt -w . && git diff --exit-code` is clea
 For golangci-lint (run in CI):
 
 ```sh
-go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
 golangci-lint run
 ```
 

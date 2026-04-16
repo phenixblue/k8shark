@@ -15,6 +15,8 @@
         "golangci-lint": true,
         "git checkout": true,
         "git pull": true,
-        "git tag": true
+        "git tag": true,
+        "git describe": true,
+        "true": true
     }
 }
