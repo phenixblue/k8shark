@@ -443,6 +443,44 @@ func (h *explorerHandler) buildTreeAt(at time.Time) (*treeResponse, error) {
 		_ = group
 		_ = version
 	}
+	ensureNamespace := func(name string) *namespaceNode {
+		node, ok := nsMap[name]
+		if !ok {
+			node = &namespaceNode{
+				Name:      name,
+				Workloads: []workloadNode{},
+				Pods:      []podNode{},
+				Resources: []resourceNode{},
+			}
+			nsMap[name] = node
+		}
+		return node
+	}
+	appendNamespacedItem := func(targetNS, resource string, entry listItem) {
+		node := ensureNamespace(targetNS)
+		if workloadKinds[resource] {
+			w := workloadNode{
+				Kind:     firstNonEmpty(asString(entry.item["kind"]), kindFromResource(resource)),
+				Name:     getMetaName(entry.item),
+				Status:   summarizeStatus(entry.item),
+				Age:      summarizeAge(entry.item),
+				ListPath: entry.path,
+				Labels:   getMetaLabels(entry.item),
+			}
+			node.Workloads = append(node.Workloads, w)
+			kindSet[w.Kind] = true
+			return
+		}
+		if resource == "pods" {
+			p := toPodNode(entry.path, entry.item)
+			node.Pods = append(node.Pods, p)
+			kindSet[p.Kind] = true
+			return
+		}
+		rn := toResourceNode(resource, entry.path, entry.item)
+		node.Resources = append(node.Resources, rn)
+		kindSet[rn.Kind] = true
+	}
 	for ns, resMap := range byNSRes {
 		for resource, candidates := range resMap {
 			items, ok := h.loadResourceItemsAt(candidates, at)
@@ -451,49 +489,22 @@ func (h *explorerHandler) buildTreeAt(at time.Time) (*treeResponse, error) {
 			}
 			if ns == "" {
 				for _, entry := range items {
+					if itemNS := getMetaNamespace(entry.item); itemNS != "" {
+						appendNamespacedItem(itemNS, resource, entry)
+						continue
+					}
 					node := toResourceNode(resource, entry.path, entry.item)
 					clusterScoped = append(clusterScoped, node)
 					kindSet[node.Kind] = true
 				}
 				continue
 			}
-			node, ok := nsMap[ns]
-			if !ok {
-				node = &namespaceNode{
-					Name:      ns,
-					Workloads: []workloadNode{},
-					Pods:      []podNode{},
-					Resources: []resourceNode{},
-				}
-				nsMap[ns] = node
-			}
-			if workloadKinds[resource] {
-				for _, entry := range items {
-					w := workloadNode{
-						Kind:     firstNonEmpty(asString(entry.item["kind"]), kindFromResource(resource)),
-						Name:     getMetaName(entry.item),
-						Status:   summarizeStatus(entry.item),
-						Age:      summarizeAge(entry.item),
-						ListPath: entry.path,
-						Labels:   getMetaLabels(entry.item),
-					}
-					node.Workloads = append(node.Workloads, w)
-					kindSet[w.Kind] = true
-				}
-				continue
-			}
-			if resource == "pods" {
-				for _, entry := range items {
-					p := toPodNode(entry.path, entry.item)
-					node.Pods = append(node.Pods, p)
-					kindSet[p.Kind] = true
-				}
-				continue
-			}
 			for _, entry := range items {
-				rn := toResourceNode(resource, entry.path, entry.item)
-				node.Resources = append(node.Resources, rn)
-				kindSet[rn.Kind] = true
+				targetNS := ns
+				if itemNS := getMetaNamespace(entry.item); itemNS != "" {
+					targetNS = itemNS
+				}
+				appendNamespacedItem(targetNS, resource, entry)
 			}
 		}
 	}
@@ -637,6 +648,11 @@ func matchesObjectName(body []byte, name string) bool {
 func getMetaName(item map[string]any) string {
 	meta, _ := item["metadata"].(map[string]any)
 	return asString(meta["name"])
+}
+
+func getMetaNamespace(item map[string]any) string {
+	meta, _ := item["metadata"].(map[string]any)
+	return asString(meta["namespace"])
 }
 
 func getMetaLabels(item map[string]any) map[string]string {
@@ -1722,9 +1738,17 @@ const indexHTML = `<!doctype html>
       return '';
     }
 
-    function nodeMatches(node, q) {
+    function nodeMatches(node, q, namespaceName) {
       if (!q) return true;
-      const hay = [node.name, ...(Object.entries(node.labels || {}).map(([k,v]) => k + '=' + v))].join(' ').toLowerCase();
+      const hay = [
+			node.name,
+			node.kind,
+			node.status,
+			node.age,
+			namespaceName || '',
+			node.list_path || '',
+			...(Object.entries(node.labels || {}).map(([k,v]) => k + '=' + v))
+		].join(' ').toLowerCase();
       return hay.includes(q);
     }
 
@@ -1888,20 +1912,27 @@ const indexHTML = `<!doctype html>
       el.tree.innerHTML = '';
       const q = el.search.value.trim().toLowerCase();
 			let renderedNodes = 0;
+			let renderedSections = 0;
 
-      const cs = document.createElement('details');
+			const cs = document.createElement('details');
 			cs.open = sectionOpen('cluster-scoped', true);
 			cs.innerHTML = '<summary>Cluster-scoped resources <span class="muted">(' + treeData.cluster_scoped.length + ')</span></summary>';
 			bindSectionState(cs, 'cluster-scoped');
+			let clusterShown = 0;
       for (const node of treeData.cluster_scoped) {
-        if (!kindEnabled(node.kind) || !nodeMatches(node, q)) continue;
+				if (!kindEnabled(node.kind) || !nodeMatches(node, q, '')) continue;
 				cs.appendChild(mkNode(node, ['Cluster', node.kind, node.name], 0, ''));
 				renderedNodes++;
+				clusterShown++;
       }
-      el.tree.appendChild(cs);
+			if (!q || clusterShown > 0) {
+				el.tree.appendChild(cs);
+				renderedSections++;
+			}
 
       const visibleNamespaces = q ? treeData.namespaces : treeData.namespaces.slice(0, namespacesVisibleLimit);
-      for (const ns of visibleNamespaces) {
+			for (const ns of visibleNamespaces) {
+				const nsMatches = !!q && ns.name.toLowerCase().includes(q);
         const ds = document.createElement('details');
 				ds.open = sectionOpen('ns:' + ns.name, treeData.namespaces.length <= 20);
 				const nsCount = (ns.workloads || []).length + (ns.pods || []).length + (ns.resources || []).length;
@@ -1911,12 +1942,12 @@ const indexHTML = `<!doctype html>
 				const nsNodes = [];
 
 			for (const w of (ns.workloads || [])) {
-				const workloadVisible = kindEnabled(w.kind) && nodeMatches(w, q);
+				const workloadVisible = kindEnabled(w.kind) && (nsMatches || nodeMatches(w, q, ns.name));
 				if (workloadVisible) {
 					nsNodes.push(mkNode(w, ['Cluster', ns.name, w.kind, w.name], 0, ''));
 				}
 				for (const p of (w.pods || [])) {
-					const podVisible = kindEnabled(p.kind) && nodeMatches(p, q);
+					const podVisible = kindEnabled(p.kind) && (nsMatches || nodeMatches(p, q, ns.name));
 					if (podVisible) {
 						const podCrumbs = workloadVisible
 							? ['Cluster', ns.name, w.kind, w.name, 'Pod', p.name]
@@ -1925,7 +1956,7 @@ const indexHTML = `<!doctype html>
 					}
 					for (const c of (p.containers || [])) {
 						const fake = {kind:'Container',name:c.name,status:'',age:'',labels:{},list_path:p.list_path};
-						if (!kindEnabled('Container') || !nodeMatches(fake, q)) continue;
+						if (!kindEnabled('Container') || !(nsMatches || nodeMatches(fake, q, ns.name))) continue;
 						const containerDepth = workloadVisible ? 2 : (podVisible ? 1 : 0);
 						const containerCrumbs = workloadVisible
 							? ['Cluster', ns.name, w.kind, w.name, 'Pod', p.name, 'Container', c.name]
@@ -1936,19 +1967,23 @@ const indexHTML = `<!doctype html>
 			}
 
 			for (const p of (ns.pods || [])) {
-          if (!kindEnabled(p.kind) || !nodeMatches(p, q)) continue;
+				if (!kindEnabled(p.kind) || !(nsMatches || nodeMatches(p, q, ns.name))) continue;
 					nsNodes.push(mkNode(p, ['Cluster', ns.name, 'Pod', p.name], 0, ''));
           for (const c of (p.containers || [])) {
             const fake = {kind:'Container',name:c.name,status:'',age:'',labels:{},list_path:p.list_path};
-            if (!kindEnabled('Container') || !nodeMatches(fake, q)) continue;
+					if (!kindEnabled('Container') || !(nsMatches || nodeMatches(fake, q, ns.name))) continue;
 						nsNodes.push(mkNode(fake, ['Cluster', ns.name, 'Pod', p.name, 'Container', c.name], 1, ''));
           }
         }
 
 			for (const r of (ns.resources || [])) {
-          if (!kindEnabled(r.kind) || !nodeMatches(r, q)) continue;
+				if (!kindEnabled(r.kind) || !(nsMatches || nodeMatches(r, q, ns.name))) continue;
 					nsNodes.push(mkNode(r, ['Cluster', ns.name, r.kind, r.name], 0, ''));
         }
+
+				if (q && nsNodes.length === 0 && !nsMatches) {
+					continue;
+				}
 
 				const limit = q ? nsNodes.length : namespaceLimit(ns.name);
 				const shown = nsNodes.slice(0, limit);
@@ -1972,6 +2007,7 @@ const indexHTML = `<!doctype html>
 					ds.appendChild(pager);
 				}
         el.tree.appendChild(ds);
+				renderedSections++;
       }
 
 			if (!q && treeData.namespaces.length > namespacesVisibleLimit) {
@@ -1987,9 +2023,10 @@ const indexHTML = `<!doctype html>
 				nsPager.appendChild(nsMeta);
 				nsPager.appendChild(nsBtn);
 				el.tree.appendChild(nsPager);
+				renderedSections++;
 			}
 
-			if (renderedNodes === 0) {
+			if (renderedNodes === 0 && renderedSections === 0) {
 				const msg = q
 					? 'No resources match the current search/filter selection.'
 					: 'No resources were found in this capture at the selected time.';
