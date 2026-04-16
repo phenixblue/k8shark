@@ -24,6 +24,7 @@ table of captured resource types without starting a server.`,
 func init() {
 	rootCmd.AddCommand(inspectCmd)
 	inspectCmd.Flags().StringP("output", "o", "table", "Output format: table, json, or yaml")
+	inspectCmd.Flags().BoolP("wide", "w", false, "Show full namespace list in table output")
 }
 
 func runInspect(cmd *cobra.Command, args []string) error {
@@ -42,12 +43,26 @@ func runInspect(cmd *cobra.Command, args []string) error {
 	case "yaml":
 		return yaml.NewEncoder(cmd.OutOrStdout()).Encode(report)
 	default:
-		printInspectTable(cmd, report)
+		wide, _ := cmd.Flags().GetBool("wide")
+		printInspectTable(cmd, report, wide)
 		return nil
 	}
 }
 
-func printInspectTable(cmd *cobra.Command, r *inspect.Report) {
+func humanBytes(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(b)/float64(div), "KMGTPE"[exp])
+}
+
+func printInspectTable(cmd *cobra.Command, r *inspect.Report, wide bool) {
 	out := cmd.OutOrStdout()
 	duration := r.CapturedUntil.Sub(r.CapturedAt).Truncate(time.Second)
 
@@ -58,7 +73,7 @@ func printInspectTable(cmd *cobra.Command, r *inspect.Report) {
 		duration)
 	fmt.Fprintf(out, "Kubernetes:   %s\n", r.KubernetesVersion)
 	fmt.Fprintf(out, "Server:       %s\n", r.ServerAddress)
-	fmt.Fprintf(out, "Archive:      %s (%d bytes)\n", r.ArchivePath, r.ArchiveSize)
+	fmt.Fprintf(out, "Archive:      %s (%s)\n", r.ArchivePath, humanBytes(r.ArchiveSize))
 	fmt.Fprintf(out, "Records:      %d\n\n", r.RecordCount)
 
 	if len(r.Resources) == 0 {
@@ -67,18 +82,36 @@ func printInspectTable(cmd *cobra.Command, r *inspect.Report) {
 	}
 
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "RESOURCE\tGROUP\tVERSION\tNAMESPACED\tITEMS\tNAMESPACES\tRECORDS")
+	if wide {
+		fmt.Fprintln(tw, "RESOURCE\tGROUP\tVERSION\tITEMS\tNAMESPACES\tRECORDS")
+	} else {
+		fmt.Fprintln(tw, "RESOURCE\tGROUP\tVERSION\tITEMS\tNAMESPACES\tRECORDS")
+	}
 	for _, rs := range r.Resources {
-		ns := strings.Join(rs.Namespaces, ",")
+		var nsCol string
 		if !rs.Namespaced {
-			ns = "-"
+			nsCol = "-"
+		} else if wide {
+			nsCol = strings.Join(rs.Namespaces, ", ")
+		} else {
+			n := len(rs.Namespaces)
+			switch n {
+			case 0:
+				nsCol = "0 namespaces"
+			case 1:
+				nsCol = rs.Namespaces[0]
+			case 2:
+				nsCol = strings.Join(rs.Namespaces, ", ")
+			default:
+				nsCol = fmt.Sprintf("%d namespaces", n)
+			}
 		}
-		namespaced := "no"
-		if rs.Namespaced {
-			namespaced = "yes"
-		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%s\t%d\n",
-			rs.Resource, rs.Group, rs.Version, namespaced, rs.Items, ns, rs.Records)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\t%d\n",
+			rs.Resource, rs.Group, rs.Version, rs.Items, nsCol, rs.Records)
 	}
 	_ = tw.Flush()
+
+	if !wide {
+		fmt.Fprintf(out, "\nUse --wide / -w to show the full namespace list.\n")
+	}
 }
