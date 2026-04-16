@@ -35,11 +35,10 @@ type Server struct {
 }
 
 type explorerHandler struct {
-	store          *server.CaptureStore
-	at             time.Time
-	verbose        bool
-	archivePath    string
-	allTransitions []transitions.Transition
+	store       *server.CaptureStore
+	at          time.Time
+	verbose     bool
+	archivePath string
 }
 
 type treeResponse struct {
@@ -134,10 +133,7 @@ func Open(opts OpenOptions) (*Server, error) {
 		return nil, fmt.Errorf("listening: %w", err)
 	}
 
-	// Pre-compute transitions for the archive (best-effort; empty on error).
-	allTrans, _ := transitions.LoadTransitions(opts.ArchivePath, transitions.FilterOpts{})
-
-	h := &explorerHandler{store: store, at: at, verbose: opts.Verbose, archivePath: opts.ArchivePath, allTransitions: allTrans}
+	h := &explorerHandler{store: store, at: at, verbose: opts.Verbose, archivePath: opts.ArchivePath}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", h.serveIndex)
 	mux.HandleFunc("/api/ui/tree", h.serveTree)
@@ -301,14 +297,17 @@ func (h *explorerHandler) serveTransitions(w http.ResponseWriter, r *http.Reques
 	resource := r.URL.Query().Get("resource")
 	namespace := r.URL.Query().Get("namespace")
 
-	markers := make([]transitionMarker, 0, len(h.allTransitions))
-	for _, t := range h.allTransitions {
-		if resource != "" && !strings.Contains(t.Resource, resource) {
-			continue
-		}
-		if namespace != "" && t.Namespace != namespace {
-			continue
-		}
+	all, err := transitions.LoadTransitions(h.archivePath, transitions.FilterOpts{
+		Resource:  resource,
+		Namespace: namespace,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	markers := make([]transitionMarker, 0, len(all))
+	for _, t := range all {
 		markers = append(markers, transitionMarker{
 			Time:      t.Time.UTC().Format(time.RFC3339),
 			EventType: t.EventType,
@@ -337,17 +336,18 @@ func (h *explorerHandler) serveObjectHistory(w http.ResponseWriter, r *http.Requ
 	resource := r.URL.Query().Get("resource")
 	namespace := r.URL.Query().Get("namespace")
 
-	entries := make([]objectHistoryEntry, 0)
-	for _, t := range h.allTransitions {
-		if t.Name != name {
-			continue
-		}
-		if resource != "" && !strings.Contains(t.Resource, resource) {
-			continue
-		}
-		if namespace != "" && t.Namespace != namespace {
-			continue
-		}
+	all, err := transitions.LoadTransitions(h.archivePath, transitions.FilterOpts{
+		Name:      name,
+		Resource:  resource,
+		Namespace: namespace,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	entries := make([]objectHistoryEntry, 0, len(all))
+	for _, t := range all {
 		entries = append(entries, objectHistoryEntry{
 			Time:      t.Time.UTC().Format(time.RFC3339),
 			EventType: t.EventType,

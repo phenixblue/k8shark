@@ -12,7 +12,6 @@ import (
 	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/capture"
 	"github.com/phenixblue/k8shark/internal/server"
-	"github.com/phenixblue/k8shark/internal/transitions"
 )
 
 func TestBuildTree_Hierarchy(t *testing.T) {
@@ -544,18 +543,62 @@ func contains(values []string, want string) bool {
 	return false
 }
 
-func TestServeTransitions(t *testing.T) {
-	store := buildTestStore(t)
-	h := &explorerHandler{
-		store: store,
-		allTransitions: []transitions.Transition{
-			{Time: time.Date(2026, 4, 10, 10, 0, 5, 0, time.UTC), EventType: "ADDED", Resource: "pods", Namespace: "default", Name: "nginx"},
-			{Time: time.Date(2026, 4, 10, 10, 0, 10, 0, time.UTC), EventType: "MODIFIED", Resource: "pods", Namespace: "default", Name: "nginx"},
-			{Time: time.Date(2026, 4, 10, 10, 0, 15, 0, time.UTC), EventType: "ADDED", Resource: "deployments", Namespace: "kube-system", Name: "coredns"},
+// buildTransitionsArchive creates a minimal archive with watch events for
+// transition-related handler tests. It returns the store and the archive path.
+// Archive layout:
+//
+//	/api/v1/namespaces/default/pods      — watch: nginx ADDED(seq0), nginx MODIFIED(seq1), redis ADDED(seq2)
+//	/apis/apps/v1/namespaces/kube-system/deployments — watch: coredns ADDED(seq0)
+func buildTransitionsArchive(t *testing.T) (store *server.CaptureStore, archivePath string) {
+	t.Helper()
+	dir := t.TempDir()
+	out := filepath.Join(dir, "capture-transitions.khsrk")
+
+	t1 := time.Date(2026, 4, 10, 10, 0, 5, 0, time.UTC)
+	t2 := time.Date(2026, 4, 10, 10, 0, 10, 0, time.UTC)
+	t3 := time.Date(2026, 4, 10, 10, 0, 15, 0, time.UTC)
+
+	nginxV1 := json.RawMessage(`{"metadata":{"name":"nginx","namespace":"default","uid":"nginx-1"}}`)
+	nginxV2 := json.RawMessage(`{"metadata":{"name":"nginx","namespace":"default","uid":"nginx-1"},"status":{"phase":"Running"}}`)
+	redisBody := json.RawMessage(`{"metadata":{"name":"redis","namespace":"default","uid":"redis-1"}}`)
+	corednsBody := json.RawMessage(`{"metadata":{"name":"coredns","namespace":"kube-system","uid":"coredns-1"}}`)
+
+	recs := []*capture.Record{
+		// /api/v1/namespaces/default/pods — seq 0, 1, 2
+		{ID: "w1", CapturedAt: t1, APIPath: "/api/v1/namespaces/default/pods", EventType: "ADDED", HTTPMethod: "GET", ResponseCode: 200, ResponseBody: nginxV1},
+		{ID: "w2", CapturedAt: t2, APIPath: "/api/v1/namespaces/default/pods", EventType: "MODIFIED", HTTPMethod: "GET", ResponseCode: 200, ResponseBody: nginxV2},
+		{ID: "w3", CapturedAt: t3, APIPath: "/api/v1/namespaces/default/pods", EventType: "ADDED", HTTPMethod: "GET", ResponseCode: 200, ResponseBody: redisBody},
+		// /apis/apps/v1/namespaces/kube-system/deployments — seq 0
+		{ID: "w4", CapturedAt: t3, APIPath: "/apis/apps/v1/namespaces/kube-system/deployments", EventType: "ADDED", HTTPMethod: "GET", ResponseCode: 200, ResponseBody: corednsBody},
+	}
+	idx := capture.Index{
+		"/api/v1/namespaces/default/pods":                  {APIPath: "/api/v1/namespaces/default/pods", Seqs: []int{}, Times: []time.Time{}},
+		"/apis/apps/v1/namespaces/kube-system/deployments": {APIPath: "/apis/apps/v1/namespaces/kube-system/deployments", Seqs: []int{}, Times: []time.Time{}},
+	}
+	wi := capture.WatchIndex{
+		"/api/v1/namespaces/default/pods": {
+			APIPath:    "/api/v1/namespaces/default/pods",
+			Seqs:       []int{0, 1, 2},
+			Times:      []time.Time{t1, t2, t3},
+			EventTypes: []string{"ADDED", "MODIFIED", "ADDED"},
+		},
+		"/apis/apps/v1/namespaces/kube-system/deployments": {
+			APIPath:    "/apis/apps/v1/namespaces/kube-system/deployments",
+			Seqs:       []int{0},
+			Times:      []time.Time{t3},
+			EventTypes: []string{"ADDED"},
 		},
 	}
+	meta := &capture.CaptureMetadata{CaptureID: "transitions-test", CapturedAt: t1, CapturedUntil: t3}
+	store = buildStoreFromArchive(t, out, recs, idx, wi, meta)
+	return store, out
+}
 
-	// Unfiltered — returns all 3.
+func TestServeTransitions(t *testing.T) {
+	store, archivePath := buildTransitionsArchive(t)
+	h := &explorerHandler{store: store, archivePath: archivePath}
+
+	// Unfiltered — returns all 4 events (nginx ADDED, nginx MODIFIED, redis ADDED, coredns ADDED).
 	req := httptest.NewRequest(http.MethodGet, "/api/ui/transitions", nil)
 	rr := httptest.NewRecorder()
 	h.serveTransitions(rr, req)
@@ -566,21 +609,21 @@ func TestServeTransitions(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &markers); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(markers) != 3 {
-		t.Fatalf("expected 3 markers, got %d", len(markers))
+	if len(markers) != 4 {
+		t.Fatalf("expected 4 markers, got %d", len(markers))
 	}
 
-	// Filter by resource.
+	// Filter by resource=pods — should return 3 (nginx x2, redis x1).
 	req2 := httptest.NewRequest(http.MethodGet, "/api/ui/transitions?resource=pods", nil)
 	rr2 := httptest.NewRecorder()
 	h.serveTransitions(rr2, req2)
 	var filtered []map[string]any
 	_ = json.Unmarshal(rr2.Body.Bytes(), &filtered)
-	if len(filtered) != 2 {
-		t.Fatalf("expected 2 pod markers, got %d", len(filtered))
+	if len(filtered) != 3 {
+		t.Fatalf("expected 3 pod markers, got %d", len(filtered))
 	}
 
-	// Filter by namespace.
+	// Filter by namespace=kube-system — should return 1 (coredns).
 	req3 := httptest.NewRequest(http.MethodGet, "/api/ui/transitions?namespace=kube-system", nil)
 	rr3 := httptest.NewRecorder()
 	h.serveTransitions(rr3, req3)
@@ -592,15 +635,8 @@ func TestServeTransitions(t *testing.T) {
 }
 
 func TestServeObjectHistory(t *testing.T) {
-	store := buildTestStore(t)
-	h := &explorerHandler{
-		store: store,
-		allTransitions: []transitions.Transition{
-			{Time: time.Date(2026, 4, 10, 10, 0, 5, 0, time.UTC), EventType: "ADDED", Resource: "pods", Namespace: "default", Name: "nginx", After: json.RawMessage(`{"metadata":{"name":"nginx"}}`)},
-			{Time: time.Date(2026, 4, 10, 10, 0, 10, 0, time.UTC), EventType: "MODIFIED", Resource: "pods", Namespace: "default", Name: "nginx", Before: json.RawMessage(`{"metadata":{"name":"nginx"}}`), After: json.RawMessage(`{"metadata":{"name":"nginx"},"status":{"phase":"Running"}}`)},
-			{Time: time.Date(2026, 4, 10, 10, 0, 15, 0, time.UTC), EventType: "ADDED", Resource: "pods", Namespace: "default", Name: "redis"},
-		},
-	}
+	store, archivePath := buildTransitionsArchive(t)
+	h := &explorerHandler{store: store, archivePath: archivePath}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/ui/object-history?name=nginx", nil)
 	rr := httptest.NewRecorder()
