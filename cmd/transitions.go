@@ -12,7 +12,7 @@ import (
 )
 
 var transitionsCmd = &cobra.Command{
-	Use:   "transitions <capture.tar.gz>",
+	Use:   "transitions <capture.khsrk>",
 	Short: "List resource state changes from a capture archive",
 	Long: `Reads a k8shark capture archive and reports ADDED, MODIFIED, and DELETED
 events for captured resources, without starting a replay server.

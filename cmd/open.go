@@ -8,7 +8,7 @@ import (
 )
 
 var openCmd = &cobra.Command{
-	Use:   "open <capture.tar.gz>",
+	Use:   "open <capture.khsrk>",
 	Short: "Open a capture file and start a mock Kubernetes API server",
 	Long: `Extracts a k8shark capture archive, starts a local mock Kubernetes
 API server, and writes a kubeconfig so kubectl can connect immediately.`,

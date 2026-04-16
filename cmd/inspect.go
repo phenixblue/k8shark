@@ -13,7 +13,7 @@ import (
 )
 
 var inspectCmd = &cobra.Command{
-	Use:   "inspect <capture.tar.gz>",
+	Use:   "inspect <capture.khsrk>",
 	Short: "Display a summary of a capture archive's contents",
 	Long: `Reads a k8shark capture archive and prints capture metadata and a
 table of captured resource types without starting a server.`,

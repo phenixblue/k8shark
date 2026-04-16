@@ -28,11 +28,13 @@ type CaptureMetadata struct {
 	DeduplicatedCount int       `json:"deduplicated_count"`
 }
 
-// IndexEntry maps an API path to the ordered list of record IDs captured for it.
+// IndexEntry maps an API path to the ordered list of record sequence numbers.
+// Seqs[i] is the 0-based sequence index of the i-th record for this path,
+// matching the on-disk filename records/<pathDir>/<seq>.json.zst.
 type IndexEntry struct {
-	APIPath   string      `json:"api_path"`
-	RecordIDs []string    `json:"record_ids"`
-	Times     []time.Time `json:"times"`
+	APIPath string      `json:"api_path"`
+	Seqs    []int       `json:"seqs"`
+	Times   []time.Time `json:"times"`
 }
 
 // Index is the top-level index.json written inside the archive.
@@ -41,11 +43,11 @@ type Index map[string]*IndexEntry
 
 // WatchIndexEntry maps an API path to the ordered watch events captured for it.
 // Each watch event is a separate record with event_type ADDED, MODIFIED, or DELETED.
-// EventTypes is kept in sync with RecordIDs and Times for fast filtering without
+// EventTypes is kept in sync with Seqs and Times for fast filtering without
 // reading every record file.
 type WatchIndexEntry struct {
 	APIPath    string      `json:"api_path"`
-	RecordIDs  []string    `json:"record_ids"`
+	Seqs       []int       `json:"seqs"`
 	Times      []time.Time `json:"times"`
 	EventTypes []string    `json:"event_types"`
 }

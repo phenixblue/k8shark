@@ -27,7 +27,7 @@ func sampleRecord(i int) any {
 // records to a streaming tar.gz archive.
 func BenchmarkStreamWriter_WriteRecord(b *testing.B) {
 	dir := b.TempDir()
-	w, err := NewStreamWriter(dir + "/capture.tar.gz")
+	w, err := NewStreamWriter(dir + "/capture.khsrk")
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -49,7 +49,7 @@ func BenchmarkStreamWriter_RoundTrip(b *testing.B) {
 		b.Run(fmt.Sprintf("%d_records", n), func(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				dir := b.TempDir()
-				path := dir + "/capture.tar.gz"
+				path := dir + "/capture.khsrk"
 				w, err := NewStreamWriter(path)
 				if err != nil {
 					b.Fatal(err)
@@ -62,9 +62,11 @@ func BenchmarkStreamWriter_RoundTrip(b *testing.B) {
 				if err := w.Finish(map[string]any{"capture_id": "bench"}, map[string]any{}, nil); err != nil {
 					b.Fatal(err)
 				}
-				if err := Open(path, b.TempDir()); err != nil {
+				ar, err := Open(path)
+				if err != nil {
 					b.Fatal(err)
 				}
+				_ = ar.Close()
 			}
 		})
 	}

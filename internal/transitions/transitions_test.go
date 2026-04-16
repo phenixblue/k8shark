@@ -20,31 +20,36 @@ import (
 func buildPollArchive(t *testing.T, apiPath string, bodies []string) string {
 	t.Helper()
 	dir := t.TempDir()
-	outPath := filepath.Join(dir, "test.tar.gz")
+	outPath := filepath.Join(dir, "test.khsrk")
 
 	t0 := time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC)
 	idx := make(capture.Index)
-	var recs []*capture.Record
+
+	w, err := archive.NewStreamWriter(outPath)
+	if err != nil {
+		t.Fatalf("NewStreamWriter: %v", err)
+	}
 
 	for i, body := range bodies {
-		id := fmt.Sprintf("snap-%d", i)
 		at := t0.Add(time.Duration(i) * time.Minute)
 		rec := &capture.Record{
-			ID:           id,
+			ID:           fmt.Sprintf("snap-%d", i),
 			CapturedAt:   at,
 			APIPath:      apiPath,
 			HTTPMethod:   "GET",
 			ResponseCode: 200,
 			ResponseBody: json.RawMessage(body),
 		}
-		recs = append(recs, rec)
+		if err := w.WriteRecord(rec); err != nil {
+			t.Fatalf("WriteRecord: %v", err)
+		}
 
 		e := idx[apiPath]
 		if e == nil {
 			e = &capture.IndexEntry{APIPath: apiPath}
 			idx[apiPath] = e
 		}
-		e.RecordIDs = append(e.RecordIDs, id)
+		e.Seqs = append(e.Seqs, i)
 		e.Times = append(e.Times, at)
 	}
 
@@ -52,10 +57,10 @@ func buildPollArchive(t *testing.T, apiPath string, bodies []string) string {
 		CaptureID:     "poll-test",
 		CapturedAt:    t0,
 		CapturedUntil: t0.Add(time.Duration(len(bodies)) * time.Minute),
-		RecordCount:   len(recs),
+		RecordCount:   len(bodies),
 	}
-	if err := archive.Write(outPath, meta, recs, idx); err != nil {
-		t.Fatalf("buildPollArchive: %v", err)
+	if err := w.Finish(meta, idx, nil); err != nil {
+		t.Fatalf("buildPollArchive Finish: %v", err)
 	}
 	return outPath
 }
@@ -65,7 +70,7 @@ func buildPollArchive(t *testing.T, apiPath string, bodies []string) string {
 func buildWatchArchive(t *testing.T, apiPath, snapBody string, events []watchEvent) string {
 	t.Helper()
 	dir := t.TempDir()
-	outPath := filepath.Join(dir, "test.tar.gz")
+	outPath := filepath.Join(dir, "test.khsrk")
 
 	t0 := time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC)
 
@@ -80,9 +85,9 @@ func buildWatchArchive(t *testing.T, apiPath, snapBody string, events []watchEve
 
 	idx := capture.Index{
 		apiPath: {
-			APIPath:   apiPath,
-			RecordIDs: []string{snapRec.ID},
-			Times:     []time.Time{t0},
+			APIPath: apiPath,
+			Seqs:    []int{0},
+			Times:   []time.Time{t0},
 		},
 	}
 
@@ -113,7 +118,7 @@ func buildWatchArchive(t *testing.T, apiPath, snapBody string, events []watchEve
 		if err := w.WriteRecord(rec); err != nil {
 			t.Fatalf("WriteRecord(watch %d): %v", i, err)
 		}
-		wiEntry.RecordIDs = append(wiEntry.RecordIDs, id)
+		wiEntry.Seqs = append(wiEntry.Seqs, i+1) // seq continues after snap (seq 0)
 		wiEntry.Times = append(wiEntry.Times, at)
 		wiEntry.EventTypes = append(wiEntry.EventTypes, ev.eventType)
 	}

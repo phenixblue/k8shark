@@ -12,7 +12,7 @@ import (
 )
 
 var redactCmd = &cobra.Command{
-	Use:   "redact --in <capture.tar.gz> [--out <redacted.tar.gz>]",
+	Use:   "redact --in <capture.khsrk> [--out <redacted.khsrk>]",
 	Short: "Redact Secret data and arbitrary fields from a capture archive",
 	Long: `Produces a new capture archive with Kubernetes Secret data replaced by
 "REDACTED" and any configured field-level redaction rules applied.
@@ -22,16 +22,16 @@ Field rules can be supplied via --redact-field (repeatable) with the format:
   <fieldPath>:<Kind>:<replacement>[:<valueType>]
 
 Examples:
-  kshrk redact --in capture.tar.gz --redact-secrets
-  kshrk redact --in capture.tar.gz --redact-field "data.api-key:ConfigMap:REDACTED"
-  kshrk redact --in capture.tar.gz --config k8shark.yaml`,
+  kshrk redact --in capture.khsrk --redact-secrets
+  kshrk redact --in capture.khsrk --redact-field "data.api-key:ConfigMap:REDACTED"
+  kshrk redact --in capture.khsrk --config k8shark.yaml`,
 	RunE: runRedact,
 }
 
 func init() {
 	rootCmd.AddCommand(redactCmd)
 	redactCmd.Flags().String("in", "", "source capture archive (required)")
-	redactCmd.Flags().String("out", "", "output archive path (default: <in>-redacted.tar.gz)")
+	redactCmd.Flags().String("out", "", "output archive path (default: <in>-redacted.khsrk)")
 	redactCmd.Flags().Bool("redact-secrets", false, "redact all Kubernetes Secret data and stringData values")
 	redactCmd.Flags().StringArray("allow-secret", nil, "namespace/name of secret to preserve (repeatable)")
 	redactCmd.Flags().StringArray("redact-field", nil, "field redaction rule: <fieldPath>:<Kind>:<replacement>[:<valueType>] (repeatable)")
@@ -66,8 +66,8 @@ func runRedact(cmd *cobra.Command, _ []string) error {
 	cfgFile, _ := cmd.Flags().GetString("config")
 
 	if out == "" {
-		base := strings.TrimSuffix(in, ".tar.gz")
-		out = base + "-redacted.tar.gz"
+		base := strings.TrimSuffix(in, ".khsrk")
+		out = base + "-redacted.khsrk"
 	}
 
 	// Refuse to overwrite the source.

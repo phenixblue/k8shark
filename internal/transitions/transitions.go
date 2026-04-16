@@ -3,8 +3,6 @@ package transitions
 import (
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -46,32 +44,20 @@ type FilterOpts struct {
 //   - Poll-only paths: consecutive snapshot pairs are diff'd by object identity
 //     to detect additions, modifications, and deletions.
 func LoadTransitions(archivePath string, opts FilterOpts) ([]Transition, error) {
-	tmpDir, err := os.MkdirTemp("", "k8shark-transitions-*")
+	ar, err := archive.Open(archivePath)
 	if err != nil {
-		return nil, fmt.Errorf("creating temp dir: %w", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	if err := archive.Open(archivePath, tmpDir); err != nil {
 		return nil, fmt.Errorf("opening archive: %w", err)
 	}
+	defer ar.Close()
 
-	base := filepath.Join(tmpDir, "k8shark-capture")
-
-	idxData, err := os.ReadFile(filepath.Join(base, "index.json"))
-	if err != nil {
-		return nil, fmt.Errorf("reading index: %w", err)
-	}
 	var idx capture.Index
-	if err := json.Unmarshal(idxData, &idx); err != nil {
-		return nil, fmt.Errorf("parsing index: %w", err)
+	if err := ar.ReadIndex(&idx); err != nil {
+		return nil, fmt.Errorf("reading index: %w", err)
 	}
 
 	// Watch-index may be absent for older archives.
 	var wi capture.WatchIndex
-	if wiData, rerr := os.ReadFile(filepath.Join(base, "watch-index.json")); rerr == nil {
-		_ = json.Unmarshal(wiData, &wi)
-	}
+	_, _ = ar.ReadWatchIndex(&wi)
 
 	var all []Transition
 
@@ -88,14 +74,14 @@ func LoadTransitions(archivePath string, opts FilterOpts) ([]Transition, error) 
 			continue
 		}
 
-		if wiEntry, hasWatch := wi[apiPath]; hasWatch && len(wiEntry.RecordIDs) > 0 {
-			ts, err := watchTransitions(base, apiPath, wiEntry, g, v, r, ns, opts)
+		if wiEntry, hasWatch := wi[apiPath]; hasWatch && len(wiEntry.Seqs) > 0 {
+			ts, err := watchTransitions(ar, apiPath, wiEntry, g, v, r, ns, opts)
 			if err != nil {
 				return nil, err
 			}
 			all = append(all, ts...)
 		} else {
-			ts, err := pollTransitions(base, apiPath, entry, g, v, r, ns, opts)
+			ts, err := pollTransitions(ar, apiPath, entry, g, v, r, ns, opts)
 			if err != nil {
 				return nil, err
 			}
@@ -113,13 +99,13 @@ func LoadTransitions(archivePath string, opts FilterOpts) ([]Transition, error) 
 // watchTransitions emits transitions for a watch-captured API path by walking
 // the watch-index entries in chronological order. Per-object state is tracked
 // so that Before is populated accurately for MODIFIED and DELETED events.
-func watchTransitions(base, apiPath string, wi *capture.WatchIndexEntry, g, v, r, ns string, opts FilterOpts) ([]Transition, error) {
+func watchTransitions(ar *archive.Archive, apiPath string, wi *capture.WatchIndexEntry, g, v, r, ns string, opts FilterOpts) ([]Transition, error) {
 	// lastState tracks the most recently seen body per object key so we can
 	// populate Before for MODIFIED and DELETED events.
 	lastState := make(map[string]json.RawMessage)
 
 	var out []Transition
-	for i, id := range wi.RecordIDs {
+	for i, seq := range wi.Seqs {
 		if i >= len(wi.Times) || i >= len(wi.EventTypes) {
 			break
 		}
@@ -131,7 +117,7 @@ func watchTransitions(base, apiPath string, wi *capture.WatchIndexEntry, g, v, r
 			break
 		}
 
-		rec, err := readRecord(base, id)
+		rec, err := readRecord(ar, apiPath, seq)
 		if err != nil {
 			// Tolerate individual record read failures.
 			continue
@@ -181,16 +167,16 @@ func watchTransitions(base, apiPath string, wi *capture.WatchIndexEntry, g, v, r
 // pollTransitions emits transitions for a poll-only API path by diffing
 // consecutive snapshot pairs. The transition timestamp is that of the newer
 // snapshot in each pair.
-func pollTransitions(base, apiPath string, entry *capture.IndexEntry, g, v, r, ns string, opts FilterOpts) ([]Transition, error) {
+func pollTransitions(ar *archive.Archive, apiPath string, entry *capture.IndexEntry, g, v, r, ns string, opts FilterOpts) ([]Transition, error) {
 	var out []Transition
 
 	var prevItems map[string]json.RawMessage
 	var prevOrder []string
 
-	for i, id := range entry.RecordIDs {
-		rec, err := readRecord(base, id)
+	for i, seq := range entry.Seqs {
+		rec, err := readRecord(ar, apiPath, seq)
 		if err != nil {
-			return nil, fmt.Errorf("reading record %s: %w", id, err)
+			return nil, fmt.Errorf("reading record seq %d: %w", seq, err)
 		}
 
 		var list struct {
@@ -299,15 +285,15 @@ func diffItems(
 	return out
 }
 
-// readRecord reads and parses a single capture.Record by ID from the archive.
-func readRecord(base, id string) (capture.Record, error) {
-	data, err := os.ReadFile(filepath.Join(base, "records", id+".json"))
+// readRecord reads and parses a single capture.Record by seq from the archive.
+func readRecord(ar *archive.Archive, apiPath string, seq int) (capture.Record, error) {
+	data, err := ar.ReadRecord(apiPath, seq)
 	if err != nil {
-		return capture.Record{}, fmt.Errorf("reading record %s: %w", id, err)
+		return capture.Record{}, fmt.Errorf("reading record seq %d: %w", seq, err)
 	}
 	var rec capture.Record
 	if err := json.Unmarshal(data, &rec); err != nil {
-		return capture.Record{}, fmt.Errorf("parsing record %s: %w", id, err)
+		return capture.Record{}, fmt.Errorf("parsing record seq %d: %w", seq, err)
 	}
 	return rec, nil
 }

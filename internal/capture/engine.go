@@ -32,6 +32,12 @@ type CaptureSummary struct {
 }
 
 // Engine orchestrates the capture loop.
+// maxConcurrentFetches limits the number of goroutines simultaneously reading
+// HTTP response bodies during a poll pass.  Bounding this caps peak in-flight
+// memory (each body can be several MB for large list responses) regardless of
+// how many resources are configured or auto-discovered.
+const maxConcurrentFetches = 32
+
 type Engine struct {
 	cfg            *config.Config
 	verbose        bool
@@ -45,6 +51,8 @@ type Engine struct {
 	lastHash       map[string][32]byte
 	dedupSkipped   int
 	warnedFallback map[string]bool // dedup set for allNotFound cluster-scoped fallback warnings
+	pathSeq        map[string]int  // per-path record sequence counter (matches archive on-disk seq)
+	fetchSem       chan struct{}   // semaphore bounding concurrent body reads
 }
 
 const maxConcurrentWatchStreams = 256
@@ -81,6 +89,8 @@ func NewEngine(cfg *config.Config, verbose bool) (*Engine, error) {
 		discoveryCache: make(map[string][]byte),
 		lastHash:       make(map[string][32]byte),
 		warnedFallback: make(map[string]bool),
+		pathSeq:        make(map[string]int),
+		fetchSem:       make(chan struct{}, maxConcurrentFetches),
 	}, nil
 }
 
@@ -97,6 +107,8 @@ func newEngineWith(cfg *config.Config, client *http.Client, baseURL string, verb
 		discoveryCache: make(map[string][]byte),
 		lastHash:       make(map[string][32]byte),
 		warnedFallback: make(map[string]bool),
+		pathSeq:        make(map[string]int),
+		fetchSem:       make(chan struct{}, maxConcurrentFetches),
 	}
 }
 
@@ -411,7 +423,9 @@ func (e *Engine) streamWatch(ctx context.Context, apiPath, resourceVersion strin
 		if _, ok := e.watchIndex[apiPath]; !ok {
 			e.watchIndex[apiPath] = &WatchIndexEntry{APIPath: apiPath}
 		}
-		e.watchIndex[apiPath].RecordIDs = append(e.watchIndex[apiPath].RecordIDs, rec.ID)
+		seq := e.pathSeq[apiPath]
+		e.pathSeq[apiPath] = seq + 1
+		e.watchIndex[apiPath].Seqs = append(e.watchIndex[apiPath].Seqs, seq)
 		e.watchIndex[apiPath].Times = append(e.watchIndex[apiPath].Times, rec.CapturedAt)
 		e.watchIndex[apiPath].EventTypes = append(e.watchIndex[apiPath].EventTypes, rec.EventType)
 		e.mu.Unlock()
@@ -880,7 +894,9 @@ func (e *Engine) doFetch(ctx context.Context, apiPath, tableKeySuffix string, de
 		return nil, 0
 	}
 
+	e.fetchSem <- struct{}{}
 	body, err := io.ReadAll(resp.Body)
+	<-e.fetchSem
 	resp.Body.Close()
 	if err != nil {
 		if e.verbose {
@@ -944,7 +960,9 @@ func (e *Engine) doFetch(ctx context.Context, apiPath, tableKeySuffix string, de
 	if _, ok := e.index[indexKey]; !ok {
 		e.index[indexKey] = &IndexEntry{APIPath: indexKey}
 	}
-	e.index[indexKey].RecordIDs = append(e.index[indexKey].RecordIDs, rec.ID)
+	seq := e.pathSeq[indexKey]
+	e.pathSeq[indexKey] = seq + 1
+	e.index[indexKey].Seqs = append(e.index[indexKey].Seqs, seq)
 	e.index[indexKey].Times = append(e.index[indexKey].Times, rec.CapturedAt)
 	e.mu.Unlock()
 	return body, resp.StatusCode
@@ -1076,7 +1094,9 @@ func (e *Engine) fetchOnePodLog(ctx context.Context, namespace, podName string, 
 	if _, ok := e.index[logPath]; !ok {
 		e.index[logPath] = &IndexEntry{APIPath: logPath}
 	}
-	e.index[logPath].RecordIDs = append(e.index[logPath].RecordIDs, rec.ID)
+	logSeq := e.pathSeq[logPath]
+	e.pathSeq[logPath] = logSeq + 1
+	e.index[logPath].Seqs = append(e.index[logPath].Seqs, logSeq)
 	e.index[logPath].Times = append(e.index[logPath].Times, rec.CapturedAt)
 	e.mu.Unlock()
 }
