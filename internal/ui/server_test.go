@@ -24,7 +24,10 @@ func TestBuildTree_Hierarchy(t *testing.T) {
 	if len(tree.Namespaces) != 1 || tree.Namespaces[0].Name != "default" {
 		t.Fatalf("expected one default namespace, got %+v", tree.Namespaces)
 	}
-	ns := tree.Namespaces[0]
+	ns, err := h.buildNamespaceAt("default", time.Time{})
+	if err != nil {
+		t.Fatalf("buildNamespaceAt: %v", err)
+	}
 	if len(ns.Workloads) == 0 {
 		t.Fatal("expected workloads in namespace")
 	}
@@ -78,14 +81,18 @@ func TestServeDetail_ItemFromWatchOnlyAddedResource(t *testing.T) {
 func TestBuildTree_IncludesWatchOnlyAddedResource(t *testing.T) {
 	store := buildWatchOnlyStore(t)
 	h := &explorerHandler{store: store}
-	tree, err := h.buildTreeAt(time.Date(2026, 4, 10, 10, 0, 31, 0, time.UTC))
+	at := time.Date(2026, 4, 10, 10, 0, 31, 0, time.UTC)
+	tree, err := h.buildTreeAt(at)
 	if err != nil {
 		t.Fatalf("buildTreeAt: %v", err)
 	}
 	if len(tree.Namespaces) != 1 || tree.Namespaces[0].Name != "default" {
 		t.Fatalf("expected one default namespace, got %+v", tree.Namespaces)
 	}
-	ns := tree.Namespaces[0]
+	ns, err := h.buildNamespaceAt("default", at)
+	if err != nil {
+		t.Fatalf("buildNamespaceAt: %v", err)
+	}
 	if len(ns.Pods) != 1 || ns.Pods[0].Name != "redis" {
 		t.Fatalf("expected watch-only pod to appear, got %+v", ns.Pods)
 	}
@@ -101,7 +108,10 @@ func TestBuildTree_IncludesQueryOnlyListPath(t *testing.T) {
 	if len(tree.Namespaces) != 1 || tree.Namespaces[0].Name != "default" {
 		t.Fatalf("expected one default namespace, got %+v", tree.Namespaces)
 	}
-	ns := tree.Namespaces[0]
+	ns, err := h.buildNamespaceAt("default", time.Time{})
+	if err != nil {
+		t.Fatalf("buildNamespaceAt: %v", err)
+	}
 	found := false
 	for _, r := range ns.Resources {
 		if r.Kind == "ConfigMap" && r.Name == "demo-config" {
@@ -124,7 +134,10 @@ func TestBuildTree_PrefersNonEmptyQueryListOverEmptyBaseList(t *testing.T) {
 	if len(tree.Namespaces) != 1 || tree.Namespaces[0].Name != "default" {
 		t.Fatalf("expected one default namespace, got %+v", tree.Namespaces)
 	}
-	ns := tree.Namespaces[0]
+	ns, err := h.buildNamespaceAt("default", time.Time{})
+	if err != nil {
+		t.Fatalf("buildNamespaceAt: %v", err)
+	}
 	if len(ns.Pods) != 1 || ns.Pods[0].Name != "demo-pod" {
 		t.Fatalf("expected pod from non-empty query list, got %+v", ns.Pods)
 	}
@@ -143,7 +156,10 @@ func TestBuildTree_MergesItemsAcrossCapturedQueryLists(t *testing.T) {
 	if len(tree.Namespaces) != 1 || tree.Namespaces[0].Name != "default" {
 		t.Fatalf("expected one default namespace, got %+v", tree.Namespaces)
 	}
-	ns := tree.Namespaces[0]
+	ns, err := h.buildNamespaceAt("default", time.Time{})
+	if err != nil {
+		t.Fatalf("buildNamespaceAt: %v", err)
+	}
 	if len(ns.Pods) != 2 {
 		t.Fatalf("expected two merged pods, got %+v", ns.Pods)
 	}
@@ -163,7 +179,10 @@ func TestBuildTree_IncludesItemOnlyPaths(t *testing.T) {
 	if len(tree.Namespaces) != 1 || tree.Namespaces[0].Name != "default" {
 		t.Fatalf("expected one default namespace, got %+v", tree.Namespaces)
 	}
-	ns := tree.Namespaces[0]
+	ns, err := h.buildNamespaceAt("default", time.Time{})
+	if err != nil {
+		t.Fatalf("buildNamespaceAt: %v", err)
+	}
 	if len(ns.Resources) != 1 || ns.Resources[0].Name != "demo-config" {
 		t.Fatalf("expected item-only ConfigMap to appear, got %+v", ns.Resources)
 	}
@@ -182,7 +201,10 @@ func TestBuildTree_IncludesTableRows(t *testing.T) {
 	if len(tree.Namespaces) != 1 || tree.Namespaces[0].Name != "default" {
 		t.Fatalf("expected one default namespace, got %+v", tree.Namespaces)
 	}
-	ns := tree.Namespaces[0]
+	ns, err := h.buildNamespaceAt("default", time.Time{})
+	if err != nil {
+		t.Fatalf("buildNamespaceAt: %v", err)
+	}
 	if len(ns.Resources) != 1 || ns.Resources[0].Name != "table-config" {
 		t.Fatalf("expected table row object to appear, got %+v", ns.Resources)
 	}
@@ -259,13 +281,14 @@ func TestCollectTimestamps_Sampled(t *testing.T) {
 }
 
 func TestServeTree_AtOverride(t *testing.T) {
-	store := buildMultiSnapshotStore(t)
-	h := &explorerHandler{store: store}
+	store, out := buildMultiSnapshotArchive(t)
+	h := &explorerHandler{store: store, archivePath: out}
 	target := time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC).Format(time.RFC3339)
+
+	// Verify the skeleton tree still works.
 	req := httptest.NewRequest(http.MethodGet, "/api/ui/tree?at="+target, nil)
 	rr := httptest.NewRecorder()
 	h.serveTree(rr, req)
-
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rr.Code)
 	}
@@ -273,20 +296,37 @@ func TestServeTree_AtOverride(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &tree); err != nil {
 		t.Fatalf("unmarshal tree: %v", err)
 	}
-	if len(tree.Namespaces) != 1 || len(tree.Namespaces[0].Pods) != 1 {
-		t.Fatalf("expected one namespace with one pod, got %+v", tree.Namespaces)
+	if len(tree.Namespaces) != 1 || tree.Namespaces[0].Name != "default" {
+		t.Fatalf("expected one default namespace, got %+v", tree.Namespaces)
 	}
-	if tree.Namespaces[0].Pods[0].Name != "demo-old" {
-		t.Fatalf("expected older pod at selected timestamp, got %q", tree.Namespaces[0].Pods[0].Name)
+
+	// Verify the namespace detail endpoint respects the at= override.
+	req2 := httptest.NewRequest(http.MethodGet, "/api/ui/tree/namespace?ns=default&at="+target, nil)
+	rr2 := httptest.NewRecorder()
+	h.serveTreeNamespace(rr2, req2)
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr2.Code)
+	}
+	var ns namespaceDetailResponse
+	if err := json.Unmarshal(rr2.Body.Bytes(), &ns); err != nil {
+		t.Fatalf("unmarshal namespace detail: %v", err)
+	}
+	if len(ns.Pods) != 1 {
+		t.Fatalf("expected one pod, got %+v", ns.Pods)
+	}
+	if ns.Pods[0].Name != "demo-old" {
+		t.Fatalf("expected older pod at selected timestamp, got %q", ns.Pods[0].Name)
 	}
 }
 
 func TestServeTree_AtInvalid(t *testing.T) {
 	store := buildTestStore(t)
 	h := &explorerHandler{store: store}
-	req := httptest.NewRequest(http.MethodGet, "/api/ui/tree?at=not-a-time", nil)
+	// serveTree is now index-only and ignores the at= param; invalid value on
+	// serveTreeNamespace (where at is actually used) should return 400.
+	req := httptest.NewRequest(http.MethodGet, "/api/ui/tree/namespace?ns=default&at=not-a-time", nil)
 	rr := httptest.NewRecorder()
-	h.serveTree(rr, req)
+	h.serveTreeNamespace(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rr.Code)
 	}
@@ -473,6 +513,11 @@ func buildTableOnlyStore(t *testing.T) *server.CaptureStore {
 }
 
 func buildMultiSnapshotStore(t *testing.T) *server.CaptureStore {
+	store, _ := buildMultiSnapshotArchive(t)
+	return store
+}
+
+func buildMultiSnapshotArchive(t *testing.T) (*server.CaptureStore, string) {
 	t.Helper()
 	dir := t.TempDir()
 	out := filepath.Join(dir, "capture-multi-snapshot.khsrk")
@@ -494,7 +539,7 @@ func buildMultiSnapshotStore(t *testing.T) *server.CaptureStore {
 		},
 	}
 	meta := &capture.CaptureMetadata{CaptureID: "ui-multi-snapshot-test", CapturedAt: t1, CapturedUntil: t2, RecordCount: len(recs)}
-	return buildStoreFromArchive(t, out, recs, idx, nil, meta)
+	return buildStoreFromArchive(t, out, recs, idx, nil, meta), out
 }
 
 func buildWatchOnlyStore(t *testing.T) *server.CaptureStore {

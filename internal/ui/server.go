@@ -45,7 +45,7 @@ type treeResponse struct {
 	CapturedAt    time.Time       `json:"captured_at"`
 	CapturedUntil time.Time       `json:"captured_until"`
 	Namespaces    []namespaceNode `json:"namespaces"`
-	ClusterScoped []resourceNode  `json:"cluster_scoped"`
+	ClusterScoped []string        `json:"cluster_scoped"` // resource kind names only; items loaded on demand
 	ResourceKinds []string        `json:"resource_kinds"`
 }
 
@@ -59,10 +59,7 @@ type timestampsResponse struct {
 }
 
 type namespaceNode struct {
-	Name      string         `json:"name"`
-	Workloads []workloadNode `json:"workloads"`
-	Pods      []podNode      `json:"pods"`
-	Resources []resourceNode `json:"resources"`
+	Name string `json:"name"`
 }
 
 type workloadNode struct {
@@ -98,6 +95,13 @@ type resourceNode struct {
 	Age      string            `json:"age,omitempty"`
 	ListPath string            `json:"list_path"`
 	Labels   map[string]string `json:"labels,omitempty"`
+}
+
+type namespaceDetailResponse struct {
+	Name      string         `json:"name"`
+	Workloads []workloadNode `json:"workloads"`
+	Pods      []podNode      `json:"pods"`
+	Resources []resourceNode `json:"resources"`
 }
 
 type listItem struct {
@@ -137,6 +141,7 @@ func Open(opts OpenOptions) (*Server, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", h.serveIndex)
 	mux.HandleFunc("/api/ui/tree", h.serveTree)
+	mux.HandleFunc("/api/ui/tree/namespace", h.serveTreeNamespace)
 	mux.HandleFunc("/api/ui/detail", h.serveDetail)
 	mux.HandleFunc("/api/ui/timestamps", h.serveTimestamps)
 	mux.HandleFunc("/api/ui/transitions", h.serveTransitions)
@@ -186,18 +191,72 @@ func (h *explorerHandler) serveIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *explorerHandler) serveTree(w http.ResponseWriter, r *http.Request) {
+	// Index-only walk: no record bodies are read.
+	// Returns the namespace list, cluster-scoped resource kinds, and all resource kinds.
+	// Clients load individual namespace items on demand via /api/ui/tree/namespace.
+	nsSet := map[string]struct{}{}
+	clusterKindSet := map[string]struct{}{}
+	kindSet := map[string]struct{}{}
+	for path := range h.store.Index {
+		_, _, resource, ns, _ := parseAPIPath(baseAPIPath(path))
+		if resource == "" {
+			continue
+		}
+		kind := kindFromResource(resource)
+		kindSet[kind] = struct{}{}
+		if ns == "" {
+			clusterKindSet[kind] = struct{}{}
+		} else {
+			nsSet[ns] = struct{}{}
+		}
+	}
+	namespaces := make([]namespaceNode, 0, len(nsSet))
+	for ns := range nsSet {
+		namespaces = append(namespaces, namespaceNode{Name: ns})
+	}
+	sort.Slice(namespaces, func(i, j int) bool { return namespaces[i].Name < namespaces[j].Name })
+
+	clusterKinds := make([]string, 0, len(clusterKindSet))
+	for k := range clusterKindSet {
+		clusterKinds = append(clusterKinds, k)
+	}
+	sort.Strings(clusterKinds)
+
+	kinds := make([]string, 0, len(kindSet))
+	for k := range kindSet {
+		kinds = append(kinds, k)
+	}
+	sort.Strings(kinds)
+
+	writeJSON(w, http.StatusOK, treeResponse{
+		CapturedAt:    h.store.Metadata.CapturedAt,
+		CapturedUntil: h.store.Metadata.CapturedUntil,
+		Namespaces:    namespaces,
+		ClusterScoped: clusterKinds,
+		ResourceKinds: kinds,
+	})
+}
+
+// serveTreeNamespace loads all items for a single namespace (or cluster-scoped
+// resources when ns="" / ns=":cluster") and returns the full workloads/pods/resources
+// breakdown. This is called on demand as the user expands a namespace in the UI.
+func (h *explorerHandler) serveTreeNamespace(w http.ResponseWriter, r *http.Request) {
 	at, err := h.resolveRequestAt(r)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	ns := r.URL.Query().Get("ns")
+	if ns == ":cluster" {
+		ns = ""
+	}
 
-	resp, err := h.buildTreeAt(at)
+	node, err := h.buildNamespaceAt(ns, at)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, resp)
+	writeJSON(w, http.StatusOK, node)
 }
 
 func (h *explorerHandler) serveDetail(w http.ResponseWriter, r *http.Request) {
@@ -409,135 +468,125 @@ func (h *explorerHandler) buildTree() (*treeResponse, error) {
 	return h.buildTreeAt(h.at)
 }
 
+// buildTreeAt is kept for tests; it reconstructs the full tree the old way.
+// New callers should use the split serveTree + serveTreeNamespace endpoints.
 func (h *explorerHandler) buildTreeAt(at time.Time) (*treeResponse, error) {
-	nsMap := map[string]*namespaceNode{}
-	clusterScoped := make([]resourceNode, 0)
-	kindSet := map[string]bool{}
-	workloadKinds := map[string]bool{
-		"deployments":  true,
-		"statefulsets": true,
-		"daemonsets":   true,
-		"jobs":         true,
-		"replicasets":  true,
-	}
-	// Map of (namespace, resource) -> all candidate index paths
-	byNSRes := map[string]map[string][]string{}
+	nsSet := map[string]struct{}{}
+	clusterKindSet := map[string]struct{}{}
+	kindSet := map[string]struct{}{}
 	for path := range h.store.Index {
-		group, version, resource, ns, _ := parseAPIPath(baseAPIPath(path))
+		_, _, resource, ns, _ := parseAPIPath(baseAPIPath(path))
 		if resource == "" {
 			continue
 		}
-		if byNSRes[ns] == nil {
-			byNSRes[ns] = map[string][]string{}
-		}
-		byNSRes[ns][resource] = append(byNSRes[ns][resource], path)
-		_ = group
-		_ = version
-	}
-	ensureNamespace := func(name string) *namespaceNode {
-		node, ok := nsMap[name]
-		if !ok {
-			node = &namespaceNode{
-				Name:      name,
-				Workloads: []workloadNode{},
-				Pods:      []podNode{},
-				Resources: []resourceNode{},
-			}
-			nsMap[name] = node
-		}
-		return node
-	}
-	appendNamespacedItem := func(targetNS, resource string, entry listItem) {
-		node := ensureNamespace(targetNS)
-		if workloadKinds[resource] {
-			w := workloadNode{
-				Kind:     firstNonEmpty(asString(entry.item["kind"]), kindFromResource(resource)),
-				Name:     getMetaName(entry.item),
-				Status:   summarizeStatus(entry.item),
-				Age:      summarizeAge(entry.item),
-				ListPath: entry.path,
-				Labels:   getMetaLabels(entry.item),
-			}
-			node.Workloads = append(node.Workloads, w)
-			kindSet[w.Kind] = true
-			return
-		}
-		if resource == "pods" {
-			p := toPodNode(entry.path, entry.item)
-			node.Pods = append(node.Pods, p)
-			kindSet[p.Kind] = true
-			return
-		}
-		rn := toResourceNode(resource, entry.path, entry.item)
-		node.Resources = append(node.Resources, rn)
-		kindSet[rn.Kind] = true
-	}
-	for ns, resMap := range byNSRes {
-		for resource, candidates := range resMap {
-			items, ok := h.loadResourceItemsAt(candidates, at)
-			if !ok {
-				continue
-			}
-			if ns == "" {
-				for _, entry := range items {
-					if itemNS := getMetaNamespace(entry.item); itemNS != "" {
-						appendNamespacedItem(itemNS, resource, entry)
-						continue
-					}
-					node := toResourceNode(resource, entry.path, entry.item)
-					clusterScoped = append(clusterScoped, node)
-					kindSet[node.Kind] = true
-				}
-				continue
-			}
-			for _, entry := range items {
-				targetNS := ns
-				if itemNS := getMetaNamespace(entry.item); itemNS != "" {
-					targetNS = itemNS
-				}
-				appendNamespacedItem(targetNS, resource, entry)
-			}
+		kind := kindFromResource(resource)
+		kindSet[kind] = struct{}{}
+		if ns == "" {
+			clusterKindSet[kind] = struct{}{}
+		} else {
+			nsSet[ns] = struct{}{}
 		}
 	}
-	for ns := range nsMap {
-		attachPodsToWorkloads(nsMap[ns])
-	}
-	namespaces := make([]namespaceNode, 0, len(nsMap))
-	for _, ns := range nsMap {
-		sort.Slice(ns.Workloads, func(i, j int) bool {
-			if ns.Workloads[i].Kind == ns.Workloads[j].Kind {
-				return ns.Workloads[i].Name < ns.Workloads[j].Name
-			}
-			return ns.Workloads[i].Kind < ns.Workloads[j].Kind
-		})
-		sort.Slice(ns.Pods, func(i, j int) bool { return ns.Pods[i].Name < ns.Pods[j].Name })
-		sort.Slice(ns.Resources, func(i, j int) bool {
-			if ns.Resources[i].Kind == ns.Resources[j].Kind {
-				return ns.Resources[i].Name < ns.Resources[j].Name
-			}
-			return ns.Resources[i].Kind < ns.Resources[j].Kind
-		})
-		namespaces = append(namespaces, *ns)
+	namespaces := make([]namespaceNode, 0, len(nsSet))
+	for ns := range nsSet {
+		namespaces = append(namespaces, namespaceNode{Name: ns})
 	}
 	sort.Slice(namespaces, func(i, j int) bool { return namespaces[i].Name < namespaces[j].Name })
-	sort.Slice(clusterScoped, func(i, j int) bool {
-		if clusterScoped[i].Kind == clusterScoped[j].Kind {
-			return clusterScoped[i].Name < clusterScoped[j].Name
-		}
-		return clusterScoped[i].Kind < clusterScoped[j].Kind
-	})
+
+	clusterKinds := make([]string, 0, len(clusterKindSet))
+	for k := range clusterKindSet {
+		clusterKinds = append(clusterKinds, k)
+	}
+	sort.Strings(clusterKinds)
+
 	kinds := make([]string, 0, len(kindSet))
 	for k := range kindSet {
 		kinds = append(kinds, k)
 	}
 	sort.Strings(kinds)
+
 	return &treeResponse{
 		CapturedAt:    h.store.Metadata.CapturedAt,
 		CapturedUntil: h.store.Metadata.CapturedUntil,
 		Namespaces:    namespaces,
-		ClusterScoped: clusterScoped,
+		ClusterScoped: clusterKinds,
 		ResourceKinds: kinds,
 	}, nil
+}
+
+// buildNamespaceAt loads all items for the given namespace (empty = cluster-scoped)
+// and returns the full workloads / pods / resources breakdown.
+func (h *explorerHandler) buildNamespaceAt(targetNS string, at time.Time) (*namespaceDetailResponse, error) {
+	workloadKinds := map[string]bool{
+		"deployments": true, "statefulsets": true, "daemonsets": true,
+		"jobs": true, "replicasets": true,
+	}
+
+	// Collect candidate paths for this namespace.
+	byRes := map[string][]string{}
+	for path := range h.store.Index {
+		_, _, resource, ns, _ := parseAPIPath(baseAPIPath(path))
+		if resource == "" {
+			continue
+		}
+		if ns != targetNS {
+			continue
+		}
+		byRes[resource] = append(byRes[resource], path)
+	}
+
+	node := &namespaceDetailResponse{
+		Name:      targetNS,
+		Workloads: []workloadNode{},
+		Pods:      []podNode{},
+		Resources: []resourceNode{},
+	}
+
+	for resource, candidates := range byRes {
+		items, ok := h.loadResourceItemsAt(candidates, at)
+		if !ok {
+			continue
+		}
+		for _, entry := range items {
+			itemNS := getMetaNamespace(entry.item)
+			if targetNS != "" && itemNS != "" && itemNS != targetNS {
+				continue
+			}
+			if workloadKinds[resource] {
+				node.Workloads = append(node.Workloads, workloadNode{
+					Kind:     firstNonEmpty(asString(entry.item["kind"]), kindFromResource(resource)),
+					Name:     getMetaName(entry.item),
+					Status:   summarizeStatus(entry.item),
+					Age:      summarizeAge(entry.item),
+					ListPath: entry.path,
+					Labels:   getMetaLabels(entry.item),
+				})
+				continue
+			}
+			if resource == "pods" {
+				node.Pods = append(node.Pods, toPodNode(entry.path, entry.item))
+				continue
+			}
+			node.Resources = append(node.Resources, toResourceNode(resource, entry.path, entry.item))
+		}
+	}
+
+	attachPodsToWorkloads(node)
+
+	sort.Slice(node.Workloads, func(i, j int) bool {
+		if node.Workloads[i].Kind == node.Workloads[j].Kind {
+			return node.Workloads[i].Name < node.Workloads[j].Name
+		}
+		return node.Workloads[i].Kind < node.Workloads[j].Kind
+	})
+	sort.Slice(node.Pods, func(i, j int) bool { return node.Pods[i].Name < node.Pods[j].Name })
+	sort.Slice(node.Resources, func(i, j int) bool {
+		if node.Resources[i].Kind == node.Resources[j].Kind {
+			return node.Resources[i].Name < node.Resources[j].Name
+		}
+		return node.Resources[i].Kind < node.Resources[j].Kind
+	})
+	return node, nil
 }
 
 func toResourceNode(resource, listPath string, item map[string]any) resourceNode {
@@ -576,7 +625,7 @@ func toPodNode(listPath string, item map[string]any) podNode {
 	}
 }
 
-func attachPodsToWorkloads(ns *namespaceNode) {
+func attachPodsToWorkloads(ns *namespaceDetailResponse) {
 	byOwner := map[string]*workloadNode{}
 	for i := range ns.Workloads {
 		k := ns.Workloads[i].Kind + "/" + ns.Workloads[i].Name
