@@ -670,6 +670,29 @@ func (h *handler) handleWatch(w http.ResponseWriter, r *http.Request, path strin
 	}
 
 	if code == 404 {
+		// Cluster-scoped fallback: resource was captured at the cluster path
+		// (e.g. /api/v1/pods) but the watch targets a specific namespace.
+		// Filter by metadata.namespace so k9s pod/container watchers that use
+		// a namespaced watch path see the right items.
+		g, v, resource, ns := parseAPIPath(watchPath)
+		if ns != "" && resource != "" {
+			var clusterPath string
+			if g == "" {
+				clusterPath = "/api/" + v + "/" + resource
+			} else {
+				clusterPath = "/apis/" + g + "/" + v + "/" + resource
+			}
+			clusterBody, clusterCode, cerr := h.store.ReconstructAt(clusterPath, at)
+			if cerr == nil && clusterCode == 200 {
+				filtered, ferr := applySelectors(clusterBody, "", "metadata.namespace="+ns)
+				if ferr == nil {
+					rawBody, code = filtered, 200
+				}
+			}
+		}
+	}
+
+	if code == 404 {
 		g, v, resource, _ := parseAPIPath(watchPath)
 		if resource != "" {
 			av := v
