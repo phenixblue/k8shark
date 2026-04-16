@@ -1912,6 +1912,7 @@ const indexHTML = `<!doctype html>
       el.tree.innerHTML = '';
       const q = el.search.value.trim().toLowerCase();
 			let renderedNodes = 0;
+			let renderedSections = 0;
 
 			const cs = document.createElement('details');
 			cs.open = sectionOpen('cluster-scoped', true);
@@ -1926,6 +1927,7 @@ const indexHTML = `<!doctype html>
       }
 			if (!q || clusterShown > 0) {
 				el.tree.appendChild(cs);
+				renderedSections++;
 			}
 
       const visibleNamespaces = q ? treeData.namespaces : treeData.namespaces.slice(0, namespacesVisibleLimit);
@@ -2005,6 +2007,7 @@ const indexHTML = `<!doctype html>
 					ds.appendChild(pager);
 				}
         el.tree.appendChild(ds);
+				renderedSections++;
       }
 
 			if (!q && treeData.namespaces.length > namespacesVisibleLimit) {
@@ -2020,9 +2023,10 @@ const indexHTML = `<!doctype html>
 				nsPager.appendChild(nsMeta);
 				nsPager.appendChild(nsBtn);
 				el.tree.appendChild(nsPager);
+				renderedSections++;
 			}
 
-			if (renderedNodes === 0) {
+			if (renderedNodes === 0 && renderedSections === 0) {
 				const msg = q
 					? 'No resources match the current search/filter selection.'
 					: 'No resources were found in this capture at the selected time.';
