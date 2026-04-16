@@ -4,8 +4,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/phenixblue/k8shark/internal/archive"
@@ -38,83 +36,125 @@ type Result struct {
 // Archive reads srcPath, applies redaction options, and writes to dstPath.
 // The original archive is not modified.
 func Archive(srcPath, dstPath string, opts Options) (Result, error) {
-	// Extract the source archive to a temp dir.
-	tmpDir, err := os.MkdirTemp("", "k8shark-redact-*")
+	ar, err := archive.Open(srcPath)
 	if err != nil {
-		return Result{}, fmt.Errorf("creating temp dir: %w", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	if err := archive.Open(srcPath, tmpDir); err != nil {
 		return Result{}, fmt.Errorf("opening archive: %w", err)
 	}
+	defer ar.Close()
 
-	// Load metadata and index.
-	metaBytes, err := os.ReadFile(filepath.Join(tmpDir, "k8shark-capture", "metadata.json"))
-	if err != nil {
+	var meta capture.CaptureMetadata
+	if err := ar.ReadMetadata(&meta); err != nil {
 		return Result{}, fmt.Errorf("reading metadata: %w", err)
 	}
-	var meta capture.CaptureMetadata
-	if err := json.Unmarshal(metaBytes, &meta); err != nil {
-		return Result{}, fmt.Errorf("parsing metadata: %w", err)
-	}
 
-	idxBytes, err := os.ReadFile(filepath.Join(tmpDir, "k8shark-capture", "index.json"))
-	if err != nil {
+	var idx capture.Index
+	if err := ar.ReadIndex(&idx); err != nil {
 		return Result{}, fmt.Errorf("reading index: %w", err)
 	}
-	var idx capture.Index
-	if err := json.Unmarshal(idxBytes, &idx); err != nil {
-		return Result{}, fmt.Errorf("parsing index: %w", err)
-	}
 
-	// Walk all records, collect unique IDs, and redact as needed.
-	seen := map[string]bool{}
-	for _, entry := range idx {
-		for _, id := range entry.RecordIDs {
-			seen[id] = true
-		}
-	}
+	var wi capture.WatchIndex
+	_, _ = ar.ReadWatchIndex(&wi)
 
-	var records []*capture.Record
 	result := Result{}
 
-	for id := range seen {
-		recPath := filepath.Join(tmpDir, "k8shark-capture", "records", id+".json")
-		data, err := os.ReadFile(recPath)
-		if err != nil {
-			return Result{}, fmt.Errorf("reading record %s: %w", id, err)
-		}
-		var rec capture.Record
-		if err := json.Unmarshal(data, &rec); err != nil {
-			return Result{}, fmt.Errorf("parsing record %s: %w", id, err)
-		}
-
-		// Secret redaction pass
-		if opts.RedactSecrets {
-			secretsRedacted, err := redactRecord(&rec, opts.AllowList)
-			if err != nil {
-				return Result{}, fmt.Errorf("redacting record %s: %w", id, err)
-			}
-			if secretsRedacted {
-				result.SecretsRedacted++
-			}
-		}
-
-		// Field-level redaction pass
-		if len(opts.Rules) > 0 {
-			fieldsRedacted, err := redactFieldsInRecord(&rec, opts.Rules)
-			if err != nil {
-				return Result{}, fmt.Errorf("field-redacting record %s: %w", id, err)
-			}
-			result.FieldsRedacted += fieldsRedacted
-		}
-
-		records = append(records, &rec)
+	sw, err := archive.NewStreamWriter(dstPath)
+	if err != nil {
+		return Result{}, fmt.Errorf("creating output archive: %w", err)
 	}
 
-	if err := archive.Write(dstPath, &meta, records, idx); err != nil {
-		return Result{}, fmt.Errorf("writing redacted archive: %w", err)
+	// newIdx / newWI will be built with corrected seq numbers as we write.
+	newIdx := make(capture.Index, len(idx))
+	newWI := make(capture.WatchIndex, len(wi))
+
+	// Copy regular index records in order, rebuilding seqs.
+	for apiPath, entry := range idx {
+		newEntry := &capture.IndexEntry{
+			APIPath: entry.APIPath,
+			Times:   entry.Times,
+		}
+		for _, seq := range entry.Seqs {
+			data, err := ar.ReadRecord(apiPath, seq)
+			if err != nil {
+				return Result{}, fmt.Errorf("reading record seq %d: %w", seq, err)
+			}
+			var rec capture.Record
+			if err := json.Unmarshal(data, &rec); err != nil {
+				return Result{}, fmt.Errorf("parsing record seq %d: %w", seq, err)
+			}
+
+			if opts.RedactSecrets {
+				secretsRedacted, err := redactRecord(&rec, opts.AllowList)
+				if err != nil {
+					return Result{}, fmt.Errorf("redacting record seq %d: %w", seq, err)
+				}
+				if secretsRedacted {
+					result.SecretsRedacted++
+				}
+			}
+
+			if len(opts.Rules) > 0 {
+				fieldsRedacted, err := redactFieldsInRecord(&rec, opts.Rules)
+				if err != nil {
+					return Result{}, fmt.Errorf("field-redacting record seq %d: %w", seq, err)
+				}
+				result.FieldsRedacted += fieldsRedacted
+			}
+
+			newSeq, err := sw.WriteRecordRaw(apiPath, rec)
+			if err != nil {
+				return Result{}, fmt.Errorf("writing record seq %d: %w", seq, err)
+			}
+			newEntry.Seqs = append(newEntry.Seqs, newSeq)
+		}
+		newIdx[apiPath] = newEntry
+	}
+
+	// Copy watch-index records in order.
+	for apiPath, wiEntry := range wi {
+		newWIEntry := &capture.WatchIndexEntry{
+			APIPath:    wiEntry.APIPath,
+			Times:      wiEntry.Times,
+			EventTypes: wiEntry.EventTypes,
+		}
+		for _, seq := range wiEntry.Seqs {
+			data, err := ar.ReadRecord(apiPath, seq)
+			if err != nil {
+				return Result{}, fmt.Errorf("reading watch record seq %d: %w", seq, err)
+			}
+			var rec capture.Record
+			if err := json.Unmarshal(data, &rec); err != nil {
+				return Result{}, fmt.Errorf("parsing watch record seq %d: %w", seq, err)
+			}
+
+			if opts.RedactSecrets {
+				secretsRedacted, err := redactRecord(&rec, opts.AllowList)
+				if err != nil {
+					return Result{}, fmt.Errorf("redacting watch record seq %d: %w", seq, err)
+				}
+				if secretsRedacted {
+					result.SecretsRedacted++
+				}
+			}
+
+			if len(opts.Rules) > 0 {
+				fieldsRedacted, err := redactFieldsInRecord(&rec, opts.Rules)
+				if err != nil {
+					return Result{}, fmt.Errorf("field-redacting watch record seq %d: %w", seq, err)
+				}
+				result.FieldsRedacted += fieldsRedacted
+			}
+
+			newSeq, err := sw.WriteRecordRaw(apiPath, rec)
+			if err != nil {
+				return Result{}, fmt.Errorf("writing watch record seq %d: %w", seq, err)
+			}
+			newWIEntry.Seqs = append(newWIEntry.Seqs, newSeq)
+		}
+		newWI[apiPath] = newWIEntry
+	}
+
+	if err := sw.Finish(&meta, newIdx, newWI); err != nil {
+		return Result{}, fmt.Errorf("finishing output archive: %w", err)
 	}
 
 	return result, nil

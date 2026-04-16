@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
@@ -31,7 +30,6 @@ type OpenOptions struct {
 
 type Server struct {
 	address    string
-	tmpDir     string
 	httpServer *http.Server
 	done       chan struct{}
 }
@@ -109,25 +107,20 @@ type listItem struct {
 }
 
 func Open(opts OpenOptions) (*Server, error) {
-	tmpDir, err := os.MkdirTemp("", "k8shark-ui-*")
+	ar, err := archive.Open(opts.ArchivePath)
 	if err != nil {
-		return nil, fmt.Errorf("creating temp dir: %w", err)
+		return nil, fmt.Errorf("opening archive: %w", err)
 	}
 
-	if err := archive.Open(opts.ArchivePath, tmpDir); err != nil {
-		_ = os.RemoveAll(tmpDir)
-		return nil, fmt.Errorf("extracting archive: %w", err)
-	}
-
-	store, err := server.LoadStore(tmpDir)
+	store, err := server.LoadStore(ar)
 	if err != nil {
-		_ = os.RemoveAll(tmpDir)
+		_ = ar.Close()
 		return nil, fmt.Errorf("loading capture: %w", err)
 	}
 
 	at, err := parseReplayAt(store.Metadata.CapturedAt, store.Metadata.CapturedUntil, opts.At)
 	if err != nil {
-		_ = os.RemoveAll(tmpDir)
+		_ = ar.Close()
 		return nil, err
 	}
 
@@ -137,7 +130,7 @@ func Open(opts OpenOptions) (*Server, error) {
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:"+port)
 	if err != nil {
-		_ = os.RemoveAll(tmpDir)
+		_ = ar.Close()
 		return nil, fmt.Errorf("listening: %w", err)
 	}
 
@@ -161,7 +154,7 @@ func Open(opts OpenOptions) (*Server, error) {
 	}()
 
 	addr := fmt.Sprintf("http://127.0.0.1:%d", ln.Addr().(*net.TCPAddr).Port)
-	return &Server{address: addr, tmpDir: tmpDir, httpServer: httpSrv, done: done}, nil
+	return &Server{address: addr, httpServer: httpSrv, done: done}, nil
 }
 
 func (s *Server) Address() string { return s.address }
@@ -171,7 +164,6 @@ func (s *Server) Shutdown() {
 	defer cancel()
 	_ = s.httpServer.Shutdown(ctx)
 	<-s.done
-	_ = os.RemoveAll(s.tmpDir)
 }
 
 func (s *Server) Wait() error {
@@ -185,7 +177,6 @@ func (s *Server) Wait() error {
 		_ = s.httpServer.Shutdown(ctx)
 		<-s.done
 	}
-	_ = os.RemoveAll(s.tmpDir)
 	return nil
 }
 
@@ -892,13 +883,13 @@ func (h *explorerHandler) responseBodiesAt(path string, at time.Time) ([][]byte,
 	}
 
 	entry, ok := h.store.Index[path]
-	if !ok || len(entry.RecordIDs) == 0 {
+	if !ok || len(entry.Seqs) == 0 {
 		return nil, false
 	}
 
-	bodies := make([][]byte, 0, len(entry.RecordIDs))
-	for _, id := range entry.RecordIDs {
-		body, ok := h.readRecordBody(id)
+	bodies := make([][]byte, 0, len(entry.Seqs))
+	for _, seq := range entry.Seqs {
+		body, ok := h.readRecordBody(path, seq)
 		if !ok {
 			continue
 		}
@@ -973,13 +964,9 @@ func sampleTimes(times []time.Time, limit int) []time.Time {
 	return selected
 }
 
-func (h *explorerHandler) readRecordBody(id string) ([]byte, bool) {
-	data, err := os.ReadFile(filepath.Join(h.store.Dir, "k8shark-capture", "records", id+".json"))
+func (h *explorerHandler) readRecordBody(apiPath string, seq int) ([]byte, bool) {
+	rec, err := h.store.ReadRecord(apiPath, seq)
 	if err != nil {
-		return nil, false
-	}
-	var rec capture.Record
-	if err := json.Unmarshal(data, &rec); err != nil {
 		return nil, false
 	}
 	if rec.ResponseCode != http.StatusOK {

@@ -42,14 +42,21 @@ func buildTestArchive(t *testing.T) string {
 	}
 	idx := capture.Index{
 		"/api/v1/namespaces/default/pods": {
-			APIPath:   "/api/v1/namespaces/default/pods",
-			RecordIDs: []string{"rec-001"},
-			Times:     []time.Time{now},
+			APIPath: "/api/v1/namespaces/default/pods",
+			Seqs:    []int{0},
+			Times:   []time.Time{now},
 		},
 	}
 
-	if err := archive.Write(outPath, meta, rec, idx); err != nil {
-		t.Fatalf("archive.Write: %v", err)
+	sw, err := archive.NewStreamWriter(outPath)
+	if err != nil {
+		t.Fatalf("NewStreamWriter: %v", err)
+	}
+	if err := sw.WriteRecord(rec[0]); err != nil {
+		t.Fatalf("WriteRecord: %v", err)
+	}
+	if err := sw.Finish(meta, idx, nil); err != nil {
+		t.Fatalf("archive Finish: %v", err)
 	}
 	return outPath
 }

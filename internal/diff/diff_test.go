@@ -125,35 +125,37 @@ func TestRun_NoDiff(t *testing.T) {
 func buildArchive(t *testing.T, entries map[string][]capture.Record) string {
 	t.Helper()
 	out := filepath.Join(t.TempDir(), "capture.tar.gz")
-	ids := make([]string, 0)
-	all := make([]capture.Record, 0)
 	index := make(capture.Index)
 	var capturedAt, capturedUntil time.Time
+	totalCount := 0
+
+	sw, err := archivepkg.NewStreamWriter(out)
+	if err != nil {
+		t.Fatalf("NewStreamWriter: %v", err)
+	}
 	for path, records := range entries {
 		entry := &capture.IndexEntry{APIPath: path}
-		for _, rec := range records {
+		for i, rec := range records {
 			if capturedAt.IsZero() || rec.CapturedAt.Before(capturedAt) {
 				capturedAt = rec.CapturedAt
 			}
 			if capturedUntil.IsZero() || rec.CapturedAt.After(capturedUntil) {
 				capturedUntil = rec.CapturedAt
 			}
-			ids = append(ids, rec.ID)
-			all = append(all, rec)
-			entry.RecordIDs = append(entry.RecordIDs, rec.ID)
+			rcopy := rec
+			if err := sw.WriteRecord(&rcopy); err != nil {
+				t.Fatalf("WriteRecord: %v", err)
+			}
+			entry.Seqs = append(entry.Seqs, i)
 			entry.Times = append(entry.Times, rec.CapturedAt)
+			totalCount++
 		}
 		index[path] = entry
 	}
-	meta := capture.CaptureMetadata{CaptureID: "test-capture", CapturedAt: capturedAt, CapturedUntil: capturedUntil, RecordCount: len(all)}
-	recs := make([]*capture.Record, 0, len(all))
-	for i := range all {
-		recs = append(recs, &all[i])
+	meta := capture.CaptureMetadata{CaptureID: "test-capture", CapturedAt: capturedAt, CapturedUntil: capturedUntil, RecordCount: totalCount}
+	if err := sw.Finish(&meta, index, nil); err != nil {
+		t.Fatalf("Finish: %v", err)
 	}
-	if err := archivepkg.Write(out, &meta, recs, index); err != nil {
-		t.Fatalf("archive.Write: %v", err)
-	}
-	_ = ids
 	return out
 }
 

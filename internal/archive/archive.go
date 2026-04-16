@@ -1,18 +1,22 @@
 package archive
 
 import (
-	"archive/tar"
-	"compress/gzip"
+	"archive/zip"
+	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"sync/atomic"
+
+	"github.com/klauspost/compress/zstd"
 )
 
 // RecordSink accepts individual capture records as they arrive.
-// It decouples the engine from the specific output format (tar.gz vs NDJSON).
 type RecordSink interface {
 	WriteRecord(rec any) error
 	// Finish writes metadata.json, index.json, and (when watchIndex is non-nil)
@@ -21,14 +25,61 @@ type RecordSink interface {
 	RecordCount() int
 }
 
-// StreamWriter streams each record directly into a .tar.gz archive as it
-// arrives. metadata.json and index.json are written by Finish(). Thread-safe.
+// pathDir returns a short, filesystem-safe directory name for an API path.
+// We use the first 16 hex chars of SHA-256 to avoid path-length issues.
+func pathDir(apiPath string) string {
+	sum := sha256.Sum256([]byte(apiPath))
+	return fmt.Sprintf("%x", sum[:8])
+}
+
+// zstdEncoder is a package-level encoder pool for compressing record data.
+var zstdEncoderPool = sync.Pool{
+	New: func() any {
+		enc, _ := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedDefault))
+		return enc
+	},
+}
+
+func zstdCompress(data []byte) ([]byte, error) {
+	enc := zstdEncoderPool.Get().(*zstd.Encoder)
+	defer zstdEncoderPool.Put(enc)
+	var buf bytes.Buffer
+	enc.Reset(&buf)
+	if _, err := enc.Write(data); err != nil {
+		return nil, err
+	}
+	if err := enc.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// zstdDecoder is a package-level decoder pool.
+var zstdDecoderPool = sync.Pool{
+	New: func() any {
+		dec, _ := zstd.NewReader(nil)
+		return dec
+	},
+}
+
+func zstdDecompress(data []byte) ([]byte, error) {
+	dec := zstdDecoderPool.Get().(*zstd.Decoder)
+	defer zstdDecoderPool.Put(dec)
+	if err := dec.Reset(bytes.NewReader(data)); err != nil {
+		return nil, err
+	}
+	return io.ReadAll(dec)
+}
+
+// StreamWriter streams each record directly into a .kshrk (ZIP+Zstd) archive.
+// metadata.json, index.json, and watch-index.json are written by Finish().
+// Thread-safe.
 type StreamWriter struct {
-	mu sync.Mutex
-	f  *os.File
-	gw *gzip.Writer
-	tw *tar.Writer
-	n  int
+	mu      sync.Mutex
+	f       *os.File
+	zw      *zip.Writer
+	n       int
+	pathSeq map[string]int // apiPath → next seq number for that path's directory
 }
 
 // NewStreamWriter creates a new StreamWriter writing to outputPath.
@@ -37,55 +88,103 @@ func NewStreamWriter(outputPath string) (*StreamWriter, error) {
 	if err != nil {
 		return nil, fmt.Errorf("creating output file %q: %w", outputPath, err)
 	}
-	gw := gzip.NewWriter(f)
-	tw := tar.NewWriter(gw)
-	return &StreamWriter{f: f, gw: gw, tw: tw}, nil
+	return &StreamWriter{
+		f:       f,
+		zw:      zip.NewWriter(f),
+		pathSeq: make(map[string]int),
+	}, nil
 }
 
-// WriteRecord marshals rec to JSON and appends it to the tar archive.
+// WriteRecord marshals rec to JSON, Zstd-compresses it, and appends it
+// to the ZIP archive under records/<pathDir(apiPath)>/<seq>.json.zst.
+// The record must have both "id" and "api_path" fields.
 func (w *StreamWriter) WriteRecord(rec any) error {
 	data, err := json.Marshal(rec)
 	if err != nil {
 		return fmt.Errorf("marshalling record: %w", err)
 	}
-	var idHolder struct {
-		ID string `json:"id"`
+	var hdr struct {
+		ID      string `json:"id"`
+		APIPath string `json:"api_path"`
 	}
-	if err := json.Unmarshal(data, &idHolder); err != nil || idHolder.ID == "" {
-		return fmt.Errorf("record missing id field")
+	if err := json.Unmarshal(data, &hdr); err != nil || hdr.ID == "" || hdr.APIPath == "" {
+		return fmt.Errorf("record missing id or api_path field")
 	}
-	path := filepath.Join("k8shark-capture", "records", idHolder.ID+".json")
+
+	compressed, err := zstdCompress(data)
+	if err != nil {
+		return fmt.Errorf("compressing record %s: %w", hdr.ID, err)
+	}
+
+	dir := pathDir(hdr.APIPath)
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if err := writeBytesToTar(w.tw, path, data); err != nil {
+
+	seq := w.pathSeq[hdr.APIPath]
+	w.pathSeq[hdr.APIPath] = seq + 1
+	entryName := filepath.Join("k8shark-capture", "records", dir, fmt.Sprintf("%d.json.zst", seq))
+
+	if err := writeBytes(w.zw, entryName, compressed); err != nil {
 		return err
 	}
 	w.n++
 	return nil
 }
 
-// Finish writes metadata.json, index.json, and (when watchIndex is non-nil)
-// watch-index.json, then closes the archive.
+// WriteRecordRaw compresses data and writes it to the archive for the given
+// apiPath.  It returns the seq number assigned to this record.
+func (w *StreamWriter) WriteRecordRaw(apiPath string, data any) (int, error) {
+	b, err := json.Marshal(data)
+	if err != nil {
+		return 0, fmt.Errorf("marshalling record: %w", err)
+	}
+	compressed, err := zstdCompress(b)
+	if err != nil {
+		return 0, fmt.Errorf("compressing record: %w", err)
+	}
+	dir := pathDir(apiPath)
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	seq := w.pathSeq[apiPath]
+	w.pathSeq[apiPath] = seq + 1
+	entryName := filepath.Join("k8shark-capture", "records", dir, fmt.Sprintf("%d.json.zst", seq))
+	if err := writeBytes(w.zw, entryName, compressed); err != nil {
+		return 0, err
+	}
+	w.n++
+	return seq, nil
+}
+
+// Finish writes metadata.json, index.json, and watch-index.json, then closes.
 func (w *StreamWriter) Finish(meta, index, watchIndex any) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if err := writeJSON(w.tw, "k8shark-capture/metadata.json", meta); err != nil {
-		return err
-	}
-	if err := writeJSON(w.tw, "k8shark-capture/index.json", index); err != nil {
-		return err
-	}
-	if watchIndex != nil {
-		if err := writeJSON(w.tw, "k8shark-capture/watch-index.json", watchIndex); err != nil {
+
+	// metadata.json stored uncompressed for fast header reads.
+	if meta != nil {
+		b, err := json.MarshalIndent(meta, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshalling metadata: %w", err)
+		}
+		if err := writeBytes(w.zw, "k8shark-capture/metadata.json", b); err != nil {
 			return err
 		}
 	}
-	if err := w.tw.Close(); err != nil {
-		return fmt.Errorf("closing tar: %w", err)
+	if index != nil {
+		if err := writeJSONZstd(w.zw, "k8shark-capture/index.json.zst", index); err != nil {
+			return err
+		}
 	}
-	if err := w.gw.Close(); err != nil {
-		return fmt.Errorf("closing gzip: %w", err)
+	if watchIndex != nil {
+		if err := writeJSONZstd(w.zw, "k8shark-capture/watch-index.json.zst", watchIndex); err != nil {
+			return err
+		}
+	}
+	if err := w.zw.Close(); err != nil {
+		return fmt.Errorf("closing zip: %w", err)
 	}
 	return w.f.Close()
 }
@@ -132,188 +231,175 @@ func (w *NDJSONWriter) RecordCount() int {
 	return w.n
 }
 
-// Writable is anything that can provide records, index, and metadata for writing.
-// We use concrete types from capture to avoid circular imports by defining them as
-// any — callers pass the real values.
-
-// Write serialises all capture data into a .tar.gz archive at outputPath.
-//
-// Archive layout:
-//
-//	k8shark-capture/
-//	  metadata.json
-//	  index.json
-//	  records/<id>.json
-func Write(outputPath string, metadata any, records any, index any) error {
-	f, err := os.Create(outputPath)
-	if err != nil {
-		return fmt.Errorf("creating output file %q: %w", outputPath, err)
-	}
-	defer f.Close()
-
-	gw := gzip.NewWriter(f)
-	defer gw.Close()
-	tw := tar.NewWriter(gw)
-	defer tw.Close()
-
-	if err := writeJSON(tw, "k8shark-capture/metadata.json", metadata); err != nil {
-		return err
-	}
-	if err := writeJSON(tw, "k8shark-capture/index.json", index); err != nil {
-		return err
-	}
-
-	// Use json marshal + unmarshal round-trip to get individual records as
-	// []map[string]any so archive package stays import-cycle-free.
-	raw, err := json.Marshal(records)
-	if err != nil {
-		return fmt.Errorf("marshalling records: %w", err)
-	}
-	var recs []json.RawMessage
-	if err := json.Unmarshal(raw, &recs); err != nil {
-		return fmt.Errorf("unmarshalling records slice: %w", err)
-	}
-
-	for _, r := range recs {
-		// Extract id field only for filename.
-		var idHolder struct {
-			ID string `json:"id"`
-		}
-		if err := json.Unmarshal(r, &idHolder); err != nil || idHolder.ID == "" {
-			return fmt.Errorf("record missing id field")
-		}
-		path := filepath.Join("k8shark-capture", "records", idHolder.ID+".json")
-		if err := writeBytesToTar(tw, path, r); err != nil {
-			return err
-		}
-	}
-
-	return nil
+// Archive provides random-access reads into a k8shark ZIP+Zstd capture archive.
+// It does NOT require extraction to disk.
+type Archive struct {
+	zr     *zip.ReadCloser
+	byName map[string]*zip.File // ZIP entry name → file handle
+	size   int64
+	path   string
+	readN  atomic.Int64 // for diagnostics
 }
 
-// Open extracts a k8shark archive to destDir and returns the opened *Reader.
-func Open(archivePath, destDir string) error {
-	f, err := os.Open(archivePath)
+// Open opens a k8shark archive for reading. The caller must call Close() when done.
+func Open(archivePath string) (*Archive, error) {
+	fi, err := os.Stat(archivePath)
 	if err != nil {
-		return fmt.Errorf("opening archive %q: %w", archivePath, err)
+		return nil, fmt.Errorf("stat %q: %w", archivePath, err)
 	}
-	defer f.Close()
-
-	gr, err := gzip.NewReader(f)
+	zr, err := zip.OpenReader(archivePath)
 	if err != nil {
-		return fmt.Errorf("reading gzip stream: %w", err)
+		return nil, fmt.Errorf("opening zip archive %q: %w", archivePath, err)
 	}
-	defer gr.Close()
+	byName := make(map[string]*zip.File, len(zr.File))
+	for _, f := range zr.File {
+		byName[f.Name] = f
+	}
+	return &Archive{zr: zr, byName: byName, size: fi.Size(), path: archivePath}, nil
+}
 
-	tr := tar.NewReader(gr)
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
+// Close releases the underlying file handle.
+func (a *Archive) Close() error { return a.zr.Close() }
+
+// Path returns the archive file path.
+func (a *Archive) Path() string { return a.path }
+
+// Size returns the on-disk size of the archive in bytes.
+func (a *Archive) Size() int64 { return a.size }
+
+// ReadMetadata reads and parses metadata.json from the archive.
+func (a *Archive) ReadMetadata(v any) error {
+	data, err := a.readRaw("k8shark-capture/metadata.json")
+	if err != nil {
+		return fmt.Errorf("reading metadata.json: %w", err)
+	}
+	return json.Unmarshal(data, v)
+}
+
+// ReadIndex reads and parses the Zstd-compressed index.json.zst.
+func (a *Archive) ReadIndex(v any) error {
+	data, err := a.readZstd("k8shark-capture/index.json.zst")
+	if err != nil {
+		return fmt.Errorf("reading index.json.zst: %w", err)
+	}
+	return json.Unmarshal(data, v)
+}
+
+// ReadWatchIndex reads and parses watch-index.json.zst, if present.
+// Returns (false, nil) when the archive has no watch index.
+func (a *Archive) ReadWatchIndex(v any) (bool, error) {
+	const name = "k8shark-capture/watch-index.json.zst"
+	if _, ok := a.byName[name]; !ok {
+		return false, nil
+	}
+	data, err := a.readZstd(name)
+	if err != nil {
+		return false, fmt.Errorf("reading watch-index.json.zst: %w", err)
+	}
+	return true, json.Unmarshal(data, v)
+}
+
+// ReadRecord reads the record at sequence seq under apiPath.
+// seq is 0-based and matches the order records were written for that path.
+func (a *Archive) ReadRecord(apiPath string, seq int) ([]byte, error) {
+	dir := pathDir(apiPath)
+	name := filepath.ToSlash(filepath.Join("k8shark-capture", "records", dir, fmt.Sprintf("%d.json.zst", seq)))
+	data, err := a.readZstd(name)
+	if err != nil {
+		return nil, fmt.Errorf("reading record path=%s seq=%d: %w", apiPath, seq, err)
+	}
+	a.readN.Add(1)
+	return data, nil
+}
+
+// RecordsForPath returns all record bytes in capture order for apiPath.
+// Stops at the first missing sequence number.
+func (a *Archive) RecordsForPath(apiPath string) ([][]byte, error) {
+	dir := pathDir(apiPath)
+	var out [][]byte
+	for seq := 0; ; seq++ {
+		name := filepath.ToSlash(filepath.Join("k8shark-capture", "records", dir, fmt.Sprintf("%d.json.zst", seq)))
+		if _, ok := a.byName[name]; !ok {
 			break
 		}
+		data, err := a.readZstd(name)
 		if err != nil {
-			return fmt.Errorf("reading tar entry: %w", err)
+			return nil, err
 		}
-		target := filepath.Join(destDir, hdr.Name) // #nosec G305 — path validated below
-		if !isPathSafe(destDir, target) {
-			return fmt.Errorf("unsafe tar path %q", hdr.Name)
-		}
-		switch hdr.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0o750); err != nil {
-				return err
-			}
+		out = append(out, data)
+	}
+	return out, nil
+}
+
+// PathDirs returns all distinct path-hash directories found under records/.
+// This allows enumeration without the index.
+func (a *Archive) PathDirs() []string {
+	seen := make(map[string]bool)
+	for name := range a.byName {
+		// prefix: k8shark-capture/records/<dir>/
+		if !strings.HasPrefix(name, "k8shark-capture/records/") {
 			continue
-		case tar.TypeReg:
-			if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
-				return err
-			}
-			out, err := os.Create(target)
-			if err != nil {
-				return err
-			}
-			if _, err := io.Copy(out, io.LimitReader(tr, 512<<20)); err != nil { // 512 MB per-file limit
-				out.Close()
-				return err
-			}
-			out.Close()
+		}
+		rest := strings.TrimPrefix(name, "k8shark-capture/records/")
+		parts := strings.SplitN(rest, "/", 2)
+		if len(parts) == 2 && parts[0] != "" {
+			seen[parts[0]] = true
 		}
 	}
+	dirs := make([]string, 0, len(seen))
+	for d := range seen {
+		dirs = append(dirs, d)
+	}
+	return dirs
+}
+
+// PathDir exposes the pathDir function for use by other packages (e.g. capture engine).
+func PathDir(apiPath string) string { return pathDir(apiPath) }
+
+// readRaw reads an uncompressed ZIP entry.
+func (a *Archive) readRaw(name string) ([]byte, error) {
+	zf, ok := a.byName[name]
+	if !ok {
+		return nil, fmt.Errorf("entry %q not found in archive", name)
+	}
+	rc, err := zf.Open()
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+	return io.ReadAll(rc)
+}
+
+// readZstd reads a Zstd-compressed ZIP entry and returns decompressed bytes.
+func (a *Archive) readZstd(name string) ([]byte, error) {
+	compressed, err := a.readRaw(name)
+	if err != nil {
+		return nil, err
+	}
+	return zstdDecompress(compressed)
+}
+
+// ---- helpers used by StreamWriter ----
+
+func writeBytes(zw *zip.Writer, name string, data []byte) error {
+	w, err := zw.Create(name)
+	if err != nil {
+		return fmt.Errorf("creating zip entry %s: %w", name, err)
+	}
+	if _, err := w.Write(data); err != nil {
+		return fmt.Errorf("writing zip entry %s: %w", name, err)
+	}
 	return nil
 }
 
-// isPathSafe ensures target is inside destDir (prevents path traversal).
-func isPathSafe(destDir, target string) bool {
-	rel, err := filepath.Rel(destDir, target)
+func writeJSONZstd(zw *zip.Writer, name string, v any) error {
+	plain, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
-		return false
+		return fmt.Errorf("marshalling %s: %w", name, err)
 	}
-	if len(rel) >= 2 && rel[:2] == ".." {
-		return false
-	}
-	return true
-}
-
-func writeJSON(tw *tar.Writer, path string, v any) error {
-	data, err := json.MarshalIndent(v, "", "  ")
+	compressed, err := zstdCompress(plain)
 	if err != nil {
-		return fmt.Errorf("marshalling %s: %w", path, err)
+		return fmt.Errorf("compressing %s: %w", name, err)
 	}
-	return writeBytesToTar(tw, path, data)
-}
-
-func writeBytesToTar(tw *tar.Writer, path string, data []byte) error {
-	hdr := &tar.Header{
-		Name: path,
-		Mode: 0o644,
-		Size: int64(len(data)),
-	}
-	if err := tw.WriteHeader(hdr); err != nil {
-		return fmt.Errorf("writing tar header for %s: %w", path, err)
-	}
-	if _, err := tw.Write(data); err != nil {
-		return fmt.Errorf("writing tar body for %s: %w", path, err)
-	}
-	return nil
-}
-
-// ReadMetadata reads just metadata.json from an already-extracted archive directory.
-func ReadMetadata(dir string) (map[string]any, error) {
-	data, err := os.ReadFile(filepath.Join(dir, "k8shark-capture", "metadata.json"))
-	if err != nil {
-		return nil, err
-	}
-	var m map[string]any
-	return m, json.Unmarshal(data, &m)
-}
-
-// ReadIndex reads index.json from an already-extracted archive directory.
-func ReadIndex(dir string) (map[string]any, error) {
-	data, err := os.ReadFile(filepath.Join(dir, "k8shark-capture", "index.json"))
-	if err != nil {
-		return nil, err
-	}
-	var idx map[string]any
-	return idx, json.Unmarshal(data, &idx)
-}
-
-// ReadRecord reads a single record file by ID.
-func ReadRecord(dir, id string) ([]byte, error) {
-	path := filepath.Join(dir, "k8shark-capture", "records", id+".json")
-	return os.ReadFile(path)
-}
-
-// ListRecordIDs returns all record IDs present in the records/ directory.
-func ListRecordIDs(dir string) ([]string, error) {
-	pattern := filepath.Join(dir, "k8shark-capture", "records", "*.json")
-	matches, err := filepath.Glob(pattern)
-	if err != nil {
-		return nil, err
-	}
-	ids := make([]string, 0, len(matches))
-	for _, m := range matches {
-		base := filepath.Base(m)
-		ids = append(ids, base[:len(base)-5]) // strip .json
-	}
-	return ids, nil
+	return writeBytes(zw, name, compressed)
 }

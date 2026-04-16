@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -231,9 +230,9 @@ func TestCollectTimestamps_Sampled(t *testing.T) {
 		path := "/api/v1/namespaces/default/pods?snapshot=" + time.Duration(i).String()
 		ts := base.Add(time.Duration(i) * time.Minute)
 		index[path] = &capture.IndexEntry{
-			APIPath:   path,
-			RecordIDs: []string{"r"},
-			Times:     []time.Time{ts},
+			APIPath: path,
+			Seqs:    []int{0},
+			Times:   []time.Time{ts},
 		}
 	}
 
@@ -294,6 +293,38 @@ func TestServeTree_AtInvalid(t *testing.T) {
 	}
 }
 
+// buildStoreFromArchive writes records via StreamWriter, opens the archive, and
+// returns a CaptureStore. wIdx may be nil for archives without watch data.
+func buildStoreFromArchive(t *testing.T, out string, recs []*capture.Record, idx capture.Index, wIdx capture.WatchIndex, meta *capture.CaptureMetadata) *server.CaptureStore {
+	t.Helper()
+	sw, err := archive.NewStreamWriter(out)
+	if err != nil {
+		t.Fatalf("NewStreamWriter: %v", err)
+	}
+	for _, r := range recs {
+		if err := sw.WriteRecord(r); err != nil {
+			t.Fatalf("WriteRecord: %v", err)
+		}
+	}
+	var wi any
+	if len(wIdx) > 0 {
+		wi = wIdx
+	}
+	if err := sw.Finish(meta, idx, wi); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	ar, err := archive.Open(out)
+	if err != nil {
+		t.Fatalf("archive.Open: %v", err)
+	}
+	t.Cleanup(func() { ar.Close() })
+	store, err := server.LoadStore(ar)
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	return store
+}
+
 func buildTestStore(t *testing.T) *server.CaptureStore {
 	t.Helper()
 	dir := t.TempDir()
@@ -310,27 +341,12 @@ func buildTestStore(t *testing.T) *server.CaptureStore {
 		{ID: "r3", CapturedAt: now, APIPath: "/api/v1/nodes", HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(nodeList)},
 	}
 	idx := capture.Index{
-		"/apis/apps/v1/namespaces/default/deployments": {APIPath: "/apis/apps/v1/namespaces/default/deployments", RecordIDs: []string{"r1"}, Times: []time.Time{now}},
-		"/api/v1/namespaces/default/pods":              {APIPath: "/api/v1/namespaces/default/pods", RecordIDs: []string{"r2"}, Times: []time.Time{now}},
-		"/api/v1/nodes":                                {APIPath: "/api/v1/nodes", RecordIDs: []string{"r3"}, Times: []time.Time{now}},
+		"/apis/apps/v1/namespaces/default/deployments": {APIPath: "/apis/apps/v1/namespaces/default/deployments", Seqs: []int{0}, Times: []time.Time{now}},
+		"/api/v1/namespaces/default/pods":              {APIPath: "/api/v1/namespaces/default/pods", Seqs: []int{0}, Times: []time.Time{now}},
+		"/api/v1/nodes":                                {APIPath: "/api/v1/nodes", Seqs: []int{0}, Times: []time.Time{now}},
 	}
 	meta := &capture.CaptureMetadata{CaptureID: "ui-test", CapturedAt: now.Add(-5 * time.Minute), CapturedUntil: now, RecordCount: len(recs)}
-	if err := archive.Write(out, meta, recs, idx); err != nil {
-		t.Fatalf("archive.Write: %v", err)
-	}
-
-	extractDir := filepath.Join(dir, "extract")
-	if err := os.MkdirAll(extractDir, 0o750); err != nil {
-		t.Fatalf("mkdir extract: %v", err)
-	}
-	if err := archive.Open(out, extractDir); err != nil {
-		t.Fatalf("archive.Open: %v", err)
-	}
-	store, err := server.LoadStore(extractDir)
-	if err != nil {
-		t.Fatalf("LoadStore: %v", err)
-	}
-	return store
+	return buildStoreFromArchive(t, out, recs, idx, nil, meta)
 }
 
 func buildQueryOnlyStore(t *testing.T) *server.CaptureStore {
@@ -346,28 +362,13 @@ func buildQueryOnlyStore(t *testing.T) *server.CaptureStore {
 	}
 	idx := capture.Index{
 		"/api/v1/namespaces/default/configmaps?labelSelector=app%3Ddemo": {
-			APIPath:   "/api/v1/namespaces/default/configmaps?labelSelector=app%3Ddemo",
-			RecordIDs: []string{"q1"},
-			Times:     []time.Time{now},
+			APIPath: "/api/v1/namespaces/default/configmaps?labelSelector=app%3Ddemo",
+			Seqs:    []int{0},
+			Times:   []time.Time{now},
 		},
 	}
 	meta := &capture.CaptureMetadata{CaptureID: "ui-query-test", CapturedAt: now.Add(-2 * time.Minute), CapturedUntil: now, RecordCount: len(recs)}
-	if err := archive.Write(out, meta, recs, idx); err != nil {
-		t.Fatalf("archive.Write: %v", err)
-	}
-
-	extractDir := filepath.Join(dir, "extract")
-	if err := os.MkdirAll(extractDir, 0o750); err != nil {
-		t.Fatalf("mkdir extract: %v", err)
-	}
-	if err := archive.Open(out, extractDir); err != nil {
-		t.Fatalf("archive.Open: %v", err)
-	}
-	store, err := server.LoadStore(extractDir)
-	if err != nil {
-		t.Fatalf("LoadStore: %v", err)
-	}
-	return store
+	return buildStoreFromArchive(t, out, recs, idx, nil, meta)
 }
 
 func buildPreferredQueryStore(t *testing.T) *server.CaptureStore {
@@ -385,33 +386,18 @@ func buildPreferredQueryStore(t *testing.T) *server.CaptureStore {
 	}
 	idx := capture.Index{
 		"/api/v1/namespaces/default/pods": {
-			APIPath:   "/api/v1/namespaces/default/pods",
-			RecordIDs: []string{"p1"},
-			Times:     []time.Time{now},
+			APIPath: "/api/v1/namespaces/default/pods",
+			Seqs:    []int{0},
+			Times:   []time.Time{now},
 		},
 		"/api/v1/namespaces/default/pods?labelSelector=app%3Ddemo": {
-			APIPath:   "/api/v1/namespaces/default/pods?labelSelector=app%3Ddemo",
-			RecordIDs: []string{"p2"},
-			Times:     []time.Time{now},
+			APIPath: "/api/v1/namespaces/default/pods?labelSelector=app%3Ddemo",
+			Seqs:    []int{0},
+			Times:   []time.Time{now},
 		},
 	}
 	meta := &capture.CaptureMetadata{CaptureID: "ui-preferred-query-test", CapturedAt: now.Add(-2 * time.Minute), CapturedUntil: now, RecordCount: len(recs)}
-	if err := archive.Write(out, meta, recs, idx); err != nil {
-		t.Fatalf("archive.Write: %v", err)
-	}
-
-	extractDir := filepath.Join(dir, "extract")
-	if err := os.MkdirAll(extractDir, 0o750); err != nil {
-		t.Fatalf("mkdir extract: %v", err)
-	}
-	if err := archive.Open(out, extractDir); err != nil {
-		t.Fatalf("archive.Open: %v", err)
-	}
-	store, err := server.LoadStore(extractDir)
-	if err != nil {
-		t.Fatalf("LoadStore: %v", err)
-	}
-	return store
+	return buildStoreFromArchive(t, out, recs, idx, nil, meta)
 }
 
 func buildMergedQueryStore(t *testing.T) *server.CaptureStore {
@@ -429,33 +415,18 @@ func buildMergedQueryStore(t *testing.T) *server.CaptureStore {
 	}
 	idx := capture.Index{
 		"/api/v1/namespaces/default/pods?labelSelector=app%3Ddemo-a": {
-			APIPath:   "/api/v1/namespaces/default/pods?labelSelector=app%3Ddemo-a",
-			RecordIDs: []string{"m1"},
-			Times:     []time.Time{now},
+			APIPath: "/api/v1/namespaces/default/pods?labelSelector=app%3Ddemo-a",
+			Seqs:    []int{0},
+			Times:   []time.Time{now},
 		},
 		"/api/v1/namespaces/default/pods?labelSelector=app%3Ddemo-b": {
-			APIPath:   "/api/v1/namespaces/default/pods?labelSelector=app%3Ddemo-b",
-			RecordIDs: []string{"m2"},
-			Times:     []time.Time{now},
+			APIPath: "/api/v1/namespaces/default/pods?labelSelector=app%3Ddemo-b",
+			Seqs:    []int{0},
+			Times:   []time.Time{now},
 		},
 	}
 	meta := &capture.CaptureMetadata{CaptureID: "ui-merged-query-test", CapturedAt: now.Add(-2 * time.Minute), CapturedUntil: now, RecordCount: len(recs)}
-	if err := archive.Write(out, meta, recs, idx); err != nil {
-		t.Fatalf("archive.Write: %v", err)
-	}
-
-	extractDir := filepath.Join(dir, "extract")
-	if err := os.MkdirAll(extractDir, 0o750); err != nil {
-		t.Fatalf("mkdir extract: %v", err)
-	}
-	if err := archive.Open(out, extractDir); err != nil {
-		t.Fatalf("archive.Open: %v", err)
-	}
-	store, err := server.LoadStore(extractDir)
-	if err != nil {
-		t.Fatalf("LoadStore: %v", err)
-	}
-	return store
+	return buildStoreFromArchive(t, out, recs, idx, nil, meta)
 }
 
 func buildItemOnlyStore(t *testing.T) *server.CaptureStore {
@@ -471,28 +442,13 @@ func buildItemOnlyStore(t *testing.T) *server.CaptureStore {
 	}
 	idx := capture.Index{
 		"/api/v1/namespaces/default/configmaps/demo-config": {
-			APIPath:   "/api/v1/namespaces/default/configmaps/demo-config",
-			RecordIDs: []string{"i1"},
-			Times:     []time.Time{now},
+			APIPath: "/api/v1/namespaces/default/configmaps/demo-config",
+			Seqs:    []int{0},
+			Times:   []time.Time{now},
 		},
 	}
 	meta := &capture.CaptureMetadata{CaptureID: "ui-item-only-test", CapturedAt: now.Add(-2 * time.Minute), CapturedUntil: now, RecordCount: len(recs)}
-	if err := archive.Write(out, meta, recs, idx); err != nil {
-		t.Fatalf("archive.Write: %v", err)
-	}
-
-	extractDir := filepath.Join(dir, "extract")
-	if err := os.MkdirAll(extractDir, 0o750); err != nil {
-		t.Fatalf("mkdir extract: %v", err)
-	}
-	if err := archive.Open(out, extractDir); err != nil {
-		t.Fatalf("archive.Open: %v", err)
-	}
-	store, err := server.LoadStore(extractDir)
-	if err != nil {
-		t.Fatalf("LoadStore: %v", err)
-	}
-	return store
+	return buildStoreFromArchive(t, out, recs, idx, nil, meta)
 }
 
 func buildTableOnlyStore(t *testing.T) *server.CaptureStore {
@@ -508,28 +464,13 @@ func buildTableOnlyStore(t *testing.T) *server.CaptureStore {
 	}
 	idx := capture.Index{
 		"/api/v1/namespaces/default/configmaps?as=Table": {
-			APIPath:   "/api/v1/namespaces/default/configmaps?as=Table",
-			RecordIDs: []string{"t1"},
-			Times:     []time.Time{now},
+			APIPath: "/api/v1/namespaces/default/configmaps?as=Table",
+			Seqs:    []int{0},
+			Times:   []time.Time{now},
 		},
 	}
 	meta := &capture.CaptureMetadata{CaptureID: "ui-table-only-test", CapturedAt: now.Add(-2 * time.Minute), CapturedUntil: now, RecordCount: len(recs)}
-	if err := archive.Write(out, meta, recs, idx); err != nil {
-		t.Fatalf("archive.Write: %v", err)
-	}
-
-	extractDir := filepath.Join(dir, "extract")
-	if err := os.MkdirAll(extractDir, 0o750); err != nil {
-		t.Fatalf("mkdir extract: %v", err)
-	}
-	if err := archive.Open(out, extractDir); err != nil {
-		t.Fatalf("archive.Open: %v", err)
-	}
-	store, err := server.LoadStore(extractDir)
-	if err != nil {
-		t.Fatalf("LoadStore: %v", err)
-	}
-	return store
+	return buildStoreFromArchive(t, out, recs, idx, nil, meta)
 }
 
 func buildMultiSnapshotStore(t *testing.T) *server.CaptureStore {
@@ -548,42 +489,23 @@ func buildMultiSnapshotStore(t *testing.T) *server.CaptureStore {
 	}
 	idx := capture.Index{
 		"/api/v1/namespaces/default/pods": {
-			APIPath:   "/api/v1/namespaces/default/pods",
-			RecordIDs: []string{"s1", "s2"},
-			Times:     []time.Time{t1, t2},
+			APIPath: "/api/v1/namespaces/default/pods",
+			Seqs:    []int{0, 1},
+			Times:   []time.Time{t1, t2},
 		},
 	}
 	meta := &capture.CaptureMetadata{CaptureID: "ui-multi-snapshot-test", CapturedAt: t1, CapturedUntil: t2, RecordCount: len(recs)}
-	if err := archive.Write(out, meta, recs, idx); err != nil {
-		t.Fatalf("archive.Write: %v", err)
-	}
-
-	extractDir := filepath.Join(dir, "extract")
-	if err := os.MkdirAll(extractDir, 0o750); err != nil {
-		t.Fatalf("mkdir extract: %v", err)
-	}
-	if err := archive.Open(out, extractDir); err != nil {
-		t.Fatalf("archive.Open: %v", err)
-	}
-	store, err := server.LoadStore(extractDir)
-	if err != nil {
-		t.Fatalf("LoadStore: %v", err)
-	}
-	return store
+	return buildStoreFromArchive(t, out, recs, idx, nil, meta)
 }
 
 func buildWatchOnlyStore(t *testing.T) *server.CaptureStore {
 	t.Helper()
 	dir := t.TempDir()
-	base := filepath.Join(dir, "k8shark-capture")
-	recDir := filepath.Join(base, "records")
-	if err := os.MkdirAll(recDir, 0o750); err != nil {
-		t.Fatalf("mkdir records: %v", err)
-	}
+	out := filepath.Join(dir, "capture-watch-only.tar.gz")
 
 	t0 := time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC)
 	t1 := t0.Add(30 * time.Second)
-	rec := capture.Record{
+	watchRec := &capture.Record{
 		ID:           "watch-1",
 		CapturedAt:   t1,
 		APIPath:      "/api/v1/namespaces/default/pods",
@@ -592,45 +514,25 @@ func buildWatchOnlyStore(t *testing.T) *server.CaptureStore {
 		ResponseCode: http.StatusOK,
 		ResponseBody: json.RawMessage(`{"apiVersion":"v1","kind":"Pod","metadata":{"name":"redis","namespace":"default","uid":"pod-redis"},"spec":{"containers":[{"name":"main"}]},"status":{"phase":"Running"}}`),
 	}
-	recData, _ := json.Marshal(rec)
-	if err := os.WriteFile(filepath.Join(recDir, rec.ID+".json"), recData, 0o644); err != nil {
-		t.Fatalf("write record: %v", err)
-	}
 
-	meta := capture.CaptureMetadata{CaptureID: "ui-watch-only-test", CapturedAt: t0, CapturedUntil: t1.Add(time.Second), RecordCount: 1}
-	metaData, _ := json.Marshal(meta)
-	if err := os.WriteFile(filepath.Join(base, "metadata.json"), metaData, 0o644); err != nil {
-		t.Fatalf("write metadata: %v", err)
-	}
-
-	indexData, _ := json.Marshal(capture.Index{
+	recs := []*capture.Record{watchRec}
+	idx := capture.Index{
 		"/api/v1/namespaces/default/pods": {
-			APIPath:   "/api/v1/namespaces/default/pods",
-			RecordIDs: []string{},
-			Times:     []time.Time{},
+			APIPath: "/api/v1/namespaces/default/pods",
+			Seqs:    []int{},
+			Times:   []time.Time{},
 		},
-	})
-	if err := os.WriteFile(filepath.Join(base, "index.json"), indexData, 0o644); err != nil {
-		t.Fatalf("write index: %v", err)
 	}
-
-	watchIndexData, _ := json.Marshal(capture.WatchIndex{
+	wi := capture.WatchIndex{
 		"/api/v1/namespaces/default/pods": {
 			APIPath:    "/api/v1/namespaces/default/pods",
-			RecordIDs:  []string{"watch-1"},
+			Seqs:       []int{0},
 			Times:      []time.Time{t1},
 			EventTypes: []string{"ADDED"},
 		},
-	})
-	if err := os.WriteFile(filepath.Join(base, "watch-index.json"), watchIndexData, 0o644); err != nil {
-		t.Fatalf("write watch-index: %v", err)
 	}
-
-	store, err := server.LoadStore(dir)
-	if err != nil {
-		t.Fatalf("LoadStore: %v", err)
-	}
-	return store
+	meta := &capture.CaptureMetadata{CaptureID: "ui-watch-only-test", CapturedAt: t0, CapturedUntil: t1.Add(time.Second), RecordCount: 1}
+	return buildStoreFromArchive(t, out, recs, idx, wi, meta)
 }
 
 func contains(values []string, want string) bool {

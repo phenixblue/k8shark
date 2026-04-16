@@ -62,9 +62,11 @@ func BenchmarkStreamWriter_RoundTrip(b *testing.B) {
 				if err := w.Finish(map[string]any{"capture_id": "bench"}, map[string]any{}, nil); err != nil {
 					b.Fatal(err)
 				}
-				if err := Open(path, b.TempDir()); err != nil {
+				ar, err := Open(path)
+				if err != nil {
 					b.Fatal(err)
 				}
+				_ = ar.Close()
 			}
 		})
 	}

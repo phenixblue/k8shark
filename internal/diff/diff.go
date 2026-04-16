@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -46,7 +44,7 @@ func Run(opts Options) (*Result, error) {
 		return nil, err
 	}
 	defer before.cleanup()
-	if after.dir != before.dir {
+	if after.ar != before.ar {
 		defer after.cleanup()
 	}
 
@@ -127,16 +125,16 @@ func RenderText(result *Result, color bool) (string, error) {
 }
 
 type archiveSnapshot struct {
-	dir      string
+	ar       *archivepkg.Archive
 	meta     capture.CaptureMetadata
 	snapshot map[string]json.RawMessage
 }
 
 func (s *archiveSnapshot) cleanup() {
-	if s == nil || s.dir == "" {
+	if s == nil || s.ar == nil {
 		return
 	}
-	_ = os.RemoveAll(s.dir)
+	_ = s.ar.Close()
 }
 
 func loadSnapshots(opts Options) (*archiveSnapshot, *archiveSnapshot, error) {
@@ -195,21 +193,17 @@ func loadSnapshots(opts Options) (*archiveSnapshot, *archiveSnapshot, error) {
 }
 
 func loadArchiveSnapshot(archivePath string, at time.Time) (*archiveSnapshot, error) {
-	dir, err := os.MkdirTemp("", "k8shark-diff-*")
+	ar, err := archivepkg.Open(archivePath)
 	if err != nil {
-		return nil, fmt.Errorf("creating temp dir: %w", err)
-	}
-	if err := archivepkg.Open(archivePath, dir); err != nil {
-		_ = os.RemoveAll(dir)
 		return nil, fmt.Errorf("opening archive %q: %w", archivePath, err)
 	}
-	store, err := server.LoadStore(dir)
+	store, err := server.LoadStore(ar)
 	if err != nil {
-		_ = os.RemoveAll(dir)
+		_ = ar.Close()
 		return nil, fmt.Errorf("loading archive %q: %w", archivePath, err)
 	}
 	shot := &archiveSnapshot{
-		dir:      dir,
+		ar:       ar,
 		meta:     store.Metadata,
 		snapshot: make(map[string]json.RawMessage, len(store.Index)),
 	}
@@ -220,7 +214,7 @@ func loadArchiveSnapshot(archivePath string, at time.Time) (*archiveSnapshot, er
 		body, code, err := store.Latest(path, at)
 		if err != nil {
 			shot.cleanup()
-			return nil, fmt.Errorf("reading %s from %q: %w", path, filepath.Base(archivePath), err)
+			return nil, fmt.Errorf("reading %s from %q: %w", path, archivePath, err)
 		}
 		if code != 200 {
 			continue

@@ -97,18 +97,21 @@ func TestEngine_CaptureToArchive(t *testing.T) {
 		t.Fatal("output archive is empty")
 	}
 
-	// Extract the archive and verify its contents.
-	extractDir := t.TempDir()
-	if err := archive.Open(outFile, extractDir); err != nil {
+	// Open the archive and verify its contents.
+	ar, err := archive.Open(outFile)
+	if err != nil {
 		t.Fatalf("failed to open archive: %v", err)
 	}
+	defer ar.Close()
 
-	// metadata.json must exist.
-	if _, err := os.Stat(filepath.Join(extractDir, "k8shark-capture", "metadata.json")); err != nil {
+	// metadata must be readable.
+	var capMeta CaptureMetadata
+	if err := ar.ReadMetadata(&capMeta); err != nil {
 		t.Error("metadata.json missing from archive")
 	}
-	// index.json must exist.
-	if _, err := os.Stat(filepath.Join(extractDir, "k8shark-capture", "index.json")); err != nil {
+	// index must be readable.
+	var capIdx Index
+	if err := ar.ReadIndex(&capIdx); err != nil {
 		t.Error("index.json missing from archive")
 	}
 
@@ -1089,7 +1092,7 @@ func TestDoFetch_DedupAllSame_FirstAlwaysWritten(t *testing.T) {
 		t.Fatalf("dedup skipped = %d, want 2", got)
 	}
 	entry := eng.index["/api/v1/pods"]
-	if entry == nil || len(entry.RecordIDs) != 1 || len(entry.Times) != 1 {
+	if entry == nil || len(entry.Seqs) != 1 || len(entry.Times) != 1 {
 		t.Fatalf("index entry should have exactly one written record, got %+v", entry)
 	}
 }
@@ -1179,12 +1182,13 @@ func TestEngine_MetadataIncludesDeduplicatedCount(t *testing.T) {
 		t.Fatalf("engine.Run() error: %v", err)
 	}
 
-	extractDir := t.TempDir()
-	if err := archive.Open(outFile, extractDir); err != nil {
+	ar2, err := archive.Open(outFile)
+	if err != nil {
 		t.Fatalf("failed to open archive: %v", err)
 	}
-	meta, err := archive.ReadMetadata(extractDir)
-	if err != nil {
+	defer ar2.Close()
+	var meta map[string]any
+	if err := ar2.ReadMetadata(&meta); err != nil {
 		t.Fatalf("failed to read metadata: %v", err)
 	}
 
@@ -1240,10 +1244,10 @@ func TestEngine_DedupPerResourceOptOut(t *testing.T) {
 	if podsEntry == nil || eventsEntry == nil {
 		t.Fatalf("missing index entries: pods=%v events=%v", podsEntry != nil, eventsEntry != nil)
 	}
-	if got := len(podsEntry.RecordIDs); got != 1 {
+	if got := len(podsEntry.Seqs); got != 1 {
 		t.Fatalf("pods should be deduplicated to one record, got %d", got)
 	}
-	if got := len(eventsEntry.RecordIDs); got <= 1 {
+	if got := len(eventsEntry.Seqs); got <= 1 {
 		t.Fatalf("events with dedup:false should keep multiple polls, got %d", got)
 	}
 }

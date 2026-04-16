@@ -19,13 +19,14 @@ func buildArchive(t *testing.T, records []*capture.Record) string {
 	idx := capture.Index{}
 	for _, r := range records {
 		if e, ok := idx[r.APIPath]; ok {
-			e.RecordIDs = append(e.RecordIDs, r.ID)
+			seq := len(e.Seqs)
+			e.Seqs = append(e.Seqs, seq)
 			e.Times = append(e.Times, r.CapturedAt)
 		} else {
 			idx[r.APIPath] = &capture.IndexEntry{
-				APIPath:   r.APIPath,
-				RecordIDs: []string{r.ID},
-				Times:     []time.Time{r.CapturedAt},
+				APIPath: r.APIPath,
+				Seqs:    []int{0},
+				Times:   []time.Time{r.CapturedAt},
 			}
 		}
 	}
@@ -40,8 +41,17 @@ func buildArchive(t *testing.T, records []*capture.Record) string {
 	}
 
 	outPath := filepath.Join(dir, "test.tar.gz")
-	if err := archive.Write(outPath, meta, records, idx); err != nil {
-		t.Fatalf("buildArchive: %v", err)
+	sw, err := archive.NewStreamWriter(outPath)
+	if err != nil {
+		t.Fatalf("buildArchive NewStreamWriter: %v", err)
+	}
+	for _, r := range records {
+		if err := sw.WriteRecord(r); err != nil {
+			t.Fatalf("buildArchive WriteRecord: %v", err)
+		}
+	}
+	if err := sw.Finish(meta, idx, nil); err != nil {
+		t.Fatalf("buildArchive Finish: %v", err)
 	}
 	return outPath
 }
@@ -153,27 +163,30 @@ func TestRun_TableKeysSkipped(t *testing.T) {
 	archivePath := buildArchive(t, []*capture.Record{
 		rec("r1", "/api/v1/namespaces/default/pods"),
 	})
+	ar, err := archive.Open(archivePath)
+	if err != nil {
+		t.Fatalf("archive.Open: %v", err)
+	}
+	defer ar.Close()
 
-	// Manually inject a Table index entry into the archive would require
-	// re-building the archive; instead verify that summariseResources skips "?"
-	// paths via the unit function directly.
+	// Manually inject a Table index entry; verify that summariseResources skips
+	// paths containing "?" via the unit function directly.
 	idx := capture.Index{
 		"/api/v1/namespaces/default/pods": {
-			APIPath:   "/api/v1/namespaces/default/pods",
-			RecordIDs: []string{"r1"},
-			Times:     []time.Time{time.Now()},
+			APIPath: "/api/v1/namespaces/default/pods",
+			Seqs:    []int{0},
+			Times:   []time.Time{time.Now()},
 		},
 		"/api/v1/namespaces/default/pods?as=Table": {
-			APIPath:   "/api/v1/namespaces/default/pods?as=Table",
-			RecordIDs: []string{"r2"},
-			Times:     []time.Time{time.Now()},
+			APIPath: "/api/v1/namespaces/default/pods?as=Table",
+			Seqs:    []int{0},
+			Times:   []time.Time{time.Now()},
 		},
 	}
-	summaries := summariseResources(idx, "")
+	summaries := summariseResources(ar, idx)
 	if len(summaries) != 1 {
 		t.Errorf("expected 1 summary (Table key excluded), got %d", len(summaries))
 	}
-	_ = archivePath
 }
 
 func TestRun_SortedOutput(t *testing.T) {

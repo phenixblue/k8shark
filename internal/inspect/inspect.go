@@ -3,8 +3,6 @@ package inspect
 import (
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -37,46 +35,25 @@ type ResourceSummary struct {
 	Items      int      `json:"item_count"`
 }
 
-// Run extracts archivePath to a temp dir, reads metadata and index, and returns
-// a Report. The caller need not do any clean-up; the temp dir is removed before
-// Run returns.
+// Run opens archivePath and returns a Report without extracting to disk.
 func Run(archivePath string) (*Report, error) {
-	fi, err := os.Stat(archivePath)
+	ar, err := archive.Open(archivePath)
 	if err != nil {
-		return nil, fmt.Errorf("stat %q: %w", archivePath, err)
-	}
-	archiveSize := fi.Size()
-
-	tmpDir, err := os.MkdirTemp("", "k8shark-inspect-*")
-	if err != nil {
-		return nil, fmt.Errorf("creating temp dir: %w", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	if err := archive.Open(archivePath, tmpDir); err != nil {
 		return nil, fmt.Errorf("opening archive: %w", err)
 	}
+	defer ar.Close()
 
-	metaBytes, err := os.ReadFile(filepath.Join(tmpDir, "k8shark-capture", "metadata.json"))
-	if err != nil {
+	var meta capture.CaptureMetadata
+	if err := ar.ReadMetadata(&meta); err != nil {
 		return nil, fmt.Errorf("reading metadata: %w", err)
 	}
-	var meta capture.CaptureMetadata
-	if err := json.Unmarshal(metaBytes, &meta); err != nil {
-		return nil, fmt.Errorf("parsing metadata: %w", err)
-	}
 
-	idxBytes, err := os.ReadFile(filepath.Join(tmpDir, "k8shark-capture", "index.json"))
-	if err != nil {
+	var idx capture.Index
+	if err := ar.ReadIndex(&idx); err != nil {
 		return nil, fmt.Errorf("reading index: %w", err)
 	}
-	var idx capture.Index
-	if err := json.Unmarshal(idxBytes, &idx); err != nil {
-		return nil, fmt.Errorf("parsing index: %w", err)
-	}
 
-	recordsDir := filepath.Join(tmpDir, "k8shark-capture", "records")
-	resources := summariseResources(idx, recordsDir)
+	resources := summariseResources(ar, idx)
 
 	return &Report{
 		CaptureID:         meta.CaptureID,
@@ -86,15 +63,14 @@ func Run(archivePath string) (*Report, error) {
 		ServerAddress:     meta.ServerAddress,
 		RecordCount:       meta.RecordCount,
 		ArchivePath:       archivePath,
-		ArchiveSize:       archiveSize,
+		ArchiveSize:       ar.Size(),
 		Resources:         resources,
 	}, nil
 }
 
 // summariseResources aggregates per-resource information from the index.
-// recordsDir is the path to the extracted records directory; if non-empty,
-// item counts are read from the latest record for each path.
-func summariseResources(idx capture.Index, recordsDir string) []ResourceSummary {
+// Item counts are read from the latest record for each path directly from the archive.
+func summariseResources(ar *archive.Archive, idx capture.Index) []ResourceSummary {
 	type key struct{ group, version, resource string }
 	type accum struct {
 		namespaced bool
@@ -123,12 +99,12 @@ func summariseResources(idx capture.Index, recordsDir string) []ResourceSummary 
 			a.namespaced = true
 			a.nsSeen[ns] = true
 		}
-		a.records += len(entry.RecordIDs)
+		a.records += len(entry.Seqs)
 
 		// Count items in the latest record for this path.
-		if recordsDir != "" && len(entry.RecordIDs) > 0 {
-			latestID := entry.RecordIDs[len(entry.RecordIDs)-1]
-			if data, err := os.ReadFile(filepath.Join(recordsDir, latestID+".json")); err == nil {
+		if len(entry.Seqs) > 0 {
+			latestSeq := entry.Seqs[len(entry.Seqs)-1]
+			if data, err := ar.ReadRecord(path, latestSeq); err == nil {
 				var rec capture.Record
 				if jerr := json.Unmarshal(data, &rec); jerr == nil && rec.ResponseCode == 200 {
 					var list struct {

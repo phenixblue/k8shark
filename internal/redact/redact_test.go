@@ -20,13 +20,17 @@ func buildTestArchive(t *testing.T, records []*capture.Record) string {
 	dir := t.TempDir()
 
 	idx := capture.Index{}
+	pathSeq := map[string]int{}
 	for _, r := range records {
-		e := &capture.IndexEntry{
-			APIPath:   r.APIPath,
-			RecordIDs: []string{r.ID},
-			Times:     []time.Time{r.CapturedAt},
+		seq := pathSeq[r.APIPath]
+		pathSeq[r.APIPath] = seq + 1
+		e := idx[r.APIPath]
+		if e == nil {
+			e = &capture.IndexEntry{APIPath: r.APIPath}
+			idx[r.APIPath] = e
 		}
-		idx[r.APIPath] = e
+		e.Seqs = append(e.Seqs, seq)
+		e.Times = append(e.Times, r.CapturedAt)
 	}
 
 	meta := &capture.CaptureMetadata{
@@ -39,8 +43,17 @@ func buildTestArchive(t *testing.T, records []*capture.Record) string {
 	}
 
 	outPath := filepath.Join(dir, "test.tar.gz")
-	if err := archive.Write(outPath, meta, records, idx); err != nil {
-		t.Fatalf("buildTestArchive: %v", err)
+	sw, err := archive.NewStreamWriter(outPath)
+	if err != nil {
+		t.Fatalf("buildTestArchive NewStreamWriter: %v", err)
+	}
+	for _, r := range records {
+		if err := sw.WriteRecord(r); err != nil {
+			t.Fatalf("buildTestArchive WriteRecord: %v", err)
+		}
+	}
+	if err := sw.Finish(meta, idx, nil); err != nil {
+		t.Fatalf("buildTestArchive Finish: %v", err)
 	}
 	return outPath
 }
@@ -125,11 +138,12 @@ func TestRedact_SecretDataRedacted(t *testing.T) {
 	}
 
 	// Verify the output archive has the value replaced.
-	tmpDir := t.TempDir()
-	if err := archive.Open(dst, tmpDir); err != nil {
+	ar2, err := archive.Open(dst)
+	if err != nil {
 		t.Fatalf("opening redacted archive: %v", err)
 	}
-	data, err := os.ReadFile(filepath.Join(tmpDir, "k8shark-capture", "records", "r1.json"))
+	defer ar2.Close()
+	data, err := ar2.ReadRecord("/api/v1/namespaces/default/secrets", 0)
 	if err != nil {
 		t.Fatalf("reading record: %v", err)
 	}
@@ -160,11 +174,12 @@ func TestRedact_StringDataRedacted(t *testing.T) {
 		t.Fatalf("Archive: %v", err)
 	}
 
-	tmpDir := t.TempDir()
-	if err := archive.Open(dst, tmpDir); err != nil {
+	ar3, err := archive.Open(dst)
+	if err != nil {
 		t.Fatalf("opening redacted archive: %v", err)
 	}
-	data, err := os.ReadFile(filepath.Join(tmpDir, "k8shark-capture", "records", "r2.json"))
+	defer ar3.Close()
+	data, err := ar3.ReadRecord("/api/v1/namespaces/default/secrets", 0)
 	if err != nil {
 		t.Fatalf("reading record: %v", err)
 	}
@@ -196,11 +211,12 @@ func TestRedact_AllowList(t *testing.T) {
 		t.Errorf("expected 0 redacted records (all allowlisted), got %d", result.SecretsRedacted)
 	}
 
-	tmpDir := t.TempDir()
-	if err := archive.Open(dst, tmpDir); err != nil {
+	ar4, err := archive.Open(dst)
+	if err != nil {
 		t.Fatalf("opening redacted archive: %v", err)
 	}
-	data, err := os.ReadFile(filepath.Join(tmpDir, "k8shark-capture", "records", "r3.json"))
+	defer ar4.Close()
+	data, err := ar4.ReadRecord("/api/v1/namespaces/default/secrets", 0)
 	if err != nil {
 		t.Fatalf("reading record: %v", err)
 	}
@@ -254,11 +270,12 @@ func TestRedact_SecretListRedacted(t *testing.T) {
 		t.Errorf("expected 1 redacted record, got %d", result.SecretsRedacted)
 	}
 
-	tmpDir := t.TempDir()
-	if err := archive.Open(dst, tmpDir); err != nil {
+	ar5, err := archive.Open(dst)
+	if err != nil {
 		t.Fatalf("opening redacted archive: %v", err)
 	}
-	data, err := os.ReadFile(filepath.Join(tmpDir, "k8shark-capture", "records", "r5.json"))
+	defer ar5.Close()
+	data, err := ar5.ReadRecord("/api/v1/namespaces/k8shark-test/secrets", 0)
 	if err != nil {
 		t.Fatalf("reading record: %v", err)
 	}
@@ -304,11 +321,12 @@ func TestRedact_SecretList_AllowList(t *testing.T) {
 		t.Errorf("expected 0 redacted records (allowlisted), got %d", result.SecretsRedacted)
 	}
 
-	tmpDir := t.TempDir()
-	if err := archive.Open(dst, tmpDir); err != nil {
+	ar6, err := archive.Open(dst)
+	if err != nil {
 		t.Fatalf("opening redacted archive: %v", err)
 	}
-	data, err := os.ReadFile(filepath.Join(tmpDir, "k8shark-capture", "records", "r6.json"))
+	defer ar6.Close()
+	data, err := ar6.ReadRecord("/api/v1/namespaces/default/secrets", 0)
 	if err != nil {
 		t.Fatalf("reading record: %v", err)
 	}
@@ -375,14 +393,12 @@ func TestArchive_FieldRules_RedactsConfigMapKey(t *testing.T) {
 		t.Errorf("expected 1 field-redacted record, got %d", result.FieldsRedacted)
 	}
 
-	tmpDir := t.TempDir()
-	if err := archive.Open(dst, tmpDir); err != nil {
+	ar7, err := archive.Open(dst)
+	if err != nil {
 		t.Fatalf("opening redacted archive: %v", err)
 	}
-	data, err := os.ReadFile(filepath.Join(tmpDir, "k8shark-capture", "records", "cm1.json"))
-	if err != nil {
-		t.Fatalf("reading record: %v", err)
-	}
+	defer ar7.Close()
+	data, _ := ar7.ReadRecord("/api/v1/namespaces/default/configmaps", 0)
 	var rec capture.Record
 	_ = json.Unmarshal(data, &rec)
 	var obj map[string]json.RawMessage
@@ -450,11 +466,12 @@ func TestArchive_FieldRules_RecursiveDescent(t *testing.T) {
 	// they are NOT nested paths, so recursive descent won't match them unless
 	// we traverse their actual key names. This confirms only truly nested
 	// "password" keys (at any depth) are matched.  safe-key should be preserved.
-	tmpDir := t.TempDir()
-	if err := archive.Open(dst, tmpDir); err != nil {
+	ar8, err := archive.Open(dst)
+	if err != nil {
 		t.Fatalf("opening redacted archive: %v", err)
 	}
-	data, _ := os.ReadFile(filepath.Join(tmpDir, "k8shark-capture", "records", "cm3.json"))
+	defer ar8.Close()
+	data, _ := ar8.ReadRecord("/api/v1/namespaces/default/configmaps", 0)
 	var rec capture.Record
 	_ = json.Unmarshal(data, &rec)
 	var obj map[string]json.RawMessage

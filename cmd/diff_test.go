@@ -87,10 +87,17 @@ func buildDiffArchive(t *testing.T, body string) string {
 	rec := &capture.Record{ID: "rec-1", CapturedAt: now, APIPath: "/api/v1/namespaces/default/pods", HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(body)}
 	meta := &capture.CaptureMetadata{CaptureID: "test-capture", CapturedAt: now, CapturedUntil: now, RecordCount: 1}
 	index := capture.Index{
-		"/api/v1/namespaces/default/pods": {APIPath: "/api/v1/namespaces/default/pods", RecordIDs: []string{"rec-1"}, Times: []time.Time{now}},
+		"/api/v1/namespaces/default/pods": {APIPath: "/api/v1/namespaces/default/pods", Seqs: []int{0}, Times: []time.Time{now}},
 	}
-	if err := archivepkg.Write(out, meta, []*capture.Record{rec}, index); err != nil {
-		t.Fatalf("archive.Write: %v", err)
+	sw, err := archivepkg.NewStreamWriter(out)
+	if err != nil {
+		t.Fatalf("NewStreamWriter: %v", err)
+	}
+	if err := sw.WriteRecord(rec); err != nil {
+		t.Fatalf("WriteRecord: %v", err)
+	}
+	if err := sw.Finish(meta, index, nil); err != nil {
+		t.Fatalf("Finish: %v", err)
 	}
 	return out
 }

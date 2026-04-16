@@ -1,26 +1,61 @@
 package server
 
 import (
+	"container/list"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/capture"
 )
 
-// CaptureStore holds the in-memory index and provides record lookups.
+// CaptureStore holds the in-memory index and provides record lookups against
+// a ZIP+Zstd archive opened without extraction to disk.
 type CaptureStore struct {
-	Dir          string
+	ar           *archive.Archive
 	Metadata     capture.CaptureMetadata
 	Index        capture.Index
 	WatchIndex   capture.WatchIndex
 	resourceInfo map[string]*ResourceInfo
-	recordCache  sync.Map // key: record ID string → capture.Record
+
+	// Record LRU cache (bounded by recordCacheMax entries).
+	recordCacheMu   sync.Mutex
+	recordCacheMap  map[recordKey]*list.Element
+	recordCacheList *list.List
+
+	// Response cache: (path, at) → marshalled body + code.
+	// Entries are valid for responseCacheTTL.
+	responseCacheMu  sync.RWMutex
+	responseCacheMap map[responseCacheKey]*responseCacheEntry
+}
+
+const recordCacheMax = 2048
+
+type recordKey struct {
+	apiPath string
+	seq     int
+}
+
+type responseCacheKey struct {
+	path string
+	at   time.Time
+}
+
+type responseCacheEntry struct {
+	body    []byte
+	code    int
+	created time.Time
+}
+
+const responseCacheTTL = 10 * time.Second
+
+type recordCacheEntry struct {
+	key recordKey
+	rec capture.Record
 }
 
 // ResourceInfo describes a single captured resource type.
@@ -34,54 +69,50 @@ type ResourceInfo struct {
 	SingularName string
 }
 
-// LoadStore reads metadata.json and index.json from an extracted archive
-// directory and returns an in-memory CaptureStore.
-func LoadStore(dir string) (*CaptureStore, error) {
-	metaData, err := os.ReadFile(filepath.Join(dir, "k8shark-capture", "metadata.json"))
-	if err != nil {
+// LoadStore reads metadata and index from the archive and returns a ready
+// CaptureStore. The archive must remain open for the lifetime of the store;
+// call ar.Close() when done (the server's Shutdown does this).
+func LoadStore(ar *archive.Archive) (*CaptureStore, error) {
+	var meta capture.CaptureMetadata
+	if err := ar.ReadMetadata(&meta); err != nil {
 		return nil, fmt.Errorf("reading metadata: %w", err)
 	}
-	var meta capture.CaptureMetadata
-	if err := json.Unmarshal(metaData, &meta); err != nil {
-		return nil, fmt.Errorf("parsing metadata: %w", err)
-	}
 
-	idxData, err := os.ReadFile(filepath.Join(dir, "k8shark-capture", "index.json"))
-	if err != nil {
-		return nil, fmt.Errorf("reading index: %w", err)
-	}
 	var idx capture.Index
-	if err := json.Unmarshal(idxData, &idx); err != nil {
-		return nil, fmt.Errorf("parsing index: %w", err)
+	if err := ar.ReadIndex(&idx); err != nil {
+		return nil, fmt.Errorf("reading index: %w", err)
 	}
 
 	s := &CaptureStore{
-		Dir:          dir,
-		Metadata:     meta,
-		Index:        idx,
-		WatchIndex:   make(capture.WatchIndex),
-		resourceInfo: make(map[string]*ResourceInfo),
+		ar:               ar,
+		Metadata:         meta,
+		Index:            idx,
+		WatchIndex:       make(capture.WatchIndex),
+		resourceInfo:     make(map[string]*ResourceInfo),
+		recordCacheMap:   make(map[recordKey]*list.Element),
+		recordCacheList:  list.New(),
+		responseCacheMap: make(map[responseCacheKey]*responseCacheEntry),
 	}
 
-	// Load watch-index.json if present. Older archives without it are treated
-	// as snapshot-only — this is the primary backward-compatibility mechanism.
-	if wiData, rerr := os.ReadFile(filepath.Join(dir, "k8shark-capture", "watch-index.json")); rerr == nil {
-		var wi capture.WatchIndex
-		if jerr := json.Unmarshal(wiData, &wi); jerr == nil && wi != nil {
-			s.WatchIndex = wi
-		}
+	// Load watch index if present.
+	var wi capture.WatchIndex
+	if found, err := ar.ReadWatchIndex(&wi); err == nil && found && wi != nil {
+		s.WatchIndex = wi
 	}
 
+	// Derive ResourceInfo from index keys synchronously (fast — no I/O).
 	s.buildResourceInfo()
+
+	// Enrich ResourceInfo from discovery records asynchronously.
+	go s.enrichResourceInfoFromDiscovery()
+
 	return s, nil
 }
 
-// buildResourceInfo derives ResourceInfo for each distinct resource type seen
-// in the index keys.
+// buildResourceInfo derives ResourceInfo for each distinct resource type in
+// the index. It does not read any record data.
 func (s *CaptureStore) buildResourceInfo() {
 	for path := range s.Index {
-		// Skip Table-format index keys (they use "?as=Table" suffix which is
-		// not a valid path component and would produce bogus ResourceInfo entries).
 		if strings.Contains(path, "?") {
 			continue
 		}
@@ -91,7 +122,6 @@ func (s *CaptureStore) buildResourceInfo() {
 		}
 		key := g + "/" + v + "/" + r
 		if existing, ok := s.resourceInfo[key]; ok {
-			// Mark namespaced if we see any namespace-scoped path for this resource.
 			if ns != "" {
 				existing.Namespaced = true
 			}
@@ -105,15 +135,11 @@ func (s *CaptureStore) buildResourceInfo() {
 			Namespaced: ns != "",
 		}
 	}
-	// Second pass: enrich ResourceInfo from captured /apis/<group>/<version>
-	// discovery records. This gives us real shortNames, singularName, and kind
-	// for CRD-backed resources that the static maps in handler.go don't cover.
-	s.enrichResourceInfoFromDiscovery()
 }
 
 // enrichResourceInfoFromDiscovery reads captured APIResourceList bodies from
-// the index (paths matching /apis/<g>/<v> and /api/v1) and updates
-// ShortNames, SingularName, and Kind for each known ResourceInfo entry.
+// the archive and back-fills Kind, ShortNames, SingularName into resourceInfo.
+// Runs in a background goroutine; store is usable before this completes.
 func (s *CaptureStore) enrichResourceInfoFromDiscovery() {
 	type apiResourceEntry struct {
 		Name         string   `json:"name"`
@@ -127,7 +153,6 @@ func (s *CaptureStore) enrichResourceInfoFromDiscovery() {
 	}
 
 	for path, entry := range s.Index {
-		// Only process group-version discovery paths, not resource paths.
 		if strings.Contains(path, "?") {
 			continue
 		}
@@ -141,14 +166,13 @@ func (s *CaptureStore) enrichResourceInfoFromDiscovery() {
 		default:
 			continue
 		}
-
-		if len(entry.RecordIDs) == 0 {
+		if len(entry.Seqs) == 0 {
 			continue
 		}
-		// Use the latest record that we can read.
+		// Use the latest record.
 		var body []byte
-		for i := len(entry.RecordIDs) - 1; i >= 0; i-- {
-			rec, err := s.readRecord(entry.RecordIDs[i])
+		for i := len(entry.Seqs) - 1; i >= 0; i-- {
+			rec, err := s.readRecord(path, entry.Seqs[i])
 			if err != nil || rec.ResponseCode != 200 {
 				continue
 			}
@@ -158,17 +182,11 @@ func (s *CaptureStore) enrichResourceInfoFromDiscovery() {
 		if body == nil {
 			continue
 		}
-
 		var resList apiResourceList
-		if err := json.Unmarshal(body, &resList); err != nil {
+		if err := json.Unmarshal(body, &resList); err != nil || resList.Kind != "APIResourceList" {
 			continue
 		}
-		if resList.Kind != "APIResourceList" {
-			continue
-		}
-
 		for _, res := range resList.Resources {
-			// Skip sub-resources (they have '/' in the name).
 			if strings.Contains(res.Name, "/") {
 				continue
 			}
@@ -201,73 +219,98 @@ func (s *CaptureStore) Resources() []*ResourceInfo {
 
 // Latest returns the ResponseBody of the most recent record for apiPath.
 // If at is non-zero, it returns the latest record whose timestamp is <= at.
-// Returns (nil, 404, nil) when the path is not in the index.
 func (s *CaptureStore) Latest(apiPath string, at time.Time) ([]byte, int, error) {
 	entry, ok := s.Index[apiPath]
-	if !ok || len(entry.RecordIDs) == 0 {
+	if !ok || len(entry.Seqs) == 0 {
 		return nil, 404, nil
 	}
 
-	// Default to the most recent record.
-	id := entry.RecordIDs[len(entry.RecordIDs)-1]
-	if !at.IsZero() && len(entry.Times) == len(entry.RecordIDs) && len(entry.Times) > 0 {
-		idx := sort.Search(len(entry.Times), func(i int) bool {
+	idx := len(entry.Seqs) - 1
+	if !at.IsZero() && len(entry.Times) == len(entry.Seqs) {
+		pos := sort.Search(len(entry.Times), func(i int) bool {
 			return entry.Times[i].After(at)
 		})
-		if idx == 0 {
+		if pos == 0 {
 			return nil, 404, nil
 		}
-		id = entry.RecordIDs[idx-1]
+		idx = pos - 1
 	}
 
-	rec, err := s.readRecord(id)
+	rec, err := s.readRecord(apiPath, entry.Seqs[idx])
 	if err != nil {
 		return nil, 500, err
 	}
 	return rec.ResponseBody, rec.ResponseCode, nil
 }
 
-// readRecord reads and parses a single capture.Record by ID from the archive.
-// Results are cached in memory so repeated reads of the same record are free.
-func (s *CaptureStore) readRecord(id string) (capture.Record, error) {
-	if v, ok := s.recordCache.Load(id); ok {
-		return v.(capture.Record), nil
+// readRecord reads and parses a single capture.Record from the archive,
+// using a bounded LRU cache to avoid re-reading hot records.
+func (s *CaptureStore) readRecord(apiPath string, seq int) (capture.Record, error) {
+	k := recordKey{apiPath, seq}
+
+	s.recordCacheMu.Lock()
+	if el, ok := s.recordCacheMap[k]; ok {
+		s.recordCacheList.MoveToFront(el)
+		rec := el.Value.(*recordCacheEntry).rec
+		s.recordCacheMu.Unlock()
+		return rec, nil
 	}
-	data, err := os.ReadFile(filepath.Join(s.Dir, "k8shark-capture", "records", id+".json"))
+	s.recordCacheMu.Unlock()
+
+	data, err := s.ar.ReadRecord(apiPath, seq)
 	if err != nil {
-		return capture.Record{}, fmt.Errorf("reading record %s: %w", id, err)
+		return capture.Record{}, fmt.Errorf("reading record path=%s seq=%d: %w", apiPath, seq, err)
 	}
 	var rec capture.Record
 	if err := json.Unmarshal(data, &rec); err != nil {
-		return capture.Record{}, fmt.Errorf("parsing record %s: %w", id, err)
+		return capture.Record{}, fmt.Errorf("parsing record path=%s seq=%d: %w", apiPath, seq, err)
 	}
-	s.recordCache.Store(id, rec)
+
+	s.recordCacheMu.Lock()
+	// Evict LRU entry if at capacity.
+	for s.recordCacheList.Len() >= recordCacheMax {
+		back := s.recordCacheList.Back()
+		if back == nil {
+			break
+		}
+		s.recordCacheList.Remove(back)
+		delete(s.recordCacheMap, back.Value.(*recordCacheEntry).key)
+	}
+	el := s.recordCacheList.PushFront(&recordCacheEntry{key: k, rec: rec})
+	s.recordCacheMap[k] = el
+	s.recordCacheMu.Unlock()
+
 	return rec, nil
 }
 
+// ReadRecord reads a single record by apiPath and seq, exposed for callers
+// outside this package that need raw record access.
+func (s *CaptureStore) ReadRecord(apiPath string, seq int) (capture.Record, error) {
+	return s.readRecord(apiPath, seq)
+}
+
 // SnapshotAt returns the body, HTTP code, and capture time of the most recent
-// snapshot record (i.e. non-watch-event record) for apiPath at or before at.
-// Returns (nil, 404, time.Time{}, nil) when no snapshot exists.
+// snapshot record for apiPath at or before at.
 func (s *CaptureStore) SnapshotAt(apiPath string, at time.Time) ([]byte, int, time.Time, error) {
 	entry, ok := s.Index[apiPath]
-	if !ok || len(entry.RecordIDs) == 0 {
+	if !ok || len(entry.Seqs) == 0 {
 		return nil, 404, time.Time{}, nil
 	}
 
-	id := entry.RecordIDs[len(entry.RecordIDs)-1]
-	snapTime := entry.Times[len(entry.Times)-1]
-	if !at.IsZero() && len(entry.Times) == len(entry.RecordIDs) && len(entry.Times) > 0 {
-		idx := sort.Search(len(entry.Times), func(i int) bool {
+	idx := len(entry.Seqs) - 1
+	snapTime := entry.Times[idx]
+	if !at.IsZero() && len(entry.Times) == len(entry.Seqs) {
+		pos := sort.Search(len(entry.Times), func(i int) bool {
 			return entry.Times[i].After(at)
 		})
-		if idx == 0 {
+		if pos == 0 {
 			return nil, 404, time.Time{}, nil
 		}
-		id = entry.RecordIDs[idx-1]
-		snapTime = entry.Times[idx-1]
+		idx = pos - 1
+		snapTime = entry.Times[idx]
 	}
 
-	rec, err := s.readRecord(id)
+	rec, err := s.readRecord(apiPath, entry.Seqs[idx])
 	if err != nil {
 		return nil, 500, time.Time{}, err
 	}
@@ -275,7 +318,6 @@ func (s *CaptureStore) SnapshotAt(apiPath string, at time.Time) ([]byte, int, ti
 }
 
 // objectKey returns the stable identity key for a Kubernetes object JSON blob.
-// Namespaced objects use "namespace/name"; cluster-scoped use "name".
 func objectKey(raw json.RawMessage) string {
 	var meta struct {
 		Metadata struct {
@@ -293,18 +335,48 @@ func objectKey(raw json.RawMessage) string {
 }
 
 // ReconstructAt returns the reconstructed list body for apiPath at time T.
-// If a WatchIndex entry exists for the path, it applies ADDED/MODIFIED/DELETED
-// watch events from (snapshot_time, T] on top of the latest snapshot.
+// Watch events are applied on top of the snapshot in parallel to reduce latency.
 // Falls back to Latest for paths without watch events.
 func (s *CaptureStore) ReconstructAt(apiPath string, at time.Time) ([]byte, int, error) {
-	wi, hasWatch := s.WatchIndex[apiPath]
-	if !hasWatch || len(wi.RecordIDs) == 0 {
-		// No watch events for this path — fall back to snapshot lookup.
-		body, code, err := s.Latest(apiPath, at)
-		return body, code, err
+	// Check response cache first.
+	cacheKey := responseCacheKey{apiPath, at}
+	s.responseCacheMu.RLock()
+	if e, ok := s.responseCacheMap[cacheKey]; ok && time.Since(e.created) < responseCacheTTL {
+		body, code := e.body, e.code
+		s.responseCacheMu.RUnlock()
+		return body, code, nil
+	}
+	s.responseCacheMu.RUnlock()
+
+	body, code, err := s.reconstructAt(apiPath, at)
+	if err != nil {
+		return nil, code, err
 	}
 
-	// Get the latest snapshot at or before T.
+	// Cache the result.
+	s.responseCacheMu.Lock()
+	s.responseCacheMap[cacheKey] = &responseCacheEntry{body: body, code: code, created: time.Now()}
+	// Simple TTL cleanup on writes — keep map bounded.
+	if len(s.responseCacheMap) > 512 {
+		now := time.Now()
+		for k, v := range s.responseCacheMap {
+			if now.Sub(v.created) > responseCacheTTL {
+				delete(s.responseCacheMap, k)
+			}
+		}
+	}
+	s.responseCacheMu.Unlock()
+
+	return body, code, nil
+}
+
+// reconstructAt is the uncached implementation of ReconstructAt.
+func (s *CaptureStore) reconstructAt(apiPath string, at time.Time) ([]byte, int, error) {
+	wi, hasWatch := s.WatchIndex[apiPath]
+	if !hasWatch || len(wi.Seqs) == 0 {
+		return s.Latest(apiPath, at)
+	}
+
 	snapBody, snapCode, snapTime, err := s.SnapshotAt(apiPath, at)
 	if err != nil {
 		return nil, 500, err
@@ -316,9 +388,7 @@ func (s *CaptureStore) ReconstructAt(apiPath string, at time.Time) ([]byte, int,
 		Items      []json.RawMessage `json:"items"`
 	}
 	if snapCode == 200 {
-		// Parse snapshot into an ordered item map (preserves insertion order).
 		if err := json.Unmarshal(snapBody, &snapList); err != nil {
-			// Snapshot not a list body (e.g. single object) — fall through unchanged.
 			return snapBody, snapCode, nil
 		}
 	} else {
@@ -335,7 +405,44 @@ func (s *CaptureStore) ReconstructAt(apiPath string, at time.Time) ([]byte, int,
 		snapList.Metadata = json.RawMessage(`{"resourceVersion":"0"}`)
 	}
 
-	// Build ordered key list and object map from snapshot items.
+	// Determine which watch events fall in (snapTime, at].
+	type watchEvent struct {
+		idx  int
+		body json.RawMessage
+	}
+
+	// Collect in-range event indices first (no I/O).
+	var inRange []int
+	for i := range wi.Seqs {
+		if i >= len(wi.Times) || i >= len(wi.EventTypes) {
+			break
+		}
+		evTime := wi.Times[i]
+		if evTime.IsZero() || !evTime.After(snapTime) {
+			continue
+		}
+		if !at.IsZero() && evTime.After(at) {
+			break
+		}
+		inRange = append(inRange, i)
+	}
+
+	// Read watch event records in parallel.
+	events := make([]watchEvent, len(inRange))
+	var wg sync.WaitGroup
+	for pos, i := range inRange {
+		wg.Add(1)
+		go func(pos, i int) {
+			defer wg.Done()
+			rec, rerr := s.readRecord(apiPath, wi.Seqs[i])
+			if rerr == nil {
+				events[pos] = watchEvent{idx: i, body: rec.ResponseBody}
+			}
+		}(pos, i)
+	}
+	wg.Wait()
+
+	// Apply events in order.
 	itemOrder := make([]string, 0, len(snapList.Items))
 	items := make(map[string]json.RawMessage, len(snapList.Items))
 	for _, item := range snapList.Items {
@@ -347,46 +454,26 @@ func (s *CaptureStore) ReconstructAt(apiPath string, at time.Time) ([]byte, int,
 		itemOrder = append(itemOrder, k)
 	}
 
-	// Collect watch events from (snapTime, at] in index order.
-	for i, id := range wi.RecordIDs {
-		if i >= len(wi.Times) || i >= len(wi.EventTypes) {
-			break
-		}
-		evTime := wi.Times[i]
-		if evTime.IsZero() || !evTime.After(snapTime) {
+	for pos, i := range inRange {
+		ev := events[pos]
+		if ev.body == nil {
 			continue
 		}
-		if !at.IsZero() && evTime.After(at) {
-			break
-		}
-
-		eventType := wi.EventTypes[i]
-		rec, rerr := s.readRecord(id)
-		if rerr != nil {
-			continue
-		}
-		k := objectKey(rec.ResponseBody)
+		k := objectKey(ev.body)
 		if k == "" {
 			continue
 		}
-
-		switch eventType {
-		case "ADDED":
+		switch wi.EventTypes[i] {
+		case "ADDED", "MODIFIED":
 			if _, exists := items[k]; !exists {
 				itemOrder = append(itemOrder, k)
 			}
-			items[k] = rec.ResponseBody
-		case "MODIFIED":
-			if _, exists := items[k]; !exists {
-				itemOrder = append(itemOrder, k)
-			}
-			items[k] = rec.ResponseBody
+			items[k] = ev.body
 		case "DELETED":
 			delete(items, k)
 		}
 	}
 
-	// Reconstruct ordered items list (skip deleted).
 	reconstructed := make([]json.RawMessage, 0, len(itemOrder))
 	seen := make(map[string]bool, len(itemOrder))
 	for _, k := range itemOrder {
@@ -411,15 +498,9 @@ func (s *CaptureStore) ReconstructAt(apiPath string, at time.Time) ([]byte, int,
 	return out, 200, nil
 }
 
-// AggregateAcrossNamespaces aggregates list items from all namespaced paths
-// for the given cluster-scoped path (e.g. /api/v1/pods). Returns a merged
-// list JSON, the list kind/apiVersion taken from the first found namespace
-// list, and 404 if nothing is found.
+// AggregateAcrossNamespaces aggregates list items from all namespaced paths.
 func (s *CaptureStore) AggregateAcrossNamespaces(clusterPath string, at time.Time) ([]byte, int, error) {
 	g, v, resource, _ := parseAPIPath(clusterPath)
-
-	// Build the namespace-scoped path prefix to match: /api/v1/namespaces/*/resource
-	// or /apis/<g>/<v>/namespaces/*/resource
 	var pathPrefix string
 	if g == "" {
 		pathPrefix = "/api/" + v + "/namespaces/"
@@ -466,7 +547,6 @@ func (s *CaptureStore) AggregateAcrossNamespaces(clusterPath string, at time.Tim
 		allItems = []json.RawMessage{}
 	}
 
-	// Build list kind from resource if not captured (fallback).
 	if listKind == "" {
 		listKind = resourceToKind(resource) + "List"
 	}
@@ -491,14 +571,9 @@ func (s *CaptureStore) AggregateAcrossNamespaces(clusterPath string, at time.Tim
 	return out, 200, nil
 }
 
-// AggregateTableAcrossNamespaces merges per-namespace Table responses (stored
-// under "path?as=Table" keys) for a cluster-scoped path. It preserves the real
-// columnDefinitions from the first namespace's response and concatenates all
-// rows — so kubectl gets the full live-cluster column set for every resource
-// type with no resource-specific logic required.
+// AggregateTableAcrossNamespaces merges per-namespace Table responses.
 func (s *CaptureStore) AggregateTableAcrossNamespaces(clusterPath string, at time.Time) ([]byte, int, error) {
 	g, v, resource, _ := parseAPIPath(clusterPath)
-
 	var pathPrefix string
 	if g == "" {
 		pathPrefix = "/api/" + v + "/namespaces/"
@@ -557,11 +632,6 @@ func (s *CaptureStore) AggregateTableAcrossNamespaces(clusterPath string, at tim
 }
 
 // parseAPIPath extracts (group, version, resource, namespace) from a REST path.
-//
-//	/api/v1/pods                                  → ("", "v1", "pods", "")
-//	/api/v1/namespaces/default/pods               → ("", "v1", "pods", "default")
-//	/apis/apps/v1/deployments                     → ("apps", "v1", "deployments", "")
-//	/apis/apps/v1/namespaces/default/deployments  → ("apps", "v1", "deployments", "default")
 func parseAPIPath(path string) (group, version, resource, namespace string) {
 	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
 	switch {
@@ -629,7 +699,6 @@ func resourceToKind(resource string) string {
 	if k, ok := known[resource]; ok {
 		return k
 	}
-	// Fallback: strip trailing 's' and title-case.
 	s := strings.TrimSuffix(resource, "s")
 	if s == "" {
 		return resource

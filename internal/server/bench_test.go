@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/phenixblue/k8shark/internal/archive"
 	capture "github.com/phenixblue/k8shark/internal/capture"
 )
 
@@ -19,8 +19,10 @@ import (
 func buildBenchStore(b *testing.B, n int) *CaptureStore {
 	b.Helper()
 	dir := b.TempDir()
-	recDir := filepath.Join(dir, "k8shark-capture", "records")
-	if err := os.MkdirAll(recDir, 0o750); err != nil {
+	outPath := filepath.Join(dir, "bench.kshrk")
+
+	sw, err := archive.NewStreamWriter(outPath)
+	if err != nil {
 		b.Fatal(err)
 	}
 
@@ -30,42 +32,42 @@ func buildBenchStore(b *testing.B, n int) *CaptureStore {
 		body := json.RawMessage(fmt.Sprintf(
 			`{"kind":"PodList","apiVersion":"v1","items":[{"metadata":{"name":"pod%d","namespace":"ns%d"}}]}`,
 			i, i))
-		recID := fmt.Sprintf("bench-rec-%04d", i)
 		rec := capture.Record{
-			ID:           recID,
+			ID:           fmt.Sprintf("bench-rec-%04d", i),
 			CapturedAt:   time.Now().UTC(),
 			APIPath:      apiPath,
 			HTTPMethod:   "GET",
 			ResponseCode: 200,
 			ResponseBody: body,
 		}
-		data, _ := json.Marshal(rec)
-		if err := os.WriteFile(filepath.Join(recDir, recID+".json"), data, 0o644); err != nil {
+		if err := sw.WriteRecord(&rec); err != nil {
 			b.Fatal(err)
 		}
 		index[apiPath] = &capture.IndexEntry{
-			APIPath:   apiPath,
-			RecordIDs: []string{recID},
-			Times:     []time.Time{rec.CapturedAt},
+			APIPath: apiPath,
+			Seqs:    []int{0},
+			Times:   []time.Time{rec.CapturedAt},
 		}
 	}
 
-	metaJSON, _ := json.Marshal(capture.CaptureMetadata{
+	meta := capture.CaptureMetadata{
 		CaptureID:         "bench-capture",
 		KubernetesVersion: "v1.29.0",
 		CapturedAt:        time.Now().UTC().Add(-time.Minute),
 		CapturedUntil:     time.Now().UTC(),
 		RecordCount:       n,
-	})
-	if err := os.WriteFile(filepath.Join(dir, "k8shark-capture", "metadata.json"), metaJSON, 0o644); err != nil {
-		b.Fatal(err)
 	}
-	idxJSON, _ := json.Marshal(index)
-	if err := os.WriteFile(filepath.Join(dir, "k8shark-capture", "index.json"), idxJSON, 0o644); err != nil {
+	if err := sw.Finish(&meta, index, nil); err != nil {
 		b.Fatal(err)
 	}
 
-	store, err := LoadStore(dir)
+	ar, err := archive.Open(outPath)
+	if err != nil {
+		b.Fatalf("archive.Open: %v", err)
+	}
+	b.Cleanup(func() { ar.Close() })
+
+	store, err := LoadStore(ar)
 	if err != nil {
 		b.Fatalf("LoadStore: %v", err)
 	}

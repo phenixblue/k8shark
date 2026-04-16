@@ -29,48 +29,43 @@ type OpenOptions struct {
 type Server struct {
 	address        string
 	kubeconfigPath string
-	tmpDir         string
+	ar             *archive.Archive
 	httpServer     *http.Server
 	done           chan struct{}
 }
 
-// Open extracts a capture archive, starts the mock HTTPS server, and writes
+// Open opens a capture archive, starts the mock HTTPS server, and writes
 // a kubeconfig pointing at it.
 func Open(opts OpenOptions) (*Server, error) {
-	// Extract the archive to a temp directory.
-	tmpDir, err := os.MkdirTemp("", "k8shark-*")
+	// Open the archive for direct in-memory access (no extraction).
+	ar, err := archive.Open(opts.ArchivePath)
 	if err != nil {
-		return nil, fmt.Errorf("creating temp dir: %w", err)
-	}
-
-	if err := archive.Open(opts.ArchivePath, tmpDir); err != nil {
-		_ = os.RemoveAll(tmpDir)
-		return nil, fmt.Errorf("extracting archive: %w", err)
+		return nil, fmt.Errorf("opening archive: %w", err)
 	}
 
 	// Load the capture index into memory.
-	store, err := LoadStore(tmpDir)
+	store, err := LoadStore(ar)
 	if err != nil {
-		_ = os.RemoveAll(tmpDir)
+		_ = ar.Close()
 		return nil, fmt.Errorf("loading capture: %w", err)
 	}
 
 	// Parse optional replay timestamp.
 	at, err := parseReplayAt(store.Metadata, opts.At)
 	if err != nil {
-		_ = os.RemoveAll(tmpDir)
+		_ = ar.Close()
 		return nil, err
 	}
 
 	// Generate a self-signed TLS certificate.
 	certPEM, keyPEM, err := generateSelfSignedCert()
 	if err != nil {
-		_ = os.RemoveAll(tmpDir)
+		_ = ar.Close()
 		return nil, fmt.Errorf("generating TLS cert: %w", err)
 	}
 	tlsCert, err := tls.X509KeyPair(certPEM, keyPEM)
 	if err != nil {
-		_ = os.RemoveAll(tmpDir)
+		_ = ar.Close()
 		return nil, fmt.Errorf("loading TLS cert: %w", err)
 	}
 
@@ -81,7 +76,7 @@ func Open(opts OpenOptions) (*Server, error) {
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:"+port)
 	if err != nil {
-		_ = os.RemoveAll(tmpDir)
+		_ = ar.Close()
 		return nil, fmt.Errorf("listening: %w", err)
 	}
 
@@ -94,7 +89,7 @@ func Open(opts OpenOptions) (*Server, error) {
 		kubeconfigPath = filepath.Join(home, ".kube", "k8shark-"+store.Metadata.CaptureID+".yaml")
 	}
 	if err := writeKubeconfig(addr, kubeconfigPath); err != nil {
-		_ = os.RemoveAll(tmpDir)
+		_ = ar.Close()
 		_ = ln.Close()
 		return nil, fmt.Errorf("writing kubeconfig: %w", err)
 	}
@@ -115,7 +110,7 @@ func Open(opts OpenOptions) (*Server, error) {
 	return &Server{
 		address:        addr,
 		kubeconfigPath: kubeconfigPath,
-		tmpDir:         tmpDir,
+		ar:             ar,
 		httpServer:     httpSrv,
 		done:           done,
 	}, nil
@@ -127,17 +122,19 @@ func (s *Server) Address() string { return s.address }
 // KubeconfigPath returns the path to the generated kubeconfig.
 func (s *Server) KubeconfigPath() string { return s.kubeconfigPath }
 
-// Shutdown immediately stops the server and cleans up the temp directory.
+// Shutdown immediately stops the server and closes the archive.
 // Useful in tests and programmatic usage; Wait() is preferred for CLI use.
 func (s *Server) Shutdown() {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = s.httpServer.Shutdown(ctx)
 	<-s.done
-	_ = os.RemoveAll(s.tmpDir)
+	if s.ar != nil {
+		_ = s.ar.Close()
+	}
 }
 
-// Wait blocks until Ctrl+C / SIGTERM, then shuts the server down and cleans up.
+// Wait blocks until Ctrl+C / SIGTERM, then shuts the server down and closes the archive.
 func (s *Server) Wait() error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -149,7 +146,9 @@ func (s *Server) Wait() error {
 		_ = s.httpServer.Shutdown(ctx)
 		<-s.done
 	}
-	_ = os.RemoveAll(s.tmpDir)
+	if s.ar != nil {
+		_ = s.ar.Close()
+	}
 	return nil
 }
 
