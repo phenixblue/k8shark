@@ -578,8 +578,11 @@ func (h *explorerHandler) buildNamespaceAt(targetNS string, at time.Time) (*name
 			if targetNS == "" && itemNS != "" {
 				continue
 			}
-			// named-namespace view: skip items from a different namespace
-			if targetNS != "" && itemNS != "" && itemNS != targetNS {
+			// named-namespace view: skip items with no namespace (truly
+			// cluster-scoped resources like ClusterRoles that happen to be
+			// returned by cluster-wide list endpoints) and items from a
+			// different namespace
+			if targetNS != "" && itemNS != targetNS {
 				continue
 			}
 			if workloadKinds[resource] {
