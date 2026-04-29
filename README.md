@@ -43,6 +43,10 @@ export KUBECONFIG=~/.kube/k8shark-<id>.yaml
 kubectl get pods -A
 ```
 
+## Web UI (Experimental)
+
+⚠️ **Note:** The web UI for cluster exploration is experimental. Large cluster captures may consume significant amounts of RAM (1-2+ GB) during replay. For large clusters, consider using an explicit resource list in your config file rather than `all: true` for auto-discovery to reduce the capture size.
+
 ## Documentation
 
 | Doc | Description |
