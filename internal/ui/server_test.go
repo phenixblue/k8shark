@@ -12,7 +12,6 @@ import (
 	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/capture"
 	"github.com/phenixblue/k8shark/internal/server"
-	"github.com/phenixblue/k8shark/internal/transitions"
 )
 
 func TestBuildTree_Hierarchy(t *testing.T) {
@@ -25,7 +24,10 @@ func TestBuildTree_Hierarchy(t *testing.T) {
 	if len(tree.Namespaces) != 1 || tree.Namespaces[0].Name != "default" {
 		t.Fatalf("expected one default namespace, got %+v", tree.Namespaces)
 	}
-	ns := tree.Namespaces[0]
+	ns, err := h.buildNamespaceAt("default", time.Time{})
+	if err != nil {
+		t.Fatalf("buildNamespaceAt: %v", err)
+	}
 	if len(ns.Workloads) == 0 {
 		t.Fatal("expected workloads in namespace")
 	}
@@ -79,14 +81,18 @@ func TestServeDetail_ItemFromWatchOnlyAddedResource(t *testing.T) {
 func TestBuildTree_IncludesWatchOnlyAddedResource(t *testing.T) {
 	store := buildWatchOnlyStore(t)
 	h := &explorerHandler{store: store}
-	tree, err := h.buildTreeAt(time.Date(2026, 4, 10, 10, 0, 31, 0, time.UTC))
+	at := time.Date(2026, 4, 10, 10, 0, 31, 0, time.UTC)
+	tree, err := h.buildTreeAt(at)
 	if err != nil {
 		t.Fatalf("buildTreeAt: %v", err)
 	}
 	if len(tree.Namespaces) != 1 || tree.Namespaces[0].Name != "default" {
 		t.Fatalf("expected one default namespace, got %+v", tree.Namespaces)
 	}
-	ns := tree.Namespaces[0]
+	ns, err := h.buildNamespaceAt("default", at)
+	if err != nil {
+		t.Fatalf("buildNamespaceAt: %v", err)
+	}
 	if len(ns.Pods) != 1 || ns.Pods[0].Name != "redis" {
 		t.Fatalf("expected watch-only pod to appear, got %+v", ns.Pods)
 	}
@@ -102,7 +108,10 @@ func TestBuildTree_IncludesQueryOnlyListPath(t *testing.T) {
 	if len(tree.Namespaces) != 1 || tree.Namespaces[0].Name != "default" {
 		t.Fatalf("expected one default namespace, got %+v", tree.Namespaces)
 	}
-	ns := tree.Namespaces[0]
+	ns, err := h.buildNamespaceAt("default", time.Time{})
+	if err != nil {
+		t.Fatalf("buildNamespaceAt: %v", err)
+	}
 	found := false
 	for _, r := range ns.Resources {
 		if r.Kind == "ConfigMap" && r.Name == "demo-config" {
@@ -125,7 +134,10 @@ func TestBuildTree_PrefersNonEmptyQueryListOverEmptyBaseList(t *testing.T) {
 	if len(tree.Namespaces) != 1 || tree.Namespaces[0].Name != "default" {
 		t.Fatalf("expected one default namespace, got %+v", tree.Namespaces)
 	}
-	ns := tree.Namespaces[0]
+	ns, err := h.buildNamespaceAt("default", time.Time{})
+	if err != nil {
+		t.Fatalf("buildNamespaceAt: %v", err)
+	}
 	if len(ns.Pods) != 1 || ns.Pods[0].Name != "demo-pod" {
 		t.Fatalf("expected pod from non-empty query list, got %+v", ns.Pods)
 	}
@@ -144,7 +156,10 @@ func TestBuildTree_MergesItemsAcrossCapturedQueryLists(t *testing.T) {
 	if len(tree.Namespaces) != 1 || tree.Namespaces[0].Name != "default" {
 		t.Fatalf("expected one default namespace, got %+v", tree.Namespaces)
 	}
-	ns := tree.Namespaces[0]
+	ns, err := h.buildNamespaceAt("default", time.Time{})
+	if err != nil {
+		t.Fatalf("buildNamespaceAt: %v", err)
+	}
 	if len(ns.Pods) != 2 {
 		t.Fatalf("expected two merged pods, got %+v", ns.Pods)
 	}
@@ -164,7 +179,10 @@ func TestBuildTree_IncludesItemOnlyPaths(t *testing.T) {
 	if len(tree.Namespaces) != 1 || tree.Namespaces[0].Name != "default" {
 		t.Fatalf("expected one default namespace, got %+v", tree.Namespaces)
 	}
-	ns := tree.Namespaces[0]
+	ns, err := h.buildNamespaceAt("default", time.Time{})
+	if err != nil {
+		t.Fatalf("buildNamespaceAt: %v", err)
+	}
 	if len(ns.Resources) != 1 || ns.Resources[0].Name != "demo-config" {
 		t.Fatalf("expected item-only ConfigMap to appear, got %+v", ns.Resources)
 	}
@@ -183,7 +201,10 @@ func TestBuildTree_IncludesTableRows(t *testing.T) {
 	if len(tree.Namespaces) != 1 || tree.Namespaces[0].Name != "default" {
 		t.Fatalf("expected one default namespace, got %+v", tree.Namespaces)
 	}
-	ns := tree.Namespaces[0]
+	ns, err := h.buildNamespaceAt("default", time.Time{})
+	if err != nil {
+		t.Fatalf("buildNamespaceAt: %v", err)
+	}
 	if len(ns.Resources) != 1 || ns.Resources[0].Name != "table-config" {
 		t.Fatalf("expected table row object to appear, got %+v", ns.Resources)
 	}
@@ -260,13 +281,14 @@ func TestCollectTimestamps_Sampled(t *testing.T) {
 }
 
 func TestServeTree_AtOverride(t *testing.T) {
-	store := buildMultiSnapshotStore(t)
-	h := &explorerHandler{store: store}
+	store, out := buildMultiSnapshotArchive(t)
+	h := &explorerHandler{store: store, archivePath: out}
 	target := time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC).Format(time.RFC3339)
+
+	// Verify the skeleton tree still works.
 	req := httptest.NewRequest(http.MethodGet, "/api/ui/tree?at="+target, nil)
 	rr := httptest.NewRecorder()
 	h.serveTree(rr, req)
-
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rr.Code)
 	}
@@ -274,20 +296,37 @@ func TestServeTree_AtOverride(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &tree); err != nil {
 		t.Fatalf("unmarshal tree: %v", err)
 	}
-	if len(tree.Namespaces) != 1 || len(tree.Namespaces[0].Pods) != 1 {
-		t.Fatalf("expected one namespace with one pod, got %+v", tree.Namespaces)
+	if len(tree.Namespaces) != 1 || tree.Namespaces[0].Name != "default" {
+		t.Fatalf("expected one default namespace, got %+v", tree.Namespaces)
 	}
-	if tree.Namespaces[0].Pods[0].Name != "demo-old" {
-		t.Fatalf("expected older pod at selected timestamp, got %q", tree.Namespaces[0].Pods[0].Name)
+
+	// Verify the namespace detail endpoint respects the at= override.
+	req2 := httptest.NewRequest(http.MethodGet, "/api/ui/tree/namespace?ns=default&at="+target, nil)
+	rr2 := httptest.NewRecorder()
+	h.serveTreeNamespace(rr2, req2)
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr2.Code)
+	}
+	var ns namespaceDetailResponse
+	if err := json.Unmarshal(rr2.Body.Bytes(), &ns); err != nil {
+		t.Fatalf("unmarshal namespace detail: %v", err)
+	}
+	if len(ns.Pods) != 1 {
+		t.Fatalf("expected one pod, got %+v", ns.Pods)
+	}
+	if ns.Pods[0].Name != "demo-old" {
+		t.Fatalf("expected older pod at selected timestamp, got %q", ns.Pods[0].Name)
 	}
 }
 
 func TestServeTree_AtInvalid(t *testing.T) {
 	store := buildTestStore(t)
 	h := &explorerHandler{store: store}
-	req := httptest.NewRequest(http.MethodGet, "/api/ui/tree?at=not-a-time", nil)
+	// serveTree is now index-only and ignores the at= param; invalid value on
+	// serveTreeNamespace (where at is actually used) should return 400.
+	req := httptest.NewRequest(http.MethodGet, "/api/ui/tree/namespace?ns=default&at=not-a-time", nil)
 	rr := httptest.NewRecorder()
-	h.serveTree(rr, req)
+	h.serveTreeNamespace(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d", rr.Code)
 	}
@@ -474,6 +513,11 @@ func buildTableOnlyStore(t *testing.T) *server.CaptureStore {
 }
 
 func buildMultiSnapshotStore(t *testing.T) *server.CaptureStore {
+	store, _ := buildMultiSnapshotArchive(t)
+	return store
+}
+
+func buildMultiSnapshotArchive(t *testing.T) (*server.CaptureStore, string) {
 	t.Helper()
 	dir := t.TempDir()
 	out := filepath.Join(dir, "capture-multi-snapshot.khsrk")
@@ -495,7 +539,7 @@ func buildMultiSnapshotStore(t *testing.T) *server.CaptureStore {
 		},
 	}
 	meta := &capture.CaptureMetadata{CaptureID: "ui-multi-snapshot-test", CapturedAt: t1, CapturedUntil: t2, RecordCount: len(recs)}
-	return buildStoreFromArchive(t, out, recs, idx, nil, meta)
+	return buildStoreFromArchive(t, out, recs, idx, nil, meta), out
 }
 
 func buildWatchOnlyStore(t *testing.T) *server.CaptureStore {
@@ -544,18 +588,62 @@ func contains(values []string, want string) bool {
 	return false
 }
 
-func TestServeTransitions(t *testing.T) {
-	store := buildTestStore(t)
-	h := &explorerHandler{
-		store: store,
-		allTransitions: []transitions.Transition{
-			{Time: time.Date(2026, 4, 10, 10, 0, 5, 0, time.UTC), EventType: "ADDED", Resource: "pods", Namespace: "default", Name: "nginx"},
-			{Time: time.Date(2026, 4, 10, 10, 0, 10, 0, time.UTC), EventType: "MODIFIED", Resource: "pods", Namespace: "default", Name: "nginx"},
-			{Time: time.Date(2026, 4, 10, 10, 0, 15, 0, time.UTC), EventType: "ADDED", Resource: "deployments", Namespace: "kube-system", Name: "coredns"},
+// buildTransitionsArchive creates a minimal archive with watch events for
+// transition-related handler tests. It returns the store and the archive path.
+// Archive layout:
+//
+//	/api/v1/namespaces/default/pods      — watch: nginx ADDED(seq0), nginx MODIFIED(seq1), redis ADDED(seq2)
+//	/apis/apps/v1/namespaces/kube-system/deployments — watch: coredns ADDED(seq0)
+func buildTransitionsArchive(t *testing.T) (store *server.CaptureStore, archivePath string) {
+	t.Helper()
+	dir := t.TempDir()
+	out := filepath.Join(dir, "capture-transitions.khsrk")
+
+	t1 := time.Date(2026, 4, 10, 10, 0, 5, 0, time.UTC)
+	t2 := time.Date(2026, 4, 10, 10, 0, 10, 0, time.UTC)
+	t3 := time.Date(2026, 4, 10, 10, 0, 15, 0, time.UTC)
+
+	nginxV1 := json.RawMessage(`{"metadata":{"name":"nginx","namespace":"default","uid":"nginx-1"}}`)
+	nginxV2 := json.RawMessage(`{"metadata":{"name":"nginx","namespace":"default","uid":"nginx-1"},"status":{"phase":"Running"}}`)
+	redisBody := json.RawMessage(`{"metadata":{"name":"redis","namespace":"default","uid":"redis-1"}}`)
+	corednsBody := json.RawMessage(`{"metadata":{"name":"coredns","namespace":"kube-system","uid":"coredns-1"}}`)
+
+	recs := []*capture.Record{
+		// /api/v1/namespaces/default/pods — seq 0, 1, 2
+		{ID: "w1", CapturedAt: t1, APIPath: "/api/v1/namespaces/default/pods", EventType: "ADDED", HTTPMethod: "GET", ResponseCode: 200, ResponseBody: nginxV1},
+		{ID: "w2", CapturedAt: t2, APIPath: "/api/v1/namespaces/default/pods", EventType: "MODIFIED", HTTPMethod: "GET", ResponseCode: 200, ResponseBody: nginxV2},
+		{ID: "w3", CapturedAt: t3, APIPath: "/api/v1/namespaces/default/pods", EventType: "ADDED", HTTPMethod: "GET", ResponseCode: 200, ResponseBody: redisBody},
+		// /apis/apps/v1/namespaces/kube-system/deployments — seq 0
+		{ID: "w4", CapturedAt: t3, APIPath: "/apis/apps/v1/namespaces/kube-system/deployments", EventType: "ADDED", HTTPMethod: "GET", ResponseCode: 200, ResponseBody: corednsBody},
+	}
+	idx := capture.Index{
+		"/api/v1/namespaces/default/pods":                  {APIPath: "/api/v1/namespaces/default/pods", Seqs: []int{}, Times: []time.Time{}},
+		"/apis/apps/v1/namespaces/kube-system/deployments": {APIPath: "/apis/apps/v1/namespaces/kube-system/deployments", Seqs: []int{}, Times: []time.Time{}},
+	}
+	wi := capture.WatchIndex{
+		"/api/v1/namespaces/default/pods": {
+			APIPath:    "/api/v1/namespaces/default/pods",
+			Seqs:       []int{0, 1, 2},
+			Times:      []time.Time{t1, t2, t3},
+			EventTypes: []string{"ADDED", "MODIFIED", "ADDED"},
+		},
+		"/apis/apps/v1/namespaces/kube-system/deployments": {
+			APIPath:    "/apis/apps/v1/namespaces/kube-system/deployments",
+			Seqs:       []int{0},
+			Times:      []time.Time{t3},
+			EventTypes: []string{"ADDED"},
 		},
 	}
+	meta := &capture.CaptureMetadata{CaptureID: "transitions-test", CapturedAt: t1, CapturedUntil: t3}
+	store = buildStoreFromArchive(t, out, recs, idx, wi, meta)
+	return store, out
+}
 
-	// Unfiltered — returns all 3.
+func TestServeTransitions(t *testing.T) {
+	store, archivePath := buildTransitionsArchive(t)
+	h := &explorerHandler{store: store, archivePath: archivePath}
+
+	// Unfiltered — returns all 4 events (nginx ADDED, nginx MODIFIED, redis ADDED, coredns ADDED).
 	req := httptest.NewRequest(http.MethodGet, "/api/ui/transitions", nil)
 	rr := httptest.NewRecorder()
 	h.serveTransitions(rr, req)
@@ -566,21 +654,21 @@ func TestServeTransitions(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &markers); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(markers) != 3 {
-		t.Fatalf("expected 3 markers, got %d", len(markers))
+	if len(markers) != 4 {
+		t.Fatalf("expected 4 markers, got %d", len(markers))
 	}
 
-	// Filter by resource.
+	// Filter by resource=pods — should return 3 (nginx x2, redis x1).
 	req2 := httptest.NewRequest(http.MethodGet, "/api/ui/transitions?resource=pods", nil)
 	rr2 := httptest.NewRecorder()
 	h.serveTransitions(rr2, req2)
 	var filtered []map[string]any
 	_ = json.Unmarshal(rr2.Body.Bytes(), &filtered)
-	if len(filtered) != 2 {
-		t.Fatalf("expected 2 pod markers, got %d", len(filtered))
+	if len(filtered) != 3 {
+		t.Fatalf("expected 3 pod markers, got %d", len(filtered))
 	}
 
-	// Filter by namespace.
+	// Filter by namespace=kube-system — should return 1 (coredns).
 	req3 := httptest.NewRequest(http.MethodGet, "/api/ui/transitions?namespace=kube-system", nil)
 	rr3 := httptest.NewRecorder()
 	h.serveTransitions(rr3, req3)
@@ -592,15 +680,8 @@ func TestServeTransitions(t *testing.T) {
 }
 
 func TestServeObjectHistory(t *testing.T) {
-	store := buildTestStore(t)
-	h := &explorerHandler{
-		store: store,
-		allTransitions: []transitions.Transition{
-			{Time: time.Date(2026, 4, 10, 10, 0, 5, 0, time.UTC), EventType: "ADDED", Resource: "pods", Namespace: "default", Name: "nginx", After: json.RawMessage(`{"metadata":{"name":"nginx"}}`)},
-			{Time: time.Date(2026, 4, 10, 10, 0, 10, 0, time.UTC), EventType: "MODIFIED", Resource: "pods", Namespace: "default", Name: "nginx", Before: json.RawMessage(`{"metadata":{"name":"nginx"}}`), After: json.RawMessage(`{"metadata":{"name":"nginx"},"status":{"phase":"Running"}}`)},
-			{Time: time.Date(2026, 4, 10, 10, 0, 15, 0, time.UTC), EventType: "ADDED", Resource: "pods", Namespace: "default", Name: "redis"},
-		},
-	}
+	store, archivePath := buildTransitionsArchive(t)
+	h := &explorerHandler{store: store, archivePath: archivePath}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/ui/object-history?name=nginx", nil)
 	rr := httptest.NewRecorder()

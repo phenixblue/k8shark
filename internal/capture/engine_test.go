@@ -310,6 +310,103 @@ func wildcardServer(t *testing.T, discoveredNS []string, reqPaths chan<- string)
 	return srv
 }
 
+// wildcardServerPaginated serves /api/v1/namespaces in two pages of pageSize,
+// simulating Kubernetes pagination for clusters with many namespaces.
+func wildcardServerPaginated(t *testing.T, allNS []string, pageSize int) *httptest.Server {
+	t.Helper()
+	const tok = "page2token"
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/version":
+			fmt.Fprint(w, `{"gitVersion":"v1.29.0"}`)
+		case "/api/v1/namespaces":
+			cont := r.URL.Query().Get("continue")
+			if cont == "" {
+				// First page
+				page := allNS
+				var continueVal string
+				if len(allNS) > pageSize {
+					page = allNS[:pageSize]
+					continueVal = tok
+				}
+				b, _ := buildNsList(page, continueVal)
+				fmt.Fprint(w, b)
+			} else if cont == tok {
+				// Second page
+				page := allNS[pageSize:]
+				b, _ := buildNsList(page, "")
+				fmt.Fprint(w, b)
+			} else {
+				w.WriteHeader(http.StatusBadRequest)
+			}
+		default:
+			fmt.Fprintf(w, `{"kind":"List","items":[]}`)
+		}
+	}))
+	return srv
+}
+
+func buildNsList(names []string, continueToken string) (string, error) {
+	type item struct {
+		Metadata struct {
+			Name string `json:"name"`
+		} `json:"metadata"`
+	}
+	type list struct {
+		Kind     string `json:"kind"`
+		Metadata struct {
+			Continue string `json:"continue,omitempty"`
+		} `json:"metadata"`
+		Items []item `json:"items"`
+	}
+	l := list{Kind: "NamespaceList"}
+	l.Metadata.Continue = continueToken
+	for _, n := range names {
+		var it item
+		it.Metadata.Name = n
+		l.Items = append(l.Items, it)
+	}
+	b, err := json.Marshal(l)
+	return string(b), err
+}
+
+func TestExpandWildcard_Pagination(t *testing.T) {
+	// Simulate a cluster with 3 namespaces split across two pages (pageSize=2).
+	allNS := []string{"default", "kube-system", "portworx"}
+	srv := wildcardServerPaginated(t, allNS, 2)
+	defer srv.Close()
+
+	outDir := t.TempDir()
+	cfg := &config.Config{
+		DurationRaw: "500ms",
+		Duration:    500 * time.Millisecond,
+		Output:      filepath.Join(outDir, "capture.khsrk"),
+		Resources: []config.Resource{
+			{Version: "v1", Resource: "pods", Namespaces: []string{"*"}, IntervalRaw: "200ms", Interval: 200 * time.Millisecond},
+		},
+	}
+
+	eng := newEngineWith(cfg, srv.Client(), srv.URL, false)
+	if _, err := eng.Run(); err != nil {
+		t.Fatalf("engine.Run() error: %v", err)
+	}
+
+	got := cfg.Resources[0].Namespaces
+	if len(got) != len(allNS) {
+		t.Fatalf("expected %d namespaces (all pages), got %d: %v", len(allNS), len(got), got)
+	}
+	gotSet := make(map[string]bool, len(got))
+	for _, ns := range got {
+		gotSet[ns] = true
+	}
+	for _, want := range allNS {
+		if !gotSet[want] {
+			t.Errorf("namespace %q missing from expanded list %v", want, got)
+		}
+	}
+}
+
 func TestExpandWildcard_NoWildcard(t *testing.T) {
 	paths := make(chan string, 100)
 	srv := wildcardServer(t, []string{"default", "kube-system"}, paths)

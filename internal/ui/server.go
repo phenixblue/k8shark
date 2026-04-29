@@ -35,18 +35,23 @@ type Server struct {
 }
 
 type explorerHandler struct {
-	store          *server.CaptureStore
-	at             time.Time
-	verbose        bool
-	archivePath    string
-	allTransitions []transitions.Transition
+	store       *server.CaptureStore
+	at          time.Time
+	verbose     bool
+	archivePath string
+	// clusterSpanning is the set of resource names (plural, lowercase) that
+	// appear as namespace-scoped index paths in the majority of namespaces.
+	// These are OLM-style resources (e.g. packagemanifests) that technically
+	// have a namespace scope but return the full cluster list for any namespace.
+	// They are excluded from individual namespace drill-downs.
+	clusterSpanning map[string]bool
 }
 
 type treeResponse struct {
 	CapturedAt    time.Time       `json:"captured_at"`
 	CapturedUntil time.Time       `json:"captured_until"`
 	Namespaces    []namespaceNode `json:"namespaces"`
-	ClusterScoped []resourceNode  `json:"cluster_scoped"`
+	ClusterScoped []string        `json:"cluster_scoped"` // resource kind names only; items loaded on demand
 	ResourceKinds []string        `json:"resource_kinds"`
 }
 
@@ -60,10 +65,7 @@ type timestampsResponse struct {
 }
 
 type namespaceNode struct {
-	Name      string         `json:"name"`
-	Workloads []workloadNode `json:"workloads"`
-	Pods      []podNode      `json:"pods"`
-	Resources []resourceNode `json:"resources"`
+	Name string `json:"name"`
 }
 
 type workloadNode struct {
@@ -101,6 +103,13 @@ type resourceNode struct {
 	Labels   map[string]string `json:"labels,omitempty"`
 }
 
+type namespaceDetailResponse struct {
+	Name      string         `json:"name"`
+	Workloads []workloadNode `json:"workloads"`
+	Pods      []podNode      `json:"pods"`
+	Resources []resourceNode `json:"resources"`
+}
+
 type listItem struct {
 	path string
 	item map[string]any
@@ -134,13 +143,12 @@ func Open(opts OpenOptions) (*Server, error) {
 		return nil, fmt.Errorf("listening: %w", err)
 	}
 
-	// Pre-compute transitions for the archive (best-effort; empty on error).
-	allTrans, _ := transitions.LoadTransitions(opts.ArchivePath, transitions.FilterOpts{})
-
-	h := &explorerHandler{store: store, at: at, verbose: opts.Verbose, archivePath: opts.ArchivePath, allTransitions: allTrans}
+	h := &explorerHandler{store: store, at: at, verbose: opts.Verbose, archivePath: opts.ArchivePath}
+	h.clusterSpanning = computeClusterSpanningResources(store)
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", h.serveIndex)
 	mux.HandleFunc("/api/ui/tree", h.serveTree)
+	mux.HandleFunc("/api/ui/tree/namespace", h.serveTreeNamespace)
 	mux.HandleFunc("/api/ui/detail", h.serveDetail)
 	mux.HandleFunc("/api/ui/timestamps", h.serveTimestamps)
 	mux.HandleFunc("/api/ui/transitions", h.serveTransitions)
@@ -190,18 +198,103 @@ func (h *explorerHandler) serveIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *explorerHandler) serveTree(w http.ResponseWriter, r *http.Request) {
+	// Index-only walk: no record bodies are read.
+	// Returns the namespace list, cluster-scoped resource kinds, and all resource kinds.
+	// Clients load individual namespace items on demand via /api/ui/tree/namespace.
+	nsSet := map[string]struct{}{}
+	clusterKindSet := map[string]struct{}{}
+	kindSet := map[string]struct{}{}
+	for path := range h.store.Index {
+		_, _, resource, ns, _ := parseAPIPath(baseAPIPath(path))
+		if resource == "" {
+			continue
+		}
+		kind := kindFromResource(resource)
+		kindSet[kind] = struct{}{}
+		if ns == "" {
+			clusterKindSet[kind] = struct{}{}
+		} else {
+			nsSet[ns] = struct{}{}
+		}
+	}
+	// Also collect namespaces from watch-event paths, which are always
+	// namespace-scoped and may reveal namespaces absent from the REST index
+	// (e.g. when resources were only captured via cluster-wide list endpoints).
+	for path := range h.store.WatchIndex {
+		_, _, resource, ns, _ := parseAPIPath(baseAPIPath(path))
+		if resource == "" || ns == "" {
+			continue
+		}
+		nsSet[ns] = struct{}{}
+	}
+	// Also enumerate namespaces from the captured /api/v1/namespaces list.
+	// This surfaces namespaces that exist in the cluster but have no per-resource
+	// paths in the capture (e.g. empty namespaces or ones not included in the
+	// capture config). We do a best-effort read; if the record is absent we
+	// gracefully skip.
+	if nsListBody, code, err := h.store.ReconstructAt("/api/v1/namespaces", h.at); err == nil && code == 200 {
+		var nsList struct {
+			Items []struct {
+				Metadata struct {
+					Name string `json:"name"`
+				} `json:"metadata"`
+			} `json:"items"`
+		}
+		if json.Unmarshal(nsListBody, &nsList) == nil {
+			for _, item := range nsList.Items {
+				if item.Metadata.Name != "" {
+					nsSet[item.Metadata.Name] = struct{}{}
+				}
+			}
+		}
+	}
+	namespaces := make([]namespaceNode, 0, len(nsSet))
+	for ns := range nsSet {
+		namespaces = append(namespaces, namespaceNode{Name: ns})
+	}
+	sort.Slice(namespaces, func(i, j int) bool { return namespaces[i].Name < namespaces[j].Name })
+
+	clusterKinds := make([]string, 0, len(clusterKindSet))
+	for k := range clusterKindSet {
+		clusterKinds = append(clusterKinds, k)
+	}
+	sort.Strings(clusterKinds)
+
+	kinds := make([]string, 0, len(kindSet))
+	for k := range kindSet {
+		kinds = append(kinds, k)
+	}
+	sort.Strings(kinds)
+
+	writeJSON(w, http.StatusOK, treeResponse{
+		CapturedAt:    h.store.Metadata.CapturedAt,
+		CapturedUntil: h.store.Metadata.CapturedUntil,
+		Namespaces:    namespaces,
+		ClusterScoped: clusterKinds,
+		ResourceKinds: kinds,
+	})
+}
+
+// serveTreeNamespace loads all items for a single namespace (or cluster-scoped
+// resources when ns="" / ns=":cluster") and returns the full workloads/pods/resources
+// breakdown. This is called on demand as the user expands a namespace in the UI.
+func (h *explorerHandler) serveTreeNamespace(w http.ResponseWriter, r *http.Request) {
 	at, err := h.resolveRequestAt(r)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	ns := r.URL.Query().Get("ns")
+	if ns == ":cluster" {
+		ns = ""
+	}
 
-	resp, err := h.buildTreeAt(at)
+	node, err := h.buildNamespaceAt(ns, at)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, resp)
+	writeJSON(w, http.StatusOK, node)
 }
 
 func (h *explorerHandler) serveDetail(w http.ResponseWriter, r *http.Request) {
@@ -301,14 +394,17 @@ func (h *explorerHandler) serveTransitions(w http.ResponseWriter, r *http.Reques
 	resource := r.URL.Query().Get("resource")
 	namespace := r.URL.Query().Get("namespace")
 
-	markers := make([]transitionMarker, 0, len(h.allTransitions))
-	for _, t := range h.allTransitions {
-		if resource != "" && !strings.Contains(t.Resource, resource) {
-			continue
-		}
-		if namespace != "" && t.Namespace != namespace {
-			continue
-		}
+	all, err := transitions.LoadTransitions(h.archivePath, transitions.FilterOpts{
+		Resource:  resource,
+		Namespace: namespace,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	markers := make([]transitionMarker, 0, len(all))
+	for _, t := range all {
 		markers = append(markers, transitionMarker{
 			Time:      t.Time.UTC().Format(time.RFC3339),
 			EventType: t.EventType,
@@ -337,17 +433,18 @@ func (h *explorerHandler) serveObjectHistory(w http.ResponseWriter, r *http.Requ
 	resource := r.URL.Query().Get("resource")
 	namespace := r.URL.Query().Get("namespace")
 
-	entries := make([]objectHistoryEntry, 0)
-	for _, t := range h.allTransitions {
-		if t.Name != name {
-			continue
-		}
-		if resource != "" && !strings.Contains(t.Resource, resource) {
-			continue
-		}
-		if namespace != "" && t.Namespace != namespace {
-			continue
-		}
+	all, err := transitions.LoadTransitions(h.archivePath, transitions.FilterOpts{
+		Name:      name,
+		Resource:  resource,
+		Namespace: namespace,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	entries := make([]objectHistoryEntry, 0, len(all))
+	for _, t := range all {
 		entries = append(entries, objectHistoryEntry{
 			Time:      t.Time.UTC().Format(time.RFC3339),
 			EventType: t.EventType,
@@ -409,135 +506,170 @@ func (h *explorerHandler) buildTree() (*treeResponse, error) {
 	return h.buildTreeAt(h.at)
 }
 
+// buildTreeAt is kept for tests; it reconstructs the full tree the old way.
+// New callers should use the split serveTree + serveTreeNamespace endpoints.
 func (h *explorerHandler) buildTreeAt(at time.Time) (*treeResponse, error) {
-	nsMap := map[string]*namespaceNode{}
-	clusterScoped := make([]resourceNode, 0)
-	kindSet := map[string]bool{}
-	workloadKinds := map[string]bool{
-		"deployments":  true,
-		"statefulsets": true,
-		"daemonsets":   true,
-		"jobs":         true,
-		"replicasets":  true,
-	}
-	// Map of (namespace, resource) -> all candidate index paths
-	byNSRes := map[string]map[string][]string{}
+	nsSet := map[string]struct{}{}
+	clusterKindSet := map[string]struct{}{}
+	kindSet := map[string]struct{}{}
 	for path := range h.store.Index {
-		group, version, resource, ns, _ := parseAPIPath(baseAPIPath(path))
+		_, _, resource, ns, _ := parseAPIPath(baseAPIPath(path))
 		if resource == "" {
 			continue
 		}
-		if byNSRes[ns] == nil {
-			byNSRes[ns] = map[string][]string{}
-		}
-		byNSRes[ns][resource] = append(byNSRes[ns][resource], path)
-		_ = group
-		_ = version
-	}
-	ensureNamespace := func(name string) *namespaceNode {
-		node, ok := nsMap[name]
-		if !ok {
-			node = &namespaceNode{
-				Name:      name,
-				Workloads: []workloadNode{},
-				Pods:      []podNode{},
-				Resources: []resourceNode{},
-			}
-			nsMap[name] = node
-		}
-		return node
-	}
-	appendNamespacedItem := func(targetNS, resource string, entry listItem) {
-		node := ensureNamespace(targetNS)
-		if workloadKinds[resource] {
-			w := workloadNode{
-				Kind:     firstNonEmpty(asString(entry.item["kind"]), kindFromResource(resource)),
-				Name:     getMetaName(entry.item),
-				Status:   summarizeStatus(entry.item),
-				Age:      summarizeAge(entry.item),
-				ListPath: entry.path,
-				Labels:   getMetaLabels(entry.item),
-			}
-			node.Workloads = append(node.Workloads, w)
-			kindSet[w.Kind] = true
-			return
-		}
-		if resource == "pods" {
-			p := toPodNode(entry.path, entry.item)
-			node.Pods = append(node.Pods, p)
-			kindSet[p.Kind] = true
-			return
-		}
-		rn := toResourceNode(resource, entry.path, entry.item)
-		node.Resources = append(node.Resources, rn)
-		kindSet[rn.Kind] = true
-	}
-	for ns, resMap := range byNSRes {
-		for resource, candidates := range resMap {
-			items, ok := h.loadResourceItemsAt(candidates, at)
-			if !ok {
-				continue
-			}
-			if ns == "" {
-				for _, entry := range items {
-					if itemNS := getMetaNamespace(entry.item); itemNS != "" {
-						appendNamespacedItem(itemNS, resource, entry)
-						continue
-					}
-					node := toResourceNode(resource, entry.path, entry.item)
-					clusterScoped = append(clusterScoped, node)
-					kindSet[node.Kind] = true
-				}
-				continue
-			}
-			for _, entry := range items {
-				targetNS := ns
-				if itemNS := getMetaNamespace(entry.item); itemNS != "" {
-					targetNS = itemNS
-				}
-				appendNamespacedItem(targetNS, resource, entry)
-			}
+		kind := kindFromResource(resource)
+		kindSet[kind] = struct{}{}
+		if ns == "" {
+			clusterKindSet[kind] = struct{}{}
+		} else {
+			nsSet[ns] = struct{}{}
 		}
 	}
-	for ns := range nsMap {
-		attachPodsToWorkloads(nsMap[ns])
-	}
-	namespaces := make([]namespaceNode, 0, len(nsMap))
-	for _, ns := range nsMap {
-		sort.Slice(ns.Workloads, func(i, j int) bool {
-			if ns.Workloads[i].Kind == ns.Workloads[j].Kind {
-				return ns.Workloads[i].Name < ns.Workloads[j].Name
-			}
-			return ns.Workloads[i].Kind < ns.Workloads[j].Kind
-		})
-		sort.Slice(ns.Pods, func(i, j int) bool { return ns.Pods[i].Name < ns.Pods[j].Name })
-		sort.Slice(ns.Resources, func(i, j int) bool {
-			if ns.Resources[i].Kind == ns.Resources[j].Kind {
-				return ns.Resources[i].Name < ns.Resources[j].Name
-			}
-			return ns.Resources[i].Kind < ns.Resources[j].Kind
-		})
-		namespaces = append(namespaces, *ns)
+	namespaces := make([]namespaceNode, 0, len(nsSet))
+	for ns := range nsSet {
+		namespaces = append(namespaces, namespaceNode{Name: ns})
 	}
 	sort.Slice(namespaces, func(i, j int) bool { return namespaces[i].Name < namespaces[j].Name })
-	sort.Slice(clusterScoped, func(i, j int) bool {
-		if clusterScoped[i].Kind == clusterScoped[j].Kind {
-			return clusterScoped[i].Name < clusterScoped[j].Name
-		}
-		return clusterScoped[i].Kind < clusterScoped[j].Kind
-	})
+
+	clusterKinds := make([]string, 0, len(clusterKindSet))
+	for k := range clusterKindSet {
+		clusterKinds = append(clusterKinds, k)
+	}
+	sort.Strings(clusterKinds)
+
 	kinds := make([]string, 0, len(kindSet))
 	for k := range kindSet {
 		kinds = append(kinds, k)
 	}
 	sort.Strings(kinds)
+
 	return &treeResponse{
 		CapturedAt:    h.store.Metadata.CapturedAt,
 		CapturedUntil: h.store.Metadata.CapturedUntil,
 		Namespaces:    namespaces,
-		ClusterScoped: clusterScoped,
+		ClusterScoped: clusterKinds,
 		ResourceKinds: kinds,
 	}, nil
+}
+
+// buildNamespaceAt loads all items for the given namespace (empty = cluster-scoped)
+// and returns the full workloads / pods / resources breakdown.
+func (h *explorerHandler) buildNamespaceAt(targetNS string, at time.Time) (*namespaceDetailResponse, error) {
+	workloadKinds := map[string]bool{
+		"deployments": true, "statefulsets": true, "daemonsets": true,
+		"jobs": true, "replicasets": true,
+	}
+
+	// Collect candidate paths for this namespace.
+	// For a named namespace:
+	//   - Always include namespace-scoped paths (/api/v1/namespaces/<ns>/pods).
+	//   - Include cluster-wide paths (/apis/apps/v1/deployments) ONLY for
+	//     resource types that have no namespace-scoped path for this namespace
+	//     in the index (e.g. portworx resources captured only at cluster scope).
+	//     This prevents truly cluster-scoped resources (ClusterRoles, Nodes…)
+	//     from appearing in the namespace drill-down.
+	// For the cluster-scoped view (targetNS == ""):
+	//   - Only include paths with no /namespaces/ segment.
+	byRes := map[string][]string{}
+	if targetNS == "" {
+		// cluster-scoped: only true cluster-wide paths
+		for path := range h.store.Index {
+			_, _, resource, ns, _ := parseAPIPath(baseAPIPath(path))
+			if resource == "" || ns != "" {
+				continue
+			}
+			byRes[resource] = append(byRes[resource], path)
+		}
+	} else {
+		// named namespace: first pass — collect namespace-scoped paths
+		nsScopedResources := map[string]bool{}
+		for path := range h.store.Index {
+			_, _, resource, ns, _ := parseAPIPath(baseAPIPath(path))
+			if resource == "" || ns != targetNS {
+				continue
+			}
+			// Skip OLM-style resources that appear across the majority of
+			// namespaces — they belong only in the cluster-scoped card.
+			if h.clusterSpanning[resource] {
+				continue
+			}
+			byRes[resource] = append(byRes[resource], path)
+			nsScopedResources[resource] = true
+		}
+		// second pass — add cluster-wide paths only for resources not already
+		// found via namespace-scoped paths
+		for path := range h.store.Index {
+			_, _, resource, ns, _ := parseAPIPath(baseAPIPath(path))
+			if resource == "" || ns != "" {
+				continue
+			}
+			if nsScopedResources[resource] {
+				continue // already covered by ns-scoped path; skip to avoid cluster-scoped pollution
+			}
+			byRes[resource] = append(byRes[resource], path)
+		}
+	}
+
+	node := &namespaceDetailResponse{
+		Name:      targetNS,
+		Workloads: []workloadNode{},
+		Pods:      []podNode{},
+		Resources: []resourceNode{},
+	}
+
+	for resource, candidates := range byRes {
+		items, ok := h.loadResourceItemsAt(candidates, at)
+		if !ok {
+			continue
+		}
+		for _, entry := range items {
+			itemNS := getMetaNamespace(entry.item)
+			// cluster-scoped view: skip any item that belongs to a namespace
+			if targetNS == "" && itemNS != "" {
+				continue
+			}
+			// named-namespace view: skip items with no namespace (truly
+			// cluster-scoped resources like ClusterRoles that happen to be
+			// returned by cluster-wide list endpoints) and items from a
+			// different namespace
+			if targetNS != "" && itemNS != targetNS {
+				continue
+			}
+			if workloadKinds[resource] {
+				node.Workloads = append(node.Workloads, workloadNode{
+					Kind:     firstNonEmpty(asString(entry.item["kind"]), kindFromResource(resource)),
+					Name:     getMetaName(entry.item),
+					Status:   summarizeStatus(entry.item),
+					Age:      summarizeAge(entry.item),
+					ListPath: entry.path,
+					Labels:   getMetaLabels(entry.item),
+				})
+				continue
+			}
+			if resource == "pods" {
+				node.Pods = append(node.Pods, toPodNode(entry.path, entry.item))
+				continue
+			}
+			node.Resources = append(node.Resources, toResourceNode(resource, entry.path, entry.item))
+		}
+	}
+
+	attachPodsToWorkloads(node)
+
+	sort.Slice(node.Workloads, func(i, j int) bool {
+		if node.Workloads[i].Kind == node.Workloads[j].Kind {
+			return node.Workloads[i].Name < node.Workloads[j].Name
+		}
+		return node.Workloads[i].Kind < node.Workloads[j].Kind
+	})
+	sort.Slice(node.Pods, func(i, j int) bool { return node.Pods[i].Name < node.Pods[j].Name })
+	sort.Slice(node.Resources, func(i, j int) bool {
+		if node.Resources[i].Kind == node.Resources[j].Kind {
+			return node.Resources[i].Name < node.Resources[j].Name
+		}
+		return node.Resources[i].Kind < node.Resources[j].Kind
+	})
+	return node, nil
 }
 
 func toResourceNode(resource, listPath string, item map[string]any) resourceNode {
@@ -576,7 +708,7 @@ func toPodNode(listPath string, item map[string]any) podNode {
 	}
 }
 
-func attachPodsToWorkloads(ns *namespaceNode) {
+func attachPodsToWorkloads(ns *namespaceDetailResponse) {
 	byOwner := map[string]*workloadNode{}
 	for i := range ns.Workloads {
 		k := ns.Workloads[i].Kind + "/" + ns.Workloads[i].Name
@@ -705,6 +837,43 @@ func getOwner(item map[string]any) (string, string) {
 		}
 	}
 	return "", ""
+}
+
+// computeClusterSpanningResources scans the index and returns the set of
+// resource names (plural, lowercase) that appear as namespace-scoped paths in
+// at least half of all discovered namespaces. These are resources like
+// PackageManifests (OLM) that technically have a namespace scope but return
+// the full cluster-wide list for any namespace. We exclude them from
+// individual namespace drill-downs to avoid every namespace showing the same
+// huge list.
+func computeClusterSpanningResources(store *server.CaptureStore) map[string]bool {
+	resNS := map[string]map[string]struct{}{} // resource → distinct namespaces
+	totalNS := map[string]struct{}{}
+	for path := range store.Index {
+		_, _, resource, ns, _ := parseAPIPath(baseAPIPath(path))
+		if resource == "" || ns == "" {
+			continue
+		}
+		if resNS[resource] == nil {
+			resNS[resource] = map[string]struct{}{}
+		}
+		resNS[resource][ns] = struct{}{}
+		totalNS[ns] = struct{}{}
+	}
+	// Use 30% of namespaces as the spanning threshold. 50% was too high: OLM's
+	// packagemanifests appear in ~45% of namespaces in typical OpenShift captures
+	// (because OLM queries it for every namespace it manages) but not quite 50%.
+	threshold := len(totalNS) * 30 / 100
+	if threshold < 3 {
+		threshold = 3
+	}
+	out := map[string]bool{}
+	for res, nsSet := range resNS {
+		if len(nsSet) >= threshold {
+			out[res] = true
+		}
+	}
+	return out
 }
 
 func kindFromResource(resource string) string {
@@ -1176,6 +1345,21 @@ const indexHTML = `<!doctype html>
 		.diff-line-del { color:#fca5a5; }
 		.diff-line-hdr { color:#94a3b8; }
 		.history-empty { padding:16px; color:var(--muted); font-size:13px; }
+
+	/* --- namespace card grid --- */
+	.ns-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(200px,1fr)); gap:12px; padding:14px; }
+	.ns-card { background:rgba(15,23,42,.75); border:1px solid #1f2937; border-radius:10px; padding:14px 16px; cursor:pointer; transition:border-color .15s,box-shadow .15s; user-select:none; }
+	.ns-card:hover { border-color:#334155; box-shadow:0 2px 12px rgba(0,0,0,.35); }
+	.ns-card:focus-visible { outline:none; border-color:#22c55e; box-shadow:0 0 0 2px rgba(34,197,94,.2); }
+	.ns-card.cluster { border-color:rgba(59,130,246,.3); background:rgba(15,23,42,.9); }
+	.ns-card-name { font-weight:700; font-size:14px; margin-bottom:8px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+	.ns-card-chips { display:flex; flex-wrap:wrap; gap:4px; }
+	.ns-card-chip { font-size:10px; padding:2px 6px; border-radius:999px; background:#1f2937; color:var(--muted); }
+	.ns-back { display:inline-flex; align-items:center; gap:6px; padding:5px 10px; border-radius:7px; border:1px solid #334155; background:#0f172a; color:#cbd5e1; cursor:pointer; font-size:12px; margin:10px 12px 2px; }
+	.ns-back:hover { border-color:#64748b; }
+	.ns-drilldown { padding-bottom:12px; }
+	.ns-section { margin:0 12px 8px; }
+	.ns-section-header { font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:.6px; padding:6px 0 4px; border-bottom:1px solid #1f2937; margin-bottom:4px; }
   </style>
 </head>
 <body>
@@ -1213,11 +1397,7 @@ const indexHTML = `<!doctype html>
     </aside>
     <main class="panel tree">
 			<div class="tree-head">
-				<span class="toggle-head-title">Tree</span>
-				<span class="tree-actions">
-					<button id="expandAll" type="button">Expand All</button>
-					<button id="collapseAll" type="button">Collapse All</button>
-				</span>
+				<span class="toggle-head-title" id="treeHeadLabel">Namespaces</span>
 			</div>
       <div class="crumbs" id="crumbs">Cluster</div>
       <div id="tree"></div>
@@ -1245,20 +1425,49 @@ const indexHTML = `<!doctype html>
 	<div id="toasts" class="toast-stack" aria-live="polite"></div>
   <script>
     let treeData = null;
+    let nsCache = {};
+    const nsFetchConcurrency = 3;
+    let nsFetchActive = 0;
+    const nsFetchQueue = [];
+    function loadNsDetail(nsName) {
+      if (nsCache[nsName] && !nsCache[nsName]._loading) return;
+      if (nsCache[nsName] && nsCache[nsName]._loading) return; // already queued/in-flight
+      nsCache[nsName] = { _loading: true };
+      nsFetchQueue.push(nsName);
+      nsDrainQueue();
+    }
+    function nsDrainQueue() {
+      while (nsFetchActive < nsFetchConcurrency && nsFetchQueue.length > 0) {
+        const nsName = nsFetchQueue.shift();
+        nsFetchActive++;
+        nsFetchOne(nsName).finally(() => {
+          nsFetchActive--;
+          nsDrainQueue();
+        });
+      }
+    }
+    async function nsFetchOne(nsName) {
+      try {
+        const q = withAtQuery(new URLSearchParams());
+        q.set('ns', nsName === ':cluster' ? ':cluster' : nsName);
+        const res = await fetch('/api/ui/tree/namespace?' + q.toString());
+        const data = await res.json();
+        nsCache[nsName] = data;
+      } catch (_) {
+        delete nsCache[nsName];
+        return;
+      }
+      render();
+    }
     let activeKinds = new Set();
 	let activeKindsInitialized = false;
     let selected = null;
     let activeTab = 'json';
 	let visibleNodes = [];
 	let activeNodeIdx = -1;
-	const namespacePageSize = 120;
-	let namespaceVisibleLimit = {};
-	const namespacesPageSize = 50;
-	let namespacesVisibleLimit = namespacesPageSize;
 	const storageKindsKey = 'kshrk.ui.activeKinds.v1';
-	const storageExpandedKey = 'kshrk.ui.expandedSections.v1';
-	let expandedSections = {};
 	let currentAt = '';
+	let currentNS = null; // null = card grid, ':cluster' = cluster-scoped, string = namespace name
 	let timelinePoints = [];
 	let scrubDebounce = null;
 	let lastLoadedAt = '';
@@ -1281,8 +1490,7 @@ const indexHTML = `<!doctype html>
 			downloadDetail: document.getElementById('downloadDetail'),
 			toggleAll: document.getElementById('toggleAll'),
 			toggleNone: document.getElementById('toggleNone'),
-			expandAll: document.getElementById('expandAll'),
-			collapseAll: document.getElementById('collapseAll'),
+			treeHeadLabel: document.getElementById('treeHeadLabel'),
 			snapshotPrev: document.getElementById('snapshotPrev'),
 			snapshotAt: document.getElementById('snapshotAt'),
 			snapshotNext: document.getElementById('snapshotNext'),
@@ -1306,8 +1514,6 @@ const indexHTML = `<!doctype html>
     el.search.oninput = render;
 		el.toggleAll.onclick = () => setAllKinds(true);
 		el.toggleNone.onclick = () => setAllKinds(false);
-	el.expandAll.onclick = () => setAllTreeDetails(true);
-	el.collapseAll.onclick = () => setAllTreeDetails(false);
 	el.snapshotPrev.onclick = () => stepSnapshot(1);
 	el.snapshotAt.onchange = () => {
 		currentAt = el.snapshotAt.value || '';
@@ -1603,16 +1809,6 @@ const indexHTML = `<!doctype html>
 			el.tree.appendChild(box);
 		}
 
-		function namespaceLimit(name) {
-			if (!namespaceVisibleLimit[name]) namespaceVisibleLimit[name] = namespacePageSize;
-			return namespaceVisibleLimit[name];
-		}
-
-		function showMoreNamespace(name) {
-			namespaceVisibleLimit[name] = namespaceLimit(name) + namespacePageSize;
-			render();
-		}
-
 		function showToast(type, message, timeoutMs) {
 			const toast = document.createElement('div');
 			toast.className = 'toast ' + type;
@@ -1681,40 +1877,12 @@ const indexHTML = `<!doctype html>
 					}
 				}
 			} catch (_) {}
-			try {
-				const expandedRaw = window.localStorage.getItem(storageExpandedKey);
-				if (expandedRaw) {
-					const parsed = JSON.parse(expandedRaw);
-					if (parsed && typeof parsed === 'object') expandedSections = parsed;
-				}
-			} catch (_) {}
 		}
 
 		function persistKinds() {
 			try {
 				window.localStorage.setItem(storageKindsKey, JSON.stringify(Array.from(activeKinds)));
 			} catch (_) {}
-		}
-
-		function persistExpandedSections() {
-			try {
-				window.localStorage.setItem(storageExpandedKey, JSON.stringify(expandedSections));
-			} catch (_) {}
-		}
-
-		function sectionOpen(sectionKey, fallbackOpen) {
-			if (Object.prototype.hasOwnProperty.call(expandedSections, sectionKey)) {
-				return !!expandedSections[sectionKey];
-			}
-			return fallbackOpen;
-		}
-
-		function bindSectionState(details, sectionKey) {
-			details.onToggle = null;
-			details.addEventListener('toggle', () => {
-				expandedSections[sectionKey] = details.open;
-				persistExpandedSections();
-			});
 		}
 
     function statusClass(status) {
@@ -1895,147 +2063,199 @@ const indexHTML = `<!doctype html>
 				setTreeState('loading', 'Loading captured resources...');
 				return;
 			}
-		const desiredKey = selected && selected.node ? nodeIdentity(selected.node) : '';
-      el.tree.innerHTML = '';
-      const q = el.search.value.trim().toLowerCase();
-			let renderedNodes = 0;
-			let renderedSections = 0;
-
-			const cs = document.createElement('details');
-			cs.open = sectionOpen('cluster-scoped', true);
-			cs.innerHTML = '<summary>Cluster-scoped resources <span class="muted">(' + treeData.cluster_scoped.length + ')</span></summary>';
-			bindSectionState(cs, 'cluster-scoped');
-			let clusterShown = 0;
-      for (const node of treeData.cluster_scoped) {
-				if (!kindEnabled(node.kind) || !nodeMatches(node, q, '')) continue;
-				cs.appendChild(mkNode(node, ['Cluster', node.kind, node.name], 0, ''));
-				renderedNodes++;
-				clusterShown++;
-      }
-			if (!q || clusterShown > 0) {
-				el.tree.appendChild(cs);
-				renderedSections++;
+			el.tree.innerHTML = '';
+			if (currentNS === null) {
+				renderCardGrid();
+			} else {
+				renderNsDrilldown();
 			}
+		}
 
-      const visibleNamespaces = q ? treeData.namespaces : treeData.namespaces.slice(0, namespacesVisibleLimit);
-			for (const ns of visibleNamespaces) {
-				const nsMatches = !!q && ns.name.toLowerCase().includes(q);
-        const ds = document.createElement('details');
-				ds.open = sectionOpen('ns:' + ns.name, treeData.namespaces.length <= 20);
-				const nsCount = (ns.workloads || []).length + (ns.pods || []).length + (ns.resources || []).length;
-				ds.innerHTML = '<summary>Namespace: <strong>' + ns.name + '</strong> <span class="muted">(' + nsCount + ')</span></summary>';
-				bindSectionState(ds, 'ns:' + ns.name);
+		// ── card grid ────────────────────────────────────────────────────────────
+		function renderCardGrid() {
+			el.treeHeadLabel.textContent = 'Namespaces';
+			el.crumbs.textContent = 'Cluster';
+			const q = el.search.value.trim().toLowerCase();
 
-				const nsNodes = [];
+			const grid = document.createElement('div');
+			grid.className = 'ns-grid';
 
-			for (const w of (ns.workloads || [])) {
-				const workloadVisible = kindEnabled(w.kind) && (nsMatches || nodeMatches(w, q, ns.name));
-				if (workloadVisible) {
-					nsNodes.push(mkNode(w, ['Cluster', ns.name, w.kind, w.name], 0, ''));
-				}
-				for (const p of (w.pods || [])) {
-					const podVisible = kindEnabled(p.kind) && (nsMatches || nodeMatches(p, q, ns.name));
-					if (podVisible) {
-						const podCrumbs = workloadVisible
-							? ['Cluster', ns.name, w.kind, w.name, 'Pod', p.name]
-							: ['Cluster', ns.name, 'Pod', p.name];
-						nsNodes.push(mkNode(p, podCrumbs, workloadVisible ? 1 : 0, ''));
-					}
-					for (const c of (p.containers || [])) {
-						const fake = {kind:'Container',name:c.name,status:'',age:'',labels:{},list_path:p.list_path};
-						if (!kindEnabled('Container') || !(nsMatches || nodeMatches(fake, q, ns.name))) continue;
-						const containerDepth = workloadVisible ? 2 : (podVisible ? 1 : 0);
-						const containerCrumbs = workloadVisible
-							? ['Cluster', ns.name, w.kind, w.name, 'Pod', p.name, 'Container', c.name]
-							: ['Cluster', ns.name, 'Pod', p.name, 'Container', c.name];
-						nsNodes.push(mkNode(fake, containerCrumbs, containerDepth, ''));
+			// cluster-scoped card
+			const allNS = [{ name: ':cluster', _cluster: true }].concat(treeData.namespaces || []);
+			let shown = 0;
+			for (const ns of allNS) {
+				const label = ns._cluster ? 'Cluster-scoped' : ns.name;
+				if (q && !label.toLowerCase().includes(q)) continue;
+				const detail = nsCache[ns.name] || {};
+				const workloads = (detail.workloads || []).length;
+				const pods = (detail.pods || []).length;
+				const resources = (detail.resources || []).length;
+				const loaded = nsCache[ns.name] && !detail._loading;
+
+				const card = document.createElement('div');
+				card.className = 'ns-card' + (ns._cluster ? ' cluster' : '');
+				card.tabIndex = 0;
+				card.setAttribute('role', 'button');
+				card.title = 'Open ' + label;
+
+				const nameEl = document.createElement('div');
+				nameEl.className = 'ns-card-name';
+				nameEl.textContent = label;
+				card.appendChild(nameEl);
+
+				const chips = document.createElement('div');
+				chips.className = 'ns-card-chips';
+				if (!loaded) {
+					// show nothing until the user opens this namespace
+				} else {
+					if (workloads) { const c = document.createElement('span'); c.className = 'ns-card-chip'; c.textContent = workloads + ' workload' + (workloads !== 1 ? 's' : ''); chips.appendChild(c); }
+					if (pods)      { const c = document.createElement('span'); c.className = 'ns-card-chip'; c.textContent = pods + ' pod' + (pods !== 1 ? 's' : '');      chips.appendChild(c); }
+					if (resources) { const c = document.createElement('span'); c.className = 'ns-card-chip'; c.textContent = resources + ' resource' + (resources !== 1 ? 's' : ''); chips.appendChild(c); }
+					if (!workloads && !pods && !resources) {
+						const c = document.createElement('span'); c.className = 'ns-card-chip'; c.textContent = 'empty'; chips.appendChild(c);
 					}
 				}
+				card.appendChild(chips);
+
+				const openNS = () => navigateToNS(ns.name);
+				card.onclick = openNS;
+				card.onkeydown = (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openNS(); } };
+				grid.appendChild(card);
+				shown++;
 			}
 
-			for (const p of (ns.pods || [])) {
-				if (!kindEnabled(p.kind) || !(nsMatches || nodeMatches(p, q, ns.name))) continue;
-					nsNodes.push(mkNode(p, ['Cluster', ns.name, 'Pod', p.name], 0, ''));
-          for (const c of (p.containers || [])) {
-            const fake = {kind:'Container',name:c.name,status:'',age:'',labels:{},list_path:p.list_path};
-					if (!kindEnabled('Container') || !(nsMatches || nodeMatches(fake, q, ns.name))) continue;
-						nsNodes.push(mkNode(fake, ['Cluster', ns.name, 'Pod', p.name, 'Container', c.name], 1, ''));
-          }
-        }
-
-			for (const r of (ns.resources || [])) {
-				if (!kindEnabled(r.kind) || !(nsMatches || nodeMatches(r, q, ns.name))) continue;
-					nsNodes.push(mkNode(r, ['Cluster', ns.name, r.kind, r.name], 0, ''));
-        }
-
-				if (q && nsNodes.length === 0 && !nsMatches) {
-					continue;
-				}
-
-				const limit = q ? nsNodes.length : namespaceLimit(ns.name);
-				const shown = nsNodes.slice(0, limit);
-				for (const nodeEl of shown) {
-					ds.appendChild(nodeEl);
-					renderedNodes++;
-				}
-				if (!q && nsNodes.length > shown.length) {
-					const pager = document.createElement('div');
-					pager.className = 'ns-pager';
-					const hidden = nsNodes.length - shown.length;
-					const meta = document.createElement('span');
-					meta.className = 'muted';
-					meta.textContent = hidden + ' more hidden';
-					const btn = document.createElement('button');
-					btn.type = 'button';
-					btn.textContent = 'Show more';
-					btn.onclick = () => showMoreNamespace(ns.name);
-					pager.appendChild(meta);
-					pager.appendChild(btn);
-					ds.appendChild(pager);
-				}
-        el.tree.appendChild(ds);
-				renderedSections++;
-      }
-
-			if (!q && treeData.namespaces.length > namespacesVisibleLimit) {
-				const nsPager = document.createElement('div');
-				nsPager.className = 'ns-pager';
-				const nsMeta = document.createElement('span');
-				nsMeta.className = 'muted';
-				nsMeta.textContent = (treeData.namespaces.length - namespacesVisibleLimit) + ' more namespaces hidden';
-				const nsBtn = document.createElement('button');
-				nsBtn.type = 'button';
-				nsBtn.textContent = 'Show more namespaces';
-				nsBtn.onclick = () => { namespacesVisibleLimit += namespacesPageSize; render(); };
-				nsPager.appendChild(nsMeta);
-				nsPager.appendChild(nsBtn);
-				el.tree.appendChild(nsPager);
-				renderedSections++;
+			if (shown === 0) {
+				setTreeState('empty', q ? 'No namespaces match "' + q + '".' : 'No namespaces found in this capture.');
+				visibleNodes = [];
+				activeNodeIdx = -1;
+				return;
 			}
+			el.tree.appendChild(grid);
+			visibleNodes = [];
+			activeNodeIdx = -1;
+		}
 
-			if (renderedNodes === 0 && renderedSections === 0) {
-				const msg = q
-					? 'No resources match the current search/filter selection.'
-					: 'No resources were found in this capture at the selected time.';
-				setTreeState('empty', msg);
+		function navigateToNS(nsName) {
+			currentNS = nsName;
+			render();
+		}
+
+		function navigateBack() {
+			currentNS = null;
+			render();
+		}
+
+		// ── ns drill-down ─────────────────────────────────────────────────────────
+		function renderNsDrilldown() {
+			const nsLabel = currentNS === ':cluster' ? 'Cluster-scoped' : currentNS;
+			el.treeHeadLabel.textContent = nsLabel;
+			el.crumbs.textContent = 'Cluster / ' + nsLabel;
+
+			// back button
+			const back = document.createElement('button');
+			back.className = 'ns-back';
+			back.type = 'button';
+			back.innerHTML = '&#8592; All namespaces';
+			back.onclick = navigateBack;
+			el.tree.appendChild(back);
+
+			const detail = nsCache[currentNS];
+			if (!detail || detail._loading) {
+				loadNsDetail(currentNS);
+				setTreeState('loading', 'Loading ' + nsLabel + '…');
+				el.tree.appendChild(document.querySelector('.tree-state') || document.createElement('div'));
 				visibleNodes = [];
 				activeNodeIdx = -1;
 				return;
 			}
 
-			visibleNodes = Array.from(el.tree.querySelectorAll('.node'));
-			if (visibleNodes.length === 0) {
+			const q = el.search.value.trim().toLowerCase();
+			const desiredKey = selected && selected.node ? nodeIdentity(selected.node) : '';
+			const drilldown = document.createElement('div');
+			drilldown.className = 'ns-drilldown';
+
+			const workloads = detail.workloads || [];
+			const pods = detail.pods || [];
+			const resources = detail.resources || [];
+			let renderedNodes = 0;
+
+			// helper: build a section for a group of nodes
+			function appendSection(title, items) {
+				if (items.length === 0) return;
+				const sec = document.createElement('div');
+				sec.className = 'ns-section';
+				const hdr = document.createElement('div');
+				hdr.className = 'ns-section-header';
+				hdr.textContent = title + ' (' + items.length + ')';
+				sec.appendChild(hdr);
+				for (const el of items) {
+					sec.appendChild(el);
+					renderedNodes++;
+				}
+				drilldown.appendChild(sec);
+			}
+
+			// workloads (with nested pods)
+			const workloadNodes = [];
+			for (const w of workloads) {
+				const visible = kindEnabled(w.kind) && nodeMatches(w, q, currentNS === ':cluster' ? '' : currentNS);
+				if (visible) workloadNodes.push(mkNode(w, ['Cluster', nsLabel, w.kind, w.name], 0, ''));
+				for (const p of (w.pods || [])) {
+					if (!kindEnabled(p.kind) || !nodeMatches(p, q, currentNS === ':cluster' ? '' : currentNS)) continue;
+					const podCrumbs = visible
+						? ['Cluster', nsLabel, w.kind, w.name, 'Pod', p.name]
+						: ['Cluster', nsLabel, 'Pod', p.name];
+					workloadNodes.push(mkNode(p, podCrumbs, visible ? 1 : 0, ''));
+					for (const c of (p.containers || [])) {
+						const fake = { kind:'Container', name:c.name, status:'', age:'', labels:{}, list_path:p.list_path };
+						if (!kindEnabled('Container') || !nodeMatches(fake, q, currentNS === ':cluster' ? '' : currentNS)) continue;
+						const depth = visible ? 2 : 1;
+						const cc = visible ? ['Cluster', nsLabel, w.kind, w.name, 'Pod', p.name, 'Container', c.name] : ['Cluster', nsLabel, 'Pod', p.name, 'Container', c.name];
+						workloadNodes.push(mkNode(fake, cc, depth, ''));
+					}
+				}
+			}
+			appendSection('Workloads', workloadNodes);
+
+			// standalone pods
+			const podNodes = [];
+			for (const p of pods) {
+				if (!kindEnabled(p.kind) || !nodeMatches(p, q, currentNS === ':cluster' ? '' : currentNS)) continue;
+				podNodes.push(mkNode(p, ['Cluster', nsLabel, 'Pod', p.name], 0, ''));
+				for (const c of (p.containers || [])) {
+					const fake = { kind:'Container', name:c.name, status:'', age:'', labels:{}, list_path:p.list_path };
+					if (!kindEnabled('Container') || !nodeMatches(fake, q, currentNS === ':cluster' ? '' : currentNS)) continue;
+					podNodes.push(mkNode(fake, ['Cluster', nsLabel, 'Pod', p.name, 'Container', c.name], 1, ''));
+				}
+			}
+			appendSection('Pods', podNodes);
+
+			// remaining resources grouped by kind
+			const byKind = {};
+			for (const r of resources) {
+				if (!kindEnabled(r.kind) || !nodeMatches(r, q, currentNS === ':cluster' ? '' : currentNS)) continue;
+				(byKind[r.kind] = byKind[r.kind] || []).push(mkNode(r, ['Cluster', nsLabel, r.kind, r.name], 0, ''));
+			}
+			for (const kind of Object.keys(byKind).sort()) {
+				appendSection(kind, byKind[kind]);
+			}
+
+			if (renderedNodes === 0) {
+				const msg = q ? 'No resources match "' + q + '" in ' + nsLabel + '.' : nsLabel + ' has no resources at this snapshot.';
+				setTreeState('empty', msg);
+				el.tree.appendChild(drilldown);
+				visibleNodes = [];
 				activeNodeIdx = -1;
 				return;
 			}
-			if (activeNodeIdx < 0 || activeNodeIdx >= visibleNodes.length) {
-				activeNodeIdx = 0;
-			}
-			if (restoreSelectionByKey(desiredKey)) {
-				return;
-			}
+
+			el.tree.appendChild(drilldown);
+			visibleNodes = Array.from(el.tree.querySelectorAll('.node'));
+			if (visibleNodes.length === 0) { activeNodeIdx = -1; return; }
+			if (activeNodeIdx < 0 || activeNodeIdx >= visibleNodes.length) activeNodeIdx = 0;
+			if (restoreSelectionByKey(desiredKey)) return;
 			selectNodeAt(activeNodeIdx, false);
-    }
+		}
 
     function renderToggles(kinds) {
 			if (!activeKindsInitialized) {
@@ -2080,20 +2300,6 @@ const indexHTML = `<!doctype html>
 			}
 			persistKinds();
 			render();
-		}
-
-		function setAllTreeDetails(open) {
-			for (const details of el.tree.querySelectorAll('details')) {
-				details.open = open;
-				const summary = details.querySelector('summary');
-				if (summary && summary.textContent.startsWith('Namespace:')) {
-					const strong = summary.querySelector('strong');
-					if (strong) expandedSections['ns:' + strong.textContent] = open;
-				} else {
-					expandedSections['cluster-scoped'] = open;
-				}
-			}
-			persistExpandedSections();
 		}
 
 		async function loadTimestamps() {
@@ -2308,7 +2514,9 @@ const indexHTML = `<!doctype html>
 					throw new Error(msg);
 				}
 				treeData = data;
-				namespacesVisibleLimit = namespacesPageSize;
+				nsCache = {};
+				nsFetchQueue.length = 0;
+				currentNS = null;
 				lastLoadedAt = normalizedAt();
 				updateMetaLine();
 				renderToggles((treeData.resource_kinds || []).concat(['Container']));

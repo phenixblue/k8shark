@@ -345,11 +345,16 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 	}
 
 	if code == 404 {
-		// Try all-namespaces aggregation: kubectl -A issues /api/v1/pods etc.
-		body, code, err = h.store.AggregateAcrossNamespaces(path, at)
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, statusObj(500, err.Error()))
-			return
+		// Try all-namespaces aggregation: kubectl -A issues cluster-wide paths
+		// like /api/v1/pods or /apis/apps/v1/deployments. Only fire for paths
+		// with no namespace segment; namespace-scoped 404s fall through to the
+		// cluster-scoped fallback below, which correctly filters by namespace.
+		if _, _, _, reqNS := parseAPIPath(path); reqNS == "" {
+			body, code, err = h.store.AggregateAcrossNamespaces(path, at)
+			if err != nil {
+				writeJSON(w, http.StatusInternalServerError, statusObj(500, err.Error()))
+				return
+			}
 		}
 	}
 
@@ -455,12 +460,14 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 				}
 			}
 		}
-		// Aggregated Table across namespaces (for -A / cluster-scoped paths).
-		if tb, tbCode, _ := h.store.AggregateTableAcrossNamespaces(path, at); tbCode == 200 {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(200)
-			_, _ = w.Write(tableFiltered(tb))
-			return
+		// Aggregated Table across namespaces (for -A / cluster-scoped paths only).
+		if _, _, _, reqNS := parseAPIPath(path); reqNS == "" {
+			if tb, tbCode, _ := h.store.AggregateTableAcrossNamespaces(path, at); tbCode == 200 {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(200)
+				_, _ = w.Write(tableFiltered(tb))
+				return
+			}
 		}
 		// Last resort: synthesize a minimal Table from the list body (old captures).
 		// body is already selector-filtered above, so buildTable sees filtered items.
@@ -671,10 +678,13 @@ func (h *handler) handleWatch(w http.ResponseWriter, r *http.Request, path strin
 	}
 
 	if code == 404 {
-		rawBody, code, err = h.store.AggregateAcrossNamespaces(watchPath, at)
-		if err != nil {
-			h.writeStatus(w, http.StatusInternalServerError, err.Error())
-			return
+		// Only aggregate across namespaces for cluster-wide watch paths.
+		if _, _, _, reqNS := parseAPIPath(watchPath); reqNS == "" {
+			rawBody, code, err = h.store.AggregateAcrossNamespaces(watchPath, at)
+			if err != nil {
+				h.writeStatus(w, http.StatusInternalServerError, err.Error())
+				return
+			}
 		}
 	}
 

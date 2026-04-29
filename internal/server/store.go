@@ -22,18 +22,26 @@ type CaptureStore struct {
 	WatchIndex   capture.WatchIndex
 	resourceInfo map[string]*ResourceInfo
 
-	// Record LRU cache (bounded by recordCacheMax entries).
-	recordCacheMu   sync.Mutex
-	recordCacheMap  map[recordKey]*list.Element
-	recordCacheList *list.List
+	// Record LRU cache (bounded by recordCacheMaxBytes total body bytes).
+	recordCacheMu    sync.Mutex
+	recordCacheMap   map[recordKey]*list.Element
+	recordCacheList  *list.List
+	recordCacheBytes int64
 
 	// Response cache: (path, at) → marshalled body + code.
-	// Entries are valid for responseCacheTTL.
-	responseCacheMu  sync.RWMutex
-	responseCacheMap map[responseCacheKey]*responseCacheEntry
+	// Entries are valid for responseCacheTTL, bounded by responseCacheMaxBytes.
+	responseCacheMu    sync.RWMutex
+	responseCacheMap   map[responseCacheKey]*responseCacheEntry
+	responseCacheBytes int64
 }
 
-const recordCacheMax = 2048
+// recordCacheMaxBytes caps the total in-memory size of cached record bodies.
+// Large cluster captures can have response bodies of hundreds of KB each;
+// a count-based cap of 2048 was the primary driver of the v0.2.0 memory regression.
+const recordCacheMaxBytes = 128 * 1024 * 1024 // 128 MiB
+
+// responseCacheMaxBytes caps the total in-memory size of cached response bodies.
+const responseCacheMaxBytes = 32 * 1024 * 1024 // 32 MiB
 
 type recordKey struct {
 	apiPath string
@@ -54,8 +62,9 @@ type responseCacheEntry struct {
 const responseCacheTTL = 10 * time.Second
 
 type recordCacheEntry struct {
-	key recordKey
-	rec capture.Record
+	key  recordKey
+	rec  capture.Record
+	size int64 // len(rec.ResponseBody)
 }
 
 // ResourceInfo describes a single captured resource type.
@@ -266,18 +275,23 @@ func (s *CaptureStore) readRecord(apiPath string, seq int) (capture.Record, erro
 		return capture.Record{}, fmt.Errorf("parsing record path=%s seq=%d: %w", apiPath, seq, err)
 	}
 
+	entry := &recordCacheEntry{key: k, rec: rec, size: int64(len(rec.ResponseBody))}
+
 	s.recordCacheMu.Lock()
-	// Evict LRU entry if at capacity.
-	for s.recordCacheList.Len() >= recordCacheMax {
+	// Evict LRU entries until the new entry fits within the byte budget.
+	for s.recordCacheBytes+entry.size > recordCacheMaxBytes {
 		back := s.recordCacheList.Back()
 		if back == nil {
 			break
 		}
+		evicted := back.Value.(*recordCacheEntry)
 		s.recordCacheList.Remove(back)
-		delete(s.recordCacheMap, back.Value.(*recordCacheEntry).key)
+		delete(s.recordCacheMap, evicted.key)
+		s.recordCacheBytes -= evicted.size
 	}
-	el := s.recordCacheList.PushFront(&recordCacheEntry{key: k, rec: rec})
+	el := s.recordCacheList.PushFront(entry)
 	s.recordCacheMap[k] = el
+	s.recordCacheBytes += entry.size
 	s.recordCacheMu.Unlock()
 
 	return rec, nil
@@ -356,11 +370,13 @@ func (s *CaptureStore) ReconstructAt(apiPath string, at time.Time) ([]byte, int,
 	// Cache the result.
 	s.responseCacheMu.Lock()
 	s.responseCacheMap[cacheKey] = &responseCacheEntry{body: body, code: code, created: time.Now()}
-	// Simple TTL cleanup on writes — keep map bounded.
-	if len(s.responseCacheMap) > 512 {
+	s.responseCacheBytes += int64(len(body))
+	// Evict expired entries when over the byte budget.
+	if s.responseCacheBytes > responseCacheMaxBytes {
 		now := time.Now()
 		for k, v := range s.responseCacheMap {
 			if now.Sub(v.created) > responseCacheTTL {
+				s.responseCacheBytes -= int64(len(v.body))
 				delete(s.responseCacheMap, k)
 			}
 		}
@@ -498,6 +514,30 @@ func (s *CaptureStore) reconstructAt(apiPath string, at time.Time) ([]byte, int,
 	return out, 200, nil
 }
 
+// itemDedupeKey returns a short string that uniquely identifies a raw JSON
+// item by uid (preferred) or name-only fallback. Used to deduplicate items
+// when aggregating across namespaces.
+//
+// Name-only (not namespace/name) is intentional for the no-UID case: OLM
+// resources like PackageManifests have no uid and are stamped with the
+// requested namespace on every namespace-scoped response, so the same package
+// appears as "adani/prometheus-operator", "kube-system/prometheus-operator",
+// etc. Using just the name correctly collapses these duplicates. Resources that
+// have genuinely distinct same-named items in different namespaces (pods,
+// services…) always carry a uid and therefore never hit this fallback.
+func itemDedupeKey(raw json.RawMessage) string {
+	var obj struct {
+		Metadata struct {
+			UID  string `json:"uid"`
+			Name string `json:"name"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(raw, &obj); err != nil || obj.Metadata.UID == "" {
+		return obj.Metadata.Name
+	}
+	return obj.Metadata.UID
+}
+
 // AggregateAcrossNamespaces aggregates list items from all namespaced paths.
 func (s *CaptureStore) AggregateAcrossNamespaces(clusterPath string, at time.Time) ([]byte, int, error) {
 	g, v, resource, _ := parseAPIPath(clusterPath)
@@ -509,11 +549,20 @@ func (s *CaptureStore) AggregateAcrossNamespaces(clusterPath string, at time.Tim
 	}
 	suffix := "/" + resource
 
+	// Safety cap: resources like packagemanifests return the full cluster list
+	// for every namespace (OLM behaviour). Aggregating across all namespaces
+	// would multiply the item count by the number of namespaces and materialise
+	// hundreds of millions of items. Cap the aggregate at 10 000 unique items
+	// (keyed by uid or name) to prevent unbounded memory use.
+	const aggregateItemCap = 10_000
+
 	var (
 		allItems   []json.RawMessage
 		listKind   string
 		apiVersion string
 		found      bool
+		seen       = make(map[string]struct{})
+		capped     bool
 	)
 
 	for indexPath := range s.Index {
@@ -537,7 +586,25 @@ func (s *CaptureStore) AggregateAcrossNamespaces(clusterPath string, at time.Tim
 			apiVersion = list.APIVersion
 			found = true
 		}
-		allItems = append(allItems, list.Items...)
+		for _, raw := range list.Items {
+			if capped {
+				break
+			}
+			// Deduplicate by uid or name so OLM-style resources that return the
+			// full cluster list for every namespace don't multiply item count.
+			key := itemDedupeKey(raw)
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+			allItems = append(allItems, raw)
+			if len(allItems) >= aggregateItemCap {
+				capped = true
+			}
+		}
+		if capped {
+			break
+		}
 	}
 
 	if !found {
@@ -571,6 +638,24 @@ func (s *CaptureStore) AggregateAcrossNamespaces(clusterPath string, at time.Tim
 	return out, 200, nil
 }
 
+// tableRowDedupeKey returns a deduplication key for a Table row using the
+// embedded object's uid (preferred) or name-only fallback. Mirrors the logic
+// of itemDedupeKey for Table-format responses.
+func tableRowDedupeKey(row json.RawMessage) string {
+	var r struct {
+		Object struct {
+			Metadata struct {
+				UID  string `json:"uid"`
+				Name string `json:"name"`
+			} `json:"metadata"`
+		} `json:"object"`
+	}
+	if err := json.Unmarshal(row, &r); err != nil || r.Object.Metadata.UID == "" {
+		return r.Object.Metadata.Name
+	}
+	return r.Object.Metadata.UID
+}
+
 // AggregateTableAcrossNamespaces merges per-namespace Table responses.
 func (s *CaptureStore) AggregateTableAcrossNamespaces(clusterPath string, at time.Time) ([]byte, int, error) {
 	g, v, resource, _ := parseAPIPath(clusterPath)
@@ -586,6 +671,7 @@ func (s *CaptureStore) AggregateTableAcrossNamespaces(clusterPath string, at tim
 		allRows []json.RawMessage
 		colDefs json.RawMessage
 		found   bool
+		seen    = make(map[string]struct{})
 	)
 
 	for indexPath := range s.Index {
@@ -607,7 +693,14 @@ func (s *CaptureStore) AggregateTableAcrossNamespaces(clusterPath string, at tim
 			colDefs = table.ColumnDefinitions
 			found = true
 		}
-		allRows = append(allRows, table.Rows...)
+		for _, row := range table.Rows {
+			key := tableRowDedupeKey(row)
+			if _, dup := seen[key]; dup {
+				continue
+			}
+			seen[key] = struct{}{}
+			allRows = append(allRows, row)
+		}
 	}
 
 	if !found {
