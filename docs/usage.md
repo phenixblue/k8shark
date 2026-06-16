@@ -442,14 +442,16 @@ resources:
     resource: pods
     namespaces: [production, staging]
     interval: 30s
-    logs: 200       # capture last 200 lines from each pod
+    logs: 200             # capture last 200 lines from each container
+    previousLogs: true    # also fetch ?previous=true for each container (optional)
 ```
 
-Log content is fetched once at the end of the capture run and stored in the archive. When you open the archive with `kshrk open`, `kubectl logs` returns the captured output:
+Log content is fetched once at the end of the capture run and stored per (pod, container) under `/api/v1/namespaces/<ns>/pods/<name>/log?container=<c>`. When you open the archive with `kshrk open`:
 
 ```sh
-kubectl logs my-app-pod-abc123 -n production
-# outputs the captured tail log
+kubectl logs my-app-pod-abc123 -n production              # current container
+kubectl logs my-app-pod-abc123 -c istio-proxy -n production
+kubectl logs my-app-pod-abc123 --previous -n production   # if previousLogs: true
 ```
 
 If a pod's logs were not captured (e.g. `logs` was omitted or set to `0`), `kubectl logs` returns a clear stub message instead of an error:
@@ -460,7 +462,9 @@ If a pod's logs were not captured (e.g. `logs` was omitted or set to `0`), `kube
 # pods entry in your k8shark capture config and re-run the capture.
 ```
 
-> **Note:** Large log volumes increase archive size. Use a reasonable tail-line limit (e.g. 100–500 lines). Previous-container logs (`kubectl logs --previous`) are not captured.
+After the capture finishes, the CLI prints a summary showing how many container logs were captured and a sample of any that were skipped (with reasons), so multi-container pods, terminated containers, and RBAC denials are visible without re-running in verbose mode.
+
+> **Note:** Large log volumes increase archive size. Use a reasonable tail-line limit (e.g. 100–500 lines). When `previousLogs: true`, "container has not been previously terminated" responses are silently dropped — only successful previous-log captures count.
 
 ### Resources not in the capture
 

@@ -37,6 +37,12 @@ type Resource struct {
 	// resource is "pods". 0 (default) disables log capture. For example, set
 	// logs: 200 to capture the last 200 lines from every pod at capture time.
 	Logs int `mapstructure:"logs"`
+	// PreviousLogs, when true, also captures the previous-container log for
+	// each container using ?previous=true. The same tail-line count from Logs
+	// applies. Useful for diagnosing CrashLoopBackOff pods where the current
+	// container is starting fresh and the interesting output lives in the
+	// terminated previous container.
+	PreviousLogs bool `mapstructure:"previousLogs"`
 	// Dedup controls response-body deduplication for this resource. Nil means
 	// enabled by default; set dedup: false to force writing every poll.
 	Dedup *bool `mapstructure:"dedup"`

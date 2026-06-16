@@ -293,6 +293,152 @@ func TestEngine_FetchPodsLogs_SkippedFailuresInSummary(t *testing.T) {
 	}
 }
 
+// TestEngine_FetchPodsLogs_Previous verifies that when PreviousLogs: true is
+// set, the engine fetches `?previous=true` for each container, stores the
+// result under a separate per-container index key, and counts successful
+// previous-log captures via CapturedPrevious. "No previous container" 400s
+// are silently dropped — they should not appear in the failure sample.
+func TestEngine_FetchPodsLogs_Previous(t *testing.T) {
+	podList := `{"apiVersion":"v1","kind":"PodList","metadata":{},"items":[` +
+		`{"metadata":{"name":"web","namespace":"default"},"spec":{"containers":[{"name":"app"}]}}` +
+		`]}`
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/version":
+			fmt.Fprint(w, `{"gitVersion":"v1.29.0"}`)
+			return
+		case "/api/v1/namespaces/default/pods":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, podList)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/log") {
+			if r.URL.Query().Get("previous") == "true" {
+				w.Header().Set("Content-Type", "text/plain")
+				fmt.Fprint(w, "old crashed log\n")
+				return
+			}
+			w.Header().Set("Content-Type", "text/plain")
+			fmt.Fprint(w, "current log\n")
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		DurationRaw: "500ms",
+		Duration:    500 * time.Millisecond,
+		Output:      filepath.Join(t.TempDir(), "capture.khsrk"),
+		Resources: []config.Resource{
+			{
+				Version: "v1", Resource: "pods",
+				Namespaces:  []string{"default"},
+				IntervalRaw: "500ms", Interval: 500 * time.Millisecond,
+				Logs:         50,
+				PreviousLogs: true,
+			},
+		},
+	}
+
+	eng := newEngineWith(cfg, srv.Client(), srv.URL, false)
+	ss := &sliceSink{}
+	eng.sink = ss
+	sum, err := eng.Run()
+	if err != nil {
+		t.Fatalf("engine.Run() error: %v", err)
+	}
+
+	currentKey := "/api/v1/namespaces/default/pods/web/log?container=app"
+	previousKey := "/api/v1/namespaces/default/pods/web/log?container=app&previous=true"
+	if _, ok := eng.index[currentKey]; !ok {
+		t.Errorf("missing current log at %q", currentKey)
+	}
+	if _, ok := eng.index[previousKey]; !ok {
+		t.Errorf("missing previous log at %q", previousKey)
+	}
+
+	if sum.PodLogs.Captured != 1 {
+		t.Errorf("expected Captured=1, got %d", sum.PodLogs.Captured)
+	}
+	if sum.PodLogs.CapturedPrevious != 1 {
+		t.Errorf("expected CapturedPrevious=1, got %d", sum.PodLogs.CapturedPrevious)
+	}
+	if sum.PodLogs.Attempted != 1 {
+		t.Errorf("expected Attempted=1 (previous fetches not counted), got %d", sum.PodLogs.Attempted)
+	}
+}
+
+// TestEngine_FetchPodsLogs_PreviousFailureSilent verifies that when the
+// previous-log fetch returns a 400 (the common "container has not been
+// previously terminated" case), it is silently dropped from the failure
+// sample so the summary stays focused on current-log issues.
+func TestEngine_FetchPodsLogs_PreviousFailureSilent(t *testing.T) {
+	podList := `{"apiVersion":"v1","kind":"PodList","metadata":{},"items":[` +
+		`{"metadata":{"name":"healthy","namespace":"default"},"spec":{"containers":[{"name":"app"}]}}` +
+		`]}`
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/version":
+			fmt.Fprint(w, `{"gitVersion":"v1.29.0"}`)
+			return
+		case "/api/v1/namespaces/default/pods":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, podList)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/log") {
+			if r.URL.Query().Get("previous") == "true" {
+				w.WriteHeader(http.StatusBadRequest)
+				fmt.Fprint(w, `{"kind":"Status","apiVersion":"v1","status":"Failure","message":"previous terminated container \"app\" in pod \"healthy\" not found","reason":"BadRequest","code":400}`)
+				return
+			}
+			w.Header().Set("Content-Type", "text/plain")
+			fmt.Fprint(w, "log\n")
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		DurationRaw: "500ms",
+		Duration:    500 * time.Millisecond,
+		Output:      filepath.Join(t.TempDir(), "capture.khsrk"),
+		Resources: []config.Resource{
+			{
+				Version: "v1", Resource: "pods",
+				Namespaces:  []string{"default"},
+				IntervalRaw: "500ms", Interval: 500 * time.Millisecond,
+				Logs:         50,
+				PreviousLogs: true,
+			},
+		},
+	}
+
+	eng := newEngineWith(cfg, srv.Client(), srv.URL, false)
+	eng.sink = &sliceSink{}
+	sum, err := eng.Run()
+	if err != nil {
+		t.Fatalf("engine.Run() error: %v", err)
+	}
+
+	if sum.PodLogs.Skipped != 0 {
+		t.Errorf("previous-log failures must not count as Skipped, got %d", sum.PodLogs.Skipped)
+	}
+	if len(sum.PodLogs.Failures) != 0 {
+		t.Errorf("previous-log failures must not appear in the failure sample, got %+v", sum.PodLogs.Failures)
+	}
+	if sum.PodLogs.Captured != 1 {
+		t.Errorf("expected Captured=1, got %d", sum.PodLogs.Captured)
+	}
+	if sum.PodLogs.CapturedPrevious != 0 {
+		t.Errorf("expected CapturedPrevious=0 (previous fetch failed), got %d", sum.PodLogs.CapturedPrevious)
+	}
+}
+
 func TestEngine_NoLogsWhenDisabled(t *testing.T) {
 	logCalled := false
 	podList := `{"apiVersion":"v1","kind":"PodList","metadata":{},"items":[{"metadata":{"name":"nginx","namespace":"default"}}]}`

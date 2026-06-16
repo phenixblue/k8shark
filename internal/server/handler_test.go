@@ -728,6 +728,60 @@ func TestHandler_ServeLog_NoContainerPicksAvailable(t *testing.T) {
 	}
 }
 
+// TestHandler_ServeLog_Previous verifies that `kubectl logs <pod> -c <c> --previous`
+// (encoded as ?container=<c>&previous=true) is routed to the previous-container
+// record stored under the corresponding index key.
+func TestHandler_ServeLog_Previous(t *testing.T) {
+	currentLog, _ := json.Marshal("current\n")
+	previousLog, _ := json.Marshal("previous\n")
+	store := buildTestStore(t, map[string][]byte{
+		"/api/v1/namespaces/default/pods/mypod/log?container=app":               currentLog,
+		"/api/v1/namespaces/default/pods/mypod/log?container=app&previous=true": previousLog,
+	})
+	h := newHandler(store, time.Time{}, false)
+
+	// Without previous=true, returns current.
+	req := httptest.NewRequest(http.MethodGet,
+		"/api/v1/namespaces/default/pods/mypod/log?container=app", nil)
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, req)
+	if got := rw.Body.String(); got != "current\n" {
+		t.Errorf("expected current log, got %q", got)
+	}
+
+	// With previous=true, returns previous.
+	req = httptest.NewRequest(http.MethodGet,
+		"/api/v1/namespaces/default/pods/mypod/log?container=app&previous=true", nil)
+	rw = httptest.NewRecorder()
+	h.ServeHTTP(rw, req)
+	if got := rw.Body.String(); got != "previous\n" {
+		t.Errorf("expected previous log, got %q", got)
+	}
+}
+
+// TestHandler_ServeLog_NoContainerDoesNotPickPrevious verifies that a bare
+// /log request never accidentally serves a previous-log record. Previous logs
+// must be opted into explicitly via ?previous=true.
+func TestHandler_ServeLog_NoContainerDoesNotPickPrevious(t *testing.T) {
+	previousLog, _ := json.Marshal("previous only\n")
+	store := buildTestStore(t, map[string][]byte{
+		"/api/v1/namespaces/default/pods/mypod/log?container=app&previous=true": previousLog,
+	})
+	h := newHandler(store, time.Time{}, false)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/namespaces/default/pods/mypod/log", nil)
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, req)
+
+	body := rw.Body.String()
+	if strings.Contains(body, "previous only") {
+		t.Errorf("bare /log served a previous-log record by accident: %q", body)
+	}
+	if !strings.Contains(body, "not captured") {
+		t.Errorf("expected stub since only previous record exists, got %q", body)
+	}
+}
+
 // TestHandler_GroupResourceList_FallbackFromIndex verifies that the mock server
 // returns a valid APIResourceList for a CRD API group even when the
 // /apis/<group>/<version> discovery document was never captured — as long as

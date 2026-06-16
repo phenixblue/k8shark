@@ -37,10 +37,11 @@ type CaptureSummary struct {
 // when logs were skipped (multi-container without log capture, RBAC denials,
 // timeouts, terminated containers, etc.) without re-running in verbose mode.
 type PodLogSummary struct {
-	Attempted int             // total (pod, container) fetch attempts
-	Captured  int             // successful captures
-	Skipped   int             // non-OK responses + transport errors
-	Failures  []PodLogFailure // capped sample of failures for CLI display
+	Attempted        int             // total (pod, container) fetch attempts (current logs only)
+	Captured         int             // successful current-log captures
+	Skipped          int             // current-log fetches that failed (non-OK / transport / timeout)
+	CapturedPrevious int             // successful ?previous=true captures, when PreviousLogs is enabled
+	Failures         []PodLogFailure // capped sample of current-log failures for CLI display
 }
 
 // PodLogFailure describes a single log fetch that did not produce a record.
@@ -243,6 +244,7 @@ func (e *Engine) Run() (*CaptureSummary, error) {
 			podLogSummary.Attempted += s.Attempted
 			podLogSummary.Captured += s.Captured
 			podLogSummary.Skipped += s.Skipped
+			podLogSummary.CapturedPrevious += s.CapturedPrevious
 			for _, f := range s.Failures {
 				if len(podLogSummary.Failures) >= podLogFailureSampleLimit {
 					break
@@ -1165,6 +1167,7 @@ func (e *Engine) fetchPodsLogs(ctx context.Context, res config.Resource) PodLogS
 		namespace string
 		pod       string
 		container string
+		previous  bool
 	}
 
 	namespaces := res.Namespaces
@@ -1203,14 +1206,20 @@ func (e *Engine) fetchPodsLogs(ctx context.Context, res config.Resource) PodLogS
 			if podNS == "" {
 				podNS = ns
 			}
+			queue := func(container string) {
+				jobs = append(jobs, job{namespace: podNS, pod: item.Metadata.Name, container: container})
+				if res.PreviousLogs {
+					jobs = append(jobs, job{namespace: podNS, pod: item.Metadata.Name, container: container, previous: true})
+				}
+			}
 			// Init containers first — they ran before main containers and
 			// often carry the most actionable diagnostic output on Pending
 			// or CrashLoopBackOff pods.
 			for _, c := range item.Spec.InitContainers {
-				jobs = append(jobs, job{namespace: podNS, pod: item.Metadata.Name, container: c.Name})
+				queue(c.Name)
 			}
 			for _, c := range item.Spec.Containers {
-				jobs = append(jobs, job{namespace: podNS, pod: item.Metadata.Name, container: c.Name})
+				queue(c.Name)
 			}
 		}
 	}
@@ -1219,9 +1228,21 @@ func (e *Engine) fetchPodsLogs(ctx context.Context, res config.Resource) PodLogS
 		return PodLogSummary{}
 	}
 
+	// Only current-log fetches count toward the user-facing summary so it
+	// stays focused on the headline number ("X/Y captured"). Previous-log
+	// fetches are best-effort: successes grow CapturedPrevious, but failures
+	// (the very common "container has not been previously terminated" 400)
+	// are dropped silently to avoid swamping the failure sample with noise.
+	attempted := 0
+	for _, j := range jobs {
+		if !j.previous {
+			attempted++
+		}
+	}
+
 	var (
 		mu      sync.Mutex
-		summary = PodLogSummary{Attempted: len(jobs)}
+		summary = PodLogSummary{Attempted: attempted}
 		wg      sync.WaitGroup
 	)
 	sem := make(chan struct{}, maxConcurrentLogFetches)
@@ -1232,10 +1253,16 @@ func (e *Engine) fetchPodsLogs(ctx context.Context, res config.Resource) PodLogS
 		go func(j job) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			result := e.fetchOnePodLog(ctx, j.namespace, j.pod, j.container, res.Logs)
+			result := e.fetchOnePodLog(ctx, j.namespace, j.pod, j.container, res.Logs, j.previous)
 
 			mu.Lock()
 			defer mu.Unlock()
+			if j.previous {
+				if result.captured {
+					summary.CapturedPrevious++
+				}
+				return
+			}
 			if result.captured {
 				summary.Captured++
 				return
@@ -1257,20 +1284,28 @@ type logFetchResult struct {
 
 // fetchOnePodLog fetches the last tailLines of one container's log and stores
 // the plain-text content as a JSON-encoded string under
-// /api/v1/namespaces/<ns>/pods/<name>/log?container=<c>. The ?container=
-// suffix is what lets the replay server route per-container `kubectl logs`
-// requests to the matching record.
-func (e *Engine) fetchOnePodLog(ctx context.Context, namespace, podName, containerName string, tailLines int) logFetchResult {
+// /api/v1/namespaces/<ns>/pods/<name>/log?container=<c> (or, when previous is
+// true, …&previous=true). The query-suffix index key lets the replay server
+// route `kubectl logs <pod> -c <c> [--previous]` to the matching record.
+func (e *Engine) fetchOnePodLog(ctx context.Context, namespace, podName, containerName string, tailLines int, previous bool) logFetchResult {
 	fetchCtx, cancel := context.WithTimeout(ctx, perPodLogTimeout)
 	defer cancel()
 
 	logPath := fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/log", namespace, podName)
 	indexKey := logPath + "?container=" + containerName
 	fetchURL := fmt.Sprintf("%s%s?container=%s&tailLines=%d", e.baseURL, logPath, url.QueryEscape(containerName), tailLines)
+	if previous {
+		indexKey += "&previous=true"
+		fetchURL += "&previous=true"
+	}
 
 	failure := func(reason string) logFetchResult {
 		if e.verbose {
-			fmt.Fprintf(os.Stderr, "  [warn] log %s/%s [container=%s]: %s\n", namespace, podName, containerName, reason)
+			marker := ""
+			if previous {
+				marker = ",previous=true"
+			}
+			fmt.Fprintf(os.Stderr, "  [warn] log %s/%s [container=%s%s]: %s\n", namespace, podName, containerName, marker, reason)
 		}
 		return logFetchResult{failure: &PodLogFailure{
 			Namespace: namespace,

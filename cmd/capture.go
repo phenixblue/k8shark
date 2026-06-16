@@ -87,6 +87,9 @@ func runCapture(cmd *cobra.Command, args []string) error {
 		if sum.PodLogs.Skipped > 0 {
 			fmt.Fprintf(os.Stdout, " (%d skipped)", sum.PodLogs.Skipped)
 		}
+		if sum.PodLogs.CapturedPrevious > 0 {
+			fmt.Fprintf(os.Stdout, ", %d previous", sum.PodLogs.CapturedPrevious)
+		}
 		fmt.Fprintln(os.Stdout)
 		if len(sum.PodLogs.Failures) > 0 {
 			fmt.Fprintln(os.Stdout, "  Skipped (sample):")

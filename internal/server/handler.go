@@ -811,31 +811,56 @@ func (h *handler) handleWatch(w http.ResponseWriter, r *http.Request, path strin
 }
 
 // serveLog serves a pod log sub-resource (e.g. /api/v1/namespaces/<ns>/pods/<name>/log).
+// Recognised query parameters:
+//   - container=<c>  — request a specific container's log
+//   - previous=true  — request the previous-container log (kubectl logs --previous)
+//
 // Lookup order:
-//  1. If the client passed ?container=<c>, return the captured record for that
-//     container (stored under path + "?container=<c>").
-//  2. Legacy archives stored a single record at the bare path with no
-//     container key — try that next so older captures keep working.
-//  3. If the client did not specify a container, fall back to the first
-//     per-container record we have for this pod. This covers single-container
-//     pods (kubectl sends no ?container= for them) and multi-container pods
-//     where the client did not pick one.
-//  4. Return a readable stub explaining how to enable log capture.
+//  1. If both container and previous are set, look up the record under
+//     path + "?container=<c>&previous=true".
+//  2. If only container is set, look up path + "?container=<c>".
+//  3. Legacy archives stored a single record at the bare path — try that.
+//  4. If no container was specified, fall back to the first per-container
+//     record we have for this pod (covers single-container pods, where
+//     kubectl sends no ?container= param).
+//  5. Return a readable stub explaining how to enable log capture.
 func (h *handler) serveLog(w http.ResponseWriter, r *http.Request, path string, at time.Time) {
-	container := r.URL.Query().Get("container")
-	if container != "" && h.tryServeLogRecord(w, path+"?container="+container, at) {
-		return
+	q := r.URL.Query()
+	container := q.Get("container")
+	previous := q.Get("previous") == "true"
+
+	if container != "" {
+		key := path + "?container=" + container
+		if previous {
+			key += "&previous=true"
+		}
+		if h.tryServeLogRecord(w, key, at) {
+			return
+		}
 	}
 	if h.tryServeLogRecord(w, path, at) {
 		return
 	}
 	if container == "" {
 		prefix := path + "?container="
+		suffix := ""
+		if previous {
+			suffix = "&previous=true"
+		}
 		for indexKey := range h.store.Index {
-			if strings.HasPrefix(indexKey, prefix) {
-				if h.tryServeLogRecord(w, indexKey, at) {
-					return
-				}
+			if !strings.HasPrefix(indexKey, prefix) {
+				continue
+			}
+			if suffix != "" && !strings.HasSuffix(indexKey, suffix) {
+				continue
+			}
+			if suffix == "" && strings.Contains(indexKey, "&previous=true") {
+				// When the client didn't ask for previous logs, don't accidentally
+				// serve a previous-log record as the default.
+				continue
+			}
+			if h.tryServeLogRecord(w, indexKey, at) {
+				return
 			}
 		}
 	}
