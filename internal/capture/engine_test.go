@@ -125,28 +125,41 @@ func TestEngine_CaptureToArchive(t *testing.T) {
 }
 
 func TestEngine_FetchPodsLogs(t *testing.T) {
+	// Pod fixtures include spec.containers so the engine knows what to fetch
+	// logs for. The redis pod also has an init container to verify init-
+	// container logs are captured too.
 	podList := `{"apiVersion":"v1","kind":"PodList","metadata":{},"items":[` +
-		`{"metadata":{"name":"nginx","namespace":"default"}},` +
-		`{"metadata":{"name":"redis","namespace":"default"}}]}`
-	nginxLog := "nginx log line 1\nnginx log line 2\n"
-	redisLog := "redis log line 1\n"
+		`{"metadata":{"name":"nginx","namespace":"default"},"spec":{"containers":[{"name":"web"}]}},` +
+		`{"metadata":{"name":"redis","namespace":"default"},"spec":{"initContainers":[{"name":"init"}],"containers":[{"name":"redis"}]}}]}`
+	logs := map[string]string{
+		"web":   "nginx log line 1\nnginx log line 2\n",
+		"redis": "redis log line 1\n",
+		"init":  "init container ran\n",
+	}
 
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/version":
 			fmt.Fprint(w, `{"gitVersion":"v1.29.0"}`)
+			return
 		case "/api/v1/namespaces/default/pods":
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, podList)
-		case "/api/v1/namespaces/default/pods/nginx/log":
-			w.Header().Set("Content-Type", "text/plain")
-			fmt.Fprint(w, nginxLog)
-		case "/api/v1/namespaces/default/pods/redis/log":
-			w.Header().Set("Content-Type", "text/plain")
-			fmt.Fprint(w, redisLog)
-		default:
-			w.WriteHeader(http.StatusNotFound)
+			return
 		}
+		if strings.HasSuffix(r.URL.Path, "/log") {
+			c := r.URL.Query().Get("container")
+			body, ok := logs[c]
+			if !ok {
+				w.WriteHeader(http.StatusBadRequest)
+				fmt.Fprintf(w, `a container name must be specified for pod, choose one of: [...]`)
+				return
+			}
+			w.Header().Set("Content-Type", "text/plain")
+			fmt.Fprint(w, body)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer srv.Close()
 
@@ -168,23 +181,27 @@ func TestEngine_FetchPodsLogs(t *testing.T) {
 	eng := newEngineWith(cfg, srv.Client(), srv.URL, false)
 	ss := &sliceSink{}
 	eng.sink = ss
-	if _, err := eng.Run(); err != nil {
+	sum, err := eng.Run()
+	if err != nil {
 		t.Fatalf("engine.Run() error: %v", err)
 	}
 
-	// Both log paths must be in the index.
-	nginxLogPath := "/api/v1/namespaces/default/pods/nginx/log"
-	redisLogPath := "/api/v1/namespaces/default/pods/redis/log"
-	if _, ok := eng.index[nginxLogPath]; !ok {
-		t.Errorf("nginx log path %q missing from index", nginxLogPath)
+	// All three (pod, container) pairs must be present at their per-container keys.
+	wantKeys := map[string]string{
+		"/api/v1/namespaces/default/pods/nginx/log?container=web":   logs["web"],
+		"/api/v1/namespaces/default/pods/redis/log?container=redis": logs["redis"],
+		"/api/v1/namespaces/default/pods/redis/log?container=init":  logs["init"],
 	}
-	if _, ok := eng.index[redisLogPath]; !ok {
-		t.Errorf("redis log path %q missing from index", redisLogPath)
+	for key := range wantKeys {
+		if _, ok := eng.index[key]; !ok {
+			t.Errorf("log path %q missing from index", key)
+		}
 	}
 
-	// Log records must be stored as JSON strings encoding the plain-text body.
+	// Each record body decodes back to the matching log text.
 	for _, rec := range ss.records {
-		if rec.APIPath != nginxLogPath && rec.APIPath != redisLogPath {
+		want, ok := wantKeys[rec.APIPath]
+		if !ok {
 			continue
 		}
 		var text string
@@ -192,13 +209,80 @@ func TestEngine_FetchPodsLogs(t *testing.T) {
 			t.Errorf("log record at %q has invalid JSON body: %v", rec.APIPath, err)
 			continue
 		}
-		want := nginxLog
-		if rec.APIPath == redisLogPath {
-			want = redisLog
-		}
 		if text != want {
 			t.Errorf("%q: got %q, want %q", rec.APIPath, text, want)
 		}
+	}
+
+	if sum.PodLogs.Attempted != 3 || sum.PodLogs.Captured != 3 || sum.PodLogs.Skipped != 0 {
+		t.Errorf("PodLogs summary = %+v, want Attempted=3 Captured=3 Skipped=0", sum.PodLogs)
+	}
+}
+
+// TestEngine_FetchPodsLogs_SkippedFailuresInSummary verifies that when a
+// container's log fetch fails (e.g. a 400 because no such container exists),
+// the summary records the failure with an actionable reason instead of
+// silently dropping it.
+func TestEngine_FetchPodsLogs_SkippedFailuresInSummary(t *testing.T) {
+	podList := `{"apiVersion":"v1","kind":"PodList","metadata":{},"items":[` +
+		`{"metadata":{"name":"good","namespace":"default"},"spec":{"containers":[{"name":"app"}]}},` +
+		`{"metadata":{"name":"bad","namespace":"default"},"spec":{"containers":[{"name":"crashed"}]}}]}`
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/version":
+			fmt.Fprint(w, `{"gitVersion":"v1.29.0"}`)
+			return
+		case "/api/v1/namespaces/default/pods":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, podList)
+			return
+		case "/api/v1/namespaces/default/pods/good/log":
+			w.Header().Set("Content-Type", "text/plain")
+			fmt.Fprint(w, "good output\n")
+			return
+		case "/api/v1/namespaces/default/pods/bad/log":
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `container "crashed" in pod "bad" is waiting to start: PodInitializing`)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		DurationRaw: "500ms",
+		Duration:    500 * time.Millisecond,
+		Output:      filepath.Join(t.TempDir(), "capture.khsrk"),
+		Resources: []config.Resource{
+			{
+				Version: "v1", Resource: "pods",
+				Namespaces:  []string{"default"},
+				IntervalRaw: "500ms", Interval: 500 * time.Millisecond,
+				Logs: 50,
+			},
+		},
+	}
+
+	eng := newEngineWith(cfg, srv.Client(), srv.URL, false)
+	eng.sink = &sliceSink{}
+	sum, err := eng.Run()
+	if err != nil {
+		t.Fatalf("engine.Run() error: %v", err)
+	}
+
+	if sum.PodLogs.Attempted != 2 || sum.PodLogs.Captured != 1 || sum.PodLogs.Skipped != 1 {
+		t.Errorf("PodLogs summary = %+v, want Attempted=2 Captured=1 Skipped=1", sum.PodLogs)
+	}
+	if len(sum.PodLogs.Failures) != 1 {
+		t.Fatalf("expected 1 failure, got %d", len(sum.PodLogs.Failures))
+	}
+	f := sum.PodLogs.Failures[0]
+	if f.Namespace != "default" || f.Pod != "bad" || f.Container != "crashed" {
+		t.Errorf("failure identifies wrong pod/container: %+v", f)
+	}
+	if !strings.Contains(f.Reason, "HTTP 400") || !strings.Contains(f.Reason, "PodInitializing") {
+		t.Errorf("failure reason should include HTTP code + body excerpt, got %q", f.Reason)
 	}
 }
 

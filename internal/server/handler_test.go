@@ -674,6 +674,60 @@ func TestHandler_ServeLog_NotCaptured(t *testing.T) {
 	}
 }
 
+// TestHandler_ServeLog_PerContainer verifies that `kubectl logs <pod> -c <c>`
+// (which the API client encodes as ?container=<c>) is routed to the
+// matching per-container record.
+func TestHandler_ServeLog_PerContainer(t *testing.T) {
+	webLog, _ := json.Marshal("web container log\n")
+	sidecarLog, _ := json.Marshal("sidecar container log\n")
+	store := buildTestStore(t, map[string][]byte{
+		"/api/v1/namespaces/default/pods/mypod/log?container=web":     webLog,
+		"/api/v1/namespaces/default/pods/mypod/log?container=sidecar": sidecarLog,
+	})
+	h := newHandler(store, time.Time{}, false)
+
+	for container, want := range map[string]string{
+		"web":     "web container log\n",
+		"sidecar": "sidecar container log\n",
+	} {
+		req := httptest.NewRequest(http.MethodGet,
+			"/api/v1/namespaces/default/pods/mypod/log?container="+container, nil)
+		rw := httptest.NewRecorder()
+		h.ServeHTTP(rw, req)
+
+		if rw.Code != http.StatusOK {
+			t.Errorf("container=%s: expected 200, got %d", container, rw.Code)
+			continue
+		}
+		if got := rw.Body.String(); got != want {
+			t.Errorf("container=%s: expected %q, got %q", container, want, got)
+		}
+	}
+}
+
+// TestHandler_ServeLog_NoContainerPicksAvailable verifies that when the client
+// asks for `/log` without a ?container= param and the archive only has
+// per-container records (the normal case for new captures), the server falls
+// back to the first one it finds rather than returning the "not captured" stub.
+func TestHandler_ServeLog_NoContainerPicksAvailable(t *testing.T) {
+	webLog, _ := json.Marshal("web container log\n")
+	store := buildTestStore(t, map[string][]byte{
+		"/api/v1/namespaces/default/pods/mypod/log?container=web": webLog,
+	})
+	h := newHandler(store, time.Time{}, false)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/namespaces/default/pods/mypod/log", nil)
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rw.Code)
+	}
+	if got := rw.Body.String(); got != "web container log\n" {
+		t.Errorf("expected per-container fallback to serve web log, got %q", got)
+	}
+}
+
 // TestHandler_GroupResourceList_FallbackFromIndex verifies that the mock server
 // returns a valid APIResourceList for a CRD API group even when the
 // /apis/<group>/<version> discovery document was never captured — as long as

@@ -150,7 +150,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	case strings.HasSuffix(path, "/log"):
 		// Pod log sub-resource: serve captured content or a helpful stub.
-		h.serveLog(w, path, replayAt)
+		h.serveLog(w, r, path, replayAt)
 	default:
 		h.serveResource(w, r, path, replayAt)
 	}
@@ -811,33 +811,61 @@ func (h *handler) handleWatch(w http.ResponseWriter, r *http.Request, path strin
 }
 
 // serveLog serves a pod log sub-resource (e.g. /api/v1/namespaces/<ns>/pods/<name>/log).
-// If the log was captured (logs: N in the resource config), it is served as
-// plain text. Otherwise a helpful stub message is returned so kubectl logs does
-// not error out against the mock server.
-func (h *handler) serveLog(w http.ResponseWriter, path string, at time.Time) {
-	body, code, err := h.store.Latest(path, at)
-	if err == nil && code == 200 {
-		// Logs are stored as JSON strings; decode to recover the original plain text.
-		var text string
-		if json.Unmarshal(body, &text) == nil {
-			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-			w.WriteHeader(http.StatusOK)
-			_, _ = fmt.Fprint(w, text)
-			return
-		}
-		// Fallback: body is already plain text (should not normally happen).
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(body)
+// Lookup order:
+//  1. If the client passed ?container=<c>, return the captured record for that
+//     container (stored under path + "?container=<c>").
+//  2. Legacy archives stored a single record at the bare path with no
+//     container key — try that next so older captures keep working.
+//  3. If the client did not specify a container, fall back to the first
+//     per-container record we have for this pod. This covers single-container
+//     pods (kubectl sends no ?container= for them) and multi-container pods
+//     where the client did not pick one.
+//  4. Return a readable stub explaining how to enable log capture.
+func (h *handler) serveLog(w http.ResponseWriter, r *http.Request, path string, at time.Time) {
+	container := r.URL.Query().Get("container")
+	if container != "" && h.tryServeLogRecord(w, path+"?container="+container, at) {
 		return
 	}
-	// Log was not captured — return a readable stub so kubectl logs exits cleanly.
+	if h.tryServeLogRecord(w, path, at) {
+		return
+	}
+	if container == "" {
+		prefix := path + "?container="
+		for indexKey := range h.store.Index {
+			if strings.HasPrefix(indexKey, prefix) {
+				if h.tryServeLogRecord(w, indexKey, at) {
+					return
+				}
+			}
+		}
+	}
+
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = fmt.Fprint(w,
 		"# k8shark capture replay: logs were not captured for this pod.\n"+
 			"# To capture logs, add 'logs: 200' (or another line count) to the\n"+
 			"# pods entry in your k8shark capture config and re-run the capture.\n")
+}
+
+// tryServeLogRecord writes the captured log for indexKey if one exists.
+// Returns true on success so the caller stops trying further fallbacks.
+func (h *handler) tryServeLogRecord(w http.ResponseWriter, indexKey string, at time.Time) bool {
+	body, code, err := h.store.Latest(indexKey, at)
+	if err != nil || code != 200 {
+		return false
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	// Logs are stored as JSON strings; decode to recover the original plain text.
+	var text string
+	if json.Unmarshal(body, &text) == nil {
+		_, _ = fmt.Fprint(w, text)
+		return true
+	}
+	// Fallback: body is already plain text (should not normally happen).
+	_, _ = w.Write(body)
+	return true
 }
 
 func (h *handler) writeStatus(w http.ResponseWriter, code int, msg string) {

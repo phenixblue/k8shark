@@ -82,6 +82,24 @@ func runCapture(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(os.Stdout, "  Output:    %s (%s)\n", sum.OutputPath, formatBytes(sum.OutputSize))
 	fmt.Fprintf(os.Stdout, "  Records:   %d across %d resource path(s)\n", sum.RecordCount, sum.ResourceCount)
 	fmt.Fprintf(os.Stdout, "  Duration:  %s\n", sum.Duration)
+	if sum.PodLogs.Attempted > 0 {
+		fmt.Fprintf(os.Stdout, "  Pod logs:  %d/%d captured", sum.PodLogs.Captured, sum.PodLogs.Attempted)
+		if sum.PodLogs.Skipped > 0 {
+			fmt.Fprintf(os.Stdout, " (%d skipped)", sum.PodLogs.Skipped)
+		}
+		fmt.Fprintln(os.Stdout)
+		if len(sum.PodLogs.Failures) > 0 {
+			fmt.Fprintln(os.Stdout, "  Skipped (sample):")
+			for _, f := range sum.PodLogs.Failures {
+				fmt.Fprintf(os.Stdout, "    - %s/%s [container=%s]: %s\n",
+					f.Namespace, f.Pod, f.Container, f.Reason)
+			}
+			if sum.PodLogs.Skipped > len(sum.PodLogs.Failures) {
+				fmt.Fprintf(os.Stdout, "    ... and %d more (run with --verbose for full list)\n",
+					sum.PodLogs.Skipped-len(sum.PodLogs.Failures))
+			}
+		}
+	}
 
 	// Post-capture redaction: merge --redact-secrets / --redact-field CLI flags
 	// with any redaction.rules defined in the config file.
