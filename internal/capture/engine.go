@@ -29,6 +29,27 @@ type CaptureSummary struct {
 	RecordCount   int
 	ResourceCount int // distinct API paths captured
 	Duration      time.Duration
+	PodLogs       PodLogSummary
+}
+
+// PodLogSummary describes the outcome of pod-log capture across every
+// (pod, container) attempted during the run. Surfaced to the CLI so users see
+// when logs were skipped (multi-container without log capture, RBAC denials,
+// timeouts, terminated containers, etc.) without re-running in verbose mode.
+type PodLogSummary struct {
+	Attempted        int             // total (pod, container) fetch attempts (current logs only)
+	Captured         int             // successful current-log captures
+	Skipped          int             // current-log fetches that failed (non-OK / transport / timeout)
+	CapturedPrevious int             // successful ?previous=true captures, when PreviousLogs is enabled
+	Failures         []PodLogFailure // capped sample of current-log failures for CLI display
+}
+
+// PodLogFailure describes a single log fetch that did not produce a record.
+type PodLogFailure struct {
+	Namespace string
+	Pod       string
+	Container string
+	Reason    string
 }
 
 // Engine orchestrates the capture loop.
@@ -37,6 +58,22 @@ type CaptureSummary struct {
 // memory (each body can be several MB for large list responses) regardless of
 // how many resources are configured or auto-discovered.
 const maxConcurrentFetches = 32
+
+// Pod log fetch tuning.
+const (
+	// maxConcurrentLogFetches bounds the number of in-flight pod-log GETs.
+	// Pod logs are fetched once at the end of the capture; on large clusters
+	// (thousands of containers) parallelism is the difference between the
+	// pass finishing in seconds vs. hitting a global timeout.
+	maxConcurrentLogFetches = 16
+	// perPodLogTimeout caps any single pod-log fetch so one hung container
+	// can't stall the whole pass. Replaces the previous global 30s budget.
+	perPodLogTimeout = 15 * time.Second
+	// podLogFailureSampleLimit bounds how many failure entries the summary
+	// holds for CLI display, so a million-container failure mode doesn't
+	// balloon memory or output.
+	podLogFailureSampleLimit = 20
+)
 
 type Engine struct {
 	cfg            *config.Config
@@ -193,16 +230,27 @@ func (e *Engine) Run() (*CaptureSummary, error) {
 	wg.Wait()
 
 	// Fetch pod logs for any pods resource entry with logs > 0. This runs after
-	// all polling so we capture the most recent log state. A short background
-	// context is used because the main capture context has already expired.
+	// all polling so we capture the most recent log state. A fresh background
+	// context is used because the main capture context has already expired;
+	// each individual log fetch enforces its own perPodLogTimeout so one
+	// hung container does not stall the whole pass.
+	var podLogSummary PodLogSummary
 	for _, res := range e.cfg.Resources {
 		if res.All {
 			continue
 		}
 		if res.Logs > 0 && res.Resource == "pods" {
-			logCtx, logCancel := context.WithTimeout(context.Background(), 30*time.Second)
-			e.fetchPodsLogs(logCtx, res)
-			logCancel()
+			s := e.fetchPodsLogs(context.Background(), res)
+			podLogSummary.Attempted += s.Attempted
+			podLogSummary.Captured += s.Captured
+			podLogSummary.Skipped += s.Skipped
+			podLogSummary.CapturedPrevious += s.CapturedPrevious
+			for _, f := range s.Failures {
+				if len(podLogSummary.Failures) >= podLogFailureSampleLimit {
+					break
+				}
+				podLogSummary.Failures = append(podLogSummary.Failures, f)
+			}
 		}
 	}
 
@@ -237,6 +285,7 @@ func (e *Engine) Run() (*CaptureSummary, error) {
 		RecordCount:   e.sink.RecordCount(),
 		ResourceCount: len(e.index),
 		Duration:      time.Since(start).Truncate(time.Second),
+		PodLogs:       podLogSummary,
 	}, nil
 }
 
@@ -476,6 +525,47 @@ func extractNamespaceFromObject(obj []byte) string {
 		return ""
 	}
 	return x.Metadata.Namespace
+}
+
+// formatHTTPFailure builds a concise human-readable reason for a non-OK HTTP
+// response. When the body is a Kubernetes Status JSON envelope (the typical
+// API server error format), only the `message` field is shown — much more
+// readable than the raw JSON, which is what users see for pod-log failures
+// like "container X is terminated" or "container Y is waiting to start".
+// Falls back to a truncated raw body when the response is not a Status object.
+func formatHTTPFailure(statusCode int, body []byte) string {
+	reason := fmt.Sprintf("HTTP %d", statusCode)
+	if len(body) == 0 {
+		return reason
+	}
+	if msg := extractStatusMessage(body); msg != "" {
+		const maxMessageLen = 300
+		if len(msg) > maxMessageLen {
+			msg = msg[:maxMessageLen] + "..."
+		}
+		return reason + ": " + msg
+	}
+	trimmed := strings.TrimSpace(string(body))
+	if len(trimmed) > 160 {
+		trimmed = trimmed[:160] + "..."
+	}
+	return reason + ": " + trimmed
+}
+
+// extractStatusMessage returns the `message` field of a Kubernetes Status
+// JSON object, or "" if the body isn't a Status envelope.
+func extractStatusMessage(body []byte) string {
+	var s struct {
+		Kind    string `json:"kind"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(body, &s); err != nil {
+		return ""
+	}
+	if s.Kind != "Status" {
+		return ""
+	}
+	return s.Message
 }
 
 func extractResourceVersion(body []byte) string {
@@ -1061,15 +1151,31 @@ func buildAPIPath(group, version, resource, namespace string) string {
 	return base + "/namespaces/" + namespace + "/" + resource
 }
 
-// fetchPodsLogs fetches the tail log for each pod found in res across all
-// configured namespaces. Each log is stored under the clean
-// /api/v1/namespaces/<ns>/pods/<name>/log path so the mock server can serve
-// it verbatim when kubectl logs is run against the replay server.
-func (e *Engine) fetchPodsLogs(ctx context.Context, res config.Resource) {
+// fetchPodsLogs fetches the tail log for each container of each pod found in
+// res across all configured namespaces. Each log is stored under
+// /api/v1/namespaces/<ns>/pods/<name>/log?container=<c> so the replay server
+// can route both bare `kubectl logs <pod>` (single-container) and
+// `kubectl logs <pod> -c <c>` requests to the right record.
+//
+// Fetches run concurrently bounded by maxConcurrentLogFetches, and each fetch
+// has its own perPodLogTimeout so one hung container does not stall the pass.
+// Per-fetch failures (HTTP errors, RBAC, timeouts, terminated containers) are
+// recorded in the returned PodLogSummary so the CLI can show users what was
+// skipped without re-running in verbose mode.
+func (e *Engine) fetchPodsLogs(ctx context.Context, res config.Resource) PodLogSummary {
+	type job struct {
+		namespace string
+		pod       string
+		container string
+		previous  bool
+	}
+
 	namespaces := res.Namespaces
 	if len(namespaces) == 0 {
 		namespaces = []string{""}
 	}
+
+	var jobs []job
 	for _, ns := range namespaces {
 		listPath := buildAPIPath(res.Group, res.Version, res.Resource, ns)
 		listBody, code := e.doFetch(ctx, listPath, "", res.DedupEnabled())
@@ -1082,6 +1188,14 @@ func (e *Engine) fetchPodsLogs(ctx context.Context, res config.Resource) {
 					Name      string `json:"name"`
 					Namespace string `json:"namespace"`
 				} `json:"metadata"`
+				Spec struct {
+					Containers []struct {
+						Name string `json:"name"`
+					} `json:"containers"`
+					InitContainers []struct {
+						Name string `json:"name"`
+					} `json:"initContainers"`
+				} `json:"spec"`
 			} `json:"items"`
 		}
 		if err := json.Unmarshal(listBody, &list); err != nil {
@@ -1092,65 +1206,169 @@ func (e *Engine) fetchPodsLogs(ctx context.Context, res config.Resource) {
 			if podNS == "" {
 				podNS = ns
 			}
-			e.fetchOnePodLog(ctx, podNS, item.Metadata.Name, res.Logs)
+			queue := func(container string) {
+				jobs = append(jobs, job{namespace: podNS, pod: item.Metadata.Name, container: container})
+				if res.PreviousLogs {
+					jobs = append(jobs, job{namespace: podNS, pod: item.Metadata.Name, container: container, previous: true})
+				}
+			}
+			// Init containers first — they ran before main containers and
+			// often carry the most actionable diagnostic output on Pending
+			// or CrashLoopBackOff pods.
+			for _, c := range item.Spec.InitContainers {
+				queue(c.Name)
+			}
+			for _, c := range item.Spec.Containers {
+				queue(c.Name)
+			}
 		}
 	}
+
+	if len(jobs) == 0 {
+		return PodLogSummary{}
+	}
+
+	// Only current-log fetches count toward the user-facing summary so it
+	// stays focused on the headline number ("X/Y captured"). Previous-log
+	// fetches are best-effort: successes grow CapturedPrevious, but failures
+	// (the very common "container has not been previously terminated" 400)
+	// are dropped silently to avoid swamping the failure sample with noise.
+	attempted := 0
+	for _, j := range jobs {
+		if !j.previous {
+			attempted++
+		}
+	}
+
+	var (
+		mu      sync.Mutex
+		summary = PodLogSummary{Attempted: attempted}
+		wg      sync.WaitGroup
+	)
+	sem := make(chan struct{}, maxConcurrentLogFetches)
+
+	for _, j := range jobs {
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(j job) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			result := e.fetchOnePodLog(ctx, j.namespace, j.pod, j.container, res.Logs, j.previous)
+
+			mu.Lock()
+			defer mu.Unlock()
+			if j.previous {
+				if result.captured {
+					summary.CapturedPrevious++
+				}
+				return
+			}
+			if result.captured {
+				summary.Captured++
+				return
+			}
+			summary.Skipped++
+			if result.failure != nil && len(summary.Failures) < podLogFailureSampleLimit {
+				summary.Failures = append(summary.Failures, *result.failure)
+			}
+		}(j)
+	}
+	wg.Wait()
+	return summary
 }
 
-// fetchOnePodLog fetches the last tailLines lines of a pod's log and stores
-// the plain-text content as a JSON-encoded string under the clean log path.
-// Storing as a JSON string ensures the record is valid JSON for the archive.
-func (e *Engine) fetchOnePodLog(ctx context.Context, namespace, podName string, tailLines int) {
-	logPath := fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/log", namespace, podName)
-	fetchURL := fmt.Sprintf("%s%s?tailLines=%d", e.baseURL, logPath, tailLines)
+type logFetchResult struct {
+	captured bool
+	failure  *PodLogFailure // nil when captured is true
+}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fetchURL, nil)
+// fetchOnePodLog fetches the last tailLines of one container's log and stores
+// the plain-text content as a JSON-encoded string under
+// /api/v1/namespaces/<ns>/pods/<name>/log?container=<c> (or, when previous is
+// true, …&previous=true). The query-suffix index key lets the replay server
+// route `kubectl logs <pod> -c <c> [--previous]` to the matching record.
+func (e *Engine) fetchOnePodLog(ctx context.Context, namespace, podName, containerName string, tailLines int, previous bool) logFetchResult {
+	fetchCtx, cancel := context.WithTimeout(ctx, perPodLogTimeout)
+	defer cancel()
+
+	logPath := fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/log", namespace, podName)
+	indexKey := logPath + "?container=" + containerName
+	fetchURL := fmt.Sprintf("%s%s?container=%s&tailLines=%d", e.baseURL, logPath, url.QueryEscape(containerName), tailLines)
+	if previous {
+		indexKey += "&previous=true"
+		fetchURL += "&previous=true"
+	}
+
+	failure := func(reason string) logFetchResult {
+		if e.verbose {
+			marker := ""
+			if previous {
+				marker = ",previous=true"
+			}
+			fmt.Fprintf(os.Stderr, "  [warn] log %s/%s [container=%s%s]: %s\n", namespace, podName, containerName, marker, reason)
+		}
+		return logFetchResult{failure: &PodLogFailure{
+			Namespace: namespace,
+			Pod:       podName,
+			Container: containerName,
+			Reason:    reason,
+		}}
+	}
+
+	req, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, fetchURL, nil)
 	if err != nil {
-		return
+		return failure(fmt.Sprintf("build request: %v", err))
 	}
 	resp, err := e.httpClient.Do(req)
 	if err != nil {
-		return
+		if fetchCtx.Err() != nil {
+			return failure("timeout after " + perPodLogTimeout.String())
+		}
+		return failure(fmt.Sprintf("request error: %v", err))
 	}
-	body, _ := io.ReadAll(resp.Body)
+	body, readErr := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return
+		return failure(formatHTTPFailure(resp.StatusCode, body))
+	}
+	if readErr != nil {
+		return failure(fmt.Sprintf("reading body: %v", readErr))
 	}
 
-	// Encode plain-text log body as a JSON string so it can be stored in the
-	// JSON archive without breaking serialisation.
 	jsonBody, err := json.Marshal(string(body))
 	if err != nil {
-		return
+		return failure(fmt.Sprintf("encoding body: %v", err))
 	}
 
 	if e.verbose {
-		fmt.Fprintf(os.Stdout, "  [capture] %s -> %d (%d bytes)\n", logPath, resp.StatusCode, len(body))
+		fmt.Fprintf(os.Stdout, "  [capture] %s -> %d (%d bytes)\n", indexKey, resp.StatusCode, len(body))
 	}
 
 	rec := &Record{
 		ID:           uuid.New().String(),
 		CapturedAt:   time.Now().UTC(),
-		APIPath:      logPath,
+		APIPath:      indexKey,
 		HTTPMethod:   http.MethodGet,
 		ResponseCode: http.StatusOK,
 		ResponseBody: json.RawMessage(jsonBody),
 	}
 	if e.sink != nil {
-		if err := e.sink.WriteRecord(rec); err != nil && e.verbose {
-			fmt.Fprintf(os.Stderr, "  [warn] writing log record %s: %v\n", logPath, err)
+		if err := e.sink.WriteRecord(rec); err != nil {
+			return failure(fmt.Sprintf("writing record: %v", err))
 		}
 	}
+
 	e.mu.Lock()
-	if _, ok := e.index[logPath]; !ok {
-		e.index[logPath] = &IndexEntry{APIPath: logPath}
+	if _, ok := e.index[indexKey]; !ok {
+		e.index[indexKey] = &IndexEntry{APIPath: indexKey}
 	}
-	logSeq := e.pathSeq[logPath]
-	e.pathSeq[logPath] = logSeq + 1
-	e.index[logPath].Seqs = append(e.index[logPath].Seqs, logSeq)
-	e.index[logPath].Times = append(e.index[logPath].Times, rec.CapturedAt)
+	seq := e.pathSeq[indexKey]
+	e.pathSeq[indexKey] = seq + 1
+	e.index[indexKey].Seqs = append(e.index[indexKey].Seqs, seq)
+	e.index[indexKey].Times = append(e.index[indexKey].Times, rec.CapturedAt)
 	e.mu.Unlock()
+
+	return logFetchResult{captured: true}
 }
 
 // expandWildcardNamespaces replaces "*" in any resource's Namespaces list with

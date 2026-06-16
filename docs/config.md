@@ -26,6 +26,8 @@ k8shark reads a YAML config file that controls what gets captured, from which na
 | `interval` | duration string | `30s` | How often to re-poll this resource during the capture window. |
 | `dedup` | bool | `true` | Skip writing a record when the response body is identical to the previous poll for the same API path. Set `false` to force writing every poll. |
 | `watch` | bool | `false` | Start a Kubernetes watch stream (`?watch=1`) for this resource in addition to polling. Watch events are recorded with an `event_type` field. |
+| `logs` | int | `0` | (pods only) Tail-line count for per-container log capture. `0` disables. Logs are stored per (pod, container) so `kubectl logs <pod> -c <c>` replays correctly. |
+| `previousLogs` | bool | `false` | (pods only, requires `logs > 0`) Also capture each container's previous-container log via `?previous=true`. Useful for CrashLoopBackOff pods where the interesting output is in the terminated previous container. |
 
 When `all: true` is set, `group`/`version`/`resource` are not required for that entry.
 
