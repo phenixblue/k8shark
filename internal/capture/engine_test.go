@@ -243,7 +243,10 @@ func TestEngine_FetchPodsLogs_SkippedFailuresInSummary(t *testing.T) {
 			return
 		case "/api/v1/namespaces/default/pods/bad/log":
 			w.WriteHeader(http.StatusBadRequest)
-			fmt.Fprint(w, `container "crashed" in pod "bad" is waiting to start: PodInitializing`)
+			// Real K8s API server error format: a Status JSON envelope.
+			// The engine should parse out the `message` field for the
+			// summary instead of dumping the raw JSON.
+			fmt.Fprint(w, `{"kind":"Status","apiVersion":"v1","metadata":{},"status":"Failure","message":"container \"crashed\" in pod \"bad\" is waiting to start: PodInitializing","reason":"BadRequest","code":400}`)
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -282,7 +285,11 @@ func TestEngine_FetchPodsLogs_SkippedFailuresInSummary(t *testing.T) {
 		t.Errorf("failure identifies wrong pod/container: %+v", f)
 	}
 	if !strings.Contains(f.Reason, "HTTP 400") || !strings.Contains(f.Reason, "PodInitializing") {
-		t.Errorf("failure reason should include HTTP code + body excerpt, got %q", f.Reason)
+		t.Errorf("failure reason should include HTTP code + parsed Status message, got %q", f.Reason)
+	}
+	// The raw JSON envelope should NOT appear — only the parsed message.
+	if strings.Contains(f.Reason, `"kind"`) || strings.Contains(f.Reason, `apiVersion`) {
+		t.Errorf("failure reason should show parsed Status message, not raw JSON: %q", f.Reason)
 	}
 }
 

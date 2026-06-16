@@ -525,6 +525,47 @@ func extractNamespaceFromObject(obj []byte) string {
 	return x.Metadata.Namespace
 }
 
+// formatHTTPFailure builds a concise human-readable reason for a non-OK HTTP
+// response. When the body is a Kubernetes Status JSON envelope (the typical
+// API server error format), only the `message` field is shown — much more
+// readable than the raw JSON, which is what users see for pod-log failures
+// like "container X is terminated" or "container Y is waiting to start".
+// Falls back to a truncated raw body when the response is not a Status object.
+func formatHTTPFailure(statusCode int, body []byte) string {
+	reason := fmt.Sprintf("HTTP %d", statusCode)
+	if len(body) == 0 {
+		return reason
+	}
+	if msg := extractStatusMessage(body); msg != "" {
+		const maxMessageLen = 300
+		if len(msg) > maxMessageLen {
+			msg = msg[:maxMessageLen] + "..."
+		}
+		return reason + ": " + msg
+	}
+	trimmed := strings.TrimSpace(string(body))
+	if len(trimmed) > 160 {
+		trimmed = trimmed[:160] + "..."
+	}
+	return reason + ": " + trimmed
+}
+
+// extractStatusMessage returns the `message` field of a Kubernetes Status
+// JSON object, or "" if the body isn't a Status envelope.
+func extractStatusMessage(body []byte) string {
+	var s struct {
+		Kind    string `json:"kind"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(body, &s); err != nil {
+		return ""
+	}
+	if s.Kind != "Status" {
+		return ""
+	}
+	return s.Message
+}
+
 func extractResourceVersion(body []byte) string {
 	var meta struct {
 		Metadata struct {
@@ -1253,15 +1294,7 @@ func (e *Engine) fetchOnePodLog(ctx context.Context, namespace, podName, contain
 	body, readErr := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		reason := fmt.Sprintf("HTTP %d", resp.StatusCode)
-		if len(body) > 0 {
-			trimmed := strings.TrimSpace(string(body))
-			if len(trimmed) > 160 {
-				trimmed = trimmed[:160] + "..."
-			}
-			reason += ": " + trimmed
-		}
-		return failure(reason)
+		return failure(formatHTTPFailure(resp.StatusCode, body))
 	}
 	if readErr != nil {
 		return failure(fmt.Sprintf("reading body: %v", readErr))
