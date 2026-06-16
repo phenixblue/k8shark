@@ -90,6 +90,12 @@ type Engine struct {
 	warnedFallback map[string]bool // dedup set for allNotFound cluster-scoped fallback warnings
 	pathSeq        map[string]int  // per-path record sequence counter (matches archive on-disk seq)
 	fetchSem       chan struct{}   // semaphore bounding concurrent body reads
+	// clusterListNamespacesSeen tracks, per wildcard-namespaced resource path,
+	// the set of namespaces that have produced items in any prior cluster-wide
+	// LIST response. Used by the demux so a namespace that empties out between
+	// polls still gets an empty list written — otherwise the replay would
+	// keep returning the prior non-empty body. Guarded by mu.
+	clusterListNamespacesSeen map[string]map[string]bool
 }
 
 const maxConcurrentWatchStreams = 256
@@ -117,17 +123,18 @@ func NewEngine(cfg *config.Config, verbose bool) (*Engine, error) {
 	}
 
 	return &Engine{
-		cfg:            cfg,
-		verbose:        verbose,
-		httpClient:     httpClient,
-		baseURL:        restCfg.Host,
-		index:          make(Index),
-		watchIndex:     make(WatchIndex),
-		discoveryCache: make(map[string][]byte),
-		lastHash:       make(map[string][32]byte),
-		warnedFallback: make(map[string]bool),
-		pathSeq:        make(map[string]int),
-		fetchSem:       make(chan struct{}, maxConcurrentFetches),
+		cfg:                       cfg,
+		verbose:                   verbose,
+		httpClient:                httpClient,
+		baseURL:                   restCfg.Host,
+		index:                     make(Index),
+		watchIndex:                make(WatchIndex),
+		discoveryCache:            make(map[string][]byte),
+		lastHash:                  make(map[string][32]byte),
+		warnedFallback:            make(map[string]bool),
+		pathSeq:                   make(map[string]int),
+		fetchSem:                  make(chan struct{}, maxConcurrentFetches),
+		clusterListNamespacesSeen: make(map[string]map[string]bool),
 	}, nil
 }
 
@@ -135,17 +142,18 @@ func NewEngine(cfg *config.Config, verbose bool) (*Engine, error) {
 // Used in tests to inject a fake API server.
 func newEngineWith(cfg *config.Config, client *http.Client, baseURL string, verbose bool) *Engine {
 	return &Engine{
-		cfg:            cfg,
-		verbose:        verbose,
-		httpClient:     client,
-		baseURL:        baseURL,
-		index:          make(Index),
-		watchIndex:     make(WatchIndex),
-		discoveryCache: make(map[string][]byte),
-		lastHash:       make(map[string][32]byte),
-		warnedFallback: make(map[string]bool),
-		pathSeq:        make(map[string]int),
-		fetchSem:       make(chan struct{}, maxConcurrentFetches),
+		cfg:                       cfg,
+		verbose:                   verbose,
+		httpClient:                client,
+		baseURL:                   baseURL,
+		index:                     make(Index),
+		watchIndex:                make(WatchIndex),
+		discoveryCache:            make(map[string][]byte),
+		lastHash:                  make(map[string][32]byte),
+		warnedFallback:            make(map[string]bool),
+		pathSeq:                   make(map[string]int),
+		fetchSem:                  make(chan struct{}, maxConcurrentFetches),
+		clusterListNamespacesSeen: make(map[string]map[string]bool),
 	}
 }
 
@@ -587,7 +595,19 @@ const tableIndexKeySuffix = "?as=Table"
 
 // fetchResource issues one GET for res and stores the record. It also fetches
 // the Table-format response so the mock server can replay rich column definitions.
+//
+// For wildcard-namespaced resources (namespaces: ["*"]), polling is performed
+// against the cluster-wide endpoint and the response is demuxed into
+// per-namespace records — this catches "zombie" resources whose namespace has
+// been deleted but which still exist in etcd. Such items are invisible to
+// per-namespace polling because the deleted namespace isn't in
+// /api/v1/namespaces. See fetchResourceClusterWide for details.
 func (e *Engine) fetchResource(ctx context.Context, res config.Resource) {
+	if res.WildcardNamespaces {
+		e.fetchResourceClusterWide(ctx, res)
+		return
+	}
+
 	namespaces := res.Namespaces
 	if len(namespaces) == 0 {
 		namespaces = []string{""}
@@ -645,6 +665,193 @@ func (e *Engine) fetchResource(ctx context.Context, res config.Resource) {
 		e.doFetch(ctx, clusterPath, "", dedupEnabled)
 		e.doFetch(ctx, clusterPath, tableIndexKeySuffix, dedupEnabled)
 	}
+}
+
+// fetchResourceClusterWide polls a wildcard-namespaced resource via the
+// cluster-wide endpoint /apis/<g>/<v>/<r> (or /api/v1/<r> for core) and
+// demuxes the response into per-namespace records keyed by metadata.namespace
+// on each item. Catches "zombie" resources whose namespace has been deleted
+// — invisible to per-namespace polling because the deleted namespace isn't
+// in /api/v1/namespaces, the source of wildcard expansion.
+//
+// A side effect of demuxing is one API call per cycle instead of N, which
+// also reduces API server load on clusters with many namespaces.
+func (e *Engine) fetchResourceClusterWide(ctx context.Context, res config.Resource) {
+	clusterPath := buildAPIPath(res.Group, res.Version, res.Resource, "")
+	dedupEnabled := res.DedupEnabled()
+
+	if body, code := e.rawFetch(ctx, clusterPath, ""); body != nil {
+		e.demuxClusterPlainList(res, clusterPath, body, code, dedupEnabled)
+	}
+	if body, code := e.rawFetch(ctx, clusterPath, tableIndexKeySuffix); body != nil {
+		e.demuxClusterTableList(res, clusterPath, body, code, dedupEnabled)
+	}
+}
+
+// demuxClusterPlainList parses a standard <Kind>List response, groups items
+// by metadata.namespace, and writes a per-namespace list record for each.
+func (e *Engine) demuxClusterPlainList(res config.Resource, clusterPath string, body []byte, statusCode int, dedupEnabled bool) {
+	var env struct {
+		APIVersion string            `json:"apiVersion,omitempty"`
+		Kind       string            `json:"kind,omitempty"`
+		Metadata   json.RawMessage   `json:"metadata,omitempty"`
+		Items      []json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		if e.verbose {
+			fmt.Fprintf(os.Stderr, "  [warn] cluster-wide demux %s: parse error: %v\n", clusterPath, err)
+		}
+		return
+	}
+
+	groups := make(map[string][]json.RawMessage)
+	for _, raw := range env.Items {
+		ns := extractNamespaceFromObject(raw)
+		if ns == "" {
+			continue
+		}
+		groups[ns] = append(groups[ns], raw)
+	}
+
+	e.writeDemuxedListGroups(res, clusterPath, statusCode, dedupEnabled, false, groups,
+		func(items []json.RawMessage) []byte {
+			return marshalDemuxedList(env.APIVersion, env.Kind, env.Metadata, items)
+		})
+}
+
+// demuxClusterTableList parses a meta.k8s.io/v1 Table response, groups rows
+// by their embedded object's metadata.namespace, and writes a per-namespace
+// Table record for each.
+func (e *Engine) demuxClusterTableList(res config.Resource, clusterPath string, body []byte, statusCode int, dedupEnabled bool) {
+	var env struct {
+		APIVersion        string            `json:"apiVersion,omitempty"`
+		Kind              string            `json:"kind,omitempty"`
+		Metadata          json.RawMessage   `json:"metadata,omitempty"`
+		ColumnDefinitions json.RawMessage   `json:"columnDefinitions,omitempty"`
+		Rows              []json.RawMessage `json:"rows"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		if e.verbose {
+			fmt.Fprintf(os.Stderr, "  [warn] cluster-wide table demux %s: parse error: %v\n", clusterPath, err)
+		}
+		return
+	}
+
+	groups := make(map[string][]json.RawMessage)
+	for _, rowRaw := range env.Rows {
+		var rowObj struct {
+			Object json.RawMessage `json:"object"`
+		}
+		if err := json.Unmarshal(rowRaw, &rowObj); err != nil {
+			continue
+		}
+		ns := extractNamespaceFromObject(rowObj.Object)
+		if ns == "" {
+			continue
+		}
+		groups[ns] = append(groups[ns], rowRaw)
+	}
+
+	e.writeDemuxedListGroups(res, clusterPath, statusCode, dedupEnabled, true, groups,
+		func(rows []json.RawMessage) []byte {
+			return marshalDemuxedTable(env.APIVersion, env.Kind, env.Metadata, env.ColumnDefinitions, rows)
+		})
+}
+
+// writeDemuxedListGroups writes one record per namespace group, plus an
+// empty-list record for any namespace that previously had items but has
+// none in this cycle — so the replay's "latest" view converges with the
+// source instead of returning stale items forever.
+func (e *Engine) writeDemuxedListGroups(
+	res config.Resource,
+	clusterPath string,
+	statusCode int,
+	dedupEnabled bool,
+	isTable bool,
+	groups map[string][]json.RawMessage,
+	buildBody func([]json.RawMessage) []byte,
+) {
+	cacheKey := clusterPath
+	if isTable {
+		cacheKey += tableIndexKeySuffix
+	}
+
+	e.mu.Lock()
+	if e.clusterListNamespacesSeen == nil {
+		e.clusterListNamespacesSeen = make(map[string]map[string]bool)
+	}
+	seenPrev := e.clusterListNamespacesSeen[cacheKey]
+	if seenPrev == nil {
+		seenPrev = make(map[string]bool)
+		e.clusterListNamespacesSeen[cacheKey] = seenPrev
+	}
+	var emptied []string
+	for ns := range groups {
+		seenPrev[ns] = true
+	}
+	for ns := range seenPrev {
+		if _, ok := groups[ns]; !ok {
+			emptied = append(emptied, ns)
+		}
+	}
+	e.mu.Unlock()
+
+	for ns, items := range groups {
+		indexKey := buildAPIPath(res.Group, res.Version, res.Resource, ns)
+		if isTable {
+			indexKey += tableIndexKeySuffix
+		}
+		e.storeRecord(indexKey, buildBody(items), statusCode, dedupEnabled)
+	}
+	for _, ns := range emptied {
+		indexKey := buildAPIPath(res.Group, res.Version, res.Resource, ns)
+		if isTable {
+			indexKey += tableIndexKeySuffix
+		}
+		e.storeRecord(indexKey, buildBody(nil), statusCode, dedupEnabled)
+	}
+}
+
+// marshalDemuxedList builds a <Kind>List JSON body containing only items.
+// Empty items render as "items":[] so kubectl/clients see a valid empty list.
+func marshalDemuxedList(apiVersion, kind string, metadata json.RawMessage, items []json.RawMessage) []byte {
+	if items == nil {
+		items = []json.RawMessage{}
+	}
+	out := map[string]any{"items": items}
+	if apiVersion != "" {
+		out["apiVersion"] = apiVersion
+	}
+	if kind != "" {
+		out["kind"] = kind
+	}
+	if len(metadata) > 0 {
+		out["metadata"] = metadata
+	}
+	body, _ := json.Marshal(out)
+	return body
+}
+
+// marshalDemuxedTable builds a meta.k8s.io/v1 Table JSON body containing only rows.
+func marshalDemuxedTable(apiVersion, kind string, metadata, columnDefs json.RawMessage, rows []json.RawMessage) []byte {
+	if rows == nil {
+		rows = []json.RawMessage{}
+	}
+	out := map[string]any{"rows": rows}
+	if apiVersion != "" {
+		out["apiVersion"] = apiVersion
+	}
+	if kind != "" {
+		out["kind"] = kind
+	}
+	if len(metadata) > 0 {
+		out["metadata"] = metadata
+	}
+	if len(columnDefs) > 0 {
+		out["columnDefinitions"] = columnDefs
+	}
+	body, _ := json.Marshal(out)
+	return body
 }
 
 // defaultAutoDiscoverExcludeGroups are API groups that produce no useful
@@ -1011,6 +1218,21 @@ func (e *Engine) fetchDiscovery(ctx context.Context) {
 // apiPath+tableKeySuffix in the index. Returns the response body and HTTP
 // status code, or (nil, 0) when the request could not be completed.
 func (e *Engine) doFetch(ctx context.Context, apiPath, tableKeySuffix string, dedupEnabled bool) ([]byte, int) {
+	body, code := e.rawFetch(ctx, apiPath, tableKeySuffix)
+	if body == nil {
+		return nil, code
+	}
+	e.storeRecord(apiPath+tableKeySuffix, body, code, dedupEnabled)
+	return body, code
+}
+
+// rawFetch issues one GET against apiPath and returns the response body and
+// status code without writing any record. Callers compose this with
+// storeRecord when they want a single fetch persisted as-is, or with the
+// cluster-wide demux when they want to split one response into per-namespace
+// records. Returns (nil, statusCode) on transport/read errors, empty bodies,
+// or cancellation.
+func (e *Engine) rawFetch(ctx context.Context, apiPath, tableKeySuffix string) ([]byte, int) {
 	url := e.baseURL + apiPath
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -1028,7 +1250,7 @@ func (e *Engine) doFetch(ctx context.Context, apiPath, tableKeySuffix string, de
 	resp, err := e.httpClient.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
-			return nil, 0 // context cancelled, not a real error
+			return nil, 0
 		}
 		if e.verbose {
 			fmt.Fprintf(os.Stderr, "  [warn] GET %s: %v\n", apiPath, err)
@@ -1051,8 +1273,7 @@ func (e *Engine) doFetch(ctx context.Context, apiPath, tableKeySuffix string, de
 		fmt.Fprintf(os.Stderr, "  [warn] RBAC denied: %s (check cluster permissions)\n", apiPath)
 	}
 
-	// Skip records with an empty body — storing json.RawMessage("") would
-	// produce invalid JSON in the archive and corrupt serialisation.
+	// Skip empty bodies — storing json.RawMessage("") would corrupt the archive.
 	if len(body) == 0 {
 		return nil, resp.StatusCode
 	}
@@ -1064,8 +1285,17 @@ func (e *Engine) doFetch(ctx context.Context, apiPath, tableKeySuffix string, de
 		}
 		fmt.Fprintf(os.Stdout, "  [capture] %s -> %d\n", label, resp.StatusCode)
 	}
+	return body, resp.StatusCode
+}
 
-	indexKey := apiPath + tableKeySuffix
+// storeRecord persists body at indexKey with optional dedup. Used both by the
+// per-resource doFetch path and by the cluster-wide demux path, which
+// constructs synthetic per-namespace bodies and writes them under per-
+// namespace index keys.
+func (e *Engine) storeRecord(indexKey string, body []byte, statusCode int, dedupEnabled bool) {
+	if len(body) == 0 {
+		return
+	}
 	if dedupEnabled {
 		h := sha256.Sum256(body)
 		e.mu.Lock()
@@ -1076,7 +1306,7 @@ func (e *Engine) doFetch(ctx context.Context, apiPath, tableKeySuffix string, de
 			if e.verbose {
 				fmt.Fprintf(os.Stdout, "  [dedup] %s unchanged; skipping write\n", indexKey)
 			}
-			return body, resp.StatusCode
+			return
 		}
 		e.lastHash[indexKey] = h
 		e.mu.Unlock()
@@ -1087,17 +1317,14 @@ func (e *Engine) doFetch(ctx context.Context, apiPath, tableKeySuffix string, de
 		CapturedAt:   time.Now().UTC(),
 		APIPath:      indexKey,
 		HTTPMethod:   http.MethodGet,
-		ResponseCode: resp.StatusCode,
+		ResponseCode: statusCode,
 		ResponseBody: json.RawMessage(body),
 	}
-
-	// Stream the record to the sink immediately — no in-memory buffer.
 	if e.sink != nil {
 		if err := e.sink.WriteRecord(rec); err != nil && e.verbose {
 			fmt.Fprintf(os.Stderr, "  [warn] writing record %s: %v\n", indexKey, err)
 		}
 	}
-
 	e.mu.Lock()
 	if _, ok := e.index[indexKey]; !ok {
 		e.index[indexKey] = &IndexEntry{APIPath: indexKey}
@@ -1107,7 +1334,6 @@ func (e *Engine) doFetch(ctx context.Context, apiPath, tableKeySuffix string, de
 	e.index[indexKey].Seqs = append(e.index[indexKey].Seqs, seq)
 	e.index[indexKey].Times = append(e.index[indexKey].Times, rec.CapturedAt)
 	e.mu.Unlock()
-	return body, resp.StatusCode
 }
 
 // fetchServerVersion attempts to retrieve the server version string.

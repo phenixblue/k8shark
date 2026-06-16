@@ -1311,22 +1311,21 @@ func TestAutoDiscover_AllDirectiveExpandsWildcardNamespacesBeforePolling(t *test
 
 	close(paths)
 	sawWildcardPath := false
-	sawExpandedPath := false
+	sawClusterWidePath := false
 	for p := range paths {
 		if p == "/apis/networking.istio.io/v1beta1/namespaces/*/virtualservices" {
 			sawWildcardPath = true
 		}
-		if p == "/apis/networking.istio.io/v1beta1/namespaces/default/virtualservices" ||
-			p == "/apis/networking.istio.io/v1beta1/namespaces/team-a/virtualservices" {
-			sawExpandedPath = true
+		if p == "/apis/networking.istio.io/v1beta1/virtualservices" {
+			sawClusterWidePath = true
 		}
 	}
 
 	if sawWildcardPath {
-		t.Fatal("found wildcard namespace API path for discovered namespaced resource; expected expansion to concrete namespaces")
+		t.Fatal("found wildcard namespace API path for discovered namespaced resource; expansion must convert it before polling")
 	}
-	if !sawExpandedPath {
-		t.Fatal("expected at least one concrete namespace API fetch for discovered namespaced resource")
+	if !sawClusterWidePath {
+		t.Fatal("expected cluster-wide poll for wildcard-namespaced discovered resource (demuxed into per-namespace records)")
 	}
 }
 
@@ -1390,15 +1389,234 @@ func TestAutoDiscover_AllDirectiveIncludesCorePods(t *testing.T) {
 	}
 
 	close(paths)
-	sawPodFetch := false
+	sawClusterWidePodFetch := false
 	for p := range paths {
-		if p == "/api/v1/namespaces/default/pods" {
-			sawPodFetch = true
+		if p == "/api/v1/pods" {
+			sawClusterWidePodFetch = true
 			break
 		}
 	}
-	if !sawPodFetch {
-		t.Fatal("expected poll fetch for discovered core pods path")
+	if !sawClusterWidePodFetch {
+		t.Fatal("expected cluster-wide poll for wildcard-namespaced discovered pods (demuxed into per-namespace records)")
+	}
+}
+
+// TestFetchResource_WildcardUsesClusterWideAndDemuxes verifies that when a
+// resource is marked WildcardNamespaces=true, the engine polls the cluster-
+// wide endpoint exactly once (not one fetch per expanded namespace) and
+// demuxes the response into per-namespace records.
+func TestFetchResource_WildcardUsesClusterWideAndDemuxes(t *testing.T) {
+	var clusterWideHits, perNamespaceHits int32
+	clusterList := `{"apiVersion":"kubevirt.io/v1","kind":"VirtualMachineList","metadata":{"resourceVersion":"100"},"items":[` +
+		`{"apiVersion":"kubevirt.io/v1","kind":"VirtualMachine","metadata":{"name":"vm-a","namespace":"team-a"}},` +
+		`{"apiVersion":"kubevirt.io/v1","kind":"VirtualMachine","metadata":{"name":"vm-b","namespace":"team-b"}},` +
+		`{"apiVersion":"kubevirt.io/v1","kind":"VirtualMachine","metadata":{"name":"vm-c","namespace":"team-a"}}` +
+		`]}`
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/version":
+			fmt.Fprint(w, `{"gitVersion":"v1.29.0"}`)
+		case r.URL.Path == "/apis/kubevirt.io/v1/virtualmachines":
+			atomic.AddInt32(&clusterWideHits, 1)
+			fmt.Fprint(w, clusterList)
+		case strings.Contains(r.URL.Path, "/apis/kubevirt.io/v1/namespaces/") &&
+			strings.HasSuffix(r.URL.Path, "/virtualmachines"):
+			atomic.AddInt32(&perNamespaceHits, 1)
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, `{"kind":"VirtualMachineList","items":[]}`)
+		default:
+			fmt.Fprint(w, `{"kind":"List","items":[]}`)
+		}
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		DurationRaw: "400ms",
+		Duration:    400 * time.Millisecond,
+		Output:      filepath.Join(t.TempDir(), "capture.khsrk"),
+		Resources: []config.Resource{
+			{
+				Group:              "kubevirt.io",
+				Version:            "v1",
+				Resource:           "virtualmachines",
+				Namespaces:         []string{"team-a", "team-b"},
+				WildcardNamespaces: true,
+				IntervalRaw:        "200ms", Interval: 200 * time.Millisecond,
+			},
+		},
+	}
+
+	eng := newEngineWith(cfg, srv.Client(), srv.URL, false)
+	eng.sink = &sliceSink{}
+	if _, err := eng.Run(); err != nil {
+		t.Fatalf("engine.Run() error: %v", err)
+	}
+
+	if got := atomic.LoadInt32(&perNamespaceHits); got != 0 {
+		t.Errorf("expected zero per-namespace polls (cluster-wide path covers them), got %d", got)
+	}
+	if got := atomic.LoadInt32(&clusterWideHits); got == 0 {
+		t.Fatal("expected at least one cluster-wide poll")
+	}
+
+	wantKeys := []string{
+		"/apis/kubevirt.io/v1/namespaces/team-a/virtualmachines",
+		"/apis/kubevirt.io/v1/namespaces/team-b/virtualmachines",
+	}
+	for _, k := range wantKeys {
+		if _, ok := eng.index[k]; !ok {
+			t.Errorf("expected demuxed record at %q", k)
+		}
+	}
+	if _, ok := eng.index["/apis/kubevirt.io/v1/virtualmachines"]; ok {
+		t.Error("did not expect the cluster-wide path to be stored — records must be demuxed per namespace")
+	}
+}
+
+// TestFetchResource_WildcardCapturesZombieNamespaceItems is the regression
+// test for the actual bug: a VirtualMachine whose namespace has been deleted
+// (the namespace is not in /api/v1/namespaces) still appears in the cluster-
+// wide VirtualMachine list. Per-namespace polling misses it; cluster-wide
+// polling with demux captures it.
+func TestFetchResource_WildcardCapturesZombieNamespaceItems(t *testing.T) {
+	// /api/v1/namespaces only lists "live" — the wildcard expansion would
+	// produce ["live"] only and per-namespace polling would never query the
+	// deleted "ghost" namespace.
+	clusterList := `{"apiVersion":"kubevirt.io/v1","kind":"VirtualMachineList","items":[` +
+		`{"metadata":{"name":"live-vm","namespace":"live"}},` +
+		`{"metadata":{"name":"zombie","namespace":"ghost"}}` +
+		`]}`
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/version":
+			fmt.Fprint(w, `{"gitVersion":"v1.29.0"}`)
+		case "/api/v1/namespaces":
+			fmt.Fprint(w, `{"kind":"NamespaceList","items":[{"metadata":{"name":"live"}}]}`)
+		case "/apis/kubevirt.io/v1/virtualmachines":
+			fmt.Fprint(w, clusterList)
+		default:
+			fmt.Fprint(w, `{"kind":"List","items":[]}`)
+		}
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		DurationRaw: "400ms",
+		Duration:    400 * time.Millisecond,
+		Output:      filepath.Join(t.TempDir(), "capture.khsrk"),
+		Resources: []config.Resource{
+			{
+				Group:       "kubevirt.io",
+				Version:     "v1",
+				Resource:    "virtualmachines",
+				Namespaces:  []string{"*"},
+				IntervalRaw: "200ms", Interval: 200 * time.Millisecond,
+			},
+		},
+	}
+
+	eng := newEngineWith(cfg, srv.Client(), srv.URL, false)
+	eng.sink = &sliceSink{}
+	if _, err := eng.Run(); err != nil {
+		t.Fatalf("engine.Run() error: %v", err)
+	}
+
+	ghostKey := "/apis/kubevirt.io/v1/namespaces/ghost/virtualmachines"
+	if _, ok := eng.index[ghostKey]; !ok {
+		t.Fatalf("expected zombie-namespace VM to be captured at %q; got index keys: %v",
+			ghostKey, indexKeys(eng.index))
+	}
+}
+
+func indexKeys(idx Index) []string {
+	keys := make([]string, 0, len(idx))
+	for k := range idx {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// TestFetchResource_WildcardTableDemuxedPerNamespace verifies that the
+// Table-format response (kubectl get -o wide) is demuxed by reading
+// rows[].object.metadata.namespace.
+func TestFetchResource_WildcardTableDemuxedPerNamespace(t *testing.T) {
+	tableBody := `{"apiVersion":"meta.k8s.io/v1","kind":"Table","columnDefinitions":[{"name":"Name","type":"string"}],"rows":[` +
+		`{"cells":["vm-a"],"object":{"kind":"PartialObjectMetadata","metadata":{"name":"vm-a","namespace":"team-a"}}},` +
+		`{"cells":["vm-b"],"object":{"kind":"PartialObjectMetadata","metadata":{"name":"vm-b","namespace":"team-b"}}},` +
+		`{"cells":["vm-c"],"object":{"kind":"PartialObjectMetadata","metadata":{"name":"vm-c","namespace":"team-a"}}}` +
+		`]}`
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/version":
+			fmt.Fprint(w, `{"gitVersion":"v1.29.0"}`)
+		case "/apis/kubevirt.io/v1/virtualmachines":
+			if strings.Contains(r.Header.Get("Accept"), "as=Table") {
+				fmt.Fprint(w, tableBody)
+				return
+			}
+			fmt.Fprint(w, `{"kind":"VirtualMachineList","items":[]}`)
+		default:
+			fmt.Fprint(w, `{"kind":"List","items":[]}`)
+		}
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		DurationRaw: "400ms",
+		Duration:    400 * time.Millisecond,
+		Output:      filepath.Join(t.TempDir(), "capture.khsrk"),
+		Resources: []config.Resource{
+			{
+				Group:              "kubevirt.io",
+				Version:            "v1",
+				Resource:           "virtualmachines",
+				Namespaces:         []string{"team-a", "team-b"},
+				WildcardNamespaces: true,
+				IntervalRaw:        "200ms", Interval: 200 * time.Millisecond,
+			},
+		},
+	}
+
+	ss := &sliceSink{}
+	eng := newEngineWith(cfg, srv.Client(), srv.URL, false)
+	eng.sink = ss
+	if _, err := eng.Run(); err != nil {
+		t.Fatalf("engine.Run() error: %v", err)
+	}
+
+	wantTableKeys := []string{
+		"/apis/kubevirt.io/v1/namespaces/team-a/virtualmachines?as=Table",
+		"/apis/kubevirt.io/v1/namespaces/team-b/virtualmachines?as=Table",
+	}
+	for _, k := range wantTableKeys {
+		if _, ok := eng.index[k]; !ok {
+			t.Errorf("expected demuxed Table record at %q", k)
+		}
+	}
+
+	// Verify team-a's Table contains both vm-a and vm-c but NOT vm-b.
+	var teamATable *Record
+	for _, rec := range ss.records {
+		if rec.APIPath == "/apis/kubevirt.io/v1/namespaces/team-a/virtualmachines?as=Table" {
+			teamATable = rec
+			break
+		}
+	}
+	if teamATable == nil {
+		t.Fatal("missing team-a Table record")
+	}
+	body := string(teamATable.ResponseBody)
+	if !strings.Contains(body, "vm-a") || !strings.Contains(body, "vm-c") {
+		t.Errorf("team-a Table missing expected rows: %s", body)
+	}
+	if strings.Contains(body, "vm-b") {
+		t.Errorf("team-a Table leaked team-b row: %s", body)
 	}
 }
 
