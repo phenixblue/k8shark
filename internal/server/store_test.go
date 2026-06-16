@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -105,6 +106,90 @@ func buildTestStore(t *testing.T, records map[string][]byte) *CaptureStore {
 		t.Fatalf("LoadStore: %v", err)
 	}
 	return store
+}
+
+// TestStore_NamespaceItemCountsAt verifies that NamespaceItemCountsAt reads
+// IndexEntry.Counts (no body reads) and returns the correct per-(ns,
+// resource) totals, picking the latest record at or before the requested
+// time. Older archives whose IndexEntry omits Counts contribute nothing.
+func TestStore_NamespaceItemCountsAt(t *testing.T) {
+	t0 := time.Now().UTC()
+	t1 := t0.Add(30 * time.Second)
+	t2 := t0.Add(60 * time.Second)
+
+	store := &CaptureStore{
+		Index: capture.Index{
+			// Two records at different times — only the latest before `at` counts.
+			"/api/v1/namespaces/team-a/pods": {
+				APIPath: "/api/v1/namespaces/team-a/pods",
+				Seqs:    []int{0, 1},
+				Times:   []time.Time{t0, t2},
+				Counts:  []int{3, 5},
+			},
+			"/apis/apps/v1/namespaces/team-a/deployments": {
+				APIPath: "/apis/apps/v1/namespaces/team-a/deployments",
+				Seqs:    []int{0},
+				Times:   []time.Time{t1},
+				Counts:  []int{2},
+			},
+			"/apis/kubevirt.io/v1/namespaces/team-b/virtualmachines": {
+				APIPath: "/apis/kubevirt.io/v1/namespaces/team-b/virtualmachines",
+				Seqs:    []int{0},
+				Times:   []time.Time{t1},
+				Counts:  []int{4},
+			},
+			// Older archive: no Counts → must be skipped, not counted as 0.
+			"/api/v1/namespaces/team-c/configmaps": {
+				APIPath: "/api/v1/namespaces/team-c/configmaps",
+				Seqs:    []int{0},
+				Times:   []time.Time{t1},
+			},
+			// Cluster-scoped — must not appear in the per-namespace map.
+			"/api/v1/nodes": {
+				APIPath: "/api/v1/nodes",
+				Seqs:    []int{0},
+				Times:   []time.Time{t1},
+				Counts:  []int{6},
+			},
+			// Table records — same data as plain LIST; must not double-count.
+			"/api/v1/namespaces/team-a/pods?as=Table": {
+				APIPath: "/api/v1/namespaces/team-a/pods?as=Table",
+				Seqs:    []int{0},
+				Times:   []time.Time{t2},
+				Counts:  []int{5},
+			},
+		},
+	}
+
+	// At t2: pods/team-a uses the t2 record (5), deployments/team-a still 2,
+	// virtualmachines/team-b 4. team-c contributes nothing (no Counts).
+	got := store.NamespaceItemCountsAt(t2)
+	wantTeamA := map[string]int{"pods": 5, "deployments": 2}
+	wantTeamB := map[string]int{"virtualmachines": 4}
+	if !reflect.DeepEqual(got["team-a"], wantTeamA) {
+		t.Errorf("team-a = %v, want %v", got["team-a"], wantTeamA)
+	}
+	if !reflect.DeepEqual(got["team-b"], wantTeamB) {
+		t.Errorf("team-b = %v, want %v", got["team-b"], wantTeamB)
+	}
+	if _, ok := got["team-c"]; ok {
+		t.Errorf("team-c should be absent (no Counts in archive), got %v", got["team-c"])
+	}
+
+	// At t1 (between t0 and t2): pods/team-a uses the t0 record (3).
+	got = store.NamespaceItemCountsAt(t1)
+	if got["team-a"]["pods"] != 3 {
+		t.Errorf("team-a pods at t1 = %d, want 3", got["team-a"]["pods"])
+	}
+
+	// At t0 (before deployments was recorded): only pods/team-a present.
+	got = store.NamespaceItemCountsAt(t0)
+	if got["team-a"]["pods"] != 3 {
+		t.Errorf("team-a pods at t0 = %d, want 3", got["team-a"]["pods"])
+	}
+	if _, ok := got["team-a"]["deployments"]; ok {
+		t.Error("deployments should not be present at t0 (recorded later)")
+	}
 }
 
 func TestStore_Latest_Found(t *testing.T) {

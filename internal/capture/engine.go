@@ -1325,6 +1325,7 @@ func (e *Engine) storeRecord(indexKey string, body []byte, statusCode int, dedup
 			fmt.Fprintf(os.Stderr, "  [warn] writing record %s: %v\n", indexKey, err)
 		}
 	}
+	itemCount := countListItems(body)
 	e.mu.Lock()
 	if _, ok := e.index[indexKey]; !ok {
 		e.index[indexKey] = &IndexEntry{APIPath: indexKey}
@@ -1333,7 +1334,28 @@ func (e *Engine) storeRecord(indexKey string, body []byte, statusCode int, dedup
 	e.pathSeq[indexKey] = seq + 1
 	e.index[indexKey].Seqs = append(e.index[indexKey].Seqs, seq)
 	e.index[indexKey].Times = append(e.index[indexKey].Times, rec.CapturedAt)
+	e.index[indexKey].Counts = append(e.index[indexKey].Counts, itemCount)
 	e.mu.Unlock()
+}
+
+// countListItems peeks at a JSON response body and returns the number of
+// top-level items in it. Recognises both standard <Kind>List responses
+// (items[]) and meta.k8s.io/v1 Table responses (rows[]). Returns 0 for
+// non-list bodies (single objects, discovery, OpenAPI). Used to populate
+// IndexEntry.Counts so the UI can show namespace card counts without
+// loading each record body.
+func countListItems(body []byte) int {
+	var probe struct {
+		Items []json.RawMessage `json:"items"`
+		Rows  []json.RawMessage `json:"rows"`
+	}
+	if err := json.Unmarshal(body, &probe); err != nil {
+		return 0
+	}
+	if probe.Items != nil {
+		return len(probe.Items)
+	}
+	return len(probe.Rows)
 }
 
 // fetchServerVersion attempts to retrieve the server version string.
