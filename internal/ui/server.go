@@ -2151,7 +2151,10 @@ const indexHTML = `<!doctype html>
 			el.treeHeadLabel.textContent = nsLabel;
 			el.crumbs.textContent = 'Cluster / ' + nsLabel;
 
-			// back button
+			// Build the back button once; we re-append it whenever a state
+			// transition (loading / empty) clears the tree, so the user can
+			// always return to the namespace list — including when the
+			// drill-down has nothing to show.
 			const back = document.createElement('button');
 			back.className = 'ns-back';
 			back.type = 'button';
@@ -2159,11 +2162,17 @@ const indexHTML = `<!doctype html>
 			back.onclick = navigateBack;
 			el.tree.appendChild(back);
 
+			// Local helper: setTreeState wipes el.tree, so wrap it to preserve
+			// the back button in loading/empty states.
+			const setStateWithBack = (type, message) => {
+				setTreeState(type, message);
+				el.tree.insertBefore(back, el.tree.firstChild);
+			};
+
 			const detail = nsCache[currentNS];
 			if (!detail || detail._loading) {
 				loadNsDetail(currentNS);
-				setTreeState('loading', 'Loading ' + nsLabel + '…');
-				el.tree.appendChild(document.querySelector('.tree-state') || document.createElement('div'));
+				setStateWithBack('loading', 'Loading ' + nsLabel + '…');
 				visibleNodes = [];
 				activeNodeIdx = -1;
 				return;
@@ -2242,8 +2251,7 @@ const indexHTML = `<!doctype html>
 
 			if (renderedNodes === 0) {
 				const msg = q ? 'No resources match "' + q + '" in ' + nsLabel + '.' : nsLabel + ' has no resources at this snapshot.';
-				setTreeState('empty', msg);
-				el.tree.appendChild(drilldown);
+				setStateWithBack('empty', msg);
 				visibleNodes = [];
 				activeNodeIdx = -1;
 				return;
