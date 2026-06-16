@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -36,7 +37,7 @@ func Execute() {
 
 func init() {
 	cobra.OnInitialize(initConfig)
-	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default: ./k8shark.yaml)")
+	rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default: ./config.yaml, then ~/.config/kshrk/config.yaml)")
 	rootCmd.PersistentFlags().BoolP("verbose", "v", false, "enable verbose output")
 	_ = viper.BindPFlag("verbose", rootCmd.PersistentFlags().Lookup("verbose"))
 }
@@ -45,8 +46,14 @@ func initConfig() {
 	if cfgFile != "" {
 		viper.SetConfigFile(cfgFile)
 	} else {
+		// Search the current directory first, then the XDG-style
+		// ~/.config/kshrk directory. Viper returns the first match in
+		// the order the paths are added.
 		viper.AddConfigPath(".")
-		viper.SetConfigName("k8shark")
+		if home, err := os.UserHomeDir(); err == nil {
+			viper.AddConfigPath(filepath.Join(home, ".config", "kshrk"))
+		}
+		viper.SetConfigName("config")
 		viper.SetConfigType("yaml")
 	}
 	viper.AutomaticEnv()
