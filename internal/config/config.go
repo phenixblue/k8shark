@@ -46,6 +46,12 @@ type Resource struct {
 	// AutoDiscovered is set to true by the engine when this entry was generated
 	// via auto-discovery (all: true). It is not a user-facing config field.
 	AutoDiscovered bool `mapstructure:"-"`
+	// WildcardNamespaces is set to true by the engine when this entry was
+	// originally configured with a wildcard ("*") in Namespaces. After wildcard
+	// expansion the engine still needs to know the original intent so watch
+	// streams can use a single cluster-wide watch instead of one per expanded
+	// namespace. Not a user-facing config field.
+	WildcardNamespaces bool `mapstructure:"-"`
 }
 
 // DedupEnabled reports whether polling responses for this resource should be

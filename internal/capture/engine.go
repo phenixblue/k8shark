@@ -297,9 +297,21 @@ func (e *Engine) pollResource(ctx context.Context, res config.Resource) {
 	}
 }
 
-// watchResource starts one watch loop per configured namespace for the given
-// resource. For cluster-scoped resources, a single watch loop is used.
+// watchResource starts watch loops for the given resource. By default one
+// watch loop runs per configured namespace, but when the resource was
+// originally configured with a wildcard namespace ("*") a single cluster-wide
+// watch stream is used instead. This matches how in-cluster controllers
+// watch resources and avoids opening N streams against the API server on
+// clusters with many namespaces. For cluster-scoped resources a single watch
+// loop is used.
 func (e *Engine) watchResource(ctx context.Context, res config.Resource) {
+	if res.WildcardNamespaces {
+		// One cluster-wide stream; streamWatch demuxes events back to per-
+		// namespace API paths via metadata.namespace on each event object.
+		e.watchResourcePath(ctx, res, "")
+		return
+	}
+
 	namespaces := res.Namespaces
 	if len(namespaces) == 0 {
 		namespaces = []string{""}
@@ -329,7 +341,7 @@ func (e *Engine) watchResourcePath(ctx context.Context, res config.Resource, nam
 			resourceVersion = extractResourceVersion(body)
 		}
 
-		if err := e.streamWatch(ctx, apiPath, resourceVersion); err != nil && ctx.Err() == nil && e.verbose {
+		if err := e.streamWatch(ctx, res, apiPath, resourceVersion); err != nil && ctx.Err() == nil && e.verbose {
 			fmt.Fprintf(os.Stderr, "  [watch] %s: %v\n", apiPath, err)
 		}
 
@@ -346,12 +358,18 @@ func (e *Engine) watchResourcePath(ctx context.Context, res config.Resource, nam
 	}
 }
 
-func (e *Engine) streamWatch(ctx context.Context, apiPath, resourceVersion string) error {
+func (e *Engine) streamWatch(ctx context.Context, res config.Resource, apiPath, resourceVersion string) error {
 	q := url.Values{}
 	q.Set("watch", "1")
 	if resourceVersion != "" {
 		q.Set("resourceVersion", resourceVersion)
 	}
+
+	// Wildcard-namespace watches open a single cluster-wide stream but rewrite
+	// each event's stored APIPath to /api/.../namespaces/<ns>/<resource> so the
+	// replay server's per-namespace reconstruction logic continues to work
+	// without changes.
+	demuxPerNamespace := res.WildcardNamespaces && apiPath == buildAPIPath(res.Group, res.Version, res.Resource, "")
 
 	watchURL := e.baseURL + apiPath + "?" + q.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, watchURL, nil)
@@ -400,10 +418,23 @@ func (e *Engine) streamWatch(ctx context.Context, apiPath, resourceVersion strin
 			continue
 		}
 
+		recordPath := apiPath
+		if demuxPerNamespace {
+			ns := extractNamespaceFromObject(event.Object)
+			if ns == "" {
+				// Namespaced resources should always have metadata.namespace
+				// set on watch events. Skip rather than store an unattributable
+				// event under the cluster-wide path where the replay server
+				// won't find it.
+				continue
+			}
+			recordPath = buildAPIPath(res.Group, res.Version, res.Resource, ns)
+		}
+
 		rec := &Record{
 			ID:           uuid.New().String(),
 			CapturedAt:   time.Now().UTC(),
-			APIPath:      apiPath,
+			APIPath:      recordPath,
 			EventType:    event.Type,
 			HTTPMethod:   http.MethodGet,
 			ResponseCode: http.StatusOK,
@@ -413,23 +444,38 @@ func (e *Engine) streamWatch(ctx context.Context, apiPath, resourceVersion strin
 		if e.sink != nil {
 			if err := e.sink.WriteRecord(rec); err != nil {
 				if e.verbose {
-					fmt.Fprintf(os.Stderr, "  [warn] writing watch record %s: %v\n", apiPath, err)
+					fmt.Fprintf(os.Stderr, "  [warn] writing watch record %s: %v\n", recordPath, err)
 				}
 				continue
 			}
 		}
 
 		e.mu.Lock()
-		if _, ok := e.watchIndex[apiPath]; !ok {
-			e.watchIndex[apiPath] = &WatchIndexEntry{APIPath: apiPath}
+		if _, ok := e.watchIndex[recordPath]; !ok {
+			e.watchIndex[recordPath] = &WatchIndexEntry{APIPath: recordPath}
 		}
-		seq := e.pathSeq[apiPath]
-		e.pathSeq[apiPath] = seq + 1
-		e.watchIndex[apiPath].Seqs = append(e.watchIndex[apiPath].Seqs, seq)
-		e.watchIndex[apiPath].Times = append(e.watchIndex[apiPath].Times, rec.CapturedAt)
-		e.watchIndex[apiPath].EventTypes = append(e.watchIndex[apiPath].EventTypes, rec.EventType)
+		seq := e.pathSeq[recordPath]
+		e.pathSeq[recordPath] = seq + 1
+		e.watchIndex[recordPath].Seqs = append(e.watchIndex[recordPath].Seqs, seq)
+		e.watchIndex[recordPath].Times = append(e.watchIndex[recordPath].Times, rec.CapturedAt)
+		e.watchIndex[recordPath].EventTypes = append(e.watchIndex[recordPath].EventTypes, rec.EventType)
 		e.mu.Unlock()
 	}
+}
+
+// extractNamespaceFromObject reads metadata.namespace from a Kubernetes
+// object body returned in a watch event. Returns "" if the body can't be
+// parsed or the field is absent.
+func extractNamespaceFromObject(obj []byte) string {
+	var x struct {
+		Metadata struct {
+			Namespace string `json:"namespace"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(obj, &x); err != nil {
+		return ""
+	}
+	return x.Metadata.Namespace
 }
 
 func extractResourceVersion(body []byte) string {
@@ -787,6 +833,12 @@ func (e *Engine) validateWatchConcurrency() error {
 	watchStreams := 0
 	for _, r := range e.cfg.Resources {
 		if !r.Watch || r.All {
+			continue
+		}
+		if r.WildcardNamespaces {
+			// Wildcard-namespace watches collapse to a single cluster-wide stream
+			// regardless of how many namespaces the wildcard expanded to.
+			watchStreams++
 			continue
 		}
 		if len(r.Namespaces) == 0 {
@@ -1210,6 +1262,9 @@ func (e *Engine) expandWildcardNamespaces(ctx context.Context) error {
 			}
 		}
 		r.Namespaces = expanded
+		// Remember that this entry was wildcarded so watchResource can open a
+		// single cluster-wide watch stream instead of one per expanded namespace.
+		r.WildcardNamespaces = true
 
 		if e.verbose {
 			fmt.Fprintf(os.Stdout,

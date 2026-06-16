@@ -56,7 +56,7 @@ Capture complete
 
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
-| `--config` | | `./k8shark.yaml` | Path to config file |
+| `--config` | | `./config.yaml`, then `~/.config/kshrk/config.yaml` | Path to config file |
 | `--output` | `-o` | `./k8shark-<timestamp>.tar.gz` | Output archive path |
 | `--duration` | | from config | Override capture duration (e.g. `5m`) |
 | `--kubeconfig` | | `$KUBECONFIG` / `~/.kube/config` | Source cluster kubeconfig |
@@ -66,7 +66,7 @@ Capture complete
 | `--allow-secret` | | | `namespace/name` of secret to preserve when `--redact-secrets` is set (repeatable) |
 | `--redact-field` | | | Field redaction rule applied after capture: `<path>:<Kind>:<replacement>[:<type>]` (repeatable) |
 
-The `--config` flag auto-discovers `./k8shark.yaml` if not specified.
+If `--config` is not specified, k8shark looks for `./config.yaml` in the current directory first, then falls back to `~/.config/kshrk/config.yaml`.
 
 For full-cluster capture without enumerating resources manually, prefer config syntax:
 

@@ -1486,6 +1486,179 @@ func TestWatchResource_Reconnects(t *testing.T) {
 	}
 }
 
+// TestWatchResource_WildcardOpensSingleClusterWideStream verifies that when a
+// resource is marked WildcardNamespaces=true (originally configured with
+// namespaces: ["*"]), watchResource opens a single cluster-wide watch stream
+// instead of one stream per expanded namespace, and each emitted event is
+// stored under its per-namespace API path (read from metadata.namespace) so
+// the replay server's per-namespace reconstruction works unchanged.
+func TestWatchResource_WildcardOpensSingleClusterWideStream(t *testing.T) {
+	var clusterWideHits int32
+	var perNamespaceHits int32
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/version":
+			fmt.Fprint(w, `{"gitVersion":"v1.29.0"}`)
+			return
+		case "/api/v1/pods":
+			if r.URL.Query().Get("watch") == "1" {
+				atomic.AddInt32(&clusterWideHits, 1)
+				w.WriteHeader(http.StatusOK)
+				_, _ = io.WriteString(w,
+					`{"type":"ADDED","object":{"metadata":{"name":"p1","namespace":"ns-a"}}}`+"\n"+
+						`{"type":"ADDED","object":{"metadata":{"name":"p2","namespace":"ns-b"}}}`+"\n"+
+						`{"type":"MODIFIED","object":{"metadata":{"name":"p1","namespace":"ns-a"}}}`+"\n")
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+				// Hold the connection open until the test cancels.
+				<-r.Context().Done()
+				return
+			}
+			fmt.Fprint(w, `{"kind":"PodList","metadata":{"resourceVersion":"10"},"items":[]}`)
+			return
+		}
+		if strings.Contains(r.URL.Path, "/namespaces/") && strings.HasSuffix(r.URL.Path, "/pods") {
+			atomic.AddInt32(&perNamespaceHits, 1)
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	eng := newEngineWith(&config.Config{}, srv.Client(), srv.URL, false)
+	ss := &sliceSink{}
+	eng.sink = ss
+
+	res := config.Resource{
+		Version:            "v1",
+		Resource:           "pods",
+		Namespaces:         []string{"ns-a", "ns-b"},
+		Watch:              true,
+		WildcardNamespaces: true,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		eng.watchResource(ctx, res)
+	}()
+
+	deadline := time.Now().Add(1500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		ss.mu.Lock()
+		n := len(ss.records)
+		ss.mu.Unlock()
+		if n >= 3 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	if got := atomic.LoadInt32(&perNamespaceHits); got != 0 {
+		t.Fatalf("expected zero per-namespace watch requests, got %d", got)
+	}
+	if got := atomic.LoadInt32(&clusterWideHits); got == 0 {
+		t.Fatal("expected at least one cluster-wide watch connection")
+	}
+
+	eng.mu.Lock()
+	defer eng.mu.Unlock()
+
+	if _, ok := eng.watchIndex["/api/v1/pods"]; ok {
+		t.Errorf("expected no events stored under cluster-wide path /api/v1/pods (events should be demuxed per namespace)")
+	}
+	for _, want := range []string{"/api/v1/namespaces/ns-a/pods", "/api/v1/namespaces/ns-b/pods"} {
+		wi, ok := eng.watchIndex[want]
+		if !ok {
+			t.Errorf("expected watchIndex entry for %s", want)
+			continue
+		}
+		if len(wi.Seqs) == 0 {
+			t.Errorf("expected at least one event recorded for %s", want)
+		}
+	}
+}
+
+// TestRun_WildcardWatchBypassesConcurrencyCap verifies that a config using
+// namespaces: ["*"] with watch: true does not trip the watch concurrency
+// guard even on clusters with more than maxConcurrentWatchStreams namespaces,
+// because wildcard watches collapse to a single cluster-wide stream.
+func TestRun_WildcardWatchBypassesConcurrencyCap(t *testing.T) {
+	nsCount := maxConcurrentWatchStreams + 50
+	var nsItems strings.Builder
+	for i := 0; i < nsCount; i++ {
+		if i > 0 {
+			nsItems.WriteString(",")
+		}
+		fmt.Fprintf(&nsItems, `{"metadata":{"name":"ns-%d"}}`, i)
+	}
+	nsList := fmt.Sprintf(`{"kind":"NamespaceList","metadata":{},"items":[%s]}`, nsItems.String())
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/version":
+			fmt.Fprint(w, `{"gitVersion":"v1.29.0"}`)
+		case "/api":
+			fmt.Fprint(w, `{"versions":["v1"]}`)
+		case "/api/v1":
+			fmt.Fprint(w, `{"kind":"APIResourceList","resources":[]}`)
+		case "/apis":
+			fmt.Fprint(w, `{"kind":"APIGroupList","groups":[]}`)
+		case "/openapi/v2":
+			fmt.Fprint(w, `{}`)
+		case "/openapi/v3":
+			fmt.Fprint(w, `{"paths":{}}`)
+		case "/api/v1/namespaces":
+			fmt.Fprint(w, nsList)
+		case "/api/v1/pods":
+			if r.URL.Query().Get("watch") == "1" {
+				w.WriteHeader(http.StatusOK)
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+				<-r.Context().Done()
+				return
+			}
+			fmt.Fprint(w, `{"kind":"PodList","metadata":{"resourceVersion":"1"},"items":[]}`)
+		default:
+			fmt.Fprint(w, `{"kind":"List","items":[]}`)
+		}
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		DurationRaw: "300ms",
+		Duration:    300 * time.Millisecond,
+		Output:      filepath.Join(t.TempDir(), "capture.khsrk"),
+		Resources: []config.Resource{
+			{
+				Version:     "v1",
+				Resource:    "pods",
+				Namespaces:  []string{"*"},
+				Watch:       true,
+				IntervalRaw: "1s",
+				Interval:    1 * time.Second,
+			},
+		},
+	}
+
+	eng := newEngineWith(cfg, srv.Client(), srv.URL, false)
+	if _, err := eng.Run(); err != nil {
+		t.Fatalf("expected wildcard watch to bypass concurrency cap, got error: %v", err)
+	}
+	if !cfg.Resources[0].WildcardNamespaces {
+		t.Fatal("expected wildcard expansion to flag resource as WildcardNamespaces=true")
+	}
+}
+
 // TestFetchResource_AutoDiscoveredSilentFallback verifies that when a resource
 // was added via auto-discovery (AutoDiscovered=true) and every namespace-scoped
 // fetch returns 404, the engine falls back to the cluster-scoped path silently
