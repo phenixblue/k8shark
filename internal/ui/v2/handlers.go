@@ -22,11 +22,7 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]string{"error": msg})
 }
 
-// Stubs — replaced as each endpoint is built out.
-
-func (h *Handler) serveOverview(w http.ResponseWriter, r *http.Request) {
-	writeError(w, http.StatusNotImplemented, "overview not implemented yet")
-}
+// Stubs for endpoints that land in later commits on this branch.
 
 func (h *Handler) serveNamespace(w http.ResponseWriter, r *http.Request) {
 	writeError(w, http.StatusNotImplemented, "namespace not implemented yet")
@@ -53,5 +49,5 @@ func (h *Handler) serveObjectHistory(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) serveTimestamps(w http.ResponseWriter, r *http.Request) {
-	writeError(w, http.StatusNotImplemented, "timestamps not implemented yet")
+	h.timestampsHandler(w, r)
 }
