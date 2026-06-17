@@ -18,6 +18,7 @@ import (
 	"github.com/phenixblue/k8shark/internal/capture"
 	"github.com/phenixblue/k8shark/internal/server"
 	"github.com/phenixblue/k8shark/internal/transitions"
+	v2 "github.com/phenixblue/k8shark/internal/ui/v2"
 	"gopkg.in/yaml.v3"
 )
 
@@ -164,6 +165,16 @@ func Open(opts OpenOptions) (*Server, error) {
 	mux.HandleFunc("/api/ui/timestamps", h.serveTimestamps)
 	mux.HandleFunc("/api/ui/transitions", h.serveTransitions)
 	mux.HandleFunc("/api/ui/object-history", h.serveObjectHistory)
+
+	// Mount the redesigned dashboard UI under /v2/. Lives alongside the
+	// original UI during the redesign; will eventually replace it.
+	v2h := &v2.Handler{
+		Store:       store,
+		At:          at,
+		ArchivePath: opts.ArchivePath,
+		Verbose:     opts.Verbose,
+	}
+	v2h.Mount(mux)
 
 	httpSrv := &http.Server{Handler: mux}
 	done := make(chan struct{})
