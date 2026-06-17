@@ -715,3 +715,96 @@ func TestServeObjectHistory_MissingName(t *testing.T) {
 		t.Fatalf("expected 400, got %d", rr.Code)
 	}
 }
+
+// TestBuildTreeAt_NamespaceCountsExcludeClusterSpanning verifies that the
+// per-namespace card counts in the /api/ui/tree response apply the same
+// cluster-spanning filter as the drill-down (buildNamespaceAt). Without
+// this filter, OLM-style resources like packagemanifests inflate the
+// initial card count, and the card flips to "empty" (or a smaller number)
+// once the user drills in and the drill-down's filtered list takes over.
+func TestBuildTreeAt_NamespaceCountsExcludeClusterSpanning(t *testing.T) {
+	dir := t.TempDir()
+	out := filepath.Join(dir, "spanning.khsrk")
+	now := time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC)
+
+	// Five namespaces, each with the same packagemanifests entries
+	// (OLM-style behaviour). 5/5 = 100% of namespaces trips the spanning
+	// detection (threshold is 30% with a min of 3). Each namespace also
+	// gets a UNIQUE resource type that only exists in that one namespace —
+	// so the unique resource stays at 1/5 = 20% and is NOT flagged.
+	pkgList := `{"apiVersion":"packages.operators.coreos.com/v1","kind":"PackageManifestList","items":[` +
+		`{"metadata":{"name":"pkg-a","namespace":"x"}},` +
+		`{"metadata":{"name":"pkg-b","namespace":"x"}}` +
+		`]}`
+	uniqueList := func(ns, resource string) string {
+		return `{"apiVersion":"example.io/v1","kind":"WidgetList","items":[{"apiVersion":"example.io/v1","kind":"Widget","metadata":{"name":"w-1","namespace":"` + ns + `"}}]}`
+	}
+
+	recs := []*capture.Record{}
+	idx := capture.Index{}
+	type nsSpec struct{ name, uniqueRes string }
+	specs := []nsSpec{
+		{"openshift-config", "configonly"},
+		{"openshift-config-managed", "managedonly"},
+		{"kube-system", "kubeonly"},
+		{"openshift-operators", "operatorsonly"},
+		{"default", "defaultonly"},
+	}
+	for _, s := range specs {
+		pmPath := "/apis/packages.operators.coreos.com/v1/namespaces/" + s.name + "/packagemanifests"
+		uPath := "/apis/example.io/v1/namespaces/" + s.name + "/" + s.uniqueRes
+		recs = append(recs,
+			&capture.Record{ID: "r" + s.name + "-pm", CapturedAt: now, APIPath: pmPath, HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(pkgList)},
+			&capture.Record{ID: "r" + s.name + "-u", CapturedAt: now, APIPath: uPath, HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(uniqueList(s.name, s.uniqueRes))},
+		)
+		// Seqs are per-path, not global; the archive writer assigns 0..N per path.
+		idx[pmPath] = &capture.IndexEntry{APIPath: pmPath, Seqs: []int{0}, Times: []time.Time{now}, Counts: []int{2}}
+		idx[uPath] = &capture.IndexEntry{APIPath: uPath, Seqs: []int{0}, Times: []time.Time{now}, Counts: []int{1}}
+	}
+
+	meta := &capture.CaptureMetadata{
+		CaptureID:     "spanning-test",
+		CapturedAt:    now.Add(-1 * time.Minute),
+		CapturedUntil: now,
+		RecordCount:   len(recs),
+	}
+	store := buildStoreFromArchive(t, out, recs, idx, nil, meta)
+
+	h := &explorerHandler{store: store, at: now}
+	h.clusterSpanning = computeClusterSpanningResources(store)
+
+	if !h.clusterSpanning["packagemanifests"] {
+		t.Fatalf("test setup invalid: expected packagemanifests to be flagged cluster-spanning, got %v", h.clusterSpanning)
+	}
+	for _, s := range specs {
+		if h.clusterSpanning[s.uniqueRes] {
+			t.Fatalf("test setup invalid: unique resource %q should not be cluster-spanning", s.uniqueRes)
+		}
+	}
+
+	tree, err := h.buildTreeAt(now)
+	if err != nil {
+		t.Fatalf("buildTreeAt: %v", err)
+	}
+
+	// Each card should show only the 1 unique-resource (not 2 packagemanifests
+	// + 1 unique = 3), and the drill-down must agree to avoid the
+	// "count then empty" flicker the user reported.
+	for _, n := range tree.Namespaces {
+		if n.Counts == nil {
+			t.Errorf("namespace %s missing counts", n.Name)
+			continue
+		}
+		if got := n.Counts.Resources; got != 1 {
+			t.Errorf("namespace %s card chip resources=%d, want 1 (packagemanifests must be filtered)", n.Name, got)
+		}
+		nsDetail, err := h.buildNamespaceAt(n.Name, now)
+		if err != nil {
+			t.Fatalf("buildNamespaceAt(%s): %v", n.Name, err)
+		}
+		if drilldown := len(nsDetail.Resources); drilldown != n.Counts.Resources {
+			t.Errorf("namespace %s: card chip=%d but drill-down resources=%d (mismatch causes the empty-after-visit bug)",
+				n.Name, n.Counts.Resources, drilldown)
+		}
+	}
+}

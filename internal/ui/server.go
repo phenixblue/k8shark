@@ -268,7 +268,7 @@ func (h *explorerHandler) serveTree(w http.ResponseWriter, r *http.Request) {
 	for ns := range nsSet {
 		node := namespaceNode{Name: ns}
 		if byResource, ok := rawCounts[ns]; ok {
-			c := categorizeNamespaceCounts(byResource)
+			c := categorizeNamespaceCounts(byResource, h.clusterSpanning)
 			node.Counts = &c
 		}
 		namespaces = append(namespaces, node)
@@ -551,7 +551,7 @@ func (h *explorerHandler) buildTreeAt(at time.Time) (*treeResponse, error) {
 	for ns := range nsSet {
 		node := namespaceNode{Name: ns}
 		if byResource, ok := rawCounts[ns]; ok {
-			c := categorizeNamespaceCounts(byResource)
+			c := categorizeNamespaceCounts(byResource, h.clusterSpanning)
 			node.Counts = &c
 		}
 		namespaces = append(namespaces, node)
@@ -1185,9 +1185,19 @@ var uiWorkloadResources = map[string]bool{
 // categorizeNamespaceCounts maps raw per-resource counts into the three
 // chip categories shown on namespace cards. Pods get their own bucket;
 // recognised workload resources are summed; everything else is "resources".
-func categorizeNamespaceCounts(byResource map[string]int) namespaceCardCounts {
+//
+// skipResources is the set of resource names to exclude — typically the
+// cluster-spanning set (PackageManifests and similar resources that
+// technically have namespace scope but return the same cluster-wide list
+// for every namespace). The drill-down view applies the same filter, so
+// excluding them here keeps the card chip totals in sync with what the
+// user sees after navigating in.
+func categorizeNamespaceCounts(byResource map[string]int, skipResources map[string]bool) namespaceCardCounts {
 	var c namespaceCardCounts
 	for resource, n := range byResource {
+		if skipResources[resource] {
+			continue
+		}
 		switch {
 		case uiWorkloadResources[resource]:
 			c.Workloads += n
