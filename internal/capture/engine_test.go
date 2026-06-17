@@ -1620,6 +1620,39 @@ func TestFetchResource_WildcardTableDemuxedPerNamespace(t *testing.T) {
 	}
 }
 
+// TestStoreRecord_PopulatesItemCounts verifies that storeRecord counts the
+// items[] (or rows[] for Table) in each stored body and appends to
+// IndexEntry.Counts in lockstep with Seqs and Times. The UI namespace-card
+// chips depend on these counts being correct.
+func TestStoreRecord_PopulatesItemCounts(t *testing.T) {
+	eng := newEngineWith(&config.Config{}, nil, "", false)
+	ss := &sliceSink{}
+	eng.sink = ss
+
+	threeItems := []byte(`{"kind":"PodList","items":[{"metadata":{"name":"a"}},{"metadata":{"name":"b"}},{"metadata":{"name":"c"}}]}`)
+	zeroItems := []byte(`{"kind":"PodList","items":[]}`)
+	tableTwo := []byte(`{"kind":"Table","columnDefinitions":[],"rows":[{"object":{}},{"object":{}}]}`)
+	singleObj := []byte(`{"kind":"Pod","metadata":{"name":"x"}}`)
+
+	eng.storeRecord("/api/v1/namespaces/default/pods", threeItems, 200, false)
+	eng.storeRecord("/api/v1/namespaces/default/pods", zeroItems, 200, false)
+	eng.storeRecord("/api/v1/namespaces/default/pods?as=Table", tableTwo, 200, false)
+	eng.storeRecord("/api/v1/namespaces/default/pods/foo", singleObj, 200, false)
+
+	plain := eng.index["/api/v1/namespaces/default/pods"]
+	if got := plain.Counts; len(got) != 2 || got[0] != 3 || got[1] != 0 {
+		t.Errorf("plain Counts = %v, want [3 0]", got)
+	}
+	table := eng.index["/api/v1/namespaces/default/pods?as=Table"]
+	if got := table.Counts; len(got) != 1 || got[0] != 2 {
+		t.Errorf("table Counts = %v, want [2]", got)
+	}
+	single := eng.index["/api/v1/namespaces/default/pods/foo"]
+	if got := single.Counts; len(got) != 1 || got[0] != 0 {
+		t.Errorf("single-object Counts = %v, want [0]", got)
+	}
+}
+
 func TestDoFetch_DedupAllSame_FirstAlwaysWritten(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

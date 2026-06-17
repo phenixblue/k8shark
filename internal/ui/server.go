@@ -66,6 +66,17 @@ type timestampsResponse struct {
 
 type namespaceNode struct {
 	Name string `json:"name"`
+	// Counts is populated for new archives (where IndexEntry.Counts exists)
+	// and lets the UI render namespace-card chips on initial load instead of
+	// waiting for the user to drill in. Omitted entirely for older archives —
+	// the UI then falls back to its current "no chips until visited" behavior.
+	Counts *namespaceCardCounts `json:"counts,omitempty"`
+}
+
+type namespaceCardCounts struct {
+	Workloads int `json:"workloads"`
+	Pods      int `json:"pods"`
+	Resources int `json:"resources"`
 }
 
 type workloadNode struct {
@@ -248,9 +259,19 @@ func (h *explorerHandler) serveTree(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// Pull per-(ns, resource) counts from IndexEntry.Counts (no body reads).
+	// Older archives have no Counts in their index entries; nsCounts will
+	// simply be empty for those namespaces and the card chips stay blank
+	// until the user drills in, matching the prior behavior.
+	rawCounts := h.store.NamespaceItemCountsAt(h.at)
 	namespaces := make([]namespaceNode, 0, len(nsSet))
 	for ns := range nsSet {
-		namespaces = append(namespaces, namespaceNode{Name: ns})
+		node := namespaceNode{Name: ns}
+		if byResource, ok := rawCounts[ns]; ok {
+			c := categorizeNamespaceCounts(byResource)
+			node.Counts = &c
+		}
+		namespaces = append(namespaces, node)
 	}
 	sort.Slice(namespaces, func(i, j int) bool { return namespaces[i].Name < namespaces[j].Name })
 
@@ -525,9 +546,15 @@ func (h *explorerHandler) buildTreeAt(at time.Time) (*treeResponse, error) {
 			nsSet[ns] = struct{}{}
 		}
 	}
+	rawCounts := h.store.NamespaceItemCountsAt(at)
 	namespaces := make([]namespaceNode, 0, len(nsSet))
 	for ns := range nsSet {
-		namespaces = append(namespaces, namespaceNode{Name: ns})
+		node := namespaceNode{Name: ns}
+		if byResource, ok := rawCounts[ns]; ok {
+			c := categorizeNamespaceCounts(byResource)
+			node.Counts = &c
+		}
+		namespaces = append(namespaces, node)
 	}
 	sort.Slice(namespaces, func(i, j int) bool { return namespaces[i].Name < namespaces[j].Name })
 
@@ -1142,6 +1169,35 @@ func (h *explorerHandler) readRecordBody(apiPath string, seq int) ([]byte, bool)
 		return nil, false
 	}
 	return rec.ResponseBody, true
+}
+
+// uiWorkloadResources is the set of resource names categorized as
+// "workloads" by the namespace-card grid. Mirrors the workloadKinds set in
+// buildNamespaceAt so card chips and drill-down counts stay aligned.
+var uiWorkloadResources = map[string]bool{
+	"deployments":  true,
+	"statefulsets": true,
+	"daemonsets":   true,
+	"jobs":         true,
+	"replicasets":  true,
+}
+
+// categorizeNamespaceCounts maps raw per-resource counts into the three
+// chip categories shown on namespace cards. Pods get their own bucket;
+// recognised workload resources are summed; everything else is "resources".
+func categorizeNamespaceCounts(byResource map[string]int) namespaceCardCounts {
+	var c namespaceCardCounts
+	for resource, n := range byResource {
+		switch {
+		case uiWorkloadResources[resource]:
+			c.Workloads += n
+		case resource == "pods":
+			c.Pods += n
+		default:
+			c.Resources += n
+		}
+	}
+	return c
 }
 
 func baseAPIPath(path string) string {
@@ -2087,10 +2143,27 @@ const indexHTML = `<!doctype html>
 				const label = ns._cluster ? 'Cluster-scoped' : ns.name;
 				if (q && !label.toLowerCase().includes(q)) continue;
 				const detail = nsCache[ns.name] || {};
-				const workloads = (detail.workloads || []).length;
-				const pods = (detail.pods || []).length;
-				const resources = (detail.resources || []).length;
-				const loaded = nsCache[ns.name] && !detail._loading;
+				// If the user has drilled into this ns, the live arrays beat any
+				// precomputed counts (handles snapshot scrubbing edge cases).
+				// Otherwise fall back to the index-derived counts shipped on the
+				// namespace node, so cards show chips before any drill-down.
+				let workloads, pods, resources, loaded;
+				if (nsCache[ns.name] && !detail._loading) {
+					workloads = (detail.workloads || []).length;
+					pods = (detail.pods || []).length;
+					resources = (detail.resources || []).length;
+					loaded = true;
+				} else if (ns.counts) {
+					workloads = ns.counts.workloads || 0;
+					pods = ns.counts.pods || 0;
+					resources = ns.counts.resources || 0;
+					loaded = true;
+				} else {
+					workloads = 0;
+					pods = 0;
+					resources = 0;
+					loaded = false;
+				}
 
 				const card = document.createElement('div');
 				card.className = 'ns-card' + (ns._cluster ? ' cluster' : '');

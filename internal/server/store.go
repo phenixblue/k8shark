@@ -331,6 +331,59 @@ func (s *CaptureStore) SnapshotAt(apiPath string, at time.Time) ([]byte, int, ti
 	return rec.ResponseBody, rec.ResponseCode, snapTime, nil
 }
 
+// NamespaceItemCountsAt returns a map of namespace → resource → item count at
+// the given time, derived purely from IndexEntry.Counts so no record bodies
+// are read. Only namespaced LIST paths (plain JSON, not ?as=Table) contribute;
+// cluster-scoped paths and per-item GETs are skipped. Counts from records
+// whose IndexEntry.Counts slice is not populated (older archives) are
+// treated as unknown and contribute nothing — the caller can still render
+// the card grid with no chips for those entries.
+func (s *CaptureStore) NamespaceItemCountsAt(at time.Time) map[string]map[string]int {
+	out := make(map[string]map[string]int)
+	for path, entry := range s.Index {
+		if entry == nil || len(entry.Seqs) == 0 {
+			continue
+		}
+		// Skip Table-formatted records: we already count the plain LIST form.
+		if strings.Contains(path, "?") {
+			continue
+		}
+		_, _, resource, ns := parseAPIPath(path)
+		if resource == "" || ns == "" {
+			continue
+		}
+		// Skip per-item paths (e.g. .../pods/<name>) — parseAPIPath returns
+		// resource="" for these in this codebase, but be defensive.
+
+		// Pick the latest record at or before `at`.
+		idx := len(entry.Seqs) - 1
+		if !at.IsZero() && len(entry.Times) == len(entry.Seqs) {
+			pos := sort.Search(len(entry.Times), func(i int) bool {
+				return entry.Times[i].After(at)
+			})
+			if pos == 0 {
+				continue
+			}
+			idx = pos - 1
+		}
+
+		if idx >= len(entry.Counts) {
+			continue // Counts not populated for this record (older archive)
+		}
+		count := entry.Counts[idx]
+		if count <= 0 {
+			continue
+		}
+		byResource, ok := out[ns]
+		if !ok {
+			byResource = make(map[string]int)
+			out[ns] = byResource
+		}
+		byResource[resource] += count
+	}
+	return out
+}
+
 // objectKey returns the stable identity key for a Kubernetes object JSON blob.
 func objectKey(raw json.RawMessage) string {
 	var meta struct {

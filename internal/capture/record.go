@@ -35,6 +35,12 @@ type IndexEntry struct {
 	APIPath string      `json:"api_path"`
 	Seqs    []int       `json:"seqs"`
 	Times   []time.Time `json:"times"`
+	// Counts[i] is the number of top-level items in record i. Populated for
+	// list-shaped responses (anything with an items[] field or rows[] for
+	// Table responses); 0 for non-list records (single objects, discovery
+	// documents, OpenAPI specs). Optional — older archives omit this field
+	// and consumers must treat a nil/short Counts as "unknown" rather than 0.
+	Counts []int `json:"counts,omitempty"`
 }
 
 // Index is the top-level index.json written inside the archive.
