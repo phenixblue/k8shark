@@ -586,12 +586,228 @@
 
   async function renderPod(ns, name) {
     setContent(loadingState('Loading pod ' + ns + '/' + name + '…'));
+    let d;
     try {
-      const data = await getJSON('/v2/api/pod?ns=' + encodeURIComponent(ns) + '&name=' + encodeURIComponent(name));
-      setContent(el('div', { class: 'state' }, 'Pod ' + ns + '/' + name + ' data loaded. Real layout in next commit.'));
+      d = await getJSON('/v2/api/pod?ns=' + encodeURIComponent(ns) + '&name=' + encodeURIComponent(name));
     } catch (e) {
       setContent(errorState(e.message));
+      return;
     }
+
+    const root = el('div', {});
+
+    // Hero
+    const sevToBadge = { good: 'good', warn: 'warn', bad: 'bad' };
+    root.appendChild(el('div', { class: 'hero', style: 'margin:-18px -20px 0; padding:14px 20px 14px;' },
+      el('div', { class: 'crumbs' },
+        el('a', { onclick: () => go('#/overview') }, '← Cluster'),
+        el('span', { class: 'sep' }, '/'),
+        el('a', { onclick: () => go('#/ns/' + encodeURIComponent(d.namespace)) }, d.namespace),
+        el('span', { class: 'sep' }, '/'),
+        d.related && d.related.owner ? el('span', {}, d.related.owner.kind + ' / ' + d.related.owner.name) : null,
+        d.related && d.related.owner ? el('span', { class: 'sep' }, '/') : null,
+        el('b', {}, 'Pod / ' + d.name),
+      ),
+      el('div', { class: 'hero-row' },
+        el('div', {},
+          el('div', { class: 'title-row' },
+            el('div', { class: 'title' }, d.name),
+            d.hero ? el('span', { class: 'pill ' + (sevToBadge[d.hero.severity] || 'neutral') }, d.hero.reason || d.hero.phase) : null,
+          ),
+          el('div', { class: 'sub' }, 'Pod · ' + d.namespace + (d.hero?.subtitle ? ' · ' + d.hero.subtitle : '')),
+        ),
+        el('div', { class: 'hero-actions' },
+          el('button', { class: 'btn', onclick: () => go('#/logs?ns=' + encodeURIComponent(d.namespace) + '&pod=' + encodeURIComponent(d.name)) }, '▶ Logs'),
+          el('button', { class: 'btn' }, 'Events · ' + ((d.events || []).length)),
+          el('button', { class: 'btn' }, '⏷ Compare snapshots'),
+          el('button', { class: 'btn' }, 'YAML'),
+        ),
+      ),
+    ));
+
+    // Sub-tabs (visual only — content scrolled-to vertically since this is a single page for now)
+    const subtabs = el('div', { class: 'subtabs', style: 'margin:0 -20px 18px;' });
+    for (const [label, ct] of [
+      ['Summary', null],
+      ['Containers', (d.containers || []).length],
+      ['Logs', (d.containers || []).filter((c) => (c.log_preview || []).length > 0).length + ' captured'],
+      ['Events', (d.events || []).length],
+      ['History', (d.history || []).length],
+      ['YAML', null],
+      ['Relationships', null],
+    ]) {
+      const t = el('div', { class: 'tab' + (label === 'Summary' ? ' active' : '') }, label);
+      if (ct !== null) t.appendChild(el('span', { class: 'ct' }, ' · ' + ct));
+      subtabs.appendChild(t);
+    }
+    root.appendChild(subtabs);
+
+    // KPIs
+    const kpis = d.kpis || {};
+    const kpiStrip = el('div', { class: 'kpis k6' });
+    kpiStrip.appendChild(kpi('Phase', kpis.phase || '?', {
+      severity: d.hero?.severity === 'bad' ? 'alert' : (d.hero?.severity === 'warn' ? 'warn' : ''),
+      delta: d.hero?.reason || '',
+    }));
+    kpiStrip.appendChild(kpi('Restarts', kpis.restarts || 0, {
+      severity: (kpis.restarts || 0) > 0 ? 'alert' : '',
+    }));
+    kpiStrip.appendChild(kpi('Age', kpis.age || '?'));
+    kpiStrip.appendChild(kpi('Ready', kpis.ready || '0/0'));
+    kpiStrip.appendChild(kpi('Node', kpis.node || '—', { delta: kpis.pod_ip || '' }));
+    kpiStrip.appendChild(kpi('QoS', kpis.qos_class || '—'));
+    root.appendChild(kpiStrip);
+
+    // Restart sparkline + recent events
+    const sparkData = { buckets: d.restart_sparkline || [], total_events: (d.restart_sparkline || []).reduce((s, b) => s + (b.total || 0), 0), start_time: d.capture?.captured_at, end_time: d.capture?.captured_until };
+    const sparkCard = el('div', { class: 'card' },
+      cardHeader('Container restarts over capture window', sparkData.total_events + ' events'),
+      sparkChart(sparkData),
+    );
+    const evCard = el('div', { class: 'card' }, cardHeader('Recent events', String((d.events || []).length)));
+    if (!d.events || d.events.length === 0) {
+      evCard.appendChild(el('div', { class: 'state', style: 'padding:18px;' }, 'No events captured for this pod. (Did the capture include /api/v1/events?)'));
+    } else {
+      const wrap = el('div', { class: 'events' });
+      for (const ev of d.events.slice(0, 6)) {
+        wrap.appendChild(el('div', { class: 'event ' + (ev.severity || 'normal') },
+          el('span', { class: 'kind ' + (ev.severity === 'bad' ? 'bad' : (ev.severity === 'warn' ? 'warn' : '')) }, ev.reason || ''),
+          el('span', { class: 'body' },
+            el('b', {}, ev.message || ev.reason || ''),
+            ev.source || ev.count ? el('span', { class: 'small' },
+              (ev.source ? ev.source : '') + (ev.count ? ' · ' + ev.count + 'x' : ''),
+            ) : null,
+          ),
+          el('span', { class: 'age' }, formatShortTS(ev.time)),
+        ));
+      }
+      evCard.appendChild(wrap);
+    }
+    const row1 = el('div', { class: 'grid-2', style: 'margin-bottom:18px;' });
+    row1.appendChild(sparkCard);
+    row1.appendChild(evCard);
+    root.appendChild(row1);
+
+    // Containers
+    root.appendChild(el('div', { class: 'section-title' }, 'Containers (' + (d.containers || []).length + ')'));
+    const containersCard = el('div', { class: 'card', style: 'margin-bottom:18px;' });
+    for (const c of (d.containers || [])) {
+      containersCard.appendChild(containerCardEl(c));
+    }
+    root.appendChild(containersCard);
+
+    // Metadata + history
+    const grid = el('div', { class: 'grid-2' });
+
+    // Metadata card
+    const metaCard = el('div', { class: 'card' }, cardHeader('Metadata', ''));
+    const metaRow = (k, v, color) => el('div', { style: 'display:grid; grid-template-columns:140px 1fr; gap:8px; font-size:12.5px;' },
+      el('span', { style: 'color:var(--fg-faint);' }, k),
+      el('span', { style: 'font-family:var(--mono); color:' + (color || 'var(--fg)') + ';' }, v));
+    if (d.related?.owner) metaCard.appendChild(metaRow('Owner', (d.related.owner.kind || '') + '/' + (d.related.owner.name || '')));
+    if (d.kpis?.node) metaCard.appendChild(metaRow('Node', d.kpis.node));
+    if (d.kpis?.pod_ip) metaCard.appendChild(metaRow('Pod IP', d.kpis.pod_ip));
+    if (d.metadata?.created_at) metaCard.appendChild(metaRow('Created', d.metadata.created_at));
+    if (d.metadata?.labels && Object.keys(d.metadata.labels).length > 0) {
+      const labWrap = el('div', { class: 'labels', style: 'margin-top:10px;' });
+      for (const k of Object.keys(d.metadata.labels)) {
+        labWrap.appendChild(el('span', { class: 'lab' }, k + '=' + d.metadata.labels[k]));
+      }
+      metaCard.appendChild(el('div', { class: 'section-title', style: 'margin-top:10px;' }, 'Labels'));
+      metaCard.appendChild(labWrap);
+    }
+    if (d.metadata?.conditions && d.metadata.conditions.length > 0) {
+      metaCard.appendChild(el('div', { class: 'section-title', style: 'margin-top:10px;' }, 'Conditions'));
+      for (const c of d.metadata.conditions) {
+        const sevColor = c.severity === 'good' ? 'var(--good)' : c.severity === 'bad' ? 'var(--bad)' : 'var(--fg-dim)';
+        metaCard.appendChild(metaRow(c.type, c.status + (c.reason ? ' · ' + c.reason : ''), sevColor));
+      }
+    }
+    grid.appendChild(metaCard);
+
+    // History card
+    const histCard = el('div', { class: 'card' }, cardHeader('State history in capture', ''));
+    if (!d.history || d.history.length === 0) {
+      histCard.appendChild(el('div', { class: 'state', style: 'padding:14px;' }, 'No watch events captured for this pod.'));
+    } else {
+      for (const t of d.history.slice(0, 12)) {
+        const evCls = t.event_type === 'ADDED' ? 'added' : (t.event_type === 'DELETED' ? 'deleted' : 'modified');
+        histCard.appendChild(el('div', { class: 'timeline-row' },
+          el('span', { class: 'ts' }, formatShortTS(t.time)),
+          el('span', { class: 'dot ' + evCls }),
+          el('span', { class: 'ev' }, t.event_type + (t.detail ? ' · ' + t.detail : '')),
+        ));
+      }
+    }
+    if (d.related) {
+      histCard.appendChild(el('div', { class: 'section-title', style: 'margin-top:12px;' }, 'Related'));
+      if (d.related.owner) histCard.appendChild(el('div', { class: 'timeline-row' },
+        el('span', { class: 'ts' }, 'Owner'),
+        el('span', { class: 'ev' }, d.related.owner.kind + '/' + d.related.owner.name)));
+      for (const cm of (d.related.config_maps || [])) {
+        histCard.appendChild(el('div', { class: 'timeline-row' },
+          el('span', { class: 'ts' }, 'Mounts CM'),
+          el('span', { class: 'ev' }, cm.name)));
+      }
+      for (const s of (d.related.secrets || [])) {
+        histCard.appendChild(el('div', { class: 'timeline-row' },
+          el('span', { class: 'ts' }, 'Mounts Secret'),
+          el('span', { class: 'ev' }, s.name)));
+      }
+      for (const p of (d.related.pvcs || [])) {
+        histCard.appendChild(el('div', { class: 'timeline-row' },
+          el('span', { class: 'ts' }, 'Mounts PVC'),
+          el('span', { class: 'ev' }, p.name)));
+      }
+    }
+    grid.appendChild(histCard);
+
+    root.appendChild(grid);
+    setContent(root);
+  }
+
+  function containerCardEl(c) {
+    const card = el('div', { class: 'container-card ' + (c.severity || '') });
+    card.appendChild(el('div', { class: 'container-head' },
+      el('span', { class: 'nm' }, c.name),
+      el('span', { class: 'role ' + (c.role === 'init' ? 'init' : (c.role === 'side' ? 'side' : '')) }, c.role || 'main'),
+      el('span', { class: 'state ' + (c.severity || 'good') }, c.state_badge || c.state || ''),
+    ));
+    const meta = el('div', { class: 'container-meta' });
+    const mkRow = (k, v, cls) => {
+      meta.appendChild(el('span', { class: 'k' }, k));
+      meta.appendChild(el('span', { class: 'v ' + (cls || '') }, v || ''));
+    };
+    if (c.image) mkRow('Image', c.image);
+    if (c.last_terminated) {
+      mkRow('Last state', `Terminated · ${c.last_terminated}${c.last_exit_code ? ' · exit ' + c.last_exit_code : ''}`, 'bad');
+    }
+    if (c.resources) {
+      if (c.resources.cpu_limit || c.resources.cpu_request) {
+        mkRow('CPU', (c.resources.cpu_request || '?') + ' req · ' + (c.resources.cpu_limit || 'no limit'));
+      }
+      if (c.resources.memory_limit || c.resources.memory_request) {
+        mkRow('Memory', (c.resources.memory_request || '?') + ' req · ' + (c.resources.memory_limit || 'no limit'));
+      }
+    }
+    if (c.probes && c.probes.length > 0) mkRow('Probes', c.probes.join(' · '));
+    if (c.ports && c.ports.length > 0) mkRow('Ports', c.ports.join(', '));
+    card.appendChild(meta);
+    if (c.log_preview && c.log_preview.length > 0) {
+      const pre = el('div', { class: 'log-preview' });
+      for (const line of c.log_preview) {
+        pre.appendChild(document.createTextNode(line + '\n'));
+      }
+      card.appendChild(pre);
+    } else {
+      card.appendChild(el('div', { class: 'state', style: 'padding:10px; font-size:11.5px;' }, 'No captured log lines for this container.'));
+    }
+    const actions = el('div', { style: 'display:flex; gap:8px; margin-top:8px;' },
+      c.log_preview && c.log_preview.length > 0 ? el('button', { class: 'btn', onclick: () => go(c.log_path) }, 'View logs') : null,
+      c.has_previous_log ? el('button', { class: 'btn' }, 'Previous logs') : null,
+    );
+    card.appendChild(actions);
+    return card;
   }
 
   function renderTimeline() {

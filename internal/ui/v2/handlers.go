@@ -24,10 +24,6 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 
 // Stubs for endpoints that land in later commits on this branch.
 
-func (h *Handler) servePod(w http.ResponseWriter, r *http.Request) {
-	writeError(w, http.StatusNotImplemented, "pod not implemented yet")
-}
-
 func (h *Handler) serveEvents(w http.ResponseWriter, r *http.Request) {
 	writeError(w, http.StatusNotImplemented, "events not implemented yet")
 }
