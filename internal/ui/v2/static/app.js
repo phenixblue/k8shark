@@ -154,7 +154,7 @@
   function setContent(...nodes) {
     const c = $('content');
     c.innerHTML = '';
-    for (const n of nodes) c.appendChild(n);
+    for (const n of nodes) if (n) c.appendChild(n);
   }
 
   function loadingState(msg) {
@@ -166,7 +166,9 @@
 
   // ── Shared bits ──────────────────────────────────────────────────────────
   function kpi(label, value, opts = {}) {
-    return el('div', { class: 'kpi' + (opts.severity ? ' ' + opts.severity : '') },
+    const attrs = { class: 'kpi' + (opts.severity ? ' ' + opts.severity : '') + (opts.link ? ' clickable' : '') };
+    if (opts.link) attrs.onclick = () => go(opts.link);
+    return el('div', attrs,
       el('span', { class: 'label' }, label),
       el('span', { class: 'value' }, formatNumber(value)),
       opts.delta ? el('span', { class: 'delta ' + (opts.deltaKind || 'neutral') }, opts.delta) : null);
@@ -283,20 +285,22 @@
 
     const root = el('div', {});
 
-    // KPI strip
+    // KPI strip — each tile drills into the relevant view.
     const kpiStrip = el('div', { class: 'kpis' });
-    kpiStrip.appendChild(kpi('Namespaces', kpis.namespaces || 0));
-    kpiStrip.appendChild(kpi('Workloads', kpis.workloads || 0));
-    kpiStrip.appendChild(kpi('Pods', kpis.pods || 0));
+    kpiStrip.appendChild(kpi('Namespaces', kpis.namespaces || 0, { link: '#/namespaces' }));
+    kpiStrip.appendChild(kpi('Workloads', kpis.workloads || 0, { link: '#/namespaces' }));
+    kpiStrip.appendChild(kpi('Pods', kpis.pods || 0, { link: '#/namespaces' }));
     const unhealthyDelta = unhealthyDeltaText(kpis);
     kpiStrip.appendChild(kpi('Unhealthy pods', kpis.unhealthy_pods || 0, {
       severity: (kpis.unhealthy_pods || 0) > 0 ? 'alert' : '',
       delta: unhealthyDelta,
       deltaKind: 'down',
+      link: '#/namespaces?health=unhealthy',
     }));
     kpiStrip.appendChild(kpi('Watch events', kpis.watch_events || 0, {
       delta: data.sparkline && data.sparkline.buckets ? 'over ' + data.sparkline.buckets.length + ' buckets' : '',
       deltaKind: 'neutral',
+      link: '#/timeline',
     }));
     root.appendChild(kpiStrip);
 
@@ -388,15 +392,22 @@
       return;
     }
     const list = data.namespaces || [];
+    const hq = new URLSearchParams((location.hash.split('?')[1]) || '');
+    const unhealthyOnly = hq.get('health') === 'unhealthy';
     const filter = el('input', {
       placeholder: 'Filter namespaces…',
       style: 'width:100%; max-width:380px; background:var(--bg-row); border:1px solid var(--border-strong); color:var(--fg); padding:7px 10px; border-radius:6px; outline:none; margin-bottom:14px;',
     });
+    const banner = unhealthyOnly ? el('div', { class: 'state', style: 'padding:10px 14px; margin-bottom:14px; display:flex; gap:12px; align-items:center;' },
+      el('span', {}, 'Showing namespaces with unhealthy pods'),
+      el('a', { onclick: () => go('#/namespaces'), style: 'cursor:pointer;' }, 'Show all →'),
+    ) : null;
     const grid = el('div', { class: 'resource-grid', style: 'grid-template-columns:repeat(4, minmax(0,1fr));' });
     function build(q) {
       grid.innerHTML = '';
       let shown = 0;
       for (const ns of list) {
+        if (unhealthyOnly && !(ns.unhealthy > 0)) continue;
         if (q && !ns.name.toLowerCase().includes(q)) continue;
         const card = el('div', {
           class: 'res-chip',
@@ -414,12 +425,13 @@
         shown++;
       }
       if (shown === 0) {
-        grid.appendChild(el('div', { class: 'state', style: 'grid-column:1/-1;' }, 'No namespaces match.'));
+        grid.appendChild(el('div', { class: 'state', style: 'grid-column:1/-1;' },
+          unhealthyOnly ? 'No namespaces with unhealthy pods at this snapshot.' : 'No namespaces match.'));
       }
     }
     filter.addEventListener('input', () => build(filter.value.trim().toLowerCase()));
     build('');
-    setContent(filter, grid);
+    setContent(filter, banner, grid);
   }
 
   async function renderNamespace(ns) {

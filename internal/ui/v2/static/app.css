@@ -84,6 +84,8 @@ a { color: inherit; }
   background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px;
   padding: 14px 16px; display: flex; flex-direction: column; gap: 6px;
 }
+.kpi.clickable { cursor: pointer; transition: border-color .12s, background .12s; }
+.kpi.clickable:hover { border-color: var(--border-strong); background: var(--bg-row); }
 .kpi .label { font-size: 11px; color: var(--fg-faint); text-transform: uppercase; letter-spacing: .06em; }
 .kpi .value { font: 600 22px var(--font); color: var(--fg); }
 .kpi .delta { font: 11px var(--mono); }
