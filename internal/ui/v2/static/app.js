@@ -600,6 +600,8 @@
     }
 
     const root = el('div', {});
+    // Assigned once the tab bar is built below; hero action buttons jump to a tab.
+    let selectTab = () => {};
 
     // Hero
     const sevToBadge = { good: 'good', warn: 'warn', bad: 'bad' };
@@ -623,31 +625,14 @@
         ),
         el('div', { class: 'hero-actions' },
           el('button', { class: 'btn', onclick: () => go('#/logs?ns=' + encodeURIComponent(d.namespace) + '&pod=' + encodeURIComponent(d.name)) }, '▶ Logs'),
-          el('button', { class: 'btn' }, 'Events · ' + ((d.events || []).length)),
-          el('button', { class: 'btn' }, '⏷ Compare snapshots'),
-          el('button', { class: 'btn' }, 'YAML'),
+          el('button', { class: 'btn', onclick: () => selectTab('events') }, 'Events · ' + ((d.events || []).length)),
+          el('button', { class: 'btn', onclick: () => go('#/diff?path=' + encodeURIComponent('/api/v1/namespaces/' + d.namespace + '/pods') + '&name=' + encodeURIComponent(d.name)) }, '⏷ Compare snapshots'),
+          el('button', { class: 'btn', onclick: () => selectTab('yaml') }, 'YAML'),
         ),
       ),
     ));
 
-    // Sub-tabs (visual only — content scrolled-to vertically since this is a single page for now)
-    const subtabs = el('div', { class: 'subtabs', style: 'margin:0 -20px 18px;' });
-    for (const [label, ct] of [
-      ['Summary', null],
-      ['Containers', (d.containers || []).length],
-      ['Logs', (d.containers || []).filter((c) => (c.log_preview || []).length > 0).length + ' captured'],
-      ['Events', (d.events || []).length],
-      ['History', (d.history || []).length],
-      ['YAML', null],
-      ['Relationships', null],
-    ]) {
-      const t = el('div', { class: 'tab' + (label === 'Summary' ? ' active' : '') }, label);
-      if (ct !== null) t.appendChild(el('span', { class: 'ct' }, ' · ' + ct));
-      subtabs.appendChild(t);
-    }
-    root.appendChild(subtabs);
-
-    // KPIs
+    // KPIs (persistent — shown under the tab bar on every tab).
     const kpis = d.kpis || {};
     const kpiStrip = el('div', { class: 'kpis k6' });
     kpiStrip.appendChild(kpi('Phase', kpis.phase || '?', {
@@ -661,113 +646,176 @@
     kpiStrip.appendChild(kpi('Ready', kpis.ready || '0/0'));
     kpiStrip.appendChild(kpi('Node', kpis.node || '—', { delta: kpis.pod_ip || '' }));
     kpiStrip.appendChild(kpi('QoS', kpis.qos_class || '—'));
-    root.appendChild(kpiStrip);
 
-    // Restart sparkline + recent events
-    const sparkData = { buckets: d.restart_sparkline || [], total_events: (d.restart_sparkline || []).reduce((s, b) => s + (b.total || 0), 0), start_time: d.capture?.captured_at, end_time: d.capture?.captured_until };
-    const sparkCard = el('div', { class: 'card' },
-      cardHeader('Container restarts over capture window', sparkData.total_events + ' events'),
-      sparkChart(sparkData),
+    // ── Tab panels ───────────────────────────────────────────────────────────
+    const emptyState = (msg) => el('div', { class: 'state', style: 'padding:24px;' }, msg);
+
+    const eventRow = (ev) => el('div', { class: 'event ' + (ev.severity || 'normal') },
+      el('span', { class: 'kind ' + (ev.severity === 'bad' ? 'bad' : (ev.severity === 'warn' ? 'warn' : '')) }, ev.reason || ''),
+      el('span', { class: 'body' },
+        el('b', {}, ev.message || ev.reason || ''),
+        ev.source || ev.count ? el('span', { class: 'small' }, (ev.source ? ev.source : '') + (ev.count ? ' · ' + ev.count + 'x' : '')) : null,
+      ),
+      el('span', { class: 'age' }, formatShortTS(ev.time)),
     );
-    const evCard = el('div', { class: 'card' }, cardHeader('Recent events', String((d.events || []).length)));
-    if (!d.events || d.events.length === 0) {
-      evCard.appendChild(el('div', { class: 'state', style: 'padding:18px;' }, 'No events captured for this pod. (Did the capture include /api/v1/events?)'));
-    } else {
-      const wrap = el('div', { class: 'events' });
-      for (const ev of d.events.slice(0, 6)) {
-        wrap.appendChild(el('div', { class: 'event ' + (ev.severity || 'normal') },
-          el('span', { class: 'kind ' + (ev.severity === 'bad' ? 'bad' : (ev.severity === 'warn' ? 'warn' : '')) }, ev.reason || ''),
-          el('span', { class: 'body' },
-            el('b', {}, ev.message || ev.reason || ''),
-            ev.source || ev.count ? el('span', { class: 'small' },
-              (ev.source ? ev.source : '') + (ev.count ? ' · ' + ev.count + 'x' : ''),
-            ) : null,
-          ),
-          el('span', { class: 'age' }, formatShortTS(ev.time)),
-        ));
-      }
-      evCard.appendChild(wrap);
-    }
-    const row1 = el('div', { class: 'grid-2', style: 'margin-bottom:18px;' });
-    row1.appendChild(sparkCard);
-    row1.appendChild(evCard);
-    root.appendChild(row1);
 
-    // Containers
-    root.appendChild(el('div', { class: 'section-title' }, 'Containers (' + (d.containers || []).length + ')'));
-    const containersCard = el('div', { class: 'card', style: 'margin-bottom:18px;' });
-    for (const c of (d.containers || [])) {
-      containersCard.appendChild(containerCardEl(c));
-    }
-    root.appendChild(containersCard);
-
-    // Metadata + history
-    const grid = el('div', { class: 'grid-2' });
-
-    // Metadata card
-    const metaCard = el('div', { class: 'card' }, cardHeader('Metadata', ''));
     const metaRow = (k, v, color) => el('div', { style: 'display:grid; grid-template-columns:140px 1fr; gap:8px; font-size:12.5px;' },
       el('span', { style: 'color:var(--fg-faint);' }, k),
       el('span', { style: 'font-family:var(--mono); color:' + (color || 'var(--fg)') + ';' }, v));
-    if (d.related?.owner) metaCard.appendChild(metaRow('Owner', (d.related.owner.kind || '') + '/' + (d.related.owner.name || '')));
-    if (d.kpis?.node) metaCard.appendChild(metaRow('Node', d.kpis.node));
-    if (d.kpis?.pod_ip) metaCard.appendChild(metaRow('Pod IP', d.kpis.pod_ip));
-    if (d.metadata?.created_at) metaCard.appendChild(metaRow('Created', d.metadata.created_at));
-    if (d.metadata?.labels && Object.keys(d.metadata.labels).length > 0) {
-      const labWrap = el('div', { class: 'labels', style: 'margin-top:10px;' });
-      for (const k of Object.keys(d.metadata.labels)) {
-        labWrap.appendChild(el('span', { class: 'lab' }, k + '=' + d.metadata.labels[k]));
-      }
-      metaCard.appendChild(el('div', { class: 'section-title', style: 'margin-top:10px;' }, 'Labels'));
-      metaCard.appendChild(labWrap);
-    }
-    if (d.metadata?.conditions && d.metadata.conditions.length > 0) {
-      metaCard.appendChild(el('div', { class: 'section-title', style: 'margin-top:10px;' }, 'Conditions'));
-      for (const c of d.metadata.conditions) {
-        const sevColor = c.severity === 'good' ? 'var(--good)' : c.severity === 'bad' ? 'var(--bad)' : 'var(--fg-dim)';
-        metaCard.appendChild(metaRow(c.type, c.status + (c.reason ? ' · ' + c.reason : ''), sevColor));
-      }
-    }
-    grid.appendChild(metaCard);
 
-    // History card
-    const histCard = el('div', { class: 'card' }, cardHeader('State history in capture', ''));
-    if (!d.history || d.history.length === 0) {
-      histCard.appendChild(el('div', { class: 'state', style: 'padding:14px;' }, 'No watch events captured for this pod.'));
-    } else {
-      for (const t of d.history.slice(0, 12)) {
+    function buildSummary() {
+      const wrap = el('div', {});
+      const sparkData = { buckets: d.restart_sparkline || [], total_events: (d.restart_sparkline || []).reduce((s, b) => s + (b.total || 0), 0), start_time: d.capture?.captured_at, end_time: d.capture?.captured_until };
+      const sparkCard = el('div', { class: 'card' },
+        cardHeader('Container restarts over capture window', sparkData.total_events + ' events'),
+        sparkChart(sparkData));
+      const evCard = el('div', { class: 'card' }, cardHeader('Recent events', String((d.events || []).length)));
+      if (!d.events || d.events.length === 0) {
+        evCard.appendChild(el('div', { class: 'state', style: 'padding:18px;' }, 'No events captured for this pod. (Did the capture include /api/v1/events?)'));
+      } else {
+        const w = el('div', { class: 'events' });
+        for (const ev of d.events.slice(0, 6)) w.appendChild(eventRow(ev));
+        evCard.appendChild(w);
+      }
+      const row1 = el('div', { class: 'grid-2', style: 'margin-bottom:18px;' });
+      row1.appendChild(sparkCard);
+      row1.appendChild(evCard);
+      wrap.appendChild(row1);
+
+      const metaCard = el('div', { class: 'card' }, cardHeader('Metadata', ''));
+      if (d.related?.owner) metaCard.appendChild(metaRow('Owner', (d.related.owner.kind || '') + '/' + (d.related.owner.name || '')));
+      if (d.kpis?.node) metaCard.appendChild(metaRow('Node', d.kpis.node));
+      if (d.kpis?.pod_ip) metaCard.appendChild(metaRow('Pod IP', d.kpis.pod_ip));
+      if (d.metadata?.created_at) metaCard.appendChild(metaRow('Created', d.metadata.created_at));
+      if (d.metadata?.labels && Object.keys(d.metadata.labels).length > 0) {
+        metaCard.appendChild(el('div', { class: 'section-title', style: 'margin-top:10px;' }, 'Labels'));
+        const labWrap = el('div', { class: 'labels', style: 'margin-top:10px;' });
+        for (const k of Object.keys(d.metadata.labels)) labWrap.appendChild(el('span', { class: 'lab' }, k + '=' + d.metadata.labels[k]));
+        metaCard.appendChild(labWrap);
+      }
+      if (d.metadata?.conditions && d.metadata.conditions.length > 0) {
+        metaCard.appendChild(el('div', { class: 'section-title', style: 'margin-top:10px;' }, 'Conditions'));
+        for (const c of d.metadata.conditions) {
+          const sevColor = c.severity === 'good' ? 'var(--good)' : c.severity === 'bad' ? 'var(--bad)' : 'var(--fg-dim)';
+          metaCard.appendChild(metaRow(c.type, c.status + (c.reason ? ' · ' + c.reason : ''), sevColor));
+        }
+      }
+      wrap.appendChild(metaCard);
+      return wrap;
+    }
+
+    function buildContainers() {
+      if (!(d.containers || []).length) return emptyState('No containers found for this pod.');
+      const card = el('div', { class: 'card' });
+      for (const c of d.containers) card.appendChild(containerCardEl(c));
+      return card;
+    }
+
+    function buildLogs() {
+      const withLogs = (d.containers || []).filter((c) => (c.log_preview || []).length > 0 || c.log_path);
+      if (!withLogs.length) return emptyState('No logs captured for this pod. Set "logs: <N>" on the pods resource in the capture config to capture container logs.');
+      const wrap = el('div', {});
+      for (const c of withLogs) {
+        const card = el('div', { class: 'card', style: 'margin-bottom:14px;' },
+          cardHeader('Logs · ' + c.name, (c.role && c.role !== 'main') ? c.role : ''));
+        if ((c.log_preview || []).length) {
+          card.appendChild(el('pre', { class: 'log-preview', style: 'max-height:340px; padding:12px;' }, c.log_preview.join('\n')));
+        } else {
+          card.appendChild(el('div', { class: 'state', style: 'padding:12px;' }, 'No preview captured.'));
+        }
+        const actions = el('div', { style: 'display:flex; gap:8px; margin-top:10px;' });
+        if (c.log_path) actions.appendChild(el('button', { class: 'btn', onclick: () => go(c.log_path) }, 'Open full logs'));
+        if (c.has_previous_log && c.log_path) actions.appendChild(el('button', { class: 'btn', onclick: () => go(c.log_path + '&previous=true') }, 'Previous logs'));
+        if (actions.childNodes.length) card.appendChild(actions);
+        wrap.appendChild(card);
+      }
+      return wrap;
+    }
+
+    function buildEvents() {
+      if (!d.events || d.events.length === 0) return emptyState('No events captured for this pod. (Did the capture include /api/v1/events?)');
+      const card = el('div', { class: 'card' }, cardHeader('Events', String(d.events.length)));
+      const w = el('div', { class: 'events' });
+      for (const ev of d.events) w.appendChild(eventRow(ev));
+      card.appendChild(w);
+      return card;
+    }
+
+    function buildHistory() {
+      if (!d.history || d.history.length === 0) return emptyState('No watch events captured for this pod. Enable "watch: true" on the pods resource to record transitions.');
+      const card = el('div', { class: 'card' }, cardHeader('State history in capture', String(d.history.length)));
+      for (const t of d.history) {
         const evCls = t.event_type === 'ADDED' ? 'added' : (t.event_type === 'DELETED' ? 'deleted' : 'modified');
-        histCard.appendChild(el('div', { class: 'timeline-row' },
+        card.appendChild(el('div', { class: 'timeline-row' },
           el('span', { class: 'ts' }, formatShortTS(t.time)),
           el('span', { class: 'dot ' + evCls }),
           el('span', { class: 'ev' }, t.event_type + (t.detail ? ' · ' + t.detail : '')),
         ));
       }
+      return card;
     }
-    if (d.related) {
-      histCard.appendChild(el('div', { class: 'section-title', style: 'margin-top:12px;' }, 'Related'));
-      if (d.related.owner) histCard.appendChild(el('div', { class: 'timeline-row' },
-        el('span', { class: 'ts' }, 'Owner'),
-        el('span', { class: 'ev' }, d.related.owner.kind + '/' + d.related.owner.name)));
-      for (const cm of (d.related.config_maps || [])) {
-        histCard.appendChild(el('div', { class: 'timeline-row' },
-          el('span', { class: 'ts' }, 'Mounts CM'),
-          el('span', { class: 'ev' }, cm.name)));
-      }
-      for (const s of (d.related.secrets || [])) {
-        histCard.appendChild(el('div', { class: 'timeline-row' },
-          el('span', { class: 'ts' }, 'Mounts Secret'),
-          el('span', { class: 'ev' }, s.name)));
-      }
-      for (const p of (d.related.pvcs || [])) {
-        histCard.appendChild(el('div', { class: 'timeline-row' },
-          el('span', { class: 'ts' }, 'Mounts PVC'),
-          el('span', { class: 'ev' }, p.name)));
-      }
-    }
-    grid.appendChild(histCard);
 
-    root.appendChild(grid);
+    function buildRelationships() {
+      const r = d.related || {};
+      const rows = [];
+      if (r.owner) rows.push(['Owner', r.owner.kind + '/' + r.owner.name]);
+      if (r.workload) rows.push(['Workload', r.workload.kind + '/' + r.workload.name]);
+      if (typeof r.sibling_pods === 'number' && r.sibling_pods > 0) rows.push(['Sibling pods', String(r.sibling_pods)]);
+      for (const cm of (r.config_maps || [])) rows.push(['Mounts ConfigMap', cm.name]);
+      for (const s of (r.secrets || [])) rows.push(['Mounts Secret', s.name]);
+      for (const p of (r.pvcs || [])) rows.push(['Mounts PVC', p.name]);
+      if (!rows.length) return emptyState('No related objects found for this pod.');
+      const card = el('div', { class: 'card' }, cardHeader('Relationships', String(rows.length)));
+      for (const [k, v] of rows) {
+        card.appendChild(el('div', { class: 'timeline-row' },
+          el('span', { class: 'ts' }, k),
+          el('span', { class: 'ev' }, v)));
+      }
+      return card;
+    }
+
+    function buildYaml() {
+      return emptyState('Raw YAML view isn\'t available here yet — the captured object lives in the archive. Use the Compare snapshots (Diff) view or "kshrk inspect" to view it.');
+    }
+
+    const logsCount = (d.containers || []).filter((c) => (c.log_preview || []).length > 0).length;
+    const relCount = (d.related?.owner ? 1 : 0) + (d.related?.config_maps || []).length + (d.related?.secrets || []).length + (d.related?.pvcs || []).length;
+    const panelDefs = [
+      { key: 'summary', label: 'Summary', count: null, build: buildSummary },
+      { key: 'containers', label: 'Containers', count: (d.containers || []).length, build: buildContainers },
+      { key: 'logs', label: 'Logs', count: logsCount, build: buildLogs },
+      { key: 'events', label: 'Events', count: (d.events || []).length, build: buildEvents },
+      { key: 'history', label: 'History', count: (d.history || []).length, build: buildHistory },
+      { key: 'relationships', label: 'Relationships', count: relCount, build: buildRelationships },
+      { key: 'yaml', label: 'YAML', count: null, build: buildYaml },
+    ];
+
+    // Tab bar: clicking a tab lazily builds its panel and shows it.
+    const subtabs = el('div', { class: 'subtabs', style: 'margin:0 -20px 18px;' });
+    const panelHost = el('div', {});
+    const tabEls = {};
+    const panelEls = {};
+    selectTab = (key) => {
+      for (const def of panelDefs) {
+        const active = def.key === key;
+        tabEls[def.key].classList.toggle('active', active);
+        if (active && !panelEls[def.key]) {
+          panelEls[def.key] = def.build();
+          panelHost.appendChild(panelEls[def.key]);
+        }
+        if (panelEls[def.key]) panelEls[def.key].style.display = active ? '' : 'none';
+      }
+    };
+    for (const def of panelDefs) {
+      const t = el('div', { class: 'tab', onclick: () => selectTab(def.key) }, def.label);
+      if (def.count !== null) t.appendChild(el('span', { class: 'ct' }, ' · ' + def.count));
+      tabEls[def.key] = t;
+      subtabs.appendChild(t);
+    }
+    root.appendChild(subtabs);
+    root.appendChild(kpiStrip);
+    root.appendChild(panelHost);
+    selectTab('summary');
     setContent(root);
   }
 
@@ -808,8 +856,8 @@
       card.appendChild(el('div', { class: 'state', style: 'padding:10px; font-size:11.5px;' }, 'No captured log lines for this container.'));
     }
     const actions = el('div', { style: 'display:flex; gap:8px; margin-top:8px;' },
-      c.log_preview && c.log_preview.length > 0 ? el('button', { class: 'btn', onclick: () => go(c.log_path) }, 'View logs') : null,
-      c.has_previous_log ? el('button', { class: 'btn' }, 'Previous logs') : null,
+      c.log_path ? el('button', { class: 'btn', onclick: () => go(c.log_path) }, 'View logs') : null,
+      c.has_previous_log && c.log_path ? el('button', { class: 'btn', onclick: () => go(c.log_path + '&previous=true') }, 'Previous logs') : null,
     );
     card.appendChild(actions);
     return card;
