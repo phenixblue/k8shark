@@ -1843,11 +1843,11 @@ func TestWatchResource_RecordsEvents(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/api/v1/namespaces/default/pods":
-			if r.URL.Query().Get("watch") == "1" {
+			if r.URL.Query().Get("watch") != "" {
 				atomic.AddInt32(&watchHits, 1)
 				w.WriteHeader(http.StatusOK)
-				_, _ = io.WriteString(w, `{"type":"ADDED","object":{"metadata":{"name":"p1"}}}`+"\n")
-				_, _ = io.WriteString(w, `{"type":"DELETED","object":{"metadata":{"name":"p2"}}}`+"\n")
+				_, _ = io.WriteString(w, `{"type":"ADDED","object":{"apiVersion":"v1","kind":"Pod","metadata":{"name":"p1"}}}`+"\n")
+				_, _ = io.WriteString(w, `{"type":"DELETED","object":{"apiVersion":"v1","kind":"Pod","metadata":{"name":"p2"}}}`+"\n")
 				if f, ok := w.(http.Flusher); ok {
 					f.Flush()
 				}
@@ -1913,13 +1913,13 @@ func TestWatchResource_Reconnects(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/api/v1/namespaces/default/pods":
-			if r.URL.Query().Get("watch") == "1" {
+			if r.URL.Query().Get("watch") != "" {
 				n := atomic.AddInt32(&watchConn, 1)
 				w.WriteHeader(http.StatusOK)
 				if n == 1 {
-					_, _ = io.WriteString(w, `{"type":"ADDED","object":{"metadata":{"name":"first"}}}`+"\n")
+					_, _ = io.WriteString(w, `{"type":"ADDED","object":{"apiVersion":"v1","kind":"Pod","metadata":{"name":"first"}}}`+"\n")
 				} else {
-					_, _ = io.WriteString(w, `{"type":"MODIFIED","object":{"metadata":{"name":"second"}}}`+"\n")
+					_, _ = io.WriteString(w, `{"type":"MODIFIED","object":{"apiVersion":"v1","kind":"Pod","metadata":{"name":"second"}}}`+"\n")
 				}
 				if f, ok := w.(http.Flusher); ok {
 					f.Flush()
@@ -1991,13 +1991,13 @@ func TestWatchResource_WildcardOpensSingleClusterWideStream(t *testing.T) {
 			fmt.Fprint(w, `{"gitVersion":"v1.29.0"}`)
 			return
 		case "/api/v1/pods":
-			if r.URL.Query().Get("watch") == "1" {
+			if r.URL.Query().Get("watch") != "" {
 				atomic.AddInt32(&clusterWideHits, 1)
 				w.WriteHeader(http.StatusOK)
 				_, _ = io.WriteString(w,
-					`{"type":"ADDED","object":{"metadata":{"name":"p1","namespace":"ns-a"}}}`+"\n"+
-						`{"type":"ADDED","object":{"metadata":{"name":"p2","namespace":"ns-b"}}}`+"\n"+
-						`{"type":"MODIFIED","object":{"metadata":{"name":"p1","namespace":"ns-a"}}}`+"\n")
+					`{"type":"ADDED","object":{"apiVersion":"v1","kind":"Pod","metadata":{"name":"p1","namespace":"ns-a"}}}`+"\n"+
+						`{"type":"ADDED","object":{"apiVersion":"v1","kind":"Pod","metadata":{"name":"p2","namespace":"ns-b"}}}`+"\n"+
+						`{"type":"MODIFIED","object":{"apiVersion":"v1","kind":"Pod","metadata":{"name":"p1","namespace":"ns-a"}}}`+"\n")
 				if f, ok := w.(http.Flusher); ok {
 					f.Flush()
 				}

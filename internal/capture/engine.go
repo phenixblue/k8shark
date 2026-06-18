@@ -18,6 +18,11 @@ import (
 	"github.com/google/uuid"
 	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/config"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/watch"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
@@ -79,6 +84,7 @@ type Engine struct {
 	cfg            *config.Config
 	verbose        bool
 	httpClient     *http.Client
+	dynClient      dynamic.Interface // client-go dynamic client used for watch streams
 	baseURL        string
 	mu             sync.Mutex
 	index          Index
@@ -122,10 +128,21 @@ func NewEngine(cfg *config.Config, verbose bool) (*Engine, error) {
 		return nil, fmt.Errorf("building HTTP client: %w", err)
 	}
 
+	// Watch streams go through client-go's dynamic client (which uses the proper
+	// streaming watch decoder) rather than a hand-rolled HTTP request. It gets
+	// its OWN transport/connection (NewForConfig, not the shared httpClient) so
+	// long-lived watch streams don't contend with poll requests for HTTP/2
+	// streams on a single connection.
+	dynClient, err := dynamic.NewForConfig(restCfg)
+	if err != nil {
+		return nil, fmt.Errorf("building dynamic client: %w", err)
+	}
+
 	return &Engine{
 		cfg:                       cfg,
 		verbose:                   verbose,
 		httpClient:                httpClient,
+		dynClient:                 dynClient,
 		baseURL:                   restCfg.Host,
 		index:                     make(Index),
 		watchIndex:                make(WatchIndex),
@@ -141,10 +158,16 @@ func NewEngine(cfg *config.Config, verbose bool) (*Engine, error) {
 // newEngineWith constructs an Engine with a pre-built HTTP client and base URL.
 // Used in tests to inject a fake API server.
 func newEngineWith(cfg *config.Config, client *http.Client, baseURL string, verbose bool) *Engine {
+	// Build a dynamic client backed by the injected test client/server so watch
+	// streams resolve against the fake API server. Errors are ignored because
+	// the watch-streaming tests that need it construct against a valid baseURL;
+	// non-watch tests never touch dynClient.
+	dynClient, _ := dynamic.NewForConfigAndClient(&rest.Config{Host: baseURL}, client)
 	return &Engine{
 		cfg:                       cfg,
 		verbose:                   verbose,
 		httpClient:                client,
+		dynClient:                 dynClient,
 		baseURL:                   baseURL,
 		index:                     make(Index),
 		watchIndex:                make(WatchIndex),
@@ -393,12 +416,7 @@ func (e *Engine) watchResourcePath(ctx context.Context, res config.Resource, nam
 			return
 		}
 
-		resourceVersion := ""
-		if body, code := e.doFetch(ctx, apiPath, "", res.DedupEnabled()); code == http.StatusOK && body != nil {
-			resourceVersion = extractResourceVersion(body)
-		}
-
-		if err := e.streamWatch(ctx, res, apiPath, resourceVersion); err != nil && ctx.Err() == nil && e.verbose {
+		if err := e.streamWatch(ctx, res, apiPath, namespace); err != nil && ctx.Err() == nil && e.verbose {
 			fmt.Fprintf(os.Stderr, "  [watch] %s: %v\n", apiPath, err)
 		}
 
@@ -415,108 +433,141 @@ func (e *Engine) watchResourcePath(ctx context.Context, res config.Resource, nam
 	}
 }
 
-func (e *Engine) streamWatch(ctx context.Context, res config.Resource, apiPath, resourceVersion string) error {
-	q := url.Values{}
-	q.Set("watch", "1")
-	if resourceVersion != "" {
-		q.Set("resourceVersion", resourceVersion)
-	}
-
+// streamWatch opens a single watch stream via client-go's dynamic client and
+// records each ADDED/MODIFIED/DELETED event. Using the dynamic client (rather
+// than a hand-rolled HTTP request + json.Decoder) means watch events are
+// decoded by client-go's StreamWatcher, which negotiates the correct content
+// type and reliably streams events over HTTP/2 — a raw request would connect
+// but never receive any frames against some API servers.
+//
+// namespace is "" for a cluster-wide stream (cluster-scoped resources and the
+// single stream used for wildcard-namespaced resources); otherwise it is the
+// specific namespace to watch. Returning nil/err drives watchResourcePath's
+// reconnect loop, which re-bootstraps a fresh resourceVersion before retrying.
+func (e *Engine) streamWatch(ctx context.Context, res config.Resource, apiPath, namespace string) error {
 	// Wildcard-namespace watches open a single cluster-wide stream but rewrite
 	// each event's stored APIPath to /api/.../namespaces/<ns>/<resource> so the
 	// replay server's per-namespace reconstruction logic continues to work
 	// without changes.
 	demuxPerNamespace := res.WildcardNamespaces && apiPath == buildAPIPath(res.Group, res.Version, res.Resource, "")
 
-	watchURL := e.baseURL + apiPath + "?" + q.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, watchURL, nil)
-	if err != nil {
-		return err
+	gvr := schema.GroupVersionResource{Group: res.Group, Version: res.Version, Resource: res.Resource}
+
+	var ri dynamic.ResourceInterface = e.dynClient.Resource(gvr)
+	if namespace != "" {
+		ri = e.dynClient.Resource(gvr).Namespace(namespace)
 	}
 
-	resp, err := e.httpClient.Do(req)
+	// Bootstrap a starting resourceVersion with a cheap one-item list so the
+	// watch streams only changes from this point forward rather than replaying
+	// every existing object as an ADDED event. The list metadata carries the
+	// collection resourceVersion regardless of how many items are returned.
+	opts := metav1.ListOptions{}
+	if l, err := ri.List(ctx, metav1.ListOptions{Limit: 1}); err == nil {
+		opts.ResourceVersion = l.GetResourceVersion()
+	} else if ctx.Err() != nil {
+		return nil
+	}
+
+	w, err := ri.Watch(ctx, opts)
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil
 		}
 		return err
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("watch status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
+	defer w.Stop()
 
 	if e.verbose {
 		fmt.Fprintf(os.Stdout, "  [watch] %s connected\n", apiPath)
 	}
 
-	dec := json.NewDecoder(resp.Body)
 	for {
-		var event struct {
-			Type   string          `json:"type"`
-			Object json.RawMessage `json:"object"`
-		}
-		if err := dec.Decode(&event); err != nil {
-			if err == io.EOF || ctx.Err() != nil {
+		select {
+		case <-ctx.Done():
+			return nil
+		case event, ok := <-w.ResultChan():
+			if !ok {
+				// Server closed the stream; the caller re-lists and reconnects.
 				return nil
 			}
-			return err
-		}
 
-		switch event.Type {
-		case "ADDED", "MODIFIED", "DELETED":
-			// Keep these event types.
-		default:
-			continue
-		}
-		if len(event.Object) == 0 {
-			continue
-		}
-
-		recordPath := apiPath
-		if demuxPerNamespace {
-			ns := extractNamespaceFromObject(event.Object)
-			if ns == "" {
-				// Namespaced resources should always have metadata.namespace
-				// set on watch events. Skip rather than store an unattributable
-				// event under the cluster-wide path where the replay server
-				// won't find it.
-				continue
-			}
-			recordPath = buildAPIPath(res.Group, res.Version, res.Resource, ns)
-		}
-
-		rec := &Record{
-			ID:           uuid.New().String(),
-			CapturedAt:   time.Now().UTC(),
-			APIPath:      recordPath,
-			EventType:    event.Type,
-			HTTPMethod:   http.MethodGet,
-			ResponseCode: http.StatusOK,
-			ResponseBody: event.Object,
-		}
-
-		if e.sink != nil {
-			if err := e.sink.WriteRecord(rec); err != nil {
+			var eventType string
+			switch event.Type {
+			case watch.Added:
+				eventType = "ADDED"
+			case watch.Modified:
+				eventType = "MODIFIED"
+			case watch.Deleted:
+				eventType = "DELETED"
+			case watch.Error:
+				// Typically a 410 Expired Status. Log and let the channel close
+				// so watchResourcePath re-lists for a fresh resourceVersion.
 				if e.verbose {
-					fmt.Fprintf(os.Stderr, "  [warn] writing watch record %s: %v\n", recordPath, err)
+					msg := "unknown watch error"
+					if st, ok := event.Object.(*metav1.Status); ok && st.Message != "" {
+						msg = st.Message
+					}
+					fmt.Fprintf(os.Stderr, "  [watch] %s: error event: %s\n", apiPath, msg)
 				}
 				continue
+			default:
+				// Bookmark and any other types are not transitions.
+				continue
 			}
-		}
 
-		e.mu.Lock()
-		if _, ok := e.watchIndex[recordPath]; !ok {
-			e.watchIndex[recordPath] = &WatchIndexEntry{APIPath: recordPath}
+			u, ok := event.Object.(*unstructured.Unstructured)
+			if !ok {
+				continue
+			}
+			body, err := u.MarshalJSON()
+			if err != nil {
+				continue
+			}
+
+			recordPath := apiPath
+			if demuxPerNamespace {
+				ns := u.GetNamespace()
+				if ns == "" {
+					// Namespaced resources should always have metadata.namespace
+					// set on watch events. Skip rather than store an unattributable
+					// event under the cluster-wide path where the replay server
+					// won't find it.
+					continue
+				}
+				recordPath = buildAPIPath(res.Group, res.Version, res.Resource, ns)
+			}
+
+			rec := &Record{
+				ID:           uuid.New().String(),
+				CapturedAt:   time.Now().UTC(),
+				APIPath:      recordPath,
+				EventType:    eventType,
+				HTTPMethod:   http.MethodGet,
+				ResponseCode: http.StatusOK,
+				ResponseBody: body,
+			}
+
+			if e.sink != nil {
+				if err := e.sink.WriteRecord(rec); err != nil {
+					if e.verbose {
+						fmt.Fprintf(os.Stderr, "  [warn] writing watch record %s: %v\n", recordPath, err)
+					}
+					continue
+				}
+			}
+
+			e.mu.Lock()
+			if _, ok := e.watchIndex[recordPath]; !ok {
+				e.watchIndex[recordPath] = &WatchIndexEntry{APIPath: recordPath}
+			}
+			seq := e.pathSeq[recordPath]
+			e.pathSeq[recordPath] = seq + 1
+			e.watchIndex[recordPath].Seqs = append(e.watchIndex[recordPath].Seqs, seq)
+			e.watchIndex[recordPath].Times = append(e.watchIndex[recordPath].Times, rec.CapturedAt)
+			e.watchIndex[recordPath].EventTypes = append(e.watchIndex[recordPath].EventTypes, rec.EventType)
+			e.mu.Unlock()
 		}
-		seq := e.pathSeq[recordPath]
-		e.pathSeq[recordPath] = seq + 1
-		e.watchIndex[recordPath].Seqs = append(e.watchIndex[recordPath].Seqs, seq)
-		e.watchIndex[recordPath].Times = append(e.watchIndex[recordPath].Times, rec.CapturedAt)
-		e.watchIndex[recordPath].EventTypes = append(e.watchIndex[recordPath].EventTypes, rec.EventType)
-		e.mu.Unlock()
 	}
 }
 
@@ -574,18 +625,6 @@ func extractStatusMessage(body []byte) string {
 		return ""
 	}
 	return s.Message
-}
-
-func extractResourceVersion(body []byte) string {
-	var meta struct {
-		Metadata struct {
-			ResourceVersion string `json:"resourceVersion"`
-		} `json:"metadata"`
-	}
-	if err := json.Unmarshal(body, &meta); err != nil {
-		return ""
-	}
-	return meta.Metadata.ResourceVersion
 }
 
 // tableIndexKey is the virtual index key used to store Table-format responses
