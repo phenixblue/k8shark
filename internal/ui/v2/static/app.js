@@ -405,11 +405,16 @@
     row1.appendChild(issuesCard);
     root.appendChild(row1);
 
-    // Resource tiles
+    // Hint when the Resources filter is hiding some types from this page.
+    const banner = resourceFilterBanner();
+    if (banner) root.appendChild(banner);
+
+    // Resource tiles (honor the global Resources filter; keep the "+N more" tile).
     root.appendChild(el('div', { class: 'section-title' }, 'Resources captured'));
     const resourceCard = el('div', { class: 'card', style: 'margin-bottom:18px;' });
     const tileGrid = el('div', { class: 'resource-grid' });
     for (const t of (data.resources || [])) {
+      if (t.resource && !resourceEnabled(t.resource)) continue;
       tileGrid.appendChild(resourceTile(t));
     }
     resourceCard.appendChild(tileGrid);
@@ -424,11 +429,13 @@
 
     const recentCard = el('div', { class: 'card' },
       cardHeader('Recent transitions', 'last events'));
-    if (!data.recent || data.recent.length === 0) {
-      recentCard.appendChild(el('div', { class: 'state', style: 'padding:18px;' }, 'No watch events captured.'));
+    const recent = (data.recent || []).filter((t) => resourceEnabled(t.resource));
+    if (recent.length === 0) {
+      recentCard.appendChild(el('div', { class: 'state', style: 'padding:18px;' },
+        (data.recent && data.recent.length) ? 'No transitions for the enabled resource types.' : 'No watch events captured.'));
     } else {
       const evWrap = el('div', { class: 'events' });
-      for (const t of data.recent) evWrap.appendChild(recentRow(t));
+      for (const t of recent) evWrap.appendChild(recentRow(t));
       recentCard.appendChild(evWrap);
     }
 
@@ -619,12 +626,13 @@
     }
     root.appendChild(podCard);
 
-    // Other resources tile grid
-    if (d.resources && d.resources.length > 0) {
+    // Other resources tile grid (honors the global Resources filter).
+    const nsTiles = (d.resources || []).filter((t) => !t.resource || resourceEnabled(t.resource));
+    if (nsTiles.length > 0) {
       root.appendChild(el('div', { class: 'section-title' }, 'Other resources'));
       const tileCard = el('div', { class: 'card', style: 'margin-bottom:18px;' });
       const tileGrid = el('div', { class: 'resource-grid', style: 'grid-template-columns:repeat(6, minmax(0,1fr));' });
-      for (const t of d.resources) tileGrid.appendChild(resourceTile(t));
+      for (const t of nsTiles) tileGrid.appendChild(resourceTile(t));
       tileCard.appendChild(tileGrid);
       root.appendChild(tileCard);
     }
@@ -1070,6 +1078,25 @@
   function saveEnabledResources(set) {
     try { if (set) localStorage.setItem(RES_ENABLED_KEY, JSON.stringify(Array.from(set))); else localStorage.removeItem(RES_ENABLED_KEY); } catch (_) {}
   }
+  // resourceEnabled reports whether a resource type is currently toggled on in
+  // the Resources catalog (used to globally filter other views). A null set
+  // (no customization, or "All") means everything is enabled.
+  function resourceEnabled(resource) {
+    if (!resource) return true;
+    const set = loadEnabledResources();
+    return !set || set.has(resource);
+  }
+  function resourceFilterActive() {
+    return loadEnabledResources() !== null;
+  }
+  // A small banner linking to the catalog, shown on views that honor the
+  // resource filter when it's active, so hidden data is discoverable.
+  function resourceFilterBanner() {
+    if (!resourceFilterActive()) return null;
+    return el('div', { class: 'state', style: 'padding:9px 14px; margin-bottom:14px; display:flex; gap:12px; align-items:center; font-size:12px;' },
+      el('span', {}, 'Some resource types are hidden by your Resources filter.'),
+      el('a', { onclick: () => go('#/resources'), style: 'cursor:pointer;' }, 'Manage →'));
+  }
 
   async function renderResourceCatalog() {
     setContent(loadingState('Loading resources…'));
@@ -1412,13 +1439,17 @@
       sparkChart(sparkData),
     );
     root.appendChild(sparkCard);
+    const tlBanner = resourceFilterBanner();
+    if (tlBanner) root.appendChild(tlBanner);
     root.appendChild(el('div', { class: 'section-title' }, 'All recent transitions'));
     const recentCard = el('div', { class: 'card' });
-    if (!data.recent || data.recent.length === 0) {
-      recentCard.appendChild(el('div', { class: 'state', style: 'padding:18px;' }, 'No watch events were captured. Enable `watch: true` on your config’s resource entries to see live transitions.'));
+    const tlRecent = (data.recent || []).filter((t) => resourceEnabled(t.resource));
+    if (tlRecent.length === 0) {
+      recentCard.appendChild(el('div', { class: 'state', style: 'padding:18px;' },
+        (data.recent && data.recent.length) ? 'No transitions for the enabled resource types.' : 'No watch events were captured. Enable `watch: true` on your config’s resource entries to see live transitions.'));
     } else {
       const wrap = el('div', { class: 'events' });
-      for (const t of data.recent) wrap.appendChild(recentRow(t));
+      for (const t of tlRecent) wrap.appendChild(recentRow(t));
       recentCard.appendChild(wrap);
     }
     root.appendChild(recentCard);

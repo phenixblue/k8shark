@@ -188,6 +188,13 @@ func kindFromResource(resource string) string {
 		"virtualmachineinstances":   "VirtualMachineInstance",
 		"events":                    "Event",
 		"storageclasses":            "StorageClass",
+		"namespaces":                "Namespace",
+		"endpoints":                 "Endpoints",
+		"componentstatuses":         "ComponentStatus",
+		"serviceaccounts":           "ServiceAccount",
+		"replicationcontrollers":    "ReplicationController",
+		"networkpolicies":           "NetworkPolicy",
+		"poddisruptionbudgets":      "PodDisruptionBudget",
 	}
 	if k, ok := known[resource]; ok {
 		return k
@@ -195,13 +202,29 @@ func kindFromResource(resource string) string {
 	if resource == "" {
 		return ""
 	}
-	// Titlecase + strip plural "s".
-	s := strings.TrimSuffix(resource, "s")
+	return titleCase(singularize(resource))
+}
+
+// singularize converts a plural resource name to a best-effort singular using
+// common English rules (authoritative kinds come from API discovery; this is
+// only a fallback for callers that have just the resource name).
+func singularize(s string) string {
+	switch {
+	case strings.HasSuffix(s, "ies"):
+		return s[:len(s)-3] + "y" // policies -> policy
+	case strings.HasSuffix(s, "sses"), strings.HasSuffix(s, "shes"), strings.HasSuffix(s, "ches"),
+		strings.HasSuffix(s, "xes"), strings.HasSuffix(s, "zes"), strings.HasSuffix(s, "ses"):
+		return s[:len(s)-2] // statuses -> status, ingresses -> ingress, classes -> class
+	case strings.HasSuffix(s, "s") && len(s) > 1:
+		return s[:len(s)-1]
+	default:
+		return s
+	}
+}
+
+func titleCase(s string) string {
 	if s == "" {
-		s = resource
+		return s
 	}
-	if len(s) > 0 {
-		s = strings.ToUpper(s[:1]) + s[1:]
-	}
-	return s
+	return strings.ToUpper(s[:1]) + s[1:]
 }

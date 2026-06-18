@@ -194,6 +194,7 @@ func (h *Handler) serveResourceCatalog(w http.ResponseWriter, r *http.Request) {
 	}
 	at := h.resolveAt(r)
 
+	kinds := h.discoveryKindMap()
 	type key struct{ g, v, res string }
 	agg := map[key]*ResourceCatalogRow{}
 	for path, entry := range h.Store.Index {
@@ -210,7 +211,14 @@ func (h *Handler) serveResourceCatalog(w http.ResponseWriter, r *http.Request) {
 		k := key{g, v, res}
 		row := agg[k]
 		if row == nil {
-			row = &ResourceCatalogRow{Group: g, Version: v, Resource: res, Kind: kindFromResource(res), Link: resourceLink(res, "")}
+			kind := kinds[g+"/"+v+"/"+res]
+			if kind == "" {
+				kind = kinds[res]
+			}
+			if kind == "" {
+				kind = kindFromResource(res)
+			}
+			row = &ResourceCatalogRow{Group: g, Version: v, Resource: res, Kind: kind, Link: resourceLink(res, "")}
 			agg[k] = row
 		}
 		if ns != "" {
@@ -237,6 +245,55 @@ func (h *Handler) serveResourceCatalog(w http.ResponseWriter, r *http.Request) {
 	})
 	out.Total = len(out.Resources)
 	writeJSON(w, http.StatusOK, out)
+}
+
+// discoveryKindMap builds an authoritative resource→kind map from the captured
+// API discovery documents (/api/v1 and /apis/<group>/<version>), which carry
+// the real Kind for every resource — including CRDs and irregular plurals that
+// kindFromResource can only guess at. Keyed by "group/version/resource" and,
+// as a fallback, by bare "resource".
+func (h *Handler) discoveryKindMap() map[string]string {
+	m := map[string]string{}
+	for path, entry := range h.Store.Index {
+		if entry == nil || len(entry.Seqs) == 0 {
+			continue
+		}
+		if strings.Contains(path, "?") {
+			continue
+		}
+		// Discovery docs are /api/v1 (core) or /apis/<group>/<version>.
+		if path != "/api/v1" && !(strings.HasPrefix(path, "/apis/") && strings.Count(path, "/") == 3) {
+			continue
+		}
+		body, code, err := h.Store.Latest(path, time.Time{})
+		if err != nil || code != http.StatusOK || len(body) == 0 {
+			continue
+		}
+		var rl struct {
+			GroupVersion string `json:"groupVersion"`
+			Resources    []struct {
+				Name string `json:"name"`
+				Kind string `json:"kind"`
+			} `json:"resources"`
+		}
+		if json.Unmarshal(body, &rl) != nil {
+			continue
+		}
+		group, version := "", rl.GroupVersion
+		if i := strings.Index(rl.GroupVersion, "/"); i >= 0 {
+			group, version = rl.GroupVersion[:i], rl.GroupVersion[i+1:]
+		}
+		for _, res := range rl.Resources {
+			if res.Kind == "" || strings.Contains(res.Name, "/") { // skip subresources
+				continue
+			}
+			m[group+"/"+version+"/"+res.Name] = res.Kind
+			if _, ok := m[res.Name]; !ok {
+				m[res.Name] = res.Kind
+			}
+		}
+	}
+	return m
 }
 
 // objectLink builds a hash link to the generic object view for a list path +
