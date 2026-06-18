@@ -327,6 +327,41 @@ a { color: inherit; }
 .json-view .c { color: var(--fg-faint); font-style: italic; }
 
 /* Diff view */
+/* Syntax-highlighted code (object YAML/JSON view). */
+.code {
+  font: 12px var(--mono); white-space: pre; background: #07090f; border: 1px solid var(--border);
+  border-radius: 6px; overflow: auto; color: var(--fg);
+}
+.code .k-key { color: var(--accent); }
+.code .k-str { color: var(--good); }
+.code .k-num { color: var(--warn); }
+.code .k-lit { color: var(--accent-2); }
+.code .k-com { color: var(--fg-faint); font-style: italic; }
+.code .k-punc { color: var(--fg-faint); }
+
+/* Resources catalog page. */
+.cat-group {
+  display: flex; align-items: center; gap: 8px; padding: 12px 6px 4px; margin-top: 6px;
+  border-bottom: 1px solid var(--border-strong);
+}
+.cat-group .g { font: 600 11px var(--mono); color: var(--accent); letter-spacing: .03em; }
+.cat-group .gc { color: var(--fg-faint); font-size: 11px; }
+.cat-row {
+  display: grid; grid-template-columns: 18px 150px 1fr 150px 88px 64px 18px; gap: 10px;
+  align-items: center; padding: 6px; border-bottom: 1px solid var(--border); font-size: 12.5px;
+}
+.cat-row:hover { background: var(--bg-row-hover); }
+.cat-row.off { opacity: 0.42; }
+.cat-row .kind {
+  font: 10px var(--mono); padding: 1px 6px; background: var(--tag-bg); color: var(--fg-dim);
+  border-radius: 3px; text-align: center; border: 1px solid var(--border-strong);
+}
+.cat-row .nm { font: 12px var(--mono); color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cat-row .meta { color: var(--fg-faint); font: 11px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cat-row .badge { font: 10px var(--mono); color: var(--fg-dim); }
+.cat-row .num { text-align: right; font: 11px var(--mono); color: var(--fg-faint); }
+.cat-row .go { text-align: center; color: var(--fg-faint); }
+
 .diff { font: 12px var(--mono); white-space: pre; background: #07090f; border: 1px solid var(--border); border-radius: 6px; overflow: auto; }
 .diff .add { background: rgba(34,197,94,0.12); color: var(--good); }
 .diff .del { background: rgba(239,68,68,0.12); color: var(--bad); }

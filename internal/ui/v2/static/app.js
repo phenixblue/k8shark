@@ -45,7 +45,7 @@
     if (qIdx >= 0) h = h.slice(0, qIdx);
     const parts = h.split('/').filter(Boolean);
     if (parts.length === 0) return { name: 'overview' };
-    if (parts[0] === 'overview' || parts[0] === 'namespaces' || parts[0] === 'pods' || parts[0] === 'workloads' || parts[0] === 'resource' || parts[0] === 'object' || parts[0] === 'timeline' || parts[0] === 'logs' || parts[0] === 'diff') {
+    if (parts[0] === 'overview' || parts[0] === 'namespaces' || parts[0] === 'pods' || parts[0] === 'workloads' || parts[0] === 'resources' || parts[0] === 'resource' || parts[0] === 'object' || parts[0] === 'timeline' || parts[0] === 'logs' || parts[0] === 'diff') {
       return { name: parts[0] };
     }
     if (parts[0] === 'ns' && parts[1]) {
@@ -78,12 +78,14 @@
       { key: 'namespaces', label: 'Namespaces', hash: '#/namespaces' },
       { key: 'workloads',  label: 'Workloads',  hash: '#/workloads' },
       { key: 'pods',       label: 'Pods',       hash: '#/pods' },
+      { key: 'resources',  label: 'Resources',  hash: '#/resources' },
       { key: 'timeline',   label: 'Timeline',   hash: '#/timeline' },
       { key: 'logs',       label: 'Logs',       hash: '#/logs' },
       { key: 'diff',       label: 'Diff',       hash: '#/diff' },
     ];
     const activeKey = state.route.name === 'namespace' ? 'namespaces'
       : state.route.name === 'pod' ? 'pods'
+      : (state.route.name === 'resource' || state.route.name === 'object') ? 'resources'
       : state.route.name;
     for (const it of items) {
       nav.appendChild(el('div', {
@@ -181,6 +183,82 @@
   function formatNumber(n) {
     if (typeof n !== 'number') return n;
     return n.toLocaleString('en-US');
+  }
+
+  // ── Syntax highlighting (dependency-free, builds DOM nodes via textContent
+  //    so captured content can never inject markup) ──────────────────────────
+  function tok(cls, text) {
+    const s = document.createElement('span');
+    s.className = cls;
+    s.textContent = text;
+    return s;
+  }
+
+  function highlightJSON(text) {
+    const frag = document.createDocumentFragment();
+    const re = /("(?:\\.|[^"\\])*")(\s*:)?|\b(true|false|null)\b|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g;
+    let last = 0, m;
+    while ((m = re.exec(text)) !== null) {
+      if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+      if (m[1] !== undefined) {
+        const isKey = m[2] !== undefined;
+        frag.appendChild(tok(isKey ? 'k-key' : 'k-str', m[1]));
+        if (isKey) frag.appendChild(document.createTextNode(m[2]));
+      } else if (m[3] !== undefined) {
+        frag.appendChild(tok('k-lit', m[3]));
+      } else if (m[4] !== undefined) {
+        frag.appendChild(tok('k-num', m[4]));
+      }
+      last = re.lastIndex;
+    }
+    if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+    return frag;
+  }
+
+  function yamlScalar(frag, s) {
+    if (s === '') return;
+    const t = s.trim();
+    if (/^(true|false|null|~)$/i.test(t)) frag.appendChild(tok('k-lit', s));
+    else if (/^-?\d+(\.\d+)?$/.test(t)) frag.appendChild(tok('k-num', s));
+    else frag.appendChild(tok('k-str', s));
+  }
+
+  function highlightYAML(text) {
+    const frag = document.createDocumentFragment();
+    const lines = text.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      let m;
+      if ((m = line.match(/^(\s*)(#.*)$/))) {
+        frag.appendChild(document.createTextNode(m[1]));
+        frag.appendChild(tok('k-com', m[2]));
+      } else if ((m = line.match(/^(\s*)(- )?([^:\s][^:]*?):(\s*)(.*)$/))) {
+        frag.appendChild(document.createTextNode(m[1]));
+        if (m[2]) frag.appendChild(tok('k-punc', m[2]));
+        frag.appendChild(tok('k-key', m[3]));
+        frag.appendChild(tok('k-punc', ':'));
+        frag.appendChild(document.createTextNode(m[4]));
+        yamlScalar(frag, m[5]);
+      } else if ((m = line.match(/^(\s*)(- )(.*)$/))) {
+        frag.appendChild(document.createTextNode(m[1]));
+        frag.appendChild(tok('k-punc', m[2]));
+        yamlScalar(frag, m[3]);
+      } else {
+        yamlScalar(frag, line);
+      }
+      if (i < lines.length - 1) frag.appendChild(document.createTextNode('\n'));
+    }
+    return frag;
+  }
+
+  // codeBlock renders text as a highlighted <pre>. Highlighting is skipped for
+  // very large bodies to keep rendering snappy.
+  function codeBlock(text, lang) {
+    const pre = el('pre', { class: 'code', style: 'max-height:calc(100vh - 320px); padding:14px;' });
+    text = text || '';
+    if (text.length > 300000) { pre.textContent = text; return pre; }
+    pre.appendChild(lang === 'json' ? highlightJSON(text) : highlightYAML(text));
+    return pre;
   }
 
   function sparkChart(sparkline) {
@@ -773,24 +851,27 @@
     return '';
   }
 
-  // rawObjectPanel fetches one object and shows it as YAML/JSON with a toggle.
+  // rawObjectPanel fetches one object and shows it as highlighted YAML/JSON
+  // with a toggle.
   function rawObjectPanel(path, name) {
     const wrap = el('div', {});
-    const pre = el('pre', { class: 'log-preview', style: 'max-height:calc(100vh - 360px); padding:14px;' }, 'Loading…');
+    const host = el('div', {}, loadingState('Loading…'));
     let data = null, mode = 'yaml';
     const ybtn = el('button', { class: 'btn primary', onclick: () => { mode = 'yaml'; paint(); } }, 'YAML');
     const jbtn = el('button', { class: 'btn', onclick: () => { mode = 'json'; paint(); } }, 'JSON');
     function paint() {
+      host.innerHTML = '';
       if (!data) return;
-      pre.textContent = mode === 'yaml' ? (data.yaml || '') : (data.json || '');
+      if (!data.found) { host.appendChild(el('div', { class: 'state', style: 'padding:14px;' }, 'Object not present at this snapshot.')); return; }
+      host.appendChild(codeBlock(mode === 'yaml' ? data.yaml : data.json, mode));
       ybtn.className = 'btn' + (mode === 'yaml' ? ' primary' : '');
       jbtn.className = 'btn' + (mode === 'json' ? ' primary' : '');
     }
     wrap.appendChild(el('div', { style: 'display:flex; gap:8px; margin-bottom:10px;' }, ybtn, jbtn));
-    wrap.appendChild(pre);
+    wrap.appendChild(host);
     getJSON('/v2/api/object?path=' + encodeURIComponent(path) + (name ? '&name=' + encodeURIComponent(name) : ''))
-      .then((d) => { data = d; if (!d.found) { pre.textContent = 'Object not present at this snapshot.'; return; } paint(); })
-      .catch((e) => { pre.textContent = 'Error: ' + e.message; });
+      .then((d) => { data = d; paint(); })
+      .catch((e) => { host.innerHTML = ''; host.appendChild(errorState(e.message)); });
     return wrap;
   }
 
@@ -891,8 +972,8 @@
     if (!d.found) { root.appendChild(el('div', { class: 'state', style: 'padding:24px;' }, 'Object not present at this snapshot.')); setContent(root); return; }
 
     const panelDefs = [
-      { key: 'yaml', label: 'YAML', build: () => el('pre', { class: 'log-preview', style: 'max-height:calc(100vh - 320px); padding:14px;' }, d.yaml || '') },
-      { key: 'json', label: 'JSON', build: () => el('pre', { class: 'log-preview', style: 'max-height:calc(100vh - 320px); padding:14px;' }, d.json || '') },
+      { key: 'yaml', label: 'YAML', build: () => codeBlock(d.yaml || '', 'yaml') },
+      { key: 'json', label: 'JSON', build: () => codeBlock(d.json || '', 'json') },
       { key: 'history', label: 'History', build: () => objectHistoryPanel(path, name) },
       { key: 'diff', label: 'Diff', build: () => objectDiffPanel(path, name) },
     ];
@@ -974,6 +1055,90 @@
       sub.textContent = d.total + ' ' + resource + ' · ' + shown + ' shown';
     }
     filter.addEventListener('input', build);
+    build();
+    setContent(root);
+  }
+
+  // Resources catalog: every captured API resource type, grouped by API group,
+  // with per-resource toggles (persisted, v1-sidebar style) and links to the
+  // resource list.
+  const RES_ENABLED_KEY = 'kshrk.v2.resources.enabled';
+  function loadEnabledResources() {
+    try { const s = localStorage.getItem(RES_ENABLED_KEY); if (s) return new Set(JSON.parse(s)); } catch (_) {}
+    return null; // null means "all enabled"
+  }
+  function saveEnabledResources(set) {
+    try { if (set) localStorage.setItem(RES_ENABLED_KEY, JSON.stringify(Array.from(set))); else localStorage.removeItem(RES_ENABLED_KEY); } catch (_) {}
+  }
+
+  async function renderResourceCatalog() {
+    setContent(loadingState('Loading resources…'));
+    let d;
+    try {
+      d = await getJSON('/v2/api/resources');
+    } catch (e) {
+      setContent(errorState(e.message));
+      return;
+    }
+    const all = d.resources || [];
+    let enabled = loadEnabledResources();
+    const isOn = (res) => !enabled || enabled.has(res);
+
+    const root = el('div', {});
+    root.appendChild(el('div', { class: 'section-title', style: 'font-size:15px; margin-bottom:2px;' }, 'API resources'));
+    const sub = el('div', { style: 'color:var(--fg-dim); font-size:12px; margin-bottom:14px;' });
+    root.appendChild(sub);
+
+    const filter = el('input', { placeholder: 'Filter by kind, resource or group…', style: listFilterStyle });
+    const allBtn = el('button', { class: 'btn' }, 'All');
+    const noneBtn = el('button', { class: 'btn' }, 'None');
+    root.appendChild(el('div', { style: 'display:flex; gap:10px; align-items:center; margin-bottom:8px;' }, filter, allBtn, noneBtn));
+
+    const body = el('div', {});
+    root.appendChild(body);
+
+    function build() {
+      const term = filter.value.trim().toLowerCase();
+      body.innerHTML = '';
+      const groups = {};
+      for (const r of all) {
+        if (term && !(r.resource.toLowerCase().includes(term) || r.kind.toLowerCase().includes(term) || (r.group || 'core').toLowerCase().includes(term))) continue;
+        const g = r.group || 'core';
+        (groups[g] = groups[g] || []).push(r);
+      }
+      const gnames = Object.keys(groups).sort();
+      let shown = 0, enabledCount = 0;
+      for (const g of gnames) {
+        const rows = groups[g];
+        body.appendChild(el('div', { class: 'cat-group' }, el('span', { class: 'g' }, g), el('span', { class: 'gc' }, rows.length + ' kind' + (rows.length !== 1 ? 's' : ''))));
+        for (const r of rows) {
+          shown++;
+          if (isOn(r.resource)) enabledCount++;
+          const cb = el('input', { type: 'checkbox' });
+          cb.checked = isOn(r.resource);
+          cb.addEventListener('change', () => {
+            if (!enabled) enabled = new Set(all.map((x) => x.resource));
+            if (cb.checked) enabled.add(r.resource); else enabled.delete(r.resource);
+            saveEnabledResources(enabled);
+            build();
+          });
+          body.appendChild(el('div', { class: 'cat-row' + (isOn(r.resource) ? '' : ' off') },
+            cb,
+            el('span', { class: 'kind' }, r.kind),
+            el('span', { class: 'nm', style: 'cursor:pointer;', onclick: () => go(r.link) }, r.resource),
+            el('span', { class: 'meta' }, (r.group ? r.group + '/' : '') + r.version),
+            el('span', { class: 'badge' }, r.namespaced ? 'namespaced' : 'cluster'),
+            el('span', { class: 'num' }, r.count ? formatNumber(r.count) : ''),
+            el('a', { class: 'go', style: 'cursor:pointer;', onclick: () => go(r.link) }, '→'),
+          ));
+        }
+      }
+      if (!shown) body.appendChild(el('div', { class: 'state', style: 'padding:18px;' }, 'No resources match.'));
+      sub.textContent = d.total + ' resource types · ' + enabledCount + ' enabled';
+    }
+    filter.addEventListener('input', build);
+    allBtn.addEventListener('click', () => { enabled = null; saveEnabledResources(enabled); build(); });
+    noneBtn.addEventListener('click', () => { enabled = new Set(); saveEnabledResources(enabled); build(); });
     build();
     setContent(root);
   }
@@ -1444,6 +1609,7 @@
     if (r.name === 'namespaces') return renderNamespacesIndex();
     if (r.name === 'pods') return renderPodsList();
     if (r.name === 'workloads') return renderWorkloadsList();
+    if (r.name === 'resources') return renderResourceCatalog();
     if (r.name === 'resource') return renderResourceList();
     if (r.name === 'object') return renderObject();
     if (r.name === 'namespace') return renderNamespace(r.ns);

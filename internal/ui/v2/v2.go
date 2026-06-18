@@ -37,6 +37,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/v2/api/namespace", h.serveNamespace)
 	mux.HandleFunc("/v2/api/pods", h.serveAllPods)
 	mux.HandleFunc("/v2/api/workloads", h.serveAllWorkloads)
+	mux.HandleFunc("/v2/api/resources", h.serveResourceCatalog)
 	mux.HandleFunc("/v2/api/resource", h.serveResourceList)
 	mux.HandleFunc("/v2/api/object", h.serveObject)
 	mux.HandleFunc("/v2/api/pod", h.servePod)

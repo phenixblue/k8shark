@@ -483,7 +483,7 @@ func buildResourceTiles(resourceTotals map[string]int) []ResourceTile {
 		out = append(out, ResourceTile{Kind: r.kind, Resource: r.res, Count: r.count, Link: resourceLink(r.res, "")})
 	}
 	if len(rest) > showRest {
-		out = append(out, ResourceTile{Kind: fmt.Sprintf("+ %d more…", len(rest)-showRest), Count: 0, Link: "#/namespaces"})
+		out = append(out, ResourceTile{Kind: fmt.Sprintf("+ %d more…", len(rest)-showRest), Count: 0, Link: "#/resources"})
 	}
 	return out
 }

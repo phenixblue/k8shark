@@ -164,6 +164,81 @@ func (h *Handler) serveResourceList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// ResourceCatalogRow describes one captured resource type (API kind).
+type ResourceCatalogRow struct {
+	Group      string `json:"group"`
+	Version    string `json:"version"`
+	Resource   string `json:"resource"`
+	Kind       string `json:"kind"`
+	Namespaced bool   `json:"namespaced"`
+	Count      int    `json:"count"`
+	Link       string `json:"link"`
+}
+
+// ResourceCatalog is the response from /v2/api/resources — every resource type
+// seen in the capture, with item counts, for the Resources catalog page.
+type ResourceCatalog struct {
+	At        string               `json:"at,omitempty"`
+	Capture   CaptureMeta          `json:"capture"`
+	Total     int                  `json:"total"`
+	Resources []ResourceCatalogRow `json:"resources"`
+}
+
+// serveResourceCatalog enumerates every resource type captured (one row per
+// group/version/resource) with a summed item count at the resolved snapshot.
+// Counts come straight from the index (no body reads).
+func (h *Handler) serveResourceCatalog(w http.ResponseWriter, r *http.Request) {
+	if h.Store == nil {
+		writeError(w, http.StatusInternalServerError, "store not initialized")
+		return
+	}
+	at := h.resolveAt(r)
+
+	type key struct{ g, v, res string }
+	agg := map[key]*ResourceCatalogRow{}
+	for path, entry := range h.Store.Index {
+		if entry == nil || len(entry.Seqs) == 0 {
+			continue
+		}
+		if strings.Contains(path, "?") {
+			continue
+		}
+		g, v, res, ns := parseAPIPath(path)
+		if res == "" {
+			continue
+		}
+		k := key{g, v, res}
+		row := agg[k]
+		if row == nil {
+			row = &ResourceCatalogRow{Group: g, Version: v, Resource: res, Kind: kindFromResource(res), Link: resourceLink(res, "")}
+			agg[k] = row
+		}
+		if ns != "" {
+			row.Namespaced = true
+		}
+		if i := latestIndex(entry, at); i >= 0 && i < len(entry.Counts) && entry.Counts[i] > 0 {
+			row.Count += entry.Counts[i]
+		}
+	}
+
+	out := ResourceCatalog{Capture: h.captureMeta()}
+	if !at.IsZero() {
+		out.At = at.UTC().Format(time.RFC3339)
+	}
+	for _, row := range agg {
+		out.Resources = append(out.Resources, *row)
+	}
+	sort.SliceStable(out.Resources, func(i, j int) bool {
+		a, b := out.Resources[i], out.Resources[j]
+		if a.Group != b.Group {
+			return a.Group < b.Group // core ("") group sorts first
+		}
+		return a.Resource < b.Resource
+	})
+	out.Total = len(out.Resources)
+	writeJSON(w, http.StatusOK, out)
+}
+
 // objectLink builds a hash link to the generic object view for a list path +
 // object name. Both are URL-query-encoded by the frontend; here we only need a
 // stable, parseable string.
