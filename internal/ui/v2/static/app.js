@@ -419,12 +419,169 @@
 
   async function renderNamespace(ns) {
     setContent(loadingState('Loading namespace ' + ns + '…'));
+    let d;
     try {
-      const data = await getJSON('/v2/api/namespace?ns=' + encodeURIComponent(ns));
-      setContent(el('div', { class: 'state' }, 'Namespace ' + ns + ' data loaded. Real layout in next commit.'));
+      d = await getJSON('/v2/api/namespace?ns=' + encodeURIComponent(ns));
     } catch (e) {
       setContent(errorState(e.message));
+      return;
     }
+
+    const kpis = d.kpis || {};
+    const root = el('div', {});
+
+    // Hero — breadcrumb + title + action row
+    const hero = el('div', { class: 'hero', style: 'margin:-18px -20px 18px; padding:14px 20px 14px;' },
+      el('div', { class: 'crumbs' },
+        el('a', { onclick: () => go('#/overview') }, '← Cluster'),
+        el('span', { class: 'sep' }, '/'),
+        el('a', { onclick: () => go('#/namespaces') }, 'Namespaces'),
+        el('span', { class: 'sep' }, '/'),
+        el('b', {}, d.name),
+      ),
+      el('div', { class: 'hero-row' },
+        el('div', {},
+          el('div', { class: 'title-row' },
+            el('div', { class: 'title' }, d.name),
+            (d.metadata && d.metadata.phase) ? el('span', { class: 'pill ' + (d.metadata.phase === 'Active' ? 'good' : 'warn') }, d.metadata.phase) : null,
+            kpis.unhealthy_pods > 0 ? el('span', { class: 'pill bad' }, kpis.unhealthy_pods + ' unhealthy') : null,
+          ),
+          el('div', { class: 'sub' },
+            (kpis.resources || 0) + ' resources · created ' + (d.metadata?.age || '?') + ' ago',
+          ),
+        ),
+        el('div', { class: 'hero-actions' },
+          el('button', { class: 'btn', onclick: () => go('#/logs') }, '▶ Open in Logs'),
+          el('button', { class: 'btn' }, '⏷ Compare snapshots'),
+        ),
+      ),
+    );
+    root.appendChild(hero);
+
+    // KPIs
+    const kpiStrip = el('div', { class: 'kpis k6' });
+    kpiStrip.appendChild(kpi('Workloads', kpis.workloads || 0));
+    kpiStrip.appendChild(kpi('Pods', kpis.pods || 0));
+    kpiStrip.appendChild(kpi('Unhealthy pods', kpis.unhealthy_pods || 0, { severity: (kpis.unhealthy_pods || 0) > 0 ? 'alert' : '' }));
+    kpiStrip.appendChild(kpi('VirtualMachines', kpis.virtual_machines || 0));
+    kpiStrip.appendChild(kpi('ConfigMaps', kpis.configmaps || 0));
+    kpiStrip.appendChild(kpi('Secrets', kpis.secrets || 0));
+    root.appendChild(kpiStrip);
+
+    // Spark + issues row
+    const sparkCard = el('div', { class: 'card' },
+      cardHeader('Pod-state transitions (this namespace)',
+        ((d.sparkline && d.sparkline.total_events) || 0) + ' events'),
+      sparkChart(d.sparkline || {}));
+    const issuesCard = el('div', { class: 'card' },
+      cardHeader('Issues in this namespace', String((d.issues || []).length)),
+      issuesList(d.issues));
+    const row1 = el('div', { class: 'grid-2', style: 'margin-bottom:18px;' });
+    row1.appendChild(sparkCard);
+    row1.appendChild(issuesCard);
+    root.appendChild(row1);
+
+    // Workloads + VMs row
+    const wlCard = el('div', { class: 'card' }, cardHeader('Workloads', String((d.workloads || []).length)));
+    if (!d.workloads || d.workloads.length === 0) {
+      wlCard.appendChild(el('div', { class: 'state', style: 'padding:18px;' }, 'No workloads.'));
+    } else {
+      for (const w of d.workloads.slice(0, 12)) wlCard.appendChild(resourceRowEl(w));
+      if (d.workloads.length > 12) wlCard.appendChild(el('div', { style: 'padding:6px 4px; font-size:11px; color:var(--fg-faint);' }, `+ ${d.workloads.length - 12} more`));
+    }
+    const vmCard = el('div', { class: 'card' }, cardHeader('VirtualMachines', String((d.vms || []).length)));
+    if (!d.vms || d.vms.length === 0) {
+      vmCard.appendChild(el('div', { class: 'state', style: 'padding:18px;' }, 'No VirtualMachines captured.'));
+    } else {
+      for (const v of d.vms.slice(0, 12)) vmCard.appendChild(resourceRowEl(v));
+      if (d.vms.length > 12) vmCard.appendChild(el('div', { style: 'padding:6px 4px; font-size:11px; color:var(--fg-faint);' }, `+ ${d.vms.length - 12} more`));
+    }
+    const row2 = el('div', { class: 'grid-2', style: 'margin-bottom:18px;' });
+    row2.appendChild(wlCard);
+    row2.appendChild(vmCard);
+    root.appendChild(row2);
+
+    // Pods table
+    const podHeader = cardHeader('Pods', `${d.pods?.length || 0} total · ${kpis.unhealthy_pods || 0} unhealthy`);
+    const podCard = el('div', { class: 'card', style: 'margin-bottom:18px;' }, podHeader);
+    if (!d.pods || d.pods.length === 0) {
+      podCard.appendChild(el('div', { class: 'state', style: 'padding:18px;' }, 'No pods captured.'));
+    } else {
+      for (const p of d.pods.slice(0, 40)) podCard.appendChild(podRowEl(p));
+      if (d.pods.length > 40) podCard.appendChild(el('div', { style: 'padding:6px 4px; font-size:11px; color:var(--fg-faint);' }, `+ ${d.pods.length - 40} more (filtering UI coming)`));
+    }
+    root.appendChild(podCard);
+
+    // Other resources tile grid
+    if (d.resources && d.resources.length > 0) {
+      root.appendChild(el('div', { class: 'section-title' }, 'Other resources'));
+      const tileCard = el('div', { class: 'card', style: 'margin-bottom:18px;' });
+      const tileGrid = el('div', { class: 'resource-grid', style: 'grid-template-columns:repeat(6, minmax(0,1fr));' });
+      for (const t of d.resources) tileGrid.appendChild(resourceTile(t));
+      tileCard.appendChild(tileGrid);
+      root.appendChild(tileCard);
+    }
+
+    // Namespace metadata
+    if (d.metadata && (d.metadata.labels || d.metadata.annotations)) {
+      root.appendChild(el('div', { class: 'section-title' }, 'Namespace metadata'));
+      const grid = el('div', { class: 'grid-2' });
+
+      const labCard = el('div', { class: 'card' }, cardHeader('Labels & annotations', ''));
+      const labels = d.metadata.labels || {};
+      if (Object.keys(labels).length === 0) {
+        labCard.appendChild(el('div', { class: 'state', style: 'padding:14px;' }, 'No labels.'));
+      } else {
+        const wrap = el('div', { class: 'labels' });
+        for (const k of Object.keys(labels)) {
+          wrap.appendChild(el('span', { class: 'lab' }, `${k}=${labels[k]}`));
+        }
+        labCard.appendChild(wrap);
+      }
+      grid.appendChild(labCard);
+
+      const ownersCard = el('div', { class: 'card' }, cardHeader('Status', ''));
+      ownersCard.appendChild(el('div', { style: 'font-size:12.5px; color:var(--fg-dim); display:flex; flex-direction:column; gap:6px;' },
+        el('div', {}, 'Phase: ', el('span', { style: 'color:var(--fg);' }, d.metadata.phase || '?')),
+        el('div', {}, 'Created: ', el('span', { style: 'color:var(--fg); font-family:var(--mono);' }, d.metadata.created_at || '?')),
+        el('div', {}, 'Age: ', el('span', { style: 'color:var(--fg); font-family:var(--mono);' }, d.metadata.age || '?')),
+      ));
+      grid.appendChild(ownersCard);
+
+      root.appendChild(grid);
+    }
+
+    setContent(root);
+  }
+
+  // Render a workload/VM ResourceRow into a .resrow element.
+  function resourceRowEl(r) {
+    return el('div', {
+      class: 'resrow',
+      onclick: () => { /* TODO: link to detail */ },
+    },
+      el('span', { class: 'dot ' + (r.severity || 'neutral') }),
+      el('span', { class: 'kind' }, r.kind || ''),
+      el('span', { class: 'nm' }, r.name || ''),
+      el('span', { class: 'status ' + (r.severity || '') }, r.status || ''),
+      el('span', { class: 'num' }, r.restarts ? String(r.restarts) : ''),
+      el('span', { class: 'num' }, r.age || ''),
+    );
+  }
+
+  // Render a PodRow into a .resrow with a click-handler to the pod drill-down.
+  function podRowEl(p) {
+    return el('div', {
+      class: 'resrow',
+      onclick: () => p.link && go(p.link),
+    },
+      el('span', { class: 'dot ' + (p.severity || 'neutral') }),
+      el('span', { class: 'kind' }, 'Pod'),
+      el('span', { class: 'nm' }, p.name || ''),
+      el('span', { class: 'status ' + (p.severity || '') }, p.status || p.phase || ''),
+      el('span', { class: 'num' }, p.restarts ? String(p.restarts) : ''),
+      el('span', { class: 'num' }, p.age || ''),
+    );
   }
 
   async function renderPod(ns, name) {
