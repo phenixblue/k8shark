@@ -64,6 +64,13 @@ type PodLogFailure struct {
 // how many resources are configured or auto-discovered.
 const maxConcurrentFetches = 32
 
+// perFetchTimeout caps any single list/discovery fetch (request + body read).
+// Without it a stalled HTTP/2 stream can leave io.ReadAll blocked indefinitely
+// while holding a fetchSem slot, starving every other fetch and stalling
+// capture startup. The cap lets the fetch fail fast; polling retries on its
+// next interval. Generous enough for large list responses on slow links.
+const perFetchTimeout = 30 * time.Second
+
 // Pod log fetch tuning.
 const (
 	// maxConcurrentLogFetches bounds the number of in-flight pod-log GETs.
@@ -96,6 +103,7 @@ type Engine struct {
 	warnedFallback map[string]bool // dedup set for allNotFound cluster-scoped fallback warnings
 	pathSeq        map[string]int  // per-path record sequence counter (matches archive on-disk seq)
 	fetchSem       chan struct{}   // semaphore bounding concurrent body reads
+	fetchTimeout   time.Duration   // per-fetch cap (request + body read); 0 means perFetchTimeout
 	// clusterListNamespacesSeen tracks, per wildcard-namespaced resource path,
 	// the set of namespaces that have produced items in any prior cluster-wide
 	// LIST response. Used by the demux so a namespace that empties out between
@@ -131,8 +139,8 @@ func NewEngine(cfg *config.Config, verbose bool) (*Engine, error) {
 	// Watch streams go through client-go's dynamic client (which uses the proper
 	// streaming watch decoder) rather than a hand-rolled HTTP request. It gets
 	// its OWN transport/connection (NewForConfig, not the shared httpClient) so
-	// long-lived watch streams don't contend with poll requests for HTTP/2
-	// streams on a single connection.
+	// long-lived watch streams don't contend with poll requests on a single
+	// connection.
 	dynClient, err := dynamic.NewForConfig(restCfg)
 	if err != nil {
 		return nil, fmt.Errorf("building dynamic client: %w", err)
@@ -151,6 +159,7 @@ func NewEngine(cfg *config.Config, verbose bool) (*Engine, error) {
 		warnedFallback:            make(map[string]bool),
 		pathSeq:                   make(map[string]int),
 		fetchSem:                  make(chan struct{}, maxConcurrentFetches),
+		fetchTimeout:              perFetchTimeout,
 		clusterListNamespacesSeen: make(map[string]map[string]bool),
 	}, nil
 }
@@ -176,6 +185,7 @@ func newEngineWith(cfg *config.Config, client *http.Client, baseURL string, verb
 		warnedFallback:            make(map[string]bool),
 		pathSeq:                   make(map[string]int),
 		fetchSem:                  make(chan struct{}, maxConcurrentFetches),
+		fetchTimeout:              perFetchTimeout,
 		clusterListNamespacesSeen: make(map[string]map[string]bool),
 	}
 }
@@ -655,12 +665,16 @@ func (e *Engine) fetchResource(ctx context.Context, res config.Resource) {
 	// Track whether every explicitly-namespaced fetch returned 404. If so, the
 	// resource is likely cluster-scoped and the config has 'namespaces:' set by
 	// mistake — warn and also capture the cluster-scoped path as a fallback.
+	// Only a genuine 404 counts as evidence of cluster scope: a code of 0 means
+	// the fetch failed transiently (timeout/transport/cancellation), which must
+	// not be mistaken for "this resource isn't served per-namespace" or every
+	// flaky fetch would trigger a spurious cluster-wide fallback.
 	allNotFound := len(res.Namespaces) > 0
 	dedupEnabled := res.DedupEnabled()
 	for _, ns := range namespaces {
 		apiPath := buildAPIPath(res.Group, res.Version, res.Resource, ns)
 		_, code := e.doFetch(ctx, apiPath, "", dedupEnabled)
-		if code != 0 && code != http.StatusNotFound {
+		if code != http.StatusNotFound {
 			allNotFound = false
 		}
 		e.doFetch(ctx, apiPath, tableIndexKeySuffix, dedupEnabled)
@@ -1216,14 +1230,19 @@ func (e *Engine) fetchDiscovery(ctx context.Context) {
 	e.doFetch(ctx, "/openapi/v2", "", true)
 	openapiV3Body, _ := e.doFetch(ctx, "/openapi/v3", "", true)
 	if openapiV3Body != nil {
-		// Parse the v3 path index and fetch each per-group spec.
+		// Parse the v3 path index and fetch each per-group spec. These are
+		// numerous (100+ on OpenShift) and independent, so fetch them
+		// concurrently — done sequentially they can dominate (or exhaust) the
+		// whole capture window before polling/watching even begins.
 		var v3Index struct {
 			Paths map[string]json.RawMessage `json:"paths"`
 		}
 		if err := json.Unmarshal(openapiV3Body, &v3Index); err == nil {
+			paths := make([]string, 0, len(v3Index.Paths))
 			for p := range v3Index.Paths {
-				e.doFetch(ctx, "/openapi/v3/"+p, "", true)
+				paths = append(paths, "/openapi/v3/"+p)
 			}
+			e.fetchDiscoveryPaths(ctx, paths, false)
 		}
 	}
 
@@ -1241,15 +1260,42 @@ func (e *Engine) fetchDiscovery(ctx context.Context) {
 	if err := json.Unmarshal(apisBody, &groupList); err != nil {
 		return
 	}
+	gvPaths := make([]string, 0, len(groupList.Groups))
 	for _, g := range groupList.Groups {
 		for _, v := range g.Versions {
-			gvPath := "/apis/" + v.GroupVersion
-			gvBody, _ := e.doFetch(ctx, gvPath, "", true)
-			if gvBody != nil {
-				e.discoveryCache[gvPath] = gvBody
-			}
+			gvPaths = append(gvPaths, "/apis/"+v.GroupVersion)
 		}
 	}
+	e.fetchDiscoveryPaths(ctx, gvPaths, true)
+}
+
+// fetchDiscoveryPaths GETs each path concurrently (bounded), recording every
+// response via doFetch. When cache is true, successful bodies are also stored
+// in discoveryCache keyed by path so autoDiscoverResources can reuse them
+// without re-fetching. Concurrency keeps discovery from dominating short
+// captures on clusters with many API groups.
+func (e *Engine) fetchDiscoveryPaths(ctx context.Context, paths []string, cache bool) {
+	const discoveryWorkers = 16
+	sem := make(chan struct{}, discoveryWorkers)
+	var wg sync.WaitGroup
+	for _, p := range paths {
+		if ctx.Err() != nil {
+			break
+		}
+		wg.Add(1)
+		go func(path string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			body, _ := e.doFetch(ctx, path, "", true)
+			if cache && body != nil {
+				e.mu.Lock()
+				e.discoveryCache[path] = body
+				e.mu.Unlock()
+			}
+		}(p)
+	}
+	wg.Wait()
 }
 
 // doFetch issues one GET for apiPath. When tableKeySuffix is non-empty the
@@ -1274,7 +1320,17 @@ func (e *Engine) doFetch(ctx context.Context, apiPath, tableKeySuffix string, de
 func (e *Engine) rawFetch(ctx context.Context, apiPath, tableKeySuffix string) ([]byte, int) {
 	url := e.baseURL + apiPath
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	// Bound this fetch independently so a stalled HTTP/2 stream can't hang
+	// io.ReadAll forever (see perFetchTimeout). The deadline covers both the
+	// request and the body read because it rides on the request context.
+	timeout := e.fetchTimeout
+	if timeout <= 0 {
+		timeout = perFetchTimeout
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, url, nil)
 	if err != nil {
 		if e.verbose {
 			fmt.Fprintf(os.Stderr, "  [warn] build request %s: %v\n", apiPath, err)
@@ -1296,11 +1352,17 @@ func (e *Engine) rawFetch(ctx context.Context, apiPath, tableKeySuffix string) (
 		}
 		return nil, 0
 	}
+	defer resp.Body.Close()
 
-	e.fetchSem <- struct{}{}
+	// Acquire a read slot without blocking past this fetch's deadline, so a
+	// saturated semaphore can't pin a timed-out fetch indefinitely.
+	select {
+	case e.fetchSem <- struct{}{}:
+	case <-fetchCtx.Done():
+		return nil, 0
+	}
 	body, err := io.ReadAll(resp.Body)
 	<-e.fetchSem
-	resp.Body.Close()
 	if err != nil {
 		if e.verbose {
 			fmt.Fprintf(os.Stderr, "  [warn] read body %s: %v\n", apiPath, err)

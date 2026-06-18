@@ -1682,6 +1682,48 @@ func TestDoFetch_DedupAllSame_FirstAlwaysWritten(t *testing.T) {
 	}
 }
 
+// TestRawFetch_TimesOutOnStalledBody guards the per-fetch timeout: a server
+// that returns headers but never the body (a stalled HTTP/2 stream in the
+// wild) must not hang the fetch indefinitely. The fetch must return promptly,
+// and its fetchSem slot must be released so later fetches still succeed —
+// otherwise one stuck read starves every other fetch and stalls the capture.
+func TestRawFetch_TimesOutOnStalledBody(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/v1/hang" {
+			// Send headers, then block without ever writing a body.
+			w.WriteHeader(http.StatusOK)
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			<-r.Context().Done()
+			return
+		}
+		fmt.Fprint(w, `{"kind":"List","items":[]}`)
+	}))
+	defer srv.Close()
+
+	eng := newEngineWith(&config.Config{}, srv.Client(), srv.URL, false)
+	eng.sink = &sliceSink{}
+	eng.fetchTimeout = 200 * time.Millisecond
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		eng.doFetch(context.Background(), "/api/v1/hang", "", true)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("doFetch on a stalled endpoint did not return within 5s; per-fetch timeout not enforced")
+	}
+
+	// The stalled fetch must have released its read slot.
+	if _, code := eng.doFetch(context.Background(), "/api/v1/ok", "", true); code != http.StatusOK {
+		t.Fatalf("follow-up doFetch status = %d, want %d (fetchSem slot leaked?)", code, http.StatusOK)
+	}
+}
+
 func TestDoFetch_DedupAllDifferent(t *testing.T) {
 	count := 0
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
