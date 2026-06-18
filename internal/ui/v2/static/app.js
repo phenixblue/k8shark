@@ -45,7 +45,7 @@
     if (qIdx >= 0) h = h.slice(0, qIdx);
     const parts = h.split('/').filter(Boolean);
     if (parts.length === 0) return { name: 'overview' };
-    if (parts[0] === 'overview' || parts[0] === 'namespaces' || parts[0] === 'pods' || parts[0] === 'workloads' || parts[0] === 'timeline' || parts[0] === 'logs' || parts[0] === 'diff') {
+    if (parts[0] === 'overview' || parts[0] === 'namespaces' || parts[0] === 'pods' || parts[0] === 'workloads' || parts[0] === 'resource' || parts[0] === 'object' || parts[0] === 'timeline' || parts[0] === 'logs' || parts[0] === 'diff') {
       return { name: parts[0] };
     }
     if (parts[0] === 'ns' && parts[1]) {
@@ -263,7 +263,10 @@
   function recentRow(t) {
     const sevByEvent = { ADDED: 'normal', MODIFIED: 'warn', DELETED: 'bad' };
     const cls = sevByEvent[t.event_type] || 'normal';
-    return el('div', { class: 'event ' + cls },
+    const link = transitionLink(t);
+    const attrs = { class: 'event ' + cls };
+    if (link) { attrs.onclick = () => go(link); attrs.style = 'cursor:pointer;'; }
+    return el('div', attrs,
       el('span', { class: 'kind ' + (cls === 'bad' ? 'bad' : (cls === 'warn' ? 'warn' : '')) }, t.event_type || ''),
       el('span', { class: 'body' },
         el('b', {}, t.name || ''),
@@ -310,7 +313,7 @@
 
     // Spark + issues row
     const sparkCard = el('div', { class: 'card' },
-      cardHeader('Pod-state transitions (capture window)',
+      cardHeader('Resource transitions (capture window)',
         ((data.sparkline && data.sparkline.total_events) || 0) + ' events',
         { hash: '#/timeline', label: 'View timeline →' }),
       sparkChart(data.sparkline || {}));
@@ -489,9 +492,9 @@
       severity: (kpis.unhealthy_pods || 0) > 0 ? 'alert' : '',
       link: '#/pods?ns=' + nsq + '&health=unhealthy',
     }));
-    kpiStrip.appendChild(kpi('VirtualMachines', kpis.virtual_machines || 0));
-    kpiStrip.appendChild(kpi('ConfigMaps', kpis.configmaps || 0));
-    kpiStrip.appendChild(kpi('Secrets', kpis.secrets || 0));
+    kpiStrip.appendChild(kpi('VirtualMachines', kpis.virtual_machines || 0, { link: '#/resource?resource=virtualmachines&ns=' + nsq }));
+    kpiStrip.appendChild(kpi('ConfigMaps', kpis.configmaps || 0, { link: '#/resource?resource=configmaps&ns=' + nsq }));
+    kpiStrip.appendChild(kpi('Secrets', kpis.secrets || 0, { link: '#/resource?resource=secrets&ns=' + nsq }));
     root.appendChild(kpiStrip);
 
     // Spark + issues row
@@ -749,6 +752,232 @@
     setContent(root);
   }
 
+  // parseListPath extracts {ns, resource} from an API list path so the object
+  // view can show a breadcrumb.
+  function parseListPath(p) {
+    const parts = (p || '').replace(/^\//, '').split('/').filter(Boolean);
+    const i = parts.indexOf('namespaces');
+    if (i >= 0 && parts.length > i + 2) return { ns: parts[i + 1], resource: parts[i + 2] };
+    return { ns: '', resource: parts[parts.length - 1] || '' };
+  }
+
+  // transitionLink maps a watch-event/transition to its best destination:
+  // the pod detail for pods, otherwise the generic object view.
+  function transitionLink(t) {
+    if (t.resource === 'pods' && t.namespace && t.name) {
+      return '#/ns/' + encodeURIComponent(t.namespace) + '/pod/' + encodeURIComponent(t.name);
+    }
+    if (t.path && t.name) {
+      return '#/object?path=' + encodeURIComponent(t.path) + '&name=' + encodeURIComponent(t.name);
+    }
+    return '';
+  }
+
+  // rawObjectPanel fetches one object and shows it as YAML/JSON with a toggle.
+  function rawObjectPanel(path, name) {
+    const wrap = el('div', {});
+    const pre = el('pre', { class: 'log-preview', style: 'max-height:calc(100vh - 360px); padding:14px;' }, 'Loading…');
+    let data = null, mode = 'yaml';
+    const ybtn = el('button', { class: 'btn primary', onclick: () => { mode = 'yaml'; paint(); } }, 'YAML');
+    const jbtn = el('button', { class: 'btn', onclick: () => { mode = 'json'; paint(); } }, 'JSON');
+    function paint() {
+      if (!data) return;
+      pre.textContent = mode === 'yaml' ? (data.yaml || '') : (data.json || '');
+      ybtn.className = 'btn' + (mode === 'yaml' ? ' primary' : '');
+      jbtn.className = 'btn' + (mode === 'json' ? ' primary' : '');
+    }
+    wrap.appendChild(el('div', { style: 'display:flex; gap:8px; margin-bottom:10px;' }, ybtn, jbtn));
+    wrap.appendChild(pre);
+    getJSON('/v2/api/object?path=' + encodeURIComponent(path) + (name ? '&name=' + encodeURIComponent(name) : ''))
+      .then((d) => { data = d; if (!d.found) { pre.textContent = 'Object not present at this snapshot.'; return; } paint(); })
+      .catch((e) => { pre.textContent = 'Error: ' + e.message; });
+    return wrap;
+  }
+
+  function objectHistoryPanel(path, name) {
+    const card = el('div', { class: 'card' }, cardHeader('Watch event history', ''));
+    const body = el('div', {}, loadingState('Loading history…'));
+    card.appendChild(body);
+    getJSON('/v2/api/object-history?path=' + encodeURIComponent(path) + (name ? '&name=' + encodeURIComponent(name) : ''))
+      .then((h) => {
+        body.innerHTML = '';
+        const events = (h && h.events) || [];
+        if (!events.length) { body.appendChild(el('div', { class: 'state', style: 'padding:18px;' }, 'No watch events recorded for this object. (Enable watch on its resource to capture transitions.)')); return; }
+        for (const e of events) {
+          const cls = e.event_type === 'ADDED' ? 'added' : (e.event_type === 'DELETED' ? 'deleted' : 'modified');
+          body.appendChild(el('div', { class: 'timeline-row' },
+            el('span', { class: 'ts' }, formatShortTS(e.time)),
+            el('span', { class: 'dot ' + cls }),
+            el('span', { class: 'ev' }, e.event_type + (e.detail ? ' · ' + e.detail : ''))));
+        }
+      })
+      .catch((e) => { body.innerHTML = ''; body.appendChild(errorState(e.message)); });
+    return card;
+  }
+
+  function objectDiffPanel(path, name) {
+    const card = el('div', { class: 'card' }, cardHeader('Compare snapshots', ''));
+    if (state.snapshots.length < 2) {
+      card.appendChild(el('div', { class: 'state', style: 'padding:18px;' }, 'Need at least two snapshots to diff.'));
+      return card;
+    }
+    const mkSel = (val) => {
+      const s = el('select', { style: listFilterStyle });
+      for (const ts of state.snapshots) s.appendChild(el('option', { value: ts, selected: ts === val ? 'selected' : null }, ts));
+      return s;
+    };
+    const before = mkSel(state.snapshots[0]);
+    const after = mkSel(state.snapshots[state.snapshots.length - 1]);
+    const out = el('div', { style: 'margin-top:12px;' });
+    const run = async () => {
+      out.innerHTML = '';
+      out.appendChild(loadingState('Diffing…'));
+      try {
+        const data = await getJSON('/v2/api/diff?path=' + encodeURIComponent(path) + (name ? '&name=' + encodeURIComponent(name) : '') + '&before=' + encodeURIComponent(before.value) + '&after=' + encodeURIComponent(after.value));
+        out.innerHTML = '';
+        if (data.before_missing || data.after_missing) {
+          out.appendChild(el('div', { class: 'state' }, data.before_missing && data.after_missing ? 'Object not present at either snapshot.' : (data.before_missing ? 'Did not exist at the "before" snapshot — full add.' : 'Did not exist at the "after" snapshot — full delete.')));
+        }
+        if (!data.has_diff && !data.before_missing && !data.after_missing) {
+          out.appendChild(el('div', { class: 'state' }, 'No changes between these snapshots.'));
+        }
+        const diff = el('div', { class: 'diff', style: 'padding:14px;' });
+        for (const hk of (data.hunks || [])) diff.appendChild(el('div', { class: hk.type === 'add' ? 'add' : (hk.type === 'del' ? 'del' : 'ctx') }, hk.text));
+        out.appendChild(diff);
+      } catch (e) {
+        out.innerHTML = '';
+        out.appendChild(errorState(e.message));
+      }
+    };
+    card.appendChild(el('div', { style: 'display:flex; gap:8px; align-items:center; flex-wrap:wrap;' },
+      el('span', { style: 'font-size:12px; color:var(--fg-dim);' }, 'Before'), before,
+      el('span', { style: 'font-size:12px; color:var(--fg-dim);' }, 'After'), after,
+      el('button', { class: 'btn primary', onclick: run }, 'Compare')));
+    card.appendChild(out);
+    return card;
+  }
+
+  // Generic object view: YAML / JSON / History / Diff for any captured object.
+  async function renderObject() {
+    const q = hashQuery();
+    const path = q.get('path') || '';
+    const name = q.get('name') || '';
+    if (!path) { setContent(errorState('Missing object path.')); return; }
+    setContent(loadingState('Loading ' + (name || path) + '…'));
+    let d;
+    try {
+      d = await getJSON('/v2/api/object?path=' + encodeURIComponent(path) + (name ? '&name=' + encodeURIComponent(name) : ''));
+    } catch (e) {
+      setContent(errorState(e.message));
+      return;
+    }
+    const parsed = parseListPath(path);
+    const kind = d.kind || kindLabelFor(parsed.resource);
+    const root = el('div', {});
+    root.appendChild(el('div', { class: 'hero', style: 'margin:-18px -20px 18px; padding:14px 20px;' },
+      el('div', { class: 'crumbs' },
+        el('a', { onclick: () => go('#/overview') }, '← Cluster'),
+        el('span', { class: 'sep' }, '/'),
+        parsed.ns ? el('a', { onclick: () => go('#/ns/' + encodeURIComponent(parsed.ns)) }, parsed.ns) : null,
+        parsed.ns ? el('span', { class: 'sep' }, '/') : null,
+        el('a', { onclick: () => go('#/resource?resource=' + encodeURIComponent(parsed.resource) + (parsed.ns ? '&ns=' + encodeURIComponent(parsed.ns) : '')) }, kind),
+        el('span', { class: 'sep' }, '/'),
+        el('b', {}, name || parsed.resource),
+      ),
+      el('div', { class: 'hero-row' }, el('div', {},
+        el('div', { class: 'title' }, name || parsed.resource),
+        el('div', { class: 'sub' }, kind + (parsed.ns ? ' · ' + parsed.ns : '') + (d.found ? '' : ' · not present at this snapshot')))),
+    ));
+    if (!d.found) { root.appendChild(el('div', { class: 'state', style: 'padding:24px;' }, 'Object not present at this snapshot.')); setContent(root); return; }
+
+    const panelDefs = [
+      { key: 'yaml', label: 'YAML', build: () => el('pre', { class: 'log-preview', style: 'max-height:calc(100vh - 320px); padding:14px;' }, d.yaml || '') },
+      { key: 'json', label: 'JSON', build: () => el('pre', { class: 'log-preview', style: 'max-height:calc(100vh - 320px); padding:14px;' }, d.json || '') },
+      { key: 'history', label: 'History', build: () => objectHistoryPanel(path, name) },
+      { key: 'diff', label: 'Diff', build: () => objectDiffPanel(path, name) },
+    ];
+    const subtabs = el('div', { class: 'subtabs', style: 'margin:0 -20px 18px;' });
+    const host = el('div', {});
+    const tabEls = {}, panelEls = {};
+    const select = (k) => {
+      for (const def of panelDefs) {
+        const a = def.key === k;
+        tabEls[def.key].classList.toggle('active', a);
+        if (a && !panelEls[def.key]) { panelEls[def.key] = def.build(); host.appendChild(panelEls[def.key]); }
+        if (panelEls[def.key]) panelEls[def.key].style.display = a ? '' : 'none';
+      }
+    };
+    for (const def of panelDefs) {
+      const t = el('div', { class: 'tab', onclick: () => select(def.key) }, def.label);
+      tabEls[def.key] = t;
+      subtabs.appendChild(t);
+    }
+    root.appendChild(subtabs);
+    root.appendChild(host);
+    select('yaml');
+    setContent(root);
+  }
+
+  // Small JS-side mirror of kindFromResource for headers when the captured
+  // object has no top-level kind (List items often omit it).
+  function kindLabelFor(resource) {
+    const m = { pods: 'Pod', configmaps: 'ConfigMap', secrets: 'Secret', services: 'Service', deployments: 'Deployment', statefulsets: 'StatefulSet', daemonsets: 'DaemonSet', replicasets: 'ReplicaSet', jobs: 'Job', cronjobs: 'CronJob', persistentvolumeclaims: 'PersistentVolumeClaim', virtualmachines: 'VirtualMachine', virtualmachineinstances: 'VirtualMachineInstance', namespaces: 'Namespace', nodes: 'Node', events: 'Event' };
+    return m[resource] || resource;
+  }
+
+  // Generic resource-type list: every object of a resource kind, optionally
+  // scoped to a namespace. Rows open the object view.
+  async function renderResourceList() {
+    const q = hashQuery();
+    const resource = q.get('resource') || '';
+    const nsParam = q.get('ns') || '';
+    if (!resource) { setContent(errorState('Missing resource.')); return; }
+    setContent(loadingState('Loading ' + resource + '…'));
+    let d;
+    try {
+      d = await getJSON('/v2/api/resource?resource=' + encodeURIComponent(resource) + (nsParam ? '&ns=' + encodeURIComponent(nsParam) : ''));
+    } catch (e) {
+      setContent(errorState(e.message));
+      return;
+    }
+    const all = d.items || [];
+    const root = el('div', {});
+    root.appendChild(el('div', { class: 'section-title', style: 'font-size:15px; margin-bottom:2px;' }, d.kind || resource));
+    const sub = el('div', { style: 'color:var(--fg-dim); font-size:12px; margin-bottom:14px;' });
+    root.appendChild(sub);
+    const filter = el('input', { placeholder: 'Filter by name or namespace…', style: listFilterStyle });
+    root.appendChild(el('div', { style: 'display:flex; gap:10px; margin-bottom:12px;' }, filter));
+    if (nsParam) {
+      root.appendChild(el('div', { class: 'state', style: 'padding:10px 14px; margin-bottom:12px; display:flex; gap:12px; align-items:center;' },
+        el('span', {}, 'Showing namespace ' + nsParam),
+        el('a', { onclick: () => go('#/resource?resource=' + encodeURIComponent(resource)), style: 'cursor:pointer;' }, 'Show all →')));
+    }
+    const gridCols = 'grid-template-columns:200px 1fr 60px;';
+    const card = el('div', { class: 'card' });
+    card.appendChild(el('div', { class: 'objhead', style: gridCols }, el('span', {}, 'Namespace'), el('span', {}, 'Name'), el('span', { style: 'text-align:right;' }, 'Age')));
+    const listWrap = el('div', {});
+    card.appendChild(listWrap);
+    root.appendChild(card);
+    function build() {
+      const term = filter.value.trim().toLowerCase();
+      listWrap.innerHTML = '';
+      let shown = 0;
+      for (const it of all) {
+        if (term && !((it.name || '').toLowerCase().includes(term) || (it.namespace || '').toLowerCase().includes(term))) continue;
+        listWrap.appendChild(el('div', { class: 'objrow click', style: gridCols, onclick: () => go(it.link) },
+          el('span', { class: 'ns' }, it.namespace || '—'),
+          el('span', { class: 'nm' }, it.name || ''),
+          el('span', { class: 'num' }, it.age || '')));
+        shown++;
+      }
+      if (!shown) listWrap.appendChild(el('div', { class: 'state', style: 'padding:18px;' }, 'No objects match.'));
+      sub.textContent = d.total + ' ' + resource + ' · ' + shown + ' shown';
+    }
+    filter.addEventListener('input', build);
+    build();
+    setContent(root);
+  }
+
   async function renderPod(ns, name) {
     setContent(loadingState('Loading pod ' + ns + '/' + name + '…'));
     let d;
@@ -871,27 +1100,6 @@
       return card;
     }
 
-    function buildLogs() {
-      const withLogs = (d.containers || []).filter((c) => (c.log_preview || []).length > 0 || c.log_path);
-      if (!withLogs.length) return emptyState('No logs captured for this pod. Set "logs: <N>" on the pods resource in the capture config to capture container logs.');
-      const wrap = el('div', {});
-      for (const c of withLogs) {
-        const card = el('div', { class: 'card', style: 'margin-bottom:14px;' },
-          cardHeader('Logs · ' + c.name, (c.role && c.role !== 'main') ? c.role : ''));
-        if ((c.log_preview || []).length) {
-          card.appendChild(el('pre', { class: 'log-preview', style: 'max-height:340px; padding:12px;' }, c.log_preview.join('\n')));
-        } else {
-          card.appendChild(el('div', { class: 'state', style: 'padding:12px;' }, 'No preview captured.'));
-        }
-        const actions = el('div', { style: 'display:flex; gap:8px; margin-top:10px;' });
-        if (c.log_path) actions.appendChild(el('button', { class: 'btn', onclick: () => go(c.log_path) }, 'Open full logs'));
-        if (c.has_previous_log && c.log_path) actions.appendChild(el('button', { class: 'btn', onclick: () => go(c.log_path + '&previous=true') }, 'Previous logs'));
-        if (actions.childNodes.length) card.appendChild(actions);
-        wrap.appendChild(card);
-      }
-      return wrap;
-    }
-
     function buildEvents() {
       if (!d.events || d.events.length === 0) return emptyState('No events captured for this pod. (Did the capture include /api/v1/events?)');
       const card = el('div', { class: 'card' }, cardHeader('Events', String(d.events.length)));
@@ -935,15 +1143,14 @@
     }
 
     function buildYaml() {
-      return emptyState('Raw YAML view isn\'t available here yet — the captured object lives in the archive. Use the Compare snapshots (Diff) view or "kshrk inspect" to view it.');
+      // Render the pod's captured object as YAML/JSON via the generic endpoint.
+      return rawObjectPanel('/api/v1/namespaces/' + d.namespace + '/pods', d.name);
     }
 
-    const logsCount = (d.containers || []).filter((c) => (c.log_preview || []).length > 0).length;
     const relCount = (d.related?.owner ? 1 : 0) + (d.related?.config_maps || []).length + (d.related?.secrets || []).length + (d.related?.pvcs || []).length;
     const panelDefs = [
       { key: 'summary', label: 'Summary', count: null, build: buildSummary },
-      { key: 'containers', label: 'Containers', count: (d.containers || []).length, build: buildContainers },
-      { key: 'logs', label: 'Logs', count: logsCount, build: buildLogs },
+      { key: 'containers', label: 'Containers & Logs', count: (d.containers || []).length, build: buildContainers },
       { key: 'events', label: 'Events', count: (d.events || []).length, build: buildEvents },
       { key: 'history', label: 'History', count: (d.history || []).length, build: buildHistory },
       { key: 'relationships', label: 'Relationships', count: relCount, build: buildRelationships },
@@ -1237,6 +1444,8 @@
     if (r.name === 'namespaces') return renderNamespacesIndex();
     if (r.name === 'pods') return renderPodsList();
     if (r.name === 'workloads') return renderWorkloadsList();
+    if (r.name === 'resource') return renderResourceList();
+    if (r.name === 'object') return renderObject();
     if (r.name === 'namespace') return renderNamespace(r.ns);
     if (r.name === 'pod') return renderPod(r.ns, r.pod);
     if (r.name === 'timeline') return renderTimeline();

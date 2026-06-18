@@ -72,9 +72,10 @@ type Issue struct {
 
 // ResourceTile is one of the small cards in the "Resources captured" grid.
 type ResourceTile struct {
-	Kind  string `json:"kind"`
-	Count int    `json:"count"`
-	Link  string `json:"link"`
+	Kind     string `json:"kind"`
+	Resource string `json:"resource,omitempty"`
+	Count    int    `json:"count"`
+	Link     string `json:"link"`
 }
 
 // NamespaceSummary is a single row in the top-namespaces list and also the
@@ -96,4 +97,9 @@ type Transition struct {
 	Namespace string `json:"namespace,omitempty"`
 	Name      string `json:"name"`
 	Detail    string `json:"detail,omitempty"`
+	// Path is the watch event's API list path (e.g. /api/v1/namespaces/x/pods)
+	// and Resource its plural name; the UI uses them to link a transition row
+	// to the pod detail or the generic object view.
+	Path     string `json:"path,omitempty"`
+	Resource string `json:"resource,omitempty"`
 }

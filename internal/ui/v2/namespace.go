@@ -144,7 +144,7 @@ func (h *Handler) buildNamespaceDetail(ns string, at time.Time) (*NamespaceDetai
 	d.VMs = h.loadVMRowsForNS(ns, at)
 
 	// Resource tiles: every non-workload, non-pod, non-vm resource.
-	d.Resources = buildNamespaceTiles(resTotal)
+	d.Resources = buildNamespaceTiles(ns, resTotal)
 
 	// Pod-state sparkline scoped to this namespace.
 	d.Sparkline = h.sparklineForNS(ns, sparkBucketCount)
@@ -436,7 +436,7 @@ func (h *Handler) loadNamespaceMetadata(ns string, at time.Time) NamespaceMetada
 
 // buildNamespaceTiles drops the workload/pod/vm resources (rendered as
 // separate cards) and turns the rest of the per-ns counts into tiles.
-func buildNamespaceTiles(byRes map[string]int) []ResourceTile {
+func buildNamespaceTiles(ns string, byRes map[string]int) []ResourceTile {
 	out := make([]ResourceTile, 0, len(byRes))
 	for res, n := range byRes {
 		if n <= 0 {
@@ -446,9 +446,10 @@ func buildNamespaceTiles(byRes map[string]int) []ResourceTile {
 			continue
 		}
 		out = append(out, ResourceTile{
-			Kind:  kindFromResource(res),
-			Count: n,
-			Link:  "#/namespaces",
+			Kind:     kindFromResource(res),
+			Resource: res,
+			Count:    n,
+			Link:     resourceLink(res, ns),
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Count > out[j].Count })

@@ -427,6 +427,8 @@ func recentTransitions(store *server.CaptureStore, at time.Time, n int) []Transi
 			EventType: e.eventType,
 			Kind:      kindFromResource(resource),
 			Namespace: ns,
+			Path:      e.path,
+			Resource:  resource,
 		}
 		// Cheap read of the event body to pull the object name.
 		rec, err := store.ReadRecord(e.path, e.seq)
@@ -456,7 +458,7 @@ func buildResourceTiles(resourceTotals map[string]int) []ResourceTile {
 	out := make([]ResourceTile, 0, len(resourceTotals))
 	for _, res := range preferred {
 		if c, ok := resourceTotals[res]; ok && c > 0 {
-			out = append(out, ResourceTile{Kind: kindFromResource(res), Count: c, Link: "#/namespaces"})
+			out = append(out, ResourceTile{Kind: kindFromResource(res), Resource: res, Count: c, Link: resourceLink(res, "")})
 			seen[res] = true
 		}
 	}
@@ -478,10 +480,20 @@ func buildResourceTiles(resourceTotals map[string]int) []ResourceTile {
 		if i >= showRest {
 			break
 		}
-		out = append(out, ResourceTile{Kind: r.kind, Count: r.count, Link: "#/namespaces"})
+		out = append(out, ResourceTile{Kind: r.kind, Resource: r.res, Count: r.count, Link: resourceLink(r.res, "")})
 	}
 	if len(rest) > showRest {
 		out = append(out, ResourceTile{Kind: fmt.Sprintf("+ %d more…", len(rest)-showRest), Count: 0, Link: "#/namespaces"})
 	}
 	return out
+}
+
+// resourceLink builds a hash link to the generic resource list for a resource
+// plural name, optionally scoped to a namespace.
+func resourceLink(resource, ns string) string {
+	link := "#/resource?resource=" + resource
+	if ns != "" {
+		link += "&ns=" + ns
+	}
+	return link
 }
