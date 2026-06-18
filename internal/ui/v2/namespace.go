@@ -38,6 +38,7 @@ type NamespaceKPIs struct {
 // ResourceRow is a compact row in the workloads / VMs lists.
 type ResourceRow struct {
 	Kind     string `json:"kind"`
+	Resource string `json:"resource,omitempty"`
 	Name     string `json:"name"`
 	Status   string `json:"status"`
 	Severity string `json:"severity"`
@@ -261,9 +262,12 @@ func (h *Handler) loadWorkloadGroup(path, kind, short string, at time.Time) []Re
 	if err := json.Unmarshal(body, &list); err != nil {
 		return nil
 	}
+	_, _, resource, _ := parseAPIPath(path)
 	out := make([]ResourceRow, 0, len(list.Items))
 	for _, raw := range list.Items {
-		out = append(out, classifyWorkload(short, kind, raw, at))
+		row := classifyWorkload(short, kind, raw, at)
+		row.Resource = resource
+		out = append(out, row)
 	}
 	return out
 }
@@ -379,8 +383,10 @@ func (h *Handler) loadVMRowsForNS(ns string, at time.Time) []ResourceRow {
 			if status != "" && status != "Running" {
 				sev = "warn"
 			}
+			_, _, vmResource, _ := parseAPIPath(g.path)
 			out = append(out, ResourceRow{
 				Kind:     g.short,
+				Resource: vmResource,
 				Name:     v.Metadata.Name,
 				Status:   status,
 				Severity: sev,

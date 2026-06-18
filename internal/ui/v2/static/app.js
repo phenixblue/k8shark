@@ -595,34 +595,43 @@
     row1.appendChild(issuesCard);
     root.appendChild(row1);
 
-    // Workloads + VMs row
-    const wlCard = el('div', { class: 'card' }, cardHeader('Workloads', String((d.workloads || []).length)));
-    if (!d.workloads || d.workloads.length === 0) {
-      wlCard.appendChild(el('div', { class: 'state', style: 'padding:18px;' }, 'No workloads.'));
+    // Hint when the Resources filter hides some types from this namespace.
+    const nsBanner = resourceFilterBanner();
+    if (nsBanner) root.appendChild(nsBanner);
+
+    // Workloads + VMs row (honor the global Resources filter, by each row's
+    // resource type).
+    const wls = (d.workloads || []).filter((w) => resourceEnabled(w.resource));
+    const wlCard = el('div', { class: 'card' }, cardHeader('Workloads', String(wls.length)));
+    if (wls.length === 0) {
+      wlCard.appendChild(el('div', { class: 'state', style: 'padding:18px;' }, (d.workloads || []).length ? 'No workloads for the enabled resource types.' : 'No workloads.'));
     } else {
-      for (const w of d.workloads.slice(0, 12)) wlCard.appendChild(resourceRowEl(w));
-      if (d.workloads.length > 12) wlCard.appendChild(el('div', { style: 'padding:6px 4px; font-size:11px; color:var(--fg-faint);' }, `+ ${d.workloads.length - 12} more`));
+      for (const w of wls.slice(0, 12)) wlCard.appendChild(resourceRowEl(w));
+      if (wls.length > 12) wlCard.appendChild(el('div', { style: 'padding:6px 4px; font-size:11px; color:var(--fg-faint);' }, `+ ${wls.length - 12} more`));
     }
-    const vmCard = el('div', { class: 'card' }, cardHeader('VirtualMachines', String((d.vms || []).length)));
-    if (!d.vms || d.vms.length === 0) {
-      vmCard.appendChild(el('div', { class: 'state', style: 'padding:18px;' }, 'No VirtualMachines captured.'));
+    const vms = (d.vms || []).filter((v) => resourceEnabled(v.resource));
+    const vmCard = el('div', { class: 'card' }, cardHeader('VirtualMachines', String(vms.length)));
+    if (vms.length === 0) {
+      vmCard.appendChild(el('div', { class: 'state', style: 'padding:18px;' }, (d.vms || []).length ? 'No VirtualMachines for the enabled resource types.' : 'No VirtualMachines captured.'));
     } else {
-      for (const v of d.vms.slice(0, 12)) vmCard.appendChild(resourceRowEl(v));
-      if (d.vms.length > 12) vmCard.appendChild(el('div', { style: 'padding:6px 4px; font-size:11px; color:var(--fg-faint);' }, `+ ${d.vms.length - 12} more`));
+      for (const v of vms.slice(0, 12)) vmCard.appendChild(resourceRowEl(v));
+      if (vms.length > 12) vmCard.appendChild(el('div', { style: 'padding:6px 4px; font-size:11px; color:var(--fg-faint);' }, `+ ${vms.length - 12} more`));
     }
     const row2 = el('div', { class: 'grid-2', style: 'margin-bottom:18px;' });
     row2.appendChild(wlCard);
     row2.appendChild(vmCard);
     root.appendChild(row2);
 
-    // Pods table
-    const podHeader = cardHeader('Pods', `${d.pods?.length || 0} total · ${kpis.unhealthy_pods || 0} unhealthy`);
+    // Pods table (hidden when "pods" is toggled off in the Resources filter).
+    const podsOn = resourceEnabled('pods');
+    const podRows = podsOn ? (d.pods || []) : [];
+    const podHeader = cardHeader('Pods', `${podRows.length} total · ${kpis.unhealthy_pods || 0} unhealthy`);
     const podCard = el('div', { class: 'card', style: 'margin-bottom:18px;' }, podHeader);
-    if (!d.pods || d.pods.length === 0) {
-      podCard.appendChild(el('div', { class: 'state', style: 'padding:18px;' }, 'No pods captured.'));
+    if (podRows.length === 0) {
+      podCard.appendChild(el('div', { class: 'state', style: 'padding:18px;' }, !podsOn ? 'Pods are hidden by your Resources filter.' : 'No pods captured.'));
     } else {
-      for (const p of d.pods.slice(0, 40)) podCard.appendChild(podRowEl(p));
-      if (d.pods.length > 40) podCard.appendChild(el('div', { style: 'padding:6px 4px; font-size:11px; color:var(--fg-faint);' }, `+ ${d.pods.length - 40} more (filtering UI coming)`));
+      for (const p of podRows.slice(0, 40)) podCard.appendChild(podRowEl(p));
+      if (podRows.length > 40) podCard.appendChild(el('div', { style: 'padding:6px 4px; font-size:11px; color:var(--fg-faint);' }, `+ ${podRows.length - 40} more`));
     }
     root.appendChild(podCard);
 
@@ -745,6 +754,9 @@
     const toggle = el('button', { class: 'btn' });
     root.appendChild(el('div', { style: 'display:flex; gap:10px; align-items:center; margin-bottom:12px;' }, filter, toggle));
 
+    const podsBanner = resourceFilterBanner();
+    if (podsBanner) root.appendChild(podsBanner);
+
     if (nsExact) {
       root.appendChild(el('div', { class: 'state', style: 'padding:10px 14px; margin-bottom:12px; display:flex; gap:12px; align-items:center;' },
         el('span', {}, 'Showing namespace ' + nsExact),
@@ -767,7 +779,9 @@
       const term = filter.value.trim().toLowerCase();
       listWrap.innerHTML = '';
       let shown = 0;
+      const podsOn = resourceEnabled('pods');
       for (const p of all) {
+        if (!podsOn) break;
         if (nsExact && p.namespace !== nsExact) continue;
         if (unhealthyOnly && !p.unhealthy) continue;
         if (term && !(p.name.toLowerCase().includes(term) || p.namespace.toLowerCase().includes(term))) continue;
@@ -775,7 +789,7 @@
         listWrap.appendChild(objRow({ severity: p.severity, kind: 'Pod', namespace: p.namespace, name: p.name, status, num1: p.restarts ? String(p.restarts) : '', num2: p.age || '', link: p.link }));
         shown++;
       }
-      if (!shown) listWrap.appendChild(el('div', { class: 'state', style: 'padding:18px;' }, unhealthyOnly ? 'No unhealthy pods match.' : 'No pods match.'));
+      if (!shown) listWrap.appendChild(el('div', { class: 'state', style: 'padding:18px;' }, !podsOn ? 'Pods are hidden by your Resources filter.' : (unhealthyOnly ? 'No unhealthy pods match.' : 'No pods match.')));
       sub.textContent = data.total + ' pods · ' + data.unhealthy + ' unhealthy · ' + shown + ' shown';
     }
     toggle.addEventListener('click', () => { unhealthyOnly = !unhealthyOnly; refreshToggle(); build(); });
@@ -806,6 +820,9 @@
     const filter = el('input', { placeholder: 'Filter by name, kind or namespace…', style: listFilterStyle });
     root.appendChild(el('div', { style: 'display:flex; gap:10px; align-items:center; margin-bottom:12px;' }, filter));
 
+    const wlBanner = resourceFilterBanner();
+    if (wlBanner) root.appendChild(wlBanner);
+
     if (nsExact) {
       root.appendChild(el('div', { class: 'state', style: 'padding:10px 14px; margin-bottom:12px; display:flex; gap:12px; align-items:center;' },
         el('span', {}, 'Showing namespace ' + nsExact),
@@ -825,6 +842,7 @@
       listWrap.innerHTML = '';
       let shown = 0;
       for (const w of all) {
+        if (!resourceEnabled(w.resource)) continue;
         if (nsExact && w.namespace !== nsExact) continue;
         if (term && !(w.name.toLowerCase().includes(term) || w.namespace.toLowerCase().includes(term) || (w.kind || '').toLowerCase().includes(term))) continue;
         listWrap.appendChild(objRow({ severity: w.severity, kind: w.kind, namespace: w.namespace, name: w.name, status: w.status, num1: w.restarts ? String(w.restarts) : '', num2: w.age || '', link: w.link }));
@@ -1034,6 +1052,14 @@
     root.appendChild(el('div', { class: 'section-title', style: 'font-size:15px; margin-bottom:2px;' }, d.kind || resource));
     const sub = el('div', { style: 'color:var(--fg-dim); font-size:12px; margin-bottom:14px;' });
     root.appendChild(sub);
+    if (!resourceEnabled(resource)) {
+      sub.textContent = d.total + ' ' + resource + ' · hidden';
+      root.appendChild(el('div', { class: 'state', style: 'padding:24px; display:flex; gap:12px; align-items:center;' },
+        el('span', {}, (d.kind || resource) + ' is hidden by your Resources filter.'),
+        el('a', { onclick: () => go('#/resources'), style: 'cursor:pointer;' }, 'Manage resources →')));
+      setContent(root);
+      return;
+    }
     const filter = el('input', { placeholder: 'Filter by name or namespace…', style: listFilterStyle });
     root.appendChild(el('div', { style: 'display:flex; gap:10px; margin-bottom:12px;' }, filter));
     if (nsParam) {

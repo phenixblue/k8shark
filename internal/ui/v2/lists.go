@@ -30,6 +30,7 @@ type ClusterPodRow struct {
 type ClusterWorkloadRow struct {
 	Namespace string `json:"namespace"`
 	Kind      string `json:"kind"`
+	Resource  string `json:"resource"`
 	Name      string `json:"name"`
 	Status    string `json:"status"`
 	Severity  string `json:"severity"`
@@ -209,6 +210,7 @@ func (h *Handler) loadAllWorkloadRows(at time.Time) []ClusterWorkloadRow {
 			rows = append(rows, ClusterWorkloadRow{
 				Namespace: ns,
 				Kind:      k.kind,
+				Resource:  resource,
 				Name:      row.Name,
 				Status:    row.Status,
 				Severity:  row.Severity,
