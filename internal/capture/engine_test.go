@@ -41,6 +41,7 @@ func (s *sliceSink) RecordCount() int {
 	defer s.mu.Unlock()
 	return len(s.records)
 }
+func (s *sliceSink) UncompressedBytes() int64 { return 0 }
 
 // fakeK8sServer returns an httptest.TLSServer that responds to the paths used by
 // a minimal capture config (pods in default, nodes cluster-scoped).

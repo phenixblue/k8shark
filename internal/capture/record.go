@@ -26,6 +26,16 @@ type CaptureMetadata struct {
 	ServerAddress     string    `json:"server_address"`
 	RecordCount       int       `json:"record_count"`
 	DeduplicatedCount int       `json:"deduplicated_count"`
+	// Capture configuration facts, recorded so the UI can describe how the
+	// archive was produced. Omitted (zero) in archives captured before these
+	// fields existed.
+	AutoDiscovered    bool     `json:"auto_discovered,omitempty"`
+	WatchEnabled      bool     `json:"watch_enabled,omitempty"`
+	Intervals         []string `json:"intervals,omitempty"`
+	UncompressedBytes int64    `json:"uncompressed_bytes,omitempty"`
+	Redacted          bool     `json:"redacted,omitempty"`
+	SecretsRedacted   int      `json:"secrets_redacted,omitempty"`
+	FieldsRedacted    int      `json:"fields_redacted,omitempty"`
 }
 
 // IndexEntry maps an API path to the ordered list of record sequence numbers.

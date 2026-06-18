@@ -23,6 +23,9 @@ type RecordSink interface {
 	// watch-index.json, then closes the archive.
 	Finish(meta, index, watchIndex any) error
 	RecordCount() int
+	// UncompressedBytes returns the running total of record JSON bytes written
+	// (before compression).
+	UncompressedBytes() int64
 }
 
 // pathDir returns a short, filesystem-safe directory name for an API path.
@@ -79,6 +82,7 @@ type StreamWriter struct {
 	f       *os.File
 	zw      *zip.Writer
 	n       int
+	bytes   int64          // running total of uncompressed record JSON bytes
 	pathSeq map[string]int // apiPath → next seq number for that path's directory
 }
 
@@ -129,6 +133,7 @@ func (w *StreamWriter) WriteRecord(rec any) error {
 		return err
 	}
 	w.n++
+	w.bytes += int64(len(data))
 	return nil
 }
 
@@ -155,6 +160,7 @@ func (w *StreamWriter) WriteRecordRaw(apiPath string, data any) (int, error) {
 		return 0, err
 	}
 	w.n++
+	w.bytes += int64(len(b))
 	return seq, nil
 }
 
@@ -196,13 +202,21 @@ func (w *StreamWriter) RecordCount() int {
 	return w.n
 }
 
+// UncompressedBytes returns the total uncompressed record JSON bytes written.
+func (w *StreamWriter) UncompressedBytes() int64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.bytes
+}
+
 // NDJSONWriter writes each record as a newline-delimited JSON object to an
 // io.Writer (typically os.Stdout). Finish is a no-op. Thread-safe.
 type NDJSONWriter struct {
-	mu  sync.Mutex
-	w   io.Writer
-	enc *json.Encoder
-	n   int
+	mu    sync.Mutex
+	w     io.Writer
+	enc   *json.Encoder
+	n     int
+	bytes int64
 }
 
 // NewNDJSONWriter creates an NDJSONWriter writing to w.
@@ -214,6 +228,9 @@ func NewNDJSONWriter(w io.Writer) *NDJSONWriter {
 func (w *NDJSONWriter) WriteRecord(rec any) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if b, err := json.Marshal(rec); err == nil {
+		w.bytes += int64(len(b))
+	}
 	if err := w.enc.Encode(rec); err != nil {
 		return err
 	}
@@ -229,6 +246,13 @@ func (w *NDJSONWriter) RecordCount() int {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.n
+}
+
+// UncompressedBytes returns the total record JSON bytes written.
+func (w *NDJSONWriter) UncompressedBytes() int64 {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.bytes
 }
 
 // Archive provides random-access reads into a k8shark ZIP+Zstd capture archive.

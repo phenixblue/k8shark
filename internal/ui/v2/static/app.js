@@ -185,6 +185,63 @@
     return n.toLocaleString('en-US');
   }
 
+  function humanBytes(n) {
+    if (!n || n < 0) return '0 B';
+    const u = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+    let i = 0, v = n;
+    while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+    return (i === 0 ? v : v.toFixed(1)) + ' ' + u[i];
+  }
+
+  function formatDuration(secs) {
+    secs = Math.max(0, Math.round(secs || 0));
+    const h = Math.floor(secs / 3600), m = Math.floor((secs % 3600) / 60), s = secs % 60;
+    if (h) return h + 'h' + (m ? m + 'm' : '');
+    if (m) return m + 'm' + (s ? s + 's' : '');
+    return s + 's';
+  }
+
+  // Capture details card for the overview, fed by /v2/api/capture.
+  function captureDetailsCard() {
+    const card = el('div', { class: 'card', style: 'margin-bottom:18px;' }, cardHeader('Capture details', ''));
+    const body = el('div', {}, loadingState('Loading…'));
+    card.appendChild(body);
+    getJSON('/v2/api/capture')
+      .then((c) => { body.innerHTML = ''; body.appendChild(captureMetaGrid(c)); })
+      .catch(() => { body.innerHTML = ''; body.appendChild(el('div', { class: 'state', style: 'padding:14px;' }, 'Capture details unavailable.')); });
+    return card;
+  }
+
+  function captureMetaGrid(c) {
+    const grid = el('div', { class: 'capmeta' });
+    const row = (k, v) => {
+      if (v === null || v === undefined || v === '') return;
+      grid.appendChild(el('div', { class: 'row' }, el('span', { class: 'k' }, k), el('span', { class: 'v' }, String(v))));
+    };
+    row('Captured', c.captured_at ? new Date(c.captured_at).toLocaleString() : '');
+    row('Until', c.captured_until ? new Date(c.captured_until).toLocaleString() : '');
+    row('Length', formatDuration(c.duration_seconds));
+    row('Kubernetes', c.kubernetes_version);
+    row('Server', c.server_address);
+    row('Archive size', c.compressed_bytes ? humanBytes(c.compressed_bytes) + ' compressed' : '');
+    row('Uncompressed', c.uncompressed_bytes ? humanBytes(c.uncompressed_bytes) : (c.has_config_meta ? '' : 'not recorded'));
+    row('Records', formatNumber(c.record_count || 0) + (c.deduplicated_count ? ' · ' + formatNumber(c.deduplicated_count) + ' deduplicated' : ''));
+    row('Resource paths', formatNumber(c.resource_paths || 0));
+    row('Resource types', formatNumber(c.resource_types || 0));
+    row('Namespaces', formatNumber(c.namespaces || 0));
+    row('Watch events', formatNumber(c.watch_events || 0));
+    if (c.has_config_meta) {
+      row('Dynamic discovery', c.auto_discovered ? 'yes' : 'no');
+      row('Watch enabled', c.watch_enabled ? 'yes' : 'no');
+      if (c.intervals && c.intervals.length) row('Poll interval(s)', c.intervals.join(', '));
+      row('Redaction', c.redacted ? ('yes' + ((c.secrets_redacted || c.fields_redacted) ? ' (' + (c.secrets_redacted || 0) + ' secrets, ' + (c.fields_redacted || 0) + ' fields)' : '')) : 'no');
+    } else {
+      row('Capture config', 'not recorded (captured before this was tracked)');
+    }
+    row('Archive', c.archive_path);
+    return grid;
+  }
+
   // ── Syntax highlighting (dependency-free, builds DOM nodes via textContent
   //    so captured content can never inject markup) ──────────────────────────
   function tok(cls, text) {
@@ -254,11 +311,44 @@
   // codeBlock renders text as a highlighted <pre>. Highlighting is skipped for
   // very large bodies to keep rendering snappy.
   function codeBlock(text, lang) {
-    const pre = el('pre', { class: 'code', style: 'max-height:calc(100vh - 320px); padding:14px;' });
+    const pre = el('pre', { class: 'code', style: 'max-height:calc(100vh - 360px); padding:14px;' });
     text = text || '';
     if (text.length > 300000) { pre.textContent = text; return pre; }
     pre.appendChild(lang === 'json' ? highlightJSON(text) : highlightYAML(text));
     return pre;
+  }
+
+  function copyToClipboard(text, btn) {
+    const flash = () => { const old = btn.textContent; btn.textContent = '✓ Copied'; setTimeout(() => { btn.textContent = old; }, 1200); };
+    const fallback = () => {
+      const ta = document.createElement('textarea');
+      ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); flash(); } catch (_) {}
+      document.body.removeChild(ta);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(flash).catch(fallback);
+    } else { fallback(); }
+  }
+
+  function downloadText(text, filename, mime) {
+    const blob = new Blob([text], { type: mime || 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = el('a', { href: url, download: filename });
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  // codePanel wraps a codeBlock with Copy / Download actions.
+  function codePanel(text, lang, baseName) {
+    text = text || '';
+    const wrap = el('div', {});
+    const copyBtn = el('button', { class: 'btn', onclick: () => copyToClipboard(text, copyBtn) }, 'Copy');
+    const dlBtn = el('button', { class: 'btn', onclick: () => downloadText(text, (baseName || 'object') + '.' + lang, lang === 'json' ? 'application/json' : 'application/yaml') }, 'Download');
+    wrap.appendChild(el('div', { style: 'display:flex; gap:8px; margin-bottom:10px;' }, copyBtn, dlBtn));
+    wrap.appendChild(codeBlock(text, lang));
+    return wrap;
   }
 
   function sparkChart(sparkline) {
@@ -388,6 +478,9 @@
       link: '#/timeline',
     }));
     root.appendChild(kpiStrip);
+
+    // Capture details (file size, timing, config facts).
+    root.appendChild(captureDetailsCard());
 
     // Spark + issues row
     const sparkCard = el('div', { class: 'card' },
@@ -885,6 +978,9 @@
     let data = null, mode = 'yaml';
     const ybtn = el('button', { class: 'btn primary', onclick: () => { mode = 'yaml'; paint(); } }, 'YAML');
     const jbtn = el('button', { class: 'btn', onclick: () => { mode = 'json'; paint(); } }, 'JSON');
+    const curText = () => data ? (mode === 'yaml' ? data.yaml : data.json) || '' : '';
+    const copyBtn = el('button', { class: 'btn', onclick: () => copyToClipboard(curText(), copyBtn) }, 'Copy');
+    const dlBtn = el('button', { class: 'btn', onclick: () => downloadText(curText(), (name || 'object') + '.' + mode, mode === 'json' ? 'application/json' : 'application/yaml') }, 'Download');
     function paint() {
       host.innerHTML = '';
       if (!data) return;
@@ -893,7 +989,7 @@
       ybtn.className = 'btn' + (mode === 'yaml' ? ' primary' : '');
       jbtn.className = 'btn' + (mode === 'json' ? ' primary' : '');
     }
-    wrap.appendChild(el('div', { style: 'display:flex; gap:8px; margin-bottom:10px;' }, ybtn, jbtn));
+    wrap.appendChild(el('div', { style: 'display:flex; gap:8px; margin-bottom:10px;' }, ybtn, jbtn, copyBtn, dlBtn));
     wrap.appendChild(host);
     getJSON('/v2/api/object?path=' + encodeURIComponent(path) + (name ? '&name=' + encodeURIComponent(name) : ''))
       .then((d) => { data = d; paint(); })
@@ -997,9 +1093,10 @@
     ));
     if (!d.found) { root.appendChild(el('div', { class: 'state', style: 'padding:24px;' }, 'Object not present at this snapshot.')); setContent(root); return; }
 
+    const baseName = name || parsed.resource;
     const panelDefs = [
-      { key: 'yaml', label: 'YAML', build: () => codeBlock(d.yaml || '', 'yaml') },
-      { key: 'json', label: 'JSON', build: () => codeBlock(d.json || '', 'json') },
+      { key: 'yaml', label: 'YAML', build: () => codePanel(d.yaml || '', 'yaml', baseName) },
+      { key: 'json', label: 'JSON', build: () => codePanel(d.json || '', 'json', baseName) },
       { key: 'history', label: 'History', build: () => objectHistoryPanel(path, name) },
       { key: 'diff', label: 'Diff', build: () => objectDiffPanel(path, name) },
     ];
@@ -1161,9 +1258,23 @@
       }
       const gnames = Object.keys(groups).sort();
       let shown = 0, enabledCount = 0;
+      const setGroup = (rows, on) => {
+        if (!enabled) enabled = new Set(all.map((x) => x.resource));
+        for (const r of rows) { if (on) enabled.add(r.resource); else enabled.delete(r.resource); }
+        saveEnabledResources(enabled);
+        build();
+      };
       for (const g of gnames) {
         const rows = groups[g];
-        body.appendChild(el('div', { class: 'cat-group' }, el('span', { class: 'g' }, g), el('span', { class: 'gc' }, rows.length + ' kind' + (rows.length !== 1 ? 's' : ''))));
+        const onInGroup = rows.filter((r) => isOn(r.resource)).length;
+        const gcb = el('input', { type: 'checkbox' });
+        gcb.checked = onInGroup === rows.length;
+        gcb.indeterminate = onInGroup > 0 && onInGroup < rows.length;
+        gcb.addEventListener('change', () => setGroup(rows, gcb.checked));
+        body.appendChild(el('div', { class: 'cat-group' },
+          gcb,
+          el('span', { class: 'g', onclick: () => setGroup(rows, onInGroup !== rows.length) }, g),
+          el('span', { class: 'gc' }, onInGroup + '/' + rows.length + ' enabled')));
         for (const r of rows) {
           shown++;
           if (isOn(r.resource)) enabledCount++;

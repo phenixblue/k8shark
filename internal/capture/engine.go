@@ -303,6 +303,10 @@ func (e *Engine) Run() (*CaptureSummary, error) {
 		ServerAddress:     serverAddr,
 		RecordCount:       e.sink.RecordCount(),
 		DeduplicatedCount: e.dedupSkipped,
+		AutoDiscovered:    e.cfg.AutoDiscover || hasAllDirective(e.cfg.Resources),
+		WatchEnabled:      anyWatchEnabled(e.cfg.Resources),
+		Intervals:         distinctIntervals(e.cfg.Resources),
+		UncompressedBytes: e.sink.UncompressedBytes(),
 	}
 
 	if e.verbose {
@@ -1177,6 +1181,31 @@ func hasAllDirective(resources []config.Resource) bool {
 		}
 	}
 	return false
+}
+
+// anyWatchEnabled reports whether any configured resource requested a watch.
+func anyWatchEnabled(resources []config.Resource) bool {
+	for _, r := range resources {
+		if r.Watch {
+			return true
+		}
+	}
+	return false
+}
+
+// distinctIntervals collects the unique human-readable poll intervals across
+// configured resources, for display in the capture-details panel.
+func distinctIntervals(resources []config.Resource) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, r := range resources {
+		if r.IntervalRaw == "" || seen[r.IntervalRaw] {
+			continue
+		}
+		seen[r.IntervalRaw] = true
+		out = append(out, r.IntervalRaw)
+	}
+	return out
 }
 
 func (e *Engine) validateWatchConcurrency() error {
