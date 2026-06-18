@@ -38,10 +38,14 @@
   //   #/timeline              timeline
   //   #/logs                  logs full-screen
   function parseRoute() {
-    const h = (location.hash || '#/overview').replace(/^#/, '');
+    let h = (location.hash || '#/overview').replace(/^#/, '');
+    // Strip any ?query=... before splitting on slashes; route params live in
+    // the path segments, the query is parsed per-view.
+    const qIdx = h.indexOf('?');
+    if (qIdx >= 0) h = h.slice(0, qIdx);
     const parts = h.split('/').filter(Boolean);
     if (parts.length === 0) return { name: 'overview' };
-    if (parts[0] === 'overview' || parts[0] === 'namespaces' || parts[0] === 'timeline' || parts[0] === 'logs') {
+    if (parts[0] === 'overview' || parts[0] === 'namespaces' || parts[0] === 'timeline' || parts[0] === 'logs' || parts[0] === 'diff') {
       return { name: parts[0] };
     }
     if (parts[0] === 'ns' && parts[1]) {
@@ -74,6 +78,7 @@
       { key: 'namespaces', label: 'Namespaces', hash: '#/namespaces' },
       { key: 'timeline',   label: 'Timeline',   hash: '#/timeline' },
       { key: 'logs',       label: 'Logs',       hash: '#/logs' },
+      { key: 'diff',       label: 'Diff',       hash: '#/diff' },
     ];
     const activeKey = state.route.name === 'namespace' || state.route.name === 'pod' ? 'namespaces' : state.route.name;
     for (const it of items) {
@@ -810,11 +815,210 @@
     return card;
   }
 
-  function renderTimeline() {
-    setContent(el('div', { class: 'state' }, 'Timeline view — coming soon.'));
+  // ── Timeline ─────────────────────────────────────────────────────────────
+  async function renderTimeline() {
+    setContent(loadingState('Loading timeline…'));
+    let data;
+    try {
+      data = await getJSON('/v2/api/overview');
+    } catch (e) {
+      setContent(errorState(e.message));
+      return;
+    }
+    const root = el('div', {});
+    const sparkData = data.sparkline || {};
+    const sparkCard = el('div', { class: 'card', style: 'margin-bottom:18px;' },
+      cardHeader('Watch events across capture window', ((sparkData.total_events) || 0) + ' events'),
+      sparkChart(sparkData),
+    );
+    root.appendChild(sparkCard);
+    root.appendChild(el('div', { class: 'section-title' }, 'All recent transitions'));
+    const recentCard = el('div', { class: 'card' });
+    if (!data.recent || data.recent.length === 0) {
+      recentCard.appendChild(el('div', { class: 'state', style: 'padding:18px;' }, 'No watch events were captured. Enable `watch: true` on your config’s resource entries to see live transitions.'));
+    } else {
+      const wrap = el('div', { class: 'events' });
+      for (const t of data.recent) wrap.appendChild(recentRow(t));
+      recentCard.appendChild(wrap);
+    }
+    root.appendChild(recentCard);
+    setContent(root);
   }
-  function renderLogs() {
-    setContent(el('div', { class: 'state' }, 'Logs view — coming soon.'));
+
+  // ── Logs ─────────────────────────────────────────────────────────────────
+  async function renderLogs() {
+    // Parse query params from the hash (e.g. #/logs?ns=X&pod=Y&container=Z)
+    const params = parseLogsParams();
+    if (!params.ns || !params.pod) {
+      setContent(el('div', { class: 'state' }, 'Open a pod first, then click "Logs" to view its captured logs here.'));
+      return;
+    }
+
+    setContent(loadingState('Loading logs for ' + params.pod + '…'));
+    let data;
+    try {
+      const q = new URLSearchParams();
+      q.set('ns', params.ns);
+      q.set('pod', params.pod);
+      if (params.container) q.set('container', params.container);
+      if (params.previous) q.set('previous', 'true');
+      data = await getJSON('/v2/api/logs?' + q.toString());
+    } catch (e) {
+      setContent(errorState(e.message));
+      return;
+    }
+
+    const root = el('div', {});
+
+    // Hero
+    root.appendChild(el('div', { class: 'hero', style: 'margin:-18px -20px 18px; padding:14px 20px 14px;' },
+      el('div', { class: 'crumbs' },
+        el('a', { onclick: () => go('#/overview') }, '← Cluster'),
+        el('span', { class: 'sep' }, '/'),
+        el('a', { onclick: () => go('#/ns/' + encodeURIComponent(data.namespace)) }, data.namespace),
+        el('span', { class: 'sep' }, '/'),
+        el('a', { onclick: () => go('#/ns/' + encodeURIComponent(data.namespace) + '/pod/' + encodeURIComponent(data.pod)) }, 'Pod / ' + data.pod),
+        el('span', { class: 'sep' }, '/'),
+        el('b', {}, 'Logs · ' + data.container + (data.previous ? ' (previous)' : '')),
+      ),
+      el('div', { class: 'hero-row' },
+        el('div', {},
+          el('div', { class: 'title-row' },
+            el('div', { class: 'title' }, data.container),
+            el('span', { class: 'pill neutral' }, data.line_count + ' lines'),
+          ),
+          el('div', { class: 'sub' }, data.pod + (data.previous ? ' · previous container' : ' · current container')),
+        ),
+      ),
+    ));
+
+    // Container picker + previous toggle
+    const picker = el('div', { class: 'card', style: 'margin-bottom:18px; padding:10px 14px; flex-direction:row; align-items:center; gap:10px;' });
+    picker.appendChild(el('span', { style: 'font-size:11px; color:var(--fg-faint); text-transform:uppercase; letter-spacing:.06em;' }, 'Container'));
+    for (const c of (data.containers || [])) {
+      const isActive = c.name === data.container;
+      const btn = el('button', {
+        class: 'btn' + (isActive ? ' primary' : ''),
+        onclick: () => go('#/logs?ns=' + encodeURIComponent(data.namespace) + '&pod=' + encodeURIComponent(data.pod) + '&container=' + encodeURIComponent(c.name) + (data.previous ? '&previous=true' : '')),
+      }, c.name);
+      picker.appendChild(btn);
+    }
+    picker.appendChild(el('span', { style: 'margin-left:auto; font-size:11px; color:var(--fg-faint);' }, data.has_previous_variant ? 'previous log captured for this container' : ''));
+    picker.appendChild(el('button', {
+      class: 'btn' + (data.previous ? ' primary' : ''),
+      disabled: data.has_previous_variant ? null : 'disabled',
+      onclick: () => go('#/logs?ns=' + encodeURIComponent(data.namespace) + '&pod=' + encodeURIComponent(data.pod) + '&container=' + encodeURIComponent(data.container) + (data.previous ? '' : '&previous=true')),
+    }, data.previous ? '← current logs' : 'previous logs →'));
+    root.appendChild(picker);
+
+    // Log text
+    const pre = el('pre', { class: 'log-preview', style: 'max-height: calc(100vh - 320px); padding:14px;' }, data.text || '');
+    root.appendChild(pre);
+
+    setContent(root);
+  }
+
+  // ── Diff ─────────────────────────────────────────────────────────────────
+  async function renderDiff() {
+    const params = parseDiffParams();
+    const root = el('div', {});
+
+    // Form card
+    const form = el('div', { class: 'card', style: 'margin-bottom:18px;' },
+      cardHeader('Compare an object at two snapshots', ''));
+
+    const inputStyle = 'background:var(--bg-row); border:1px solid var(--border-strong); color:var(--fg); padding:6px 10px; border-radius:5px; font-size:12.5px; outline:none; min-width:240px;';
+    const pathInput = el('input', { value: params.path || '', placeholder: '/api/v1/namespaces/<ns>/pods', style: inputStyle });
+    const nameInput = el('input', { value: params.name || '', placeholder: 'pod name (optional, filters list)', style: inputStyle });
+    const beforeSelect = el('select', { style: inputStyle });
+    const afterSelect = el('select', { style: inputStyle });
+    for (const ts of state.snapshots) {
+      beforeSelect.appendChild(el('option', { value: ts, selected: params.before === ts ? 'selected' : null }, ts));
+      afterSelect.appendChild(el('option', { value: ts, selected: params.after === ts ? 'selected' : null }, ts));
+    }
+    if (!params.before && state.snapshots.length > 0) {
+      beforeSelect.value = state.snapshots[0];
+    }
+    if (!params.after && state.snapshots.length > 0) {
+      afterSelect.value = state.snapshots[state.snapshots.length - 1];
+    }
+    const goBtn = el('button', { class: 'btn primary', onclick: () => runDiff() }, 'Compare');
+
+    const formRow = el('div', { style: 'display:grid; grid-template-columns:max-content 1fr; gap:8px 16px; align-items:center;' },
+      el('span', {}, 'Path'),
+      pathInput,
+      el('span', {}, 'Name (optional)'),
+      nameInput,
+      el('span', {}, 'Before'),
+      beforeSelect,
+      el('span', {}, 'After'),
+      afterSelect,
+    );
+    form.appendChild(formRow);
+    form.appendChild(el('div', { style: 'display:flex; gap:8px; justify-content:flex-end; margin-top:8px;' }, goBtn));
+    root.appendChild(form);
+
+    const out = el('div', {});
+    root.appendChild(out);
+    setContent(root);
+
+    async function runDiff() {
+      const q = new URLSearchParams();
+      q.set('path', pathInput.value.trim());
+      if (nameInput.value.trim()) q.set('name', nameInput.value.trim());
+      q.set('before', beforeSelect.value);
+      q.set('after', afterSelect.value);
+      out.innerHTML = '';
+      out.appendChild(loadingState('Diffing…'));
+      try {
+        const data = await getJSON('/v2/api/diff?' + q.toString());
+        out.innerHTML = '';
+        if (data.before_missing || data.after_missing) {
+          out.appendChild(el('div', { class: 'state' },
+            data.before_missing && data.after_missing
+              ? 'Object not present at either snapshot.'
+              : (data.before_missing ? 'Object did not exist at the "before" snapshot — full add.' : 'Object did not exist at the "after" snapshot — full delete.'),
+          ));
+        }
+        if (!data.has_diff && !data.before_missing && !data.after_missing) {
+          out.appendChild(el('div', { class: 'state' }, 'No changes between snapshots.'));
+        }
+        const diff = el('div', { class: 'diff', style: 'padding:14px;' });
+        for (const h of (data.hunks || [])) {
+          const cls = h.type === 'add' ? 'add' : (h.type === 'del' ? 'del' : 'ctx');
+          diff.appendChild(el('div', { class: cls }, h.text));
+        }
+        out.appendChild(diff);
+      } catch (e) {
+        out.innerHTML = '';
+        out.appendChild(errorState(e.message));
+      }
+    }
+    if (params.path && params.before && params.after) runDiff();
+  }
+
+  function parseDiffParams() {
+    const idx = (location.hash || '').indexOf('?');
+    if (idx < 0) return {};
+    const q = new URLSearchParams(location.hash.slice(idx + 1));
+    return {
+      path: q.get('path') || '',
+      name: q.get('name') || '',
+      before: q.get('before') || '',
+      after: q.get('after') || '',
+    };
+  }
+
+  function parseLogsParams() {
+    const idx = (location.hash || '').indexOf('?');
+    if (idx < 0) return {};
+    const q = new URLSearchParams(location.hash.slice(idx + 1));
+    return {
+      ns: q.get('ns') || '',
+      pod: q.get('pod') || '',
+      container: q.get('container') || '',
+      previous: q.get('previous') === 'true',
+    };
   }
 
   function render() {
@@ -827,6 +1031,7 @@
     if (r.name === 'pod') return renderPod(r.ns, r.pod);
     if (r.name === 'timeline') return renderTimeline();
     if (r.name === 'logs') return renderLogs();
+    if (r.name === 'diff') return renderDiff();
     return setContent(errorState('Unknown route'));
   }
 
