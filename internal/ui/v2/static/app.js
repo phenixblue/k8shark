@@ -45,7 +45,7 @@
     if (qIdx >= 0) h = h.slice(0, qIdx);
     const parts = h.split('/').filter(Boolean);
     if (parts.length === 0) return { name: 'overview' };
-    if (parts[0] === 'overview' || parts[0] === 'namespaces' || parts[0] === 'timeline' || parts[0] === 'logs' || parts[0] === 'diff') {
+    if (parts[0] === 'overview' || parts[0] === 'namespaces' || parts[0] === 'pods' || parts[0] === 'workloads' || parts[0] === 'timeline' || parts[0] === 'logs' || parts[0] === 'diff') {
       return { name: parts[0] };
     }
     if (parts[0] === 'ns' && parts[1]) {
@@ -76,11 +76,15 @@
     const items = [
       { key: 'overview',   label: 'Overview',   hash: '#/overview' },
       { key: 'namespaces', label: 'Namespaces', hash: '#/namespaces' },
+      { key: 'workloads',  label: 'Workloads',  hash: '#/workloads' },
+      { key: 'pods',       label: 'Pods',       hash: '#/pods' },
       { key: 'timeline',   label: 'Timeline',   hash: '#/timeline' },
       { key: 'logs',       label: 'Logs',       hash: '#/logs' },
       { key: 'diff',       label: 'Diff',       hash: '#/diff' },
     ];
-    const activeKey = state.route.name === 'namespace' || state.route.name === 'pod' ? 'namespaces' : state.route.name;
+    const activeKey = state.route.name === 'namespace' ? 'namespaces'
+      : state.route.name === 'pod' ? 'pods'
+      : state.route.name;
     for (const it of items) {
       nav.appendChild(el('div', {
         class: 'tab' + (it.key === activeKey ? ' active' : ''),
@@ -288,14 +292,14 @@
     // KPI strip — each tile drills into the relevant view.
     const kpiStrip = el('div', { class: 'kpis' });
     kpiStrip.appendChild(kpi('Namespaces', kpis.namespaces || 0, { link: '#/namespaces' }));
-    kpiStrip.appendChild(kpi('Workloads', kpis.workloads || 0, { link: '#/namespaces' }));
-    kpiStrip.appendChild(kpi('Pods', kpis.pods || 0, { link: '#/namespaces' }));
+    kpiStrip.appendChild(kpi('Workloads', kpis.workloads || 0, { link: '#/workloads' }));
+    kpiStrip.appendChild(kpi('Pods', kpis.pods || 0, { link: '#/pods' }));
     const unhealthyDelta = unhealthyDeltaText(kpis);
     kpiStrip.appendChild(kpi('Unhealthy pods', kpis.unhealthy_pods || 0, {
       severity: (kpis.unhealthy_pods || 0) > 0 ? 'alert' : '',
       delta: unhealthyDelta,
       deltaKind: 'down',
-      link: '#/namespaces?health=unhealthy',
+      link: '#/pods?health=unhealthy',
     }));
     kpiStrip.appendChild(kpi('Watch events', kpis.watch_events || 0, {
       delta: data.sparkline && data.sparkline.buckets ? 'over ' + data.sparkline.buckets.length + ' buckets' : '',
@@ -475,11 +479,16 @@
     );
     root.appendChild(hero);
 
-    // KPIs
+    // KPIs — Workloads/Pods/Unhealthy drill into the cluster lists scoped to
+    // this namespace. VMs/ConfigMaps/Secrets have no list view yet.
+    const nsq = encodeURIComponent(d.name);
     const kpiStrip = el('div', { class: 'kpis k6' });
-    kpiStrip.appendChild(kpi('Workloads', kpis.workloads || 0));
-    kpiStrip.appendChild(kpi('Pods', kpis.pods || 0));
-    kpiStrip.appendChild(kpi('Unhealthy pods', kpis.unhealthy_pods || 0, { severity: (kpis.unhealthy_pods || 0) > 0 ? 'alert' : '' }));
+    kpiStrip.appendChild(kpi('Workloads', kpis.workloads || 0, { link: '#/workloads?ns=' + nsq }));
+    kpiStrip.appendChild(kpi('Pods', kpis.pods || 0, { link: '#/pods?ns=' + nsq }));
+    kpiStrip.appendChild(kpi('Unhealthy pods', kpis.unhealthy_pods || 0, {
+      severity: (kpis.unhealthy_pods || 0) > 0 ? 'alert' : '',
+      link: '#/pods?ns=' + nsq + '&health=unhealthy',
+    }));
     kpiStrip.appendChild(kpi('VirtualMachines', kpis.virtual_machines || 0));
     kpiStrip.appendChild(kpi('ConfigMaps', kpis.configmaps || 0));
     kpiStrip.appendChild(kpi('Secrets', kpis.secrets || 0));
@@ -571,12 +580,13 @@
     setContent(root);
   }
 
-  // Render a workload/VM ResourceRow into a .resrow element.
+  // Render a workload/VM ResourceRow into a .resrow element. These have no
+  // dedicated detail page, so the row is non-interactive unless it carries a
+  // link.
   function resourceRowEl(r) {
-    return el('div', {
-      class: 'resrow',
-      onclick: () => { /* TODO: link to detail */ },
-    },
+    const attrs = { class: 'resrow' + (r.link ? '' : ' static') };
+    if (r.link) attrs.onclick = () => go(r.link);
+    return el('div', attrs,
       el('span', { class: 'dot ' + (r.severity || 'neutral') }),
       el('span', { class: 'kind' }, r.kind || ''),
       el('span', { class: 'nm' }, r.name || ''),
@@ -599,6 +609,144 @@
       el('span', { class: 'num' }, p.restarts ? String(p.restarts) : ''),
       el('span', { class: 'num' }, p.age || ''),
     );
+  }
+
+  // One row in a cluster-wide object list (pods / workloads).
+  function objRow(o) {
+    const attrs = { class: 'objrow' + (o.link ? ' click' : '') };
+    if (o.link) attrs.onclick = () => go(o.link);
+    return el('div', attrs,
+      el('span', { class: 'dot ' + (o.severity || 'neutral') }),
+      el('span', { class: 'kind' }, o.kind || ''),
+      el('span', { class: 'ns' }, o.namespace || ''),
+      el('span', { class: 'nm' }, o.name || ''),
+      el('span', { class: 'status ' + (o.severity || '') }, o.status || ''),
+      el('span', { class: 'num' }, o.num1 || ''),
+      el('span', { class: 'num' }, o.num2 || ''),
+    );
+  }
+
+  const listFilterStyle = 'background:var(--bg-row); border:1px solid var(--border-strong); color:var(--fg); padding:7px 10px; border-radius:6px; outline:none; min-width:280px;';
+
+  function hashQuery() {
+    const i = (location.hash || '').indexOf('?');
+    return new URLSearchParams(i < 0 ? '' : location.hash.slice(i + 1));
+  }
+
+  async function renderPodsList() {
+    setContent(loadingState('Loading pods…'));
+    let data;
+    try {
+      data = await getJSON('/v2/api/pods');
+    } catch (e) {
+      setContent(errorState(e.message));
+      return;
+    }
+    const all = data.pods || [];
+    const q = hashQuery();
+    const nsExact = q.get('ns') || '';
+    let unhealthyOnly = q.get('health') === 'unhealthy';
+
+    const root = el('div', {});
+    root.appendChild(el('div', { class: 'section-title', style: 'font-size:15px; margin-bottom:2px;' }, 'Pods'));
+    const sub = el('div', { style: 'color:var(--fg-dim); font-size:12px; margin-bottom:14px;' });
+    root.appendChild(sub);
+
+    const filter = el('input', { placeholder: 'Filter by name or namespace…', style: listFilterStyle });
+    const toggle = el('button', { class: 'btn' });
+    root.appendChild(el('div', { style: 'display:flex; gap:10px; align-items:center; margin-bottom:12px;' }, filter, toggle));
+
+    if (nsExact) {
+      root.appendChild(el('div', { class: 'state', style: 'padding:10px 14px; margin-bottom:12px; display:flex; gap:12px; align-items:center;' },
+        el('span', {}, 'Showing namespace ' + nsExact),
+        el('a', { onclick: () => go('#/pods' + (unhealthyOnly ? '?health=unhealthy' : '')), style: 'cursor:pointer;' }, 'Show all →')));
+    }
+
+    const card = el('div', { class: 'card' });
+    card.appendChild(el('div', { class: 'objhead' },
+      el('span', {}, ''), el('span', {}, 'Kind'), el('span', {}, 'Namespace'), el('span', {}, 'Name'),
+      el('span', {}, 'Status'), el('span', { style: 'text-align:right;' }, 'Restarts'), el('span', { style: 'text-align:right;' }, 'Age')));
+    const listWrap = el('div', {});
+    card.appendChild(listWrap);
+    root.appendChild(card);
+
+    function refreshToggle() {
+      toggle.className = 'btn' + (unhealthyOnly ? ' primary' : '');
+      toggle.textContent = (unhealthyOnly ? '✓ ' : '') + 'Unhealthy only';
+    }
+    function build() {
+      const term = filter.value.trim().toLowerCase();
+      listWrap.innerHTML = '';
+      let shown = 0;
+      for (const p of all) {
+        if (nsExact && p.namespace !== nsExact) continue;
+        if (unhealthyOnly && !p.unhealthy) continue;
+        if (term && !(p.name.toLowerCase().includes(term) || p.namespace.toLowerCase().includes(term))) continue;
+        const status = (p.status || p.phase || '') + (p.ready ? ' · ' + p.ready : '');
+        listWrap.appendChild(objRow({ severity: p.severity, kind: 'Pod', namespace: p.namespace, name: p.name, status, num1: p.restarts ? String(p.restarts) : '', num2: p.age || '', link: p.link }));
+        shown++;
+      }
+      if (!shown) listWrap.appendChild(el('div', { class: 'state', style: 'padding:18px;' }, unhealthyOnly ? 'No unhealthy pods match.' : 'No pods match.'));
+      sub.textContent = data.total + ' pods · ' + data.unhealthy + ' unhealthy · ' + shown + ' shown';
+    }
+    toggle.addEventListener('click', () => { unhealthyOnly = !unhealthyOnly; refreshToggle(); build(); });
+    filter.addEventListener('input', build);
+    refreshToggle();
+    build();
+    setContent(root);
+  }
+
+  async function renderWorkloadsList() {
+    setContent(loadingState('Loading workloads…'));
+    let data;
+    try {
+      data = await getJSON('/v2/api/workloads');
+    } catch (e) {
+      setContent(errorState(e.message));
+      return;
+    }
+    const all = data.workloads || [];
+    const q = hashQuery();
+    const nsExact = q.get('ns') || '';
+
+    const root = el('div', {});
+    root.appendChild(el('div', { class: 'section-title', style: 'font-size:15px; margin-bottom:2px;' }, 'Workloads'));
+    const sub = el('div', { style: 'color:var(--fg-dim); font-size:12px; margin-bottom:14px;' });
+    root.appendChild(sub);
+
+    const filter = el('input', { placeholder: 'Filter by name, kind or namespace…', style: listFilterStyle });
+    root.appendChild(el('div', { style: 'display:flex; gap:10px; align-items:center; margin-bottom:12px;' }, filter));
+
+    if (nsExact) {
+      root.appendChild(el('div', { class: 'state', style: 'padding:10px 14px; margin-bottom:12px; display:flex; gap:12px; align-items:center;' },
+        el('span', {}, 'Showing namespace ' + nsExact),
+        el('a', { onclick: () => go('#/workloads'), style: 'cursor:pointer;' }, 'Show all →')));
+    }
+
+    const card = el('div', { class: 'card' });
+    card.appendChild(el('div', { class: 'objhead' },
+      el('span', {}, ''), el('span', {}, 'Kind'), el('span', {}, 'Namespace'), el('span', {}, 'Name'),
+      el('span', {}, 'Status'), el('span', { style: 'text-align:right;' }, ''), el('span', { style: 'text-align:right;' }, 'Age')));
+    const listWrap = el('div', {});
+    card.appendChild(listWrap);
+    root.appendChild(card);
+
+    function build() {
+      const term = filter.value.trim().toLowerCase();
+      listWrap.innerHTML = '';
+      let shown = 0;
+      for (const w of all) {
+        if (nsExact && w.namespace !== nsExact) continue;
+        if (term && !(w.name.toLowerCase().includes(term) || w.namespace.toLowerCase().includes(term) || (w.kind || '').toLowerCase().includes(term))) continue;
+        listWrap.appendChild(objRow({ severity: w.severity, kind: w.kind, namespace: w.namespace, name: w.name, status: w.status, num1: w.restarts ? String(w.restarts) : '', num2: w.age || '', link: w.link }));
+        shown++;
+      }
+      if (!shown) listWrap.appendChild(el('div', { class: 'state', style: 'padding:18px;' }, 'No workloads match.'));
+      sub.textContent = data.total + ' workloads · ' + shown + ' shown';
+    }
+    filter.addEventListener('input', build);
+    build();
+    setContent(root);
   }
 
   async function renderPod(ns, name) {
@@ -1087,6 +1235,8 @@
     const r = state.route;
     if (r.name === 'overview') return renderOverview();
     if (r.name === 'namespaces') return renderNamespacesIndex();
+    if (r.name === 'pods') return renderPodsList();
+    if (r.name === 'workloads') return renderWorkloadsList();
     if (r.name === 'namespace') return renderNamespace(r.ns);
     if (r.name === 'pod') return renderPod(r.ns, r.pod);
     if (r.name === 'timeline') return renderTimeline();

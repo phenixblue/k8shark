@@ -156,7 +156,35 @@ a { color: inherit; }
   font-size: 12.5px;
 }
 .resrow:hover { background: var(--bg-row-hover); }
+.resrow.static { cursor: default; }
+.resrow.static:hover { background: transparent; }
 .resrow:last-child { border-bottom: none; }
+
+/* Cluster-wide object lists (pods / workloads) with a namespace column. */
+.objhead, .objrow {
+  display: grid; grid-template-columns: 14px 70px 190px 1fr 160px 64px 56px; gap: 10px;
+  align-items: center; padding: 7px 6px; border-bottom: 1px solid var(--border); font-size: 12.5px;
+}
+.objhead { color: var(--fg-faint); font: 10px var(--mono); text-transform: uppercase; letter-spacing: .05em; }
+.objrow.click { cursor: pointer; }
+.objrow.click:hover { background: var(--bg-row-hover); }
+.objrow:last-child { border-bottom: none; }
+.objrow .dot { width: 8px; height: 8px; border-radius: 50%; }
+.objrow .dot.good { background: var(--good); }
+.objrow .dot.warn { background: var(--warn); }
+.objrow .dot.bad { background: var(--bad); }
+.objrow .dot.neutral { background: var(--fg-faint); }
+.objrow .kind {
+  font: 10px var(--mono); padding: 1px 6px; background: var(--tag-bg); color: var(--fg-dim);
+  border-radius: 3px; text-align: center; border: 1px solid var(--border-strong);
+}
+.objrow .ns { color: var(--fg-dim); font: 11px var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.objrow .nm { color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.objrow .status { font: 11px var(--mono); color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.objrow .status.bad { color: var(--bad); }
+.objrow .status.warn { color: var(--warn); }
+.objrow .status.good { color: var(--good); }
+.objrow .num { font: 11px var(--mono); color: var(--fg-faint); text-align: right; }
 .resrow .dot { width: 8px; height: 8px; border-radius: 50%; }
 .resrow .dot.good { background: var(--good); }
 .resrow .dot.warn { background: var(--warn); }
