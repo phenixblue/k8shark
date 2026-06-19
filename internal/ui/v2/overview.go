@@ -163,6 +163,19 @@ func (h *Handler) buildOverview(at time.Time) (*Overview, error) {
 			ns.Unhealthy++
 		}
 	}
+	// Attach namespace labels from the captured namespaces list (one read).
+	if body, code, err := store.ReconstructAt("/api/v1/namespaces", at); err == nil && code == http.StatusOK && len(body) > 0 {
+		var list struct {
+			Items []json.RawMessage `json:"items"`
+		}
+		if json.Unmarshal(body, &list) == nil {
+			for _, raw := range list.Items {
+				if s := nsByName[getName(raw)]; s != nil {
+					s.Labels = getLabels(raw)
+				}
+			}
+		}
+	}
 	ov.Namespaces = make([]NamespaceSummary, 0, len(nsByName))
 	for _, s := range nsByName {
 		ov.Namespaces = append(ov.Namespaces, *s)

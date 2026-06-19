@@ -13,30 +13,32 @@ import (
 // plus the namespace (and an Unhealthy flag matching the overview's
 // unhealthy_pods KPI definition) so the list can be filtered client-side.
 type ClusterPodRow struct {
-	Namespace string `json:"namespace"`
-	Name      string `json:"name"`
-	Phase     string `json:"phase"`
-	Status    string `json:"status"`
-	Severity  string `json:"severity"`
-	Ready     string `json:"ready"`
-	Restarts  int    `json:"restarts"`
-	Age       string `json:"age,omitempty"`
-	Link      string `json:"link"`
-	Unhealthy bool   `json:"unhealthy"`
+	Namespace string            `json:"namespace"`
+	Name      string            `json:"name"`
+	Phase     string            `json:"phase"`
+	Status    string            `json:"status"`
+	Severity  string            `json:"severity"`
+	Ready     string            `json:"ready"`
+	Restarts  int               `json:"restarts"`
+	Age       string            `json:"age,omitempty"`
+	Link      string            `json:"link"`
+	Unhealthy bool              `json:"unhealthy"`
+	Labels    map[string]string `json:"labels,omitempty"`
 }
 
 // ClusterWorkloadRow is a single workload in the cluster-wide workloads list:
 // ResourceRow plus its namespace.
 type ClusterWorkloadRow struct {
-	Namespace string `json:"namespace"`
-	Kind      string `json:"kind"`
-	Resource  string `json:"resource"`
-	Name      string `json:"name"`
-	Status    string `json:"status"`
-	Severity  string `json:"severity"`
-	Restarts  int    `json:"restarts,omitempty"`
-	Age       string `json:"age,omitempty"`
-	Link      string `json:"link,omitempty"`
+	Namespace string            `json:"namespace"`
+	Kind      string            `json:"kind"`
+	Resource  string            `json:"resource"`
+	Name      string            `json:"name"`
+	Status    string            `json:"status"`
+	Severity  string            `json:"severity"`
+	Restarts  int               `json:"restarts,omitempty"`
+	Age       string            `json:"age,omitempty"`
+	Link      string            `json:"link,omitempty"`
+	Labels    map[string]string `json:"labels,omitempty"`
 }
 
 // PodsList is the response from /v2/api/pods.
@@ -159,6 +161,7 @@ func (h *Handler) loadAllPodRows(at time.Time) ([]ClusterPodRow, int) {
 				Age:       humanAge(getCreationTimestamp(raw), at),
 				Link:      podLink(ns, name),
 				Unhealthy: uh,
+				Labels:    getLabels(raw),
 			})
 		}
 	}
@@ -217,6 +220,7 @@ func (h *Handler) loadAllWorkloadRows(at time.Time) []ClusterWorkloadRow {
 				Restarts:  row.Restarts,
 				Age:       row.Age,
 				Link:      "#/ns/" + escapeHash(ns),
+				Labels:    getLabels(raw),
 			})
 		}
 	}

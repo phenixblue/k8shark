@@ -81,11 +81,12 @@ type ResourceTile struct {
 // NamespaceSummary is a single row in the top-namespaces list and also the
 // shape returned from the Namespaces tab.
 type NamespaceSummary struct {
-	Name      string `json:"name"`
-	Resources int    `json:"resources"`
-	Workloads int    `json:"workloads"`
-	Pods      int    `json:"pods"`
-	Unhealthy int    `json:"unhealthy,omitempty"`
+	Name      string            `json:"name"`
+	Resources int               `json:"resources"`
+	Workloads int               `json:"workloads"`
+	Pods      int               `json:"pods"`
+	Unhealthy int               `json:"unhealthy,omitempty"`
+	Labels    map[string]string `json:"labels,omitempty"`
 }
 
 // Transition is a single recent watch event used by the "Recent transitions"

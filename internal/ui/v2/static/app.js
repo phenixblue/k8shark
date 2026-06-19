@@ -577,10 +577,11 @@
     const list = data.namespaces || [];
     const hq = new URLSearchParams((location.hash.split('?')[1]) || '');
     const unhealthyOnly = hq.get('health') === 'unhealthy';
-    const nameList = [...new Set(list.map((n) => n.name).filter(Boolean))].sort();
     const fb = filterBar({
-      placeholder: 'Filter namespaces… (name=, /regex/)',
-      facets: [{ key: 'name', label: 'name', field: (n) => n.name, suggest: () => nameList }],
+      placeholder: 'Filter namespaces… (name=, label=value, /regex/)',
+      rows: () => list,
+      facets: [{ key: 'name', label: 'name', field: (n) => n.name }],
+      labels: (n) => n.labels,
       bareFields: (n) => [n.name],
       onChange: () => build(),
     });
@@ -827,25 +828,32 @@
 
   // ── Chip / token filter bar ────────────────────────────────────────────────
   // opts: {
-  //   facets: [{ key, aliases?, label, field(row)->string, suggest()->[string] }],
-  //   bareFields(row)->[string],   // fields a bare term matches against
+  //   rows: () => [row],                         // full dataset (for suggestions)
+  //   facets: [{ key, aliases?, label, field(row)->string }],
+  //   labels: (row) => ({k:v}),                  // label map for label selectors
+  //   bareFields(row)->[string],                 // fields a bare term matches
   //   placeholder?, initial?: [{key,value}], onChange(),
   // }
-  // Semantics: AND across chips. A value wrapped in /.../ is a (case-insensitive)
-  // regex; otherwise it's a case-insensitive substring. Bare terms match any of
-  // bareFields. Returns { el, matches(row), chips() }.
+  // Semantics: chips AND together. A value wrapped in /.../ is a case-insensitive
+  // regex. Facet and bare terms are case-insensitive substrings; a label
+  // selector (any non-facet key=value, e.g. app.kubernetes.io/name=web) is an
+  // exact (case-insensitive) match on metadata.labels[key]. Suggestions are
+  // aggregated: each facet/label's value list is scoped by the other chips.
   function filterBar(opts) {
     const facets = opts.facets || [];
     const byKey = {};
     for (const f of facets) { byKey[f.key] = f; for (const a of (f.aliases || [])) byKey[a] = f; }
-    const normKey = (k) => { const f = byKey[k.toLowerCase()]; return f ? f.key : k.toLowerCase(); };
+    // Resolve a typed key to a facet key, else keep it verbatim (label keys are
+    // case-sensitive, so don't lowercase those).
+    const resolveKey = (k) => { const f = byKey[k.toLowerCase()]; return f ? f.key : k; };
+    const labelsOf = (row) => (opts.labels ? (opts.labels(row) || {}) : {});
 
     let chips = [];
     let suggestions = [];
     let sel = -1;
 
     const chipHost = el('span', { class: 'fb-chips' });
-    const input = el('input', { class: 'fb-input', placeholder: opts.placeholder || 'Filter… (try ns=, name=, k=v, /regex/)' });
+    const input = el('input', { class: 'fb-input', placeholder: opts.placeholder || 'Filter… (ns=, name=, label=value, /regex/)' });
     const drop = el('div', { class: 'fb-suggest', style: 'display:none;' });
     const wrap = el('div', { class: 'filterbar', onclick: () => input.focus() }, chipHost, input, drop);
 
@@ -868,10 +876,44 @@
       renderChips(); input.value = ''; closeDrop(); fire();
     }
 
+    const test = (c, str, exact) => {
+      str = String(str == null ? '' : str);
+      if (c.regex) { try { return new RegExp(c.value, 'i').test(str); } catch (_) { return false; } }
+      if (exact) return str.toLowerCase() === c.value.toLowerCase();
+      return str.toLowerCase().includes(c.value.toLowerCase());
+    };
+    function chipMatches(c, row) {
+      if (c.key && byKey[c.key]) return test(c, byKey[c.key].field(row), false);
+      if (c.key) { const lv = labelsOf(row)[c.key]; return lv !== undefined && test(c, lv, true); }
+      for (const fv of (opts.bareFields ? opts.bareFields(row) : [])) if (test(c, fv, false)) return true;
+      return false;
+    }
+    const matchesChips = (row) => { for (const c of chips) if (!chipMatches(c, row)) return false; return true; };
+    const scopedRows = () => (opts.rows ? opts.rows() : []).filter(matchesChips);
+
+    function distinct(values, partial, cap) {
+      const seen = new Set(), out = [];
+      for (let v of values) {
+        if (v == null || v === '') continue;
+        v = String(v);
+        if (partial && !v.toLowerCase().includes(partial)) continue;
+        if (seen.has(v)) continue;
+        seen.add(v); out.push(v);
+        if (out.length >= cap) break;
+      }
+      return out;
+    }
+    function labelKeys(rows) {
+      const set = new Set();
+      for (const r of rows) for (const k in labelsOf(r)) set.add(k);
+      return [...set].sort();
+    }
+
     function updateSuggestions() {
       const tok = input.value;
       suggestions = [];
       const eq = tok.indexOf('=');
+      const scope = scopedRows();
       if (eq < 0) {
         const p = tok.toLowerCase();
         const keyMatch = [], labelMatch = [];
@@ -880,16 +922,16 @@
           else if ((f.label || '').toLowerCase().startsWith(p)) labelMatch.push(f);
         }
         for (const f of keyMatch.concat(labelMatch)) suggestions.push({ type: 'key', label: f.key + '=', hint: f.label, key: f.key });
+        for (const lk of labelKeys(scope)) {
+          if (suggestions.length >= 16) break;
+          if (!p || lk.toLowerCase().includes(p)) suggestions.push({ type: 'key', label: lk + '=', hint: 'label', key: lk });
+        }
       } else {
-        const key = normKey(tok.slice(0, eq));
+        const key = resolveKey(tok.slice(0, eq));
         const partial = tok.slice(eq + 1).toLowerCase().replace(/^\/|\/$/g, '');
         const f = byKey[key];
-        if (f && f.suggest) {
-          for (const v of (f.suggest() || [])) {
-            if (!partial || v.toLowerCase().includes(partial)) suggestions.push({ type: 'value', label: v, key, value: v });
-            if (suggestions.length >= 12) break;
-          }
-        }
+        const vals = f ? scope.map(f.field) : scope.map((r) => labelsOf(r)[key]);
+        for (const v of distinct(vals, partial, 12)) suggestions.push({ type: 'value', label: v, key: f ? f.key : key, value: v });
       }
       sel = -1; // no auto-highlight: Enter commits typed text unless a suggestion is chosen
       renderDrop();
@@ -914,7 +956,7 @@
       const tok = input.value.trim();
       if (!tok) return;
       const eq = tok.indexOf('=');
-      if (eq > 0) addChip(normKey(tok.slice(0, eq)), tok.slice(eq + 1));
+      if (eq > 0) addChip(resolveKey(tok.slice(0, eq)), tok.slice(eq + 1));
       else addChip('', tok);
     }
 
@@ -932,23 +974,13 @@
       else if (e.key === 'Backspace' && input.value === '' && chips.length) { chips.pop(); renderChips(); fire(); }
     });
 
-    for (const c of (opts.initial || [])) { if (c && c.value) chips.push(makeChip(normKey(c.key || ''), c.value)); }
+    for (const c of (opts.initial || [])) { if (c && c.value) chips.push(makeChip(resolveKey(c.key || ''), c.value)); }
     renderChips();
 
-    const test = (c, str) => {
-      str = String(str == null ? '' : str);
-      if (c.regex) { try { return new RegExp(c.value, 'i').test(str); } catch (_) { return false; } }
-      return str.toLowerCase().includes(c.value.toLowerCase());
-    };
-    function chipMatches(c, row) {
-      if (c.key && byKey[c.key]) return test(c, byKey[c.key].field(row));
-      for (const fv of (opts.bareFields ? opts.bareFields(row) : [])) if (test(c, fv)) return true;
-      return false;
-    }
     return {
       el: wrap,
       chips: () => chips,
-      matches: (row) => { for (const c of chips) if (!chipMatches(c, row)) return false; return true; },
+      matches: matchesChips,
     };
   }
 
@@ -971,17 +1003,16 @@
     const sub = el('div', { style: 'color:var(--fg-dim); font-size:12px; margin-bottom:14px;' });
     root.appendChild(sub);
 
-    const nsList = [...new Set(all.map((p) => p.namespace).filter(Boolean))].sort();
-    const nameList = [...new Set(all.map((p) => p.name).filter(Boolean))].sort();
-    const statusList = [...new Set(all.map((p) => p.status || p.phase).filter(Boolean))].sort();
     const toggle = el('button', { class: 'btn' });
     const fb = filterBar({
-      placeholder: 'Filter pods… (ns=, name=, status=, /regex/)',
+      placeholder: 'Filter pods… (ns=, name=, status=, label=value, /regex/)',
+      rows: () => all,
       facets: [
-        { key: 'ns', aliases: ['namespace'], label: 'namespace', field: (p) => p.namespace, suggest: () => nsList },
-        { key: 'name', label: 'name', field: (p) => p.name, suggest: () => nameList },
-        { key: 'status', label: 'status', field: (p) => p.status || p.phase, suggest: () => statusList },
+        { key: 'ns', aliases: ['namespace'], label: 'namespace', field: (p) => p.namespace },
+        { key: 'name', label: 'name', field: (p) => p.name },
+        { key: 'status', label: 'status', field: (p) => p.status || p.phase },
       ],
+      labels: (p) => p.labels,
       bareFields: (p) => [p.name, p.namespace, p.status, p.phase],
       initial: nsExact ? [{ key: 'ns', value: nsExact }] : [],
       onChange: () => build(),
@@ -1042,16 +1073,15 @@
     const sub = el('div', { style: 'color:var(--fg-dim); font-size:12px; margin-bottom:14px;' });
     root.appendChild(sub);
 
-    const nsList = [...new Set(all.map((w) => w.namespace).filter(Boolean))].sort();
-    const nameList = [...new Set(all.map((w) => w.name).filter(Boolean))].sort();
-    const kindList = [...new Set(all.map((w) => w.kind).filter(Boolean))].sort();
     const fb = filterBar({
-      placeholder: 'Filter workloads… (ns=, kind=, name=, /regex/)',
+      placeholder: 'Filter workloads… (ns=, kind=, name=, label=value, /regex/)',
+      rows: () => all,
       facets: [
-        { key: 'ns', aliases: ['namespace'], label: 'namespace', field: (w) => w.namespace, suggest: () => nsList },
-        { key: 'kind', label: 'kind', field: (w) => w.kind, suggest: () => kindList },
-        { key: 'name', label: 'name', field: (w) => w.name, suggest: () => nameList },
+        { key: 'ns', aliases: ['namespace'], label: 'namespace', field: (w) => w.namespace },
+        { key: 'kind', label: 'kind', field: (w) => w.kind },
+        { key: 'name', label: 'name', field: (w) => w.name },
       ],
+      labels: (w) => w.labels,
       bareFields: (w) => [w.name, w.namespace, w.kind, w.status],
       initial: nsExact ? [{ key: 'ns', value: nsExact }] : [],
       onChange: () => build(),
@@ -1326,14 +1356,14 @@
       setContent(root);
       return;
     }
-    const nsList = [...new Set(all.map((it) => it.namespace).filter(Boolean))].sort();
-    const nameList = [...new Set(all.map((it) => it.name).filter(Boolean))].sort();
     const fb = filterBar({
-      placeholder: 'Filter ' + resource + '… (ns=, name=, /regex/)',
+      placeholder: 'Filter ' + resource + '… (ns=, name=, label=value, /regex/)',
+      rows: () => all,
       facets: [
-        { key: 'ns', aliases: ['namespace'], label: 'namespace', field: (it) => it.namespace, suggest: () => nsList },
-        { key: 'name', label: 'name', field: (it) => it.name, suggest: () => nameList },
+        { key: 'ns', aliases: ['namespace'], label: 'namespace', field: (it) => it.namespace },
+        { key: 'name', label: 'name', field: (it) => it.name },
       ],
+      labels: (it) => it.labels,
       bareFields: (it) => [it.name, it.namespace],
       initial: nsParam ? [{ key: 'ns', value: nsParam }] : [],
       onChange: () => build(),

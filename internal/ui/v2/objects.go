@@ -78,21 +78,22 @@ func (h *Handler) serveObject(w http.ResponseWriter, r *http.Request) {
 
 // ResourceObjectRow is a single object in a generic resource-type list.
 type ResourceObjectRow struct {
-	Namespace string `json:"namespace,omitempty"`
-	Name      string `json:"name"`
-	Age       string `json:"age,omitempty"`
-	Link      string `json:"link"`
+	Namespace string            `json:"namespace,omitempty"`
+	Name      string            `json:"name"`
+	Age       string            `json:"age,omitempty"`
+	Link      string            `json:"link"`
+	Labels    map[string]string `json:"labels,omitempty"`
 }
 
 // ResourceList is the response from /v2/api/resource — every object of a given
 // resource type (optionally scoped to a namespace) at the resolved snapshot.
 type ResourceList struct {
-	Resource string              `json:"resource"`
-	Kind     string              `json:"kind"`
-	Namespace string             `json:"namespace,omitempty"`
-	At       string              `json:"at,omitempty"`
-	Total    int                 `json:"total"`
-	Items    []ResourceObjectRow `json:"items"`
+	Resource  string              `json:"resource"`
+	Kind      string              `json:"kind"`
+	Namespace string              `json:"namespace,omitempty"`
+	At        string              `json:"at,omitempty"`
+	Total     int                 `json:"total"`
+	Items     []ResourceObjectRow `json:"items"`
 }
 
 // serveResourceList lists every object of a resource type across the capture.
@@ -151,6 +152,7 @@ func (h *Handler) serveResourceList(w http.ResponseWriter, r *http.Request) {
 				Name:      name,
 				Age:       humanAge(getCreationTimestamp(it), at),
 				Link:      objectLink(path, name),
+				Labels:    getLabels(it),
 			})
 		}
 	}
@@ -166,7 +168,7 @@ func (h *Handler) serveResourceList(w http.ResponseWriter, r *http.Request) {
 
 // ResourceCatalogRow describes one captured resource type (API kind).
 type ResourceCatalogRow struct {
-	Group      string `json:"group"`
+	Group      string   `json:"group"`
 	Version    string   `json:"version"`
 	Resource   string   `json:"resource"`
 	Kind       string   `json:"kind"`
@@ -344,6 +346,19 @@ func objectLink(path, name string) string {
 	q.Set("path", path)
 	q.Set("name", name)
 	return "#/object?" + q.Encode()
+}
+
+// getLabels reads metadata.labels from a raw object.
+func getLabels(raw json.RawMessage) map[string]string {
+	var m struct {
+		Metadata struct {
+			Labels map[string]string `json:"labels"`
+		} `json:"metadata"`
+	}
+	if json.Unmarshal(raw, &m) != nil {
+		return nil
+	}
+	return m.Metadata.Labels
 }
 
 // kindAndNamespace pulls apiVersion/kind and metadata.namespace from a raw
