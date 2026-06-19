@@ -38,8 +38,6 @@
   }
   .btn:hover{text-decoration:none; border-color:var(--accent); color:#fff}
   .btn.primary{background:linear-gradient(135deg,var(--accent),var(--accent-2)); border-color:transparent; color:#fff}
-  .install{margin:28px 0 0}
-  .install .label{color:var(--muted); font-size:13px; text-transform:uppercase; letter-spacing:.08em; margin:0 0 6px}
   pre{
     background:var(--code-bg); border:1px solid var(--border); border-radius:10px;
     padding:14px 16px; overflow:auto; margin:0 0 12px;
@@ -48,8 +46,8 @@
   pre .c{color:#6b7a90}
   pre .p{color:var(--accent)}
   pre:last-child{margin-bottom:0}
-  section{margin-top:56px}
-  h2{font-size:24px; margin:0 0 20px; text-align:center}
+  section{margin-top:80px}
+  h2{font-size:24px; margin:0 0 24px; text-align:center}
   .shot{display:block; width:100%; height:auto; border:1px solid var(--border); border-radius:12px; box-shadow:0 8px 40px rgba(0,0,0,.4)}
   .steps{display:grid; grid-template-columns:repeat(3,1fr); gap:16px}
   .step{background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:20px}
@@ -58,7 +56,7 @@
   .step p{margin:0; color:var(--muted); font-size:14px}
   .step code{background:var(--code-bg); border:1px solid var(--border); border-radius:6px; padding:1px 6px; font-size:13px}
   .note{text-align:center; color:var(--muted); font-size:14px; background:var(--panel-2); border:1px solid var(--border); border-radius:10px; padding:16px 18px}
-  footer{margin-top:56px; border-top:1px solid var(--border); padding:28px 0 40px; text-align:center; color:var(--muted); font-size:14px}
+  footer{margin-top:80px; border-top:1px solid var(--border); padding:28px 0 40px; text-align:center; color:var(--muted); font-size:14px}
   @media (max-width:680px){ .steps{grid-template-columns:1fr} header{padding-top:40px} }
 </style>
 </head>
@@ -81,16 +79,16 @@
     <a class="btn" href="https://github.com/phenixblue/k8shark/releases/latest">Releases</a>
     <a class="btn" href="./benchmarks/">Benchmarks</a>
   </div>
+</div>
 
-  <div class="install">
-    <p class="label">Install</p>
-    <pre><span class="c"># Homebrew</span>
+<section class="wrap">
+  <h2>Install</h2>
+  <pre><span class="c"># Homebrew</span>
 brew install phenixblue/tap/k8shark
 
 <span class="c"># or with Go</span>
 go install github.com/phenixblue/k8shark@latest</pre>
-  </div>
-</div>
+</section>
 
 <section class="wrap">
   <img class="shot" src="demo.gif" alt="k8shark capture and replay demo">
