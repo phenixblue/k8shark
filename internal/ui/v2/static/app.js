@@ -822,6 +822,133 @@
     return new URLSearchParams(i < 0 ? '' : location.hash.slice(i + 1));
   }
 
+  // ── Chip / token filter bar ────────────────────────────────────────────────
+  // opts: {
+  //   facets: [{ key, aliases?, label, field(row)->string, suggest()->[string] }],
+  //   bareFields(row)->[string],   // fields a bare term matches against
+  //   placeholder?, initial?: [{key,value}], onChange(),
+  // }
+  // Semantics: AND across chips. A value wrapped in /.../ is a (case-insensitive)
+  // regex; otherwise it's a case-insensitive substring. Bare terms match any of
+  // bareFields. Returns { el, matches(row), chips() }.
+  function filterBar(opts) {
+    const facets = opts.facets || [];
+    const byKey = {};
+    for (const f of facets) { byKey[f.key] = f; for (const a of (f.aliases || [])) byKey[a] = f; }
+    const normKey = (k) => { const f = byKey[k.toLowerCase()]; return f ? f.key : k.toLowerCase(); };
+
+    let chips = [];
+    let suggestions = [];
+    let sel = -1;
+
+    const chipHost = el('span', { class: 'fb-chips' });
+    const input = el('input', { class: 'fb-input', placeholder: opts.placeholder || 'Filter… (try ns=, name=, k=v, /regex/)' });
+    const drop = el('div', { class: 'fb-suggest', style: 'display:none;' });
+    const wrap = el('div', { class: 'filterbar', onclick: () => input.focus() }, chipHost, input, drop);
+
+    function makeChip(key, value) {
+      let regex = false, v = value;
+      if (v.length >= 2 && v[0] === '/' && v[v.length - 1] === '/') { regex = true; v = v.slice(1, -1); }
+      return { key, value: v, regex, label: (key ? key + '=' : '') + value };
+    }
+    function renderChips() {
+      chipHost.innerHTML = '';
+      chips.forEach((c, i) => {
+        chipHost.appendChild(el('span', { class: 'fb-chip' }, c.label,
+          el('span', { class: 'fb-x', title: 'Remove', onclick: (e) => { e.stopPropagation(); chips.splice(i, 1); renderChips(); fire(); } }, '✕')));
+      });
+    }
+    function fire() { if (opts.onChange) opts.onChange(); }
+    function addChip(key, value) {
+      if (value === '') return;
+      chips.push(makeChip(key, value));
+      renderChips(); input.value = ''; closeDrop(); fire();
+    }
+
+    function updateSuggestions() {
+      const tok = input.value;
+      suggestions = [];
+      const eq = tok.indexOf('=');
+      if (eq < 0) {
+        const p = tok.toLowerCase();
+        const keyMatch = [], labelMatch = [];
+        for (const f of facets) {
+          if (!p || f.key.startsWith(p)) keyMatch.push(f);
+          else if ((f.label || '').toLowerCase().startsWith(p)) labelMatch.push(f);
+        }
+        for (const f of keyMatch.concat(labelMatch)) suggestions.push({ type: 'key', label: f.key + '=', hint: f.label, key: f.key });
+      } else {
+        const key = normKey(tok.slice(0, eq));
+        const partial = tok.slice(eq + 1).toLowerCase().replace(/^\/|\/$/g, '');
+        const f = byKey[key];
+        if (f && f.suggest) {
+          for (const v of (f.suggest() || [])) {
+            if (!partial || v.toLowerCase().includes(partial)) suggestions.push({ type: 'value', label: v, key, value: v });
+            if (suggestions.length >= 12) break;
+          }
+        }
+      }
+      sel = -1; // no auto-highlight: Enter commits typed text unless a suggestion is chosen
+      renderDrop();
+    }
+    function renderDrop() {
+      drop.innerHTML = '';
+      if (!suggestions.length) { drop.style.display = 'none'; return; }
+      suggestions.forEach((sg, i) => {
+        drop.appendChild(el('div', { class: 'fb-opt' + (i === sel ? ' active' : ''), onmousedown: (e) => { e.preventDefault(); choose(i); } },
+          el('span', {}, sg.label), sg.hint ? el('span', { class: 'fb-hint' }, sg.hint) : null));
+      });
+      drop.style.display = '';
+    }
+    function closeDrop() { suggestions = []; sel = -1; drop.style.display = 'none'; }
+    function choose(i) {
+      const sg = suggestions[i];
+      if (!sg) return;
+      if (sg.type === 'key') { input.value = sg.key + '='; updateSuggestions(); input.focus(); }
+      else addChip(sg.key, sg.value);
+    }
+    function commitInput() {
+      const tok = input.value.trim();
+      if (!tok) return;
+      const eq = tok.indexOf('=');
+      if (eq > 0) addChip(normKey(tok.slice(0, eq)), tok.slice(eq + 1));
+      else addChip('', tok);
+    }
+
+    input.addEventListener('input', updateSuggestions);
+    input.addEventListener('focus', updateSuggestions);
+    input.addEventListener('blur', () => setTimeout(closeDrop, 120));
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowDown' && suggestions.length) { sel = (sel + 1) % suggestions.length; renderDrop(); e.preventDefault(); }
+      else if (e.key === 'ArrowUp' && suggestions.length) { sel = (sel - 1 + suggestions.length) % suggestions.length; renderDrop(); e.preventDefault(); }
+      else if (e.key === 'Tab' && suggestions.length) { e.preventDefault(); choose(sel >= 0 ? sel : 0); }
+      else if (e.key === 'Enter') {
+        if (sel >= 0 && suggestions.length && suggestions[sel].type === 'value') { e.preventDefault(); choose(sel); }
+        else { e.preventDefault(); commitInput(); }
+      } else if (e.key === 'Escape') { closeDrop(); }
+      else if (e.key === 'Backspace' && input.value === '' && chips.length) { chips.pop(); renderChips(); fire(); }
+    });
+
+    for (const c of (opts.initial || [])) { if (c && c.value) chips.push(makeChip(normKey(c.key || ''), c.value)); }
+    renderChips();
+
+    const test = (c, str) => {
+      str = String(str == null ? '' : str);
+      if (c.regex) { try { return new RegExp(c.value, 'i').test(str); } catch (_) { return false; } }
+      return str.toLowerCase().includes(c.value.toLowerCase());
+    };
+    function chipMatches(c, row) {
+      if (c.key && byKey[c.key]) return test(c, byKey[c.key].field(row));
+      for (const fv of (opts.bareFields ? opts.bareFields(row) : [])) if (test(c, fv)) return true;
+      return false;
+    }
+    return {
+      el: wrap,
+      chips: () => chips,
+      matches: (row) => { for (const c of chips) if (!chipMatches(c, row)) return false; return true; },
+    };
+  }
+
   async function renderPodsList() {
     setContent(loadingState('Loading pods…'));
     let data;
@@ -841,18 +968,25 @@
     const sub = el('div', { style: 'color:var(--fg-dim); font-size:12px; margin-bottom:14px;' });
     root.appendChild(sub);
 
-    const filter = el('input', { placeholder: 'Filter by name or namespace…', style: listFilterStyle });
+    const nsList = [...new Set(all.map((p) => p.namespace).filter(Boolean))].sort();
+    const nameList = [...new Set(all.map((p) => p.name).filter(Boolean))].sort();
+    const statusList = [...new Set(all.map((p) => p.status || p.phase).filter(Boolean))].sort();
     const toggle = el('button', { class: 'btn' });
-    root.appendChild(el('div', { style: 'display:flex; gap:10px; align-items:center; margin-bottom:12px;' }, filter, toggle));
+    const fb = filterBar({
+      placeholder: 'Filter pods… (ns=, name=, status=, /regex/)',
+      facets: [
+        { key: 'ns', aliases: ['namespace'], label: 'namespace', field: (p) => p.namespace, suggest: () => nsList },
+        { key: 'name', label: 'name', field: (p) => p.name, suggest: () => nameList },
+        { key: 'status', label: 'status', field: (p) => p.status || p.phase, suggest: () => statusList },
+      ],
+      bareFields: (p) => [p.name, p.namespace, p.status, p.phase],
+      initial: nsExact ? [{ key: 'ns', value: nsExact }] : [],
+      onChange: () => build(),
+    });
+    root.appendChild(el('div', { style: 'display:flex; gap:10px; align-items:center; margin-bottom:12px;' }, fb.el, toggle));
 
     const podsBanner = resourceFilterBanner();
     if (podsBanner) root.appendChild(podsBanner);
-
-    if (nsExact) {
-      root.appendChild(el('div', { class: 'state', style: 'padding:10px 14px; margin-bottom:12px; display:flex; gap:12px; align-items:center;' },
-        el('span', {}, 'Showing namespace ' + nsExact),
-        el('a', { onclick: () => go('#/pods' + (unhealthyOnly ? '?health=unhealthy' : '')), style: 'cursor:pointer;' }, 'Show all →')));
-    }
 
     const card = el('div', { class: 'card' });
     card.appendChild(el('div', { class: 'objhead' },
@@ -867,15 +1001,13 @@
       toggle.textContent = (unhealthyOnly ? '✓ ' : '') + 'Unhealthy only';
     }
     function build() {
-      const term = filter.value.trim().toLowerCase();
       listWrap.innerHTML = '';
       let shown = 0;
       const podsOn = resourceEnabled('pods');
       for (const p of all) {
         if (!podsOn) break;
-        if (nsExact && p.namespace !== nsExact) continue;
         if (unhealthyOnly && !p.unhealthy) continue;
-        if (term && !(p.name.toLowerCase().includes(term) || p.namespace.toLowerCase().includes(term))) continue;
+        if (!fb.matches(p)) continue;
         const status = (p.status || p.phase || '') + (p.ready ? ' · ' + p.ready : '');
         listWrap.appendChild(objRow({ severity: p.severity, kind: 'Pod', namespace: p.namespace, name: p.name, status, num1: p.restarts ? String(p.restarts) : '', num2: p.age || '', link: p.link }));
         shown++;
@@ -884,7 +1016,6 @@
       sub.textContent = data.total + ' pods · ' + data.unhealthy + ' unhealthy · ' + shown + ' shown';
     }
     toggle.addEventListener('click', () => { unhealthyOnly = !unhealthyOnly; refreshToggle(); build(); });
-    filter.addEventListener('input', build);
     refreshToggle();
     build();
     setContent(root);

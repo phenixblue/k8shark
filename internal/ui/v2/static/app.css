@@ -187,6 +187,35 @@ a { color: inherit; }
 .resrow.static:hover { background: transparent; }
 .resrow:last-child { border-bottom: none; }
 
+/* Chip / token filter bar with type-ahead. */
+.filterbar {
+  position: relative; display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  background: var(--bg-row); border: 1px solid var(--border-strong); border-radius: 6px;
+  padding: 5px 8px; min-width: 320px; flex: 1; max-width: 720px;
+}
+.filterbar .fb-chips { display: contents; }
+.filterbar .fb-input {
+  flex: 1; min-width: 140px; background: transparent; border: none; outline: none;
+  color: var(--fg); font-size: 12.5px;
+}
+.fb-chip {
+  display: inline-flex; align-items: center; gap: 6px; background: var(--tag-bg);
+  border: 1px solid var(--border-strong); color: var(--fg); border-radius: 4px;
+  padding: 2px 6px; font: 11px var(--mono);
+}
+.fb-chip .fb-x { color: var(--fg-faint); cursor: pointer; visibility: hidden; }
+.fb-chip:hover .fb-x { visibility: visible; }
+.fb-chip .fb-x:hover { color: var(--bad); }
+.fb-suggest {
+  position: absolute; top: 100%; left: 0; margin-top: 4px; min-width: 260px;
+  max-height: 280px; overflow: auto; background: var(--bg-panel);
+  border: 1px solid var(--border-strong); border-radius: 6px; z-index: 50;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .35);
+}
+.fb-opt { display: flex; justify-content: space-between; gap: 14px; padding: 6px 10px; cursor: pointer; font-size: 12.5px; }
+.fb-opt:hover, .fb-opt.active { background: var(--bg-row-hover); }
+.fb-opt .fb-hint { color: var(--fg-faint); font: 11px var(--mono); }
+
 /* Cluster-wide object lists (pods / workloads) with a namespace column. */
 .objhead, .objrow {
   display: grid; grid-template-columns: 14px 70px 190px 1fr 160px 64px 56px; gap: 10px;
