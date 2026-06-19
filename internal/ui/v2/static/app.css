@@ -20,7 +20,34 @@
   --pod: #38bdf8;
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --code-bg: #07090f;
 }
+:root[data-theme="light"] {
+  --bg: #f6f7f9;
+  --bg-panel: #ffffff;
+  --bg-card: #ffffff;
+  --bg-row: #f1f3f5;
+  --bg-row-hover: #e7ebf0;
+  --border: #e3e7eb;
+  --border-strong: #cfd6dd;
+  --fg: #1b2733;
+  --fg-dim: #51606e;
+  --fg-faint: #8a97a5;
+  --accent: #0b76d0;
+  --accent-2: #5b4bd6;
+  --good: #15803d;
+  --warn: #b45309;
+  --bad: #dc2626;
+  --tag-bg: #eef1f4;
+  --workload: #7c5cff;
+  --pod: #0b76d0;
+  --code-bg: #0f1726;
+}
+.theme-toggle {
+  background: var(--bg-row); border: 1px solid var(--border-strong); color: var(--fg-dim);
+  border-radius: 6px; padding: 5px 9px; font-size: 12px; cursor: pointer;
+}
+.theme-toggle:hover { color: var(--fg); }
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); color: var(--fg); font: 13px var(--font); }
 a { color: inherit; }
@@ -270,7 +297,7 @@ a { color: inherit; }
 .container-meta .v.warn { color: var(--warn); }
 .container-meta .v.good { color: var(--good); }
 .log-preview {
-  background: #07090f; border: 1px solid var(--border); border-radius: 5px;
+  background: var(--code-bg); border: 1px solid var(--border); border-radius: 5px;
   padding: 8px 10px; font: 11px var(--mono); color: var(--fg-dim);
   white-space: pre-wrap; max-height: 110px; overflow: auto;
 }
@@ -316,7 +343,7 @@ a { color: inherit; }
 
 /* JSON / YAML viewers */
 .json-view, .yaml-view {
-  background: #07090f; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px;
   padding: 14px; font: 12px var(--mono); white-space: pre-wrap; word-break: break-word;
   color: var(--fg); overflow: auto; max-height: 70vh;
 }
@@ -329,7 +356,7 @@ a { color: inherit; }
 /* Diff view */
 /* Syntax-highlighted code (object YAML/JSON view). */
 .code {
-  font: 12px var(--mono); white-space: pre; background: #07090f; border: 1px solid var(--border);
+  font: 12px var(--mono); white-space: pre; background: var(--code-bg); border: 1px solid var(--border);
   border-radius: 6px; overflow: auto; color: var(--fg);
 }
 .code .k-key { color: var(--accent); }
@@ -372,7 +399,7 @@ a { color: inherit; }
 .capmeta .k { font-size: 10.5px; color: var(--fg-faint); text-transform: uppercase; letter-spacing: .05em; }
 .capmeta .v { font: 12.5px var(--mono); color: var(--fg); overflow: hidden; text-overflow: ellipsis; }
 
-.diff { font: 12px var(--mono); white-space: pre; background: #07090f; border: 1px solid var(--border); border-radius: 6px; overflow: auto; }
+.diff { font: 12px var(--mono); white-space: pre; background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px; overflow: auto; }
 .diff .add { background: rgba(34,197,94,0.12); color: var(--good); }
 .diff .del { background: rgba(239,68,68,0.12); color: var(--bad); }
 .diff .ctx { color: var(--fg-dim); }

@@ -80,8 +80,6 @@
       { key: 'pods',       label: 'Pods',       hash: '#/pods' },
       { key: 'resources',  label: 'Resources',  hash: '#/resources' },
       { key: 'timeline',   label: 'Timeline',   hash: '#/timeline' },
-      { key: 'logs',       label: 'Logs',       hash: '#/logs' },
-      { key: 'diff',       label: 'Diff',       hash: '#/diff' },
     ];
     const activeKey = state.route.name === 'namespace' ? 'namespaces'
       : state.route.name === 'pod' ? 'pods'
@@ -997,6 +995,38 @@
     return wrap;
   }
 
+  // relatedRow renders a "<label>: <kind/name>" timeline row, linking the
+  // value to the object/pod view when the item carries a link.
+  function relatedRow(label, item) {
+    const text = (item.kind ? item.kind + '/' : '') + (item.name || '');
+    const val = item.link
+      ? el('a', { style: 'cursor:pointer; color:var(--accent);', onclick: () => go(item.link) }, text)
+      : el('span', {}, text);
+    return el('div', { class: 'timeline-row' },
+      el('span', { class: 'ts' }, label),
+      el('span', { class: 'ev' }, val));
+  }
+
+  // objectRelationshipsPanel fetches and renders the related-objects groups for
+  // an arbitrary captured object (PV↔PVC↔Pod, ConfigMap/Secret→Pod, owners…).
+  function objectRelationshipsPanel(path, name) {
+    const card = el('div', { class: 'card' }, cardHeader('Relationships', ''));
+    const body = el('div', {}, loadingState('Loading relationships…'));
+    card.appendChild(body);
+    getJSON('/v2/api/object-relationships?path=' + encodeURIComponent(path) + (name ? '&name=' + encodeURIComponent(name) : ''))
+      .then((d) => {
+        body.innerHTML = '';
+        const groups = (d && d.groups) || [];
+        if (!groups.length) { body.appendChild(el('div', { class: 'state', style: 'padding:18px;' }, 'No related objects found.')); return; }
+        for (const g of groups) {
+          body.appendChild(el('div', { class: 'section-title', style: 'margin-top:10px;' }, g.title + ' (' + (g.items || []).length + ')'));
+          for (const it of (g.items || [])) body.appendChild(relatedRow(it.kind || '', it));
+        }
+      })
+      .catch((e) => { body.innerHTML = ''; body.appendChild(errorState(e.message)); });
+    return card;
+  }
+
   function objectHistoryPanel(path, name) {
     const card = el('div', { class: 'card' }, cardHeader('Watch event history', ''));
     const body = el('div', {}, loadingState('Loading history…'));
@@ -1097,6 +1127,7 @@
     const panelDefs = [
       { key: 'yaml', label: 'YAML', build: () => codePanel(d.yaml || '', 'yaml', baseName) },
       { key: 'json', label: 'JSON', build: () => codePanel(d.json || '', 'json', baseName) },
+      { key: 'relationships', label: 'Relationships', build: () => objectRelationshipsPanel(path, name) },
       { key: 'history', label: 'History', build: () => objectHistoryPanel(path, name) },
       { key: 'diff', label: 'Diff', build: () => objectDiffPanel(path, name) },
     ];
@@ -1221,6 +1252,17 @@
       el('a', { onclick: () => go('#/resources'), style: 'cursor:pointer;' }, 'Manage →'));
   }
 
+  // resourceMatches does a partial (substring) match of a search term against a
+  // resource's plural name, full kind, singular name, short names, and group.
+  function resourceMatches(r, term) {
+    if ((r.resource || '').toLowerCase().includes(term)) return true;
+    if ((r.kind || '').toLowerCase().includes(term)) return true;
+    if ((r.singular || '').toLowerCase().includes(term)) return true;
+    if ((r.group || 'core').toLowerCase().includes(term)) return true;
+    for (const s of (r.short_names || [])) { if (s.toLowerCase().includes(term)) return true; }
+    return false;
+  }
+
   async function renderResourceCatalog() {
     setContent(loadingState('Loading resources…'));
     let d;
@@ -1252,7 +1294,7 @@
       body.innerHTML = '';
       const groups = {};
       for (const r of all) {
-        if (term && !(r.resource.toLowerCase().includes(term) || r.kind.toLowerCase().includes(term) || (r.group || 'core').toLowerCase().includes(term))) continue;
+        if (term && !resourceMatches(r, term)) continue;
         const g = r.group || 'core';
         (groups[g] = groups[g] || []).push(r);
       }
@@ -1289,7 +1331,9 @@
           body.appendChild(el('div', { class: 'cat-row' + (isOn(r.resource) ? '' : ' off') },
             cb,
             el('span', { class: 'kind' }, r.kind),
-            el('span', { class: 'nm', style: 'cursor:pointer;', onclick: () => go(r.link) }, r.resource),
+            el('span', { class: 'nm', style: 'cursor:pointer;', onclick: () => go(r.link) },
+              r.resource,
+              (r.short_names && r.short_names.length) ? el('span', { style: 'color:var(--fg-faint); margin-left:6px;' }, '(' + r.short_names.join(', ') + ')') : null),
             el('span', { class: 'meta' }, (r.group ? r.group + '/' : '') + r.version),
             el('span', { class: 'badge' }, r.namespaced ? 'namespaced' : 'cluster'),
             el('span', { class: 'num' }, r.count ? formatNumber(r.count) : ''),
@@ -1455,19 +1499,14 @@
     function buildRelationships() {
       const r = d.related || {};
       const rows = [];
-      if (r.owner) rows.push(['Owner', r.owner.kind + '/' + r.owner.name]);
-      if (r.workload) rows.push(['Workload', r.workload.kind + '/' + r.workload.name]);
-      if (typeof r.sibling_pods === 'number' && r.sibling_pods > 0) rows.push(['Sibling pods', String(r.sibling_pods)]);
-      for (const cm of (r.config_maps || [])) rows.push(['Mounts ConfigMap', cm.name]);
-      for (const s of (r.secrets || [])) rows.push(['Mounts Secret', s.name]);
-      for (const p of (r.pvcs || [])) rows.push(['Mounts PVC', p.name]);
+      if (r.owner) rows.push(['Owner', r.owner]);
+      if (r.workload) rows.push(['Workload', r.workload]);
+      for (const cm of (r.config_maps || [])) rows.push(['Mounts ConfigMap', cm]);
+      for (const s of (r.secrets || [])) rows.push(['Mounts Secret', s]);
+      for (const p of (r.pvcs || [])) rows.push(['Mounts PVC', p]);
       if (!rows.length) return emptyState('No related objects found for this pod.');
       const card = el('div', { class: 'card' }, cardHeader('Relationships', String(rows.length)));
-      for (const [k, v] of rows) {
-        card.appendChild(el('div', { class: 'timeline-row' },
-          el('span', { class: 'ts' }, k),
-          el('span', { class: 'ev' }, v)));
-      }
+      for (const [label, item] of rows) card.appendChild(relatedRow(label, item));
       return card;
     }
 
@@ -1789,7 +1828,34 @@
   }
 
   // ── Bootstrap ────────────────────────────────────────────────────────────
+  // ── Theme (light/dark) ─────────────────────────────────────────────────────
+  const THEME_KEY = 'kshrk.v2.theme';
+  function currentTheme() {
+    try { return localStorage.getItem(THEME_KEY) === 'light' ? 'light' : 'dark'; } catch (_) { return 'dark'; }
+  }
+  function applyTheme(t) {
+    if (t === 'light') document.documentElement.setAttribute('data-theme', 'light');
+    else document.documentElement.removeAttribute('data-theme');
+  }
+  function setupThemeToggle() {
+    const btn = el('button', { class: 'theme-toggle', title: 'Toggle light / dark theme' });
+    const paint = () => { btn.textContent = currentTheme() === 'light' ? '☾ Dark' : '☀ Light'; };
+    btn.addEventListener('click', () => {
+      const next = currentTheme() === 'light' ? 'dark' : 'light';
+      try { localStorage.setItem(THEME_KEY, next); } catch (_) {}
+      applyTheme(next);
+      paint();
+    });
+    paint();
+    const bar = $('topbar');
+    const meta = $('capture-meta');
+    if (bar && meta) bar.insertBefore(btn, meta);
+    else if (bar) bar.appendChild(btn);
+  }
+
   async function init() {
+    applyTheme(currentTheme());
+    setupThemeToggle();
     state.route = parseRoute();
     try {
       const ts = await getJSON('/v2/api/timestamps');

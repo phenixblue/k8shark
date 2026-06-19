@@ -41,6 +41,7 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/v2/api/resources", h.serveResourceCatalog)
 	mux.HandleFunc("/v2/api/resource", h.serveResourceList)
 	mux.HandleFunc("/v2/api/object", h.serveObject)
+	mux.HandleFunc("/v2/api/object-relationships", h.serveObjectRelationships)
 	mux.HandleFunc("/v2/api/pod", h.servePod)
 	mux.HandleFunc("/v2/api/events", h.serveEvents)
 	mux.HandleFunc("/v2/api/logs", h.serveLogs)

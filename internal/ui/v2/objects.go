@@ -167,12 +167,14 @@ func (h *Handler) serveResourceList(w http.ResponseWriter, r *http.Request) {
 // ResourceCatalogRow describes one captured resource type (API kind).
 type ResourceCatalogRow struct {
 	Group      string `json:"group"`
-	Version    string `json:"version"`
-	Resource   string `json:"resource"`
-	Kind       string `json:"kind"`
-	Namespaced bool   `json:"namespaced"`
-	Count      int    `json:"count"`
-	Link       string `json:"link"`
+	Version    string   `json:"version"`
+	Resource   string   `json:"resource"`
+	Kind       string   `json:"kind"`
+	Singular   string   `json:"singular,omitempty"`
+	ShortNames []string `json:"short_names,omitempty"`
+	Namespaced bool     `json:"namespaced"`
+	Count      int      `json:"count"`
+	Link       string   `json:"link"`
 }
 
 // ResourceCatalog is the response from /v2/api/resources — every resource type
@@ -194,7 +196,7 @@ func (h *Handler) serveResourceCatalog(w http.ResponseWriter, r *http.Request) {
 	}
 	at := h.resolveAt(r)
 
-	kinds := h.discoveryKindMap()
+	meta := h.discoveryResourceMeta()
 	type key struct{ g, v, res string }
 	agg := map[key]*ResourceCatalogRow{}
 	for path, entry := range h.Store.Index {
@@ -211,14 +213,15 @@ func (h *Handler) serveResourceCatalog(w http.ResponseWriter, r *http.Request) {
 		k := key{g, v, res}
 		row := agg[k]
 		if row == nil {
-			kind := kinds[g+"/"+v+"/"+res]
-			if kind == "" {
-				kind = kinds[res]
+			dm, ok := meta[g+"/"+v+"/"+res]
+			if !ok {
+				dm = meta[res]
 			}
+			kind := dm.Kind
 			if kind == "" {
 				kind = kindFromResource(res)
 			}
-			row = &ResourceCatalogRow{Group: g, Version: v, Resource: res, Kind: kind, Link: resourceLink(res, "")}
+			row = &ResourceCatalogRow{Group: g, Version: v, Resource: res, Kind: kind, Singular: dm.Singular, ShortNames: dm.Short, Link: resourceLink(res, "")}
 			agg[k] = row
 		}
 		if ns != "" {
@@ -247,13 +250,20 @@ func (h *Handler) serveResourceCatalog(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// discoveryKindMap builds an authoritative resource→kind map from the captured
-// API discovery documents (/api/v1 and /apis/<group>/<version>), which carry
-// the real Kind for every resource — including CRDs and irregular plurals that
-// kindFromResource can only guess at. Keyed by "group/version/resource" and,
-// as a fallback, by bare "resource".
-func (h *Handler) discoveryKindMap() map[string]string {
-	m := map[string]string{}
+// discMeta is the per-resource discovery info used by the Resources catalog.
+type discMeta struct {
+	Kind     string
+	Singular string
+	Short    []string
+}
+
+// discoveryResourceMeta builds an authoritative resource→{kind, singular,
+// short names} map from the captured API discovery documents (/api/v1 and
+// /apis/<group>/<version>). This gives correct kinds (incl. CRDs / irregular
+// plurals) and the kubectl short names for searching. Keyed by
+// "group/version/resource" and, as a fallback, by bare "resource".
+func (h *Handler) discoveryResourceMeta() map[string]discMeta {
+	m := map[string]discMeta{}
 	for path, entry := range h.Store.Index {
 		if entry == nil || len(entry.Seqs) == 0 {
 			continue
@@ -272,8 +282,10 @@ func (h *Handler) discoveryKindMap() map[string]string {
 		var rl struct {
 			GroupVersion string `json:"groupVersion"`
 			Resources    []struct {
-				Name string `json:"name"`
-				Kind string `json:"kind"`
+				Name         string   `json:"name"`
+				SingularName string   `json:"singularName"`
+				Kind         string   `json:"kind"`
+				ShortNames   []string `json:"shortNames"`
 			} `json:"resources"`
 		}
 		if json.Unmarshal(body, &rl) != nil {
@@ -287,13 +299,41 @@ func (h *Handler) discoveryKindMap() map[string]string {
 			if res.Kind == "" || strings.Contains(res.Name, "/") { // skip subresources
 				continue
 			}
-			m[group+"/"+version+"/"+res.Name] = res.Kind
+			dm := discMeta{Kind: res.Kind, Singular: res.SingularName, Short: res.ShortNames}
+			m[group+"/"+version+"/"+res.Name] = dm
 			if _, ok := m[res.Name]; !ok {
-				m[res.Name] = res.Kind
+				m[res.Name] = dm
 			}
 		}
 	}
 	return m
+}
+
+// apiListPath builds the Kubernetes list path for a group/version/resource,
+// scoped to a namespace when ns is non-empty.
+func apiListPath(group, version, resource, ns string) string {
+	base := "/api/" + version
+	if group != "" {
+		base = "/apis/" + group + "/" + version
+	}
+	if ns == "" {
+		return base + "/" + resource
+	}
+	return base + "/namespaces/" + ns + "/" + resource
+}
+
+// ownerLink builds an object-view link for an ownerReference, guessing the
+// resource as lowercase(kind)+"s" (correct for the common workload kinds).
+func ownerLink(o ownerRef, ns string) string {
+	group, version := "", o.APIVersion
+	if i := strings.Index(o.APIVersion, "/"); i >= 0 {
+		group, version = o.APIVersion[:i], o.APIVersion[i+1:]
+	}
+	if version == "" {
+		version = "v1"
+	}
+	resource := strings.ToLower(o.Kind) + "s"
+	return objectLink(apiListPath(group, version, resource, ns), o.Name)
 }
 
 // objectLink builds a hash link to the generic object view for a list path +

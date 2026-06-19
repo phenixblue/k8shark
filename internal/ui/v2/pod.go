@@ -575,18 +575,18 @@ func (h *Handler) podRestartSparkline(ns, name string, buckets int) []SparkBucke
 func buildRelated(pod podObject, ns, name string, store interface{}, _ time.Time) PodRelated {
 	rel := PodRelated{}
 	for _, o := range pod.Metadata.OwnerReferences {
-		rel.Owner = &RelatedItem{Kind: o.Kind, Name: o.Name}
+		rel.Owner = &RelatedItem{Kind: o.Kind, Name: o.Name, Link: ownerLink(o, ns)}
 		break
 	}
 	for _, v := range pod.Spec.Volumes {
 		if v.ConfigMap != nil && v.ConfigMap.Name != "" {
-			rel.ConfigMaps = append(rel.ConfigMaps, RelatedItem{Kind: "ConfigMap", Name: v.ConfigMap.Name})
+			rel.ConfigMaps = append(rel.ConfigMaps, RelatedItem{Kind: "ConfigMap", Name: v.ConfigMap.Name, Link: objectLink(apiListPath("", "v1", "configmaps", ns), v.ConfigMap.Name)})
 		}
 		if v.Secret != nil && v.Secret.SecretName != "" {
-			rel.Secrets = append(rel.Secrets, RelatedItem{Kind: "Secret", Name: v.Secret.SecretName})
+			rel.Secrets = append(rel.Secrets, RelatedItem{Kind: "Secret", Name: v.Secret.SecretName, Link: objectLink(apiListPath("", "v1", "secrets", ns), v.Secret.SecretName)})
 		}
 		if v.PersistentVolumeClaim != nil && v.PersistentVolumeClaim.ClaimName != "" {
-			rel.PVCs = append(rel.PVCs, RelatedItem{Kind: "PersistentVolumeClaim", Name: v.PersistentVolumeClaim.ClaimName})
+			rel.PVCs = append(rel.PVCs, RelatedItem{Kind: "PersistentVolumeClaim", Name: v.PersistentVolumeClaim.ClaimName, Link: objectLink(apiListPath("", "v1", "persistentvolumeclaims", ns), v.PersistentVolumeClaim.ClaimName)})
 		}
 	}
 	// SiblingPods placeholder — would need to count pods with the same owner.
@@ -644,8 +644,9 @@ type podMetadataObj struct {
 }
 
 type ownerRef struct {
-	Kind string `json:"kind"`
-	Name string `json:"name"`
+	Kind       string `json:"kind"`
+	Name       string `json:"name"`
+	APIVersion string `json:"apiVersion"`
 }
 
 type containerSpec struct {
