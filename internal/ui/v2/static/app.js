@@ -1847,10 +1847,10 @@
       paint();
     });
     paint();
+    // Append last so it sits at the far right of the topbar (after the
+    // capture-meta and scrubber).
     const bar = $('topbar');
-    const meta = $('capture-meta');
-    if (bar && meta) bar.insertBefore(btn, meta);
-    else if (bar) bar.appendChild(btn);
+    if (bar) bar.appendChild(btn);
   }
 
   async function init() {
