@@ -26,19 +26,19 @@
   }
   a{color:var(--accent); text-decoration:none}
   a:hover{text-decoration:underline}
-  .wrap{max-width:960px; margin:0 auto; padding:0 24px}
-  header{padding:64px 0 8px; text-align:center}
-  header img.logo{width:320px; max-width:80%; height:auto}
-  .tagline{color:var(--muted); font-size:20px; margin:10px 0 0}
-  .lede{max-width:680px; margin:28px auto 0; text-align:center; font-size:18px; color:var(--text)}
-  .cta{display:flex; gap:12px; justify-content:center; flex-wrap:wrap; margin:32px 0 8px}
+  .wrap{max-width:860px; margin:0 auto; padding:0 24px}
+  header{padding:72px 0 0; text-align:center}
+  header img.logo{width:300px; max-width:80%; height:auto}
+  .tagline{color:var(--muted); font-size:20px; margin:12px 0 0}
+  .lede{margin:24px 0 0; text-align:center; font-size:18px; color:var(--text)}
+  .cta{display:flex; gap:12px; justify-content:center; flex-wrap:wrap; margin:28px 0 0}
   .btn{
     display:inline-flex; align-items:center; gap:8px; padding:11px 18px; border-radius:10px;
     border:1px solid var(--border); background:var(--panel); color:var(--text); font-weight:600;
   }
   .btn:hover{text-decoration:none; border-color:var(--accent); color:#fff}
   .btn.primary{background:linear-gradient(135deg,var(--accent),var(--accent-2)); border-color:transparent; color:#fff}
-  .install{margin:28px auto 0; max-width:560px}
+  .install{margin:28px 0 0}
   .install .label{color:var(--muted); font-size:13px; text-transform:uppercase; letter-spacing:.08em; margin:0 0 6px}
   pre{
     background:var(--code-bg); border:1px solid var(--border); border-radius:10px;
@@ -47,8 +47,9 @@
   }
   pre .c{color:#6b7a90}
   pre .p{color:var(--accent)}
-  section{padding:48px 0}
-  h2{font-size:24px; margin:0 0 24px; text-align:center}
+  pre:last-child{margin-bottom:0}
+  section{margin-top:56px}
+  h2{font-size:24px; margin:0 0 20px; text-align:center}
   .shot{display:block; width:100%; height:auto; border:1px solid var(--border); border-radius:12px; box-shadow:0 8px 40px rgba(0,0,0,.4)}
   .steps{display:grid; grid-template-columns:repeat(3,1fr); gap:16px}
   .step{background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:20px}
@@ -56,8 +57,8 @@
   .step h3{margin:0 0 6px; font-size:16px}
   .step p{margin:0; color:var(--muted); font-size:14px}
   .step code{background:var(--code-bg); border:1px solid var(--border); border-radius:6px; padding:1px 6px; font-size:13px}
-  .note{max-width:680px; margin:0 auto; text-align:center; color:var(--muted); font-size:14px; background:var(--panel-2); border:1px solid var(--border); border-radius:10px; padding:14px 18px}
-  footer{border-top:1px solid var(--border); padding:28px 0 48px; text-align:center; color:var(--muted); font-size:14px}
+  .note{text-align:center; color:var(--muted); font-size:14px; background:var(--panel-2); border:1px solid var(--border); border-radius:10px; padding:16px 18px}
+  footer{margin-top:56px; border-top:1px solid var(--border); padding:28px 0 40px; text-align:center; color:var(--muted); font-size:14px}
   @media (max-width:680px){ .steps{grid-template-columns:1fr} header{padding-top:40px} }
 </style>
 </head>
