@@ -1424,17 +1424,6 @@
       el('a', { onclick: () => go('#/resources'), style: 'cursor:pointer;' }, 'Manage →'));
   }
 
-  // resourceMatches does a partial (substring) match of a search term against a
-  // resource's plural name, full kind, singular name, short names, and group.
-  function resourceMatches(r, term) {
-    if ((r.resource || '').toLowerCase().includes(term)) return true;
-    if ((r.kind || '').toLowerCase().includes(term)) return true;
-    if ((r.singular || '').toLowerCase().includes(term)) return true;
-    if ((r.group || 'core').toLowerCase().includes(term)) return true;
-    for (const s of (r.short_names || [])) { if (s.toLowerCase().includes(term)) return true; }
-    return false;
-  }
-
   async function renderResourceCatalog() {
     setContent(loadingState('Loading resources…'));
     let d;
@@ -1453,20 +1442,30 @@
     const sub = el('div', { style: 'color:var(--fg-dim); font-size:12px; margin-bottom:14px;' });
     root.appendChild(sub);
 
-    const filter = el('input', { placeholder: 'Filter by kind, resource or group…', style: listFilterStyle });
     const allBtn = el('button', { class: 'btn' }, 'All');
     const noneBtn = el('button', { class: 'btn' }, 'None');
-    root.appendChild(el('div', { style: 'display:flex; gap:10px; align-items:center; margin-bottom:8px;' }, filter, allBtn, noneBtn));
+    const fb = filterBar({
+      placeholder: 'Filter resources… (kind=, group=, resource=, namespaced=, /regex/)',
+      rows: () => all,
+      facets: [
+        { key: 'kind', label: 'kind', field: (r) => r.kind },
+        { key: 'group', label: 'group', field: (r) => r.group || 'core' },
+        { key: 'resource', label: 'resource', field: (r) => r.resource },
+        { key: 'namespaced', label: 'namespaced', field: (r) => (r.namespaced ? 'true' : 'false') },
+      ],
+      bareFields: (r) => [r.resource, r.kind, r.singular, r.group || 'core', ...(r.short_names || [])],
+      onChange: () => build(),
+    });
+    root.appendChild(el('div', { style: 'display:flex; gap:10px; align-items:center; margin-bottom:8px;' }, fb.el, allBtn, noneBtn));
 
     const body = el('div', {});
     root.appendChild(body);
 
     function build() {
-      const term = filter.value.trim().toLowerCase();
       body.innerHTML = '';
       const groups = {};
       for (const r of all) {
-        if (term && !resourceMatches(r, term)) continue;
+        if (!fb.matches(r)) continue;
         const g = r.group || 'core';
         (groups[g] = groups[g] || []).push(r);
       }
@@ -1516,7 +1515,6 @@
       if (!shown) body.appendChild(el('div', { class: 'state', style: 'padding:18px;' }, 'No resources match.'));
       sub.textContent = d.total + ' resource types · ' + enabledCount + ' enabled';
     }
-    filter.addEventListener('input', build);
     allBtn.addEventListener('click', () => { enabled = null; saveEnabledResources(enabled); build(); });
     noneBtn.addEventListener('click', () => { enabled = new Set(); saveEnabledResources(enabled); build(); });
     build();
@@ -1790,17 +1788,32 @@
     const tlBanner = resourceFilterBanner();
     if (tlBanner) root.appendChild(tlBanner);
     root.appendChild(el('div', { class: 'section-title' }, 'All recent transitions'));
-    const recentCard = el('div', { class: 'card' });
     const tlRecent = (data.recent || []).filter((t) => resourceEnabled(t.resource));
-    if (tlRecent.length === 0) {
-      recentCard.appendChild(el('div', { class: 'state', style: 'padding:18px;' },
-        (data.recent && data.recent.length) ? 'No transitions for the enabled resource types.' : 'No watch events were captured. Enable `watch: true` on your config’s resource entries to see live transitions.'));
-    } else {
-      const wrap = el('div', { class: 'events' });
-      for (const t of tlRecent) wrap.appendChild(recentRow(t));
-      recentCard.appendChild(wrap);
-    }
+    const fb = filterBar({
+      placeholder: 'Filter transitions… (kind=, ns=, name=, event=, /regex/)',
+      rows: () => tlRecent,
+      facets: [
+        { key: 'kind', label: 'kind', field: (t) => t.kind },
+        { key: 'ns', aliases: ['namespace'], label: 'namespace', field: (t) => t.namespace },
+        { key: 'name', label: 'name', field: (t) => t.name },
+        { key: 'event', aliases: ['type'], label: 'event type', field: (t) => t.event_type },
+      ],
+      bareFields: (t) => [t.name, t.kind, t.namespace, t.event_type],
+      onChange: () => build(),
+    });
+    root.appendChild(el('div', { style: 'margin-bottom:12px; max-width:720px;' }, fb.el));
+    const recentCard = el('div', { class: 'card' });
+    const listWrap = el('div', { class: 'events' });
+    recentCard.appendChild(listWrap);
     root.appendChild(recentCard);
+    function build() {
+      listWrap.innerHTML = '';
+      let shown = 0;
+      for (const t of tlRecent) { if (!fb.matches(t)) continue; listWrap.appendChild(recentRow(t)); shown++; }
+      if (!shown) listWrap.appendChild(el('div', { class: 'state', style: 'padding:18px;' },
+        (data.recent && data.recent.length) ? 'No transitions match.' : 'No watch events were captured. Enable `watch: true` on your config’s resource entries to see live transitions.'));
+    }
+    build();
     setContent(root);
   }
 
