@@ -12,6 +12,25 @@ k8shark reads a YAML config file that controls what gets captured, from which na
 | `resources` | list | required | Resource types to capture. See below. |
 | `auto_discover` | bool | `false` | Legacy global discovery toggle. Prefer `resources: - all: true` for fine-grained control. |
 | `redaction` | object | — | Optional field-level redaction rules applied after capture. See [Redaction](#redaction). |
+| `ui` | object | — | Ports for the `kshrk ui` web explorer. See [Web UI ports](#web-ui-ports). |
+
+## Web UI ports
+
+`kshrk ui` serves a local web UI plus a mock Kubernetes API server. By default
+both bind a random free port. Set the `ui` block to pin consistent ports:
+
+```yaml
+ui:
+  port: "8080"       # local web UI server
+  api_port: "8081"   # mock Kubernetes API server
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `ui.port` | string | `0` (random) | Port for the local web UI. |
+| `ui.api_port` | string | `0` (random) | Port for the mock Kubernetes API server. |
+
+The `--port` and `--api-port` flags on `kshrk ui` override these when provided.
 
 ## Resource entry fields
 

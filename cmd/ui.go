@@ -6,9 +6,11 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/phenixblue/k8shark/internal/config"
 	"github.com/phenixblue/k8shark/internal/server"
 	"github.com/phenixblue/k8shark/internal/ui"
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 )
 
 var uiCmd = &cobra.Command{
@@ -35,6 +37,17 @@ func runUI(cmd *cobra.Command, args []string) error {
 	kubeconfigOut, _ := cmd.Flags().GetString("kubeconfig-out")
 	at, _ := cmd.Flags().GetString("at")
 	verbose, _ := cmd.Root().PersistentFlags().GetBool("verbose")
+
+	// Fall back to config-file ui.port / ui.api_port when the flags were left at
+	// their default; an explicitly-passed flag always wins.
+	if cfg, err := config.Load(viper.ConfigFileUsed()); err == nil && cfg != nil {
+		if !cmd.Flags().Changed("port") && cfg.UI.Port != "" {
+			uiPort = cfg.UI.Port
+		}
+		if !cmd.Flags().Changed("api-port") && cfg.UI.APIPort != "" {
+			apiPort = cfg.UI.APIPort
+		}
+	}
 
 	mockSrv, err := server.Open(server.OpenOptions{
 		ArchivePath:   archivePath,

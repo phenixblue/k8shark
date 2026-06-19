@@ -13,6 +13,13 @@ output: ./capture.tar.gz
 # Defaults to $KUBECONFIG env, then ~/.kube/config.
 # kubeconfig: ~/.kube/config
 
+# Web UI ("kshrk ui") server ports. Omit or "0" for a random free port; set
+# these to pin consistent ports across runs. The --port / --api-port CLI flags
+# override these when provided.
+# ui:
+#   port: "8080"       # local web UI
+#   api_port: "8081"   # mock Kubernetes API server
+
 resources:
   # ── Core workloads ───────────────────────────────────────────────────────────
 
