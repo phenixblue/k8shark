@@ -158,7 +158,11 @@ func Open(opts OpenOptions) (*Server, error) {
 	h := &explorerHandler{store: store, at: at, verbose: opts.Verbose, archivePath: opts.ArchivePath}
 	h.clusterSpanning = computeClusterSpanningResources(store)
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", h.serveIndex)
+	// v2 is the default UI: "/" redirects to /v2/. The legacy v1 UI stays
+	// reachable at /v1/.
+	mux.HandleFunc("/", h.serveRoot)
+	mux.HandleFunc("/v1", h.serveLegacy)
+	mux.HandleFunc("/v1/", h.serveLegacy)
 	mux.HandleFunc("/api/ui/tree", h.serveTree)
 	mux.HandleFunc("/api/ui/tree/namespace", h.serveTreeNamespace)
 	mux.HandleFunc("/api/ui/detail", h.serveDetail)
@@ -210,8 +214,19 @@ func (s *Server) Wait() error {
 	return nil
 }
 
-func (h *explorerHandler) serveIndex(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
+// serveRoot redirects the bare root to the v2 dashboard (the default UI) and
+// 404s any other unmatched path.
+func (h *explorerHandler) serveRoot(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/" {
+		http.Redirect(w, r, "/v2/", http.StatusFound)
+		return
+	}
+	http.NotFound(w, r)
+}
+
+// serveLegacy serves the original (v1) explorer UI at /v1/.
+func (h *explorerHandler) serveLegacy(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/v1" && r.URL.Path != "/v1/" {
 		http.NotFound(w, r)
 		return
 	}
@@ -1330,6 +1345,8 @@ const indexHTML = `<!doctype html>
     :root { --bg:#0b0f14; --panel:#111827; --text:#e5e7eb; --muted:#94a3b8; --line:#1f2937; --ok:#16a34a; --warn:#f59e0b; --bad:#dc2626; --accent:#22c55e; }
     body { margin:0; font-family: ui-sans-serif, -apple-system, Segoe UI, sans-serif; background:linear-gradient(145deg,#0b0f14,#0f172a); color:var(--text); }
 	header { padding:14px 18px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center; gap:12px; }
+	.v2-link { margin-left:12px; font-size:12px; color:var(--accent); text-decoration:none; border:1px solid var(--line); padding:3px 8px; border-radius:5px; }
+	.v2-link:hover { border-color:var(--accent); background:rgba(34,197,94,.12); }
 	.head-right { display:flex; align-items:center; gap:10px; }
 	.snapshot-nav { display:flex; align-items:center; gap:6px; }
 	.snapshot-select { min-width:220px; max-width:340px; box-sizing:border-box; padding:6px 8px; border:1px solid #334155; border-radius:8px; background:#0f172a; color:var(--text); }
@@ -1441,7 +1458,9 @@ const indexHTML = `<!doctype html>
 </head>
 <body>
   <header>
-    <div><strong>kshrk capture explorer</strong></div>
+    <div><strong>kshrk capture explorer</strong>
+      <a href="/v2/" class="v2-link" title="Open the redesigned dashboard UI">Dashboard (v2) &rarr;</a>
+    </div>
 		<div class="head-right">
 			<span class="snapshot-label">Snapshot</span>
 			<div class="snapshot-nav">

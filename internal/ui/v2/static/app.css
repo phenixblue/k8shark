@@ -48,6 +48,11 @@
   border-radius: 6px; padding: 5px 9px; font-size: 12px; cursor: pointer;
 }
 .theme-toggle:hover { color: var(--fg); }
+.legacy-link {
+  font-size: 11px; color: var(--fg-faint); text-decoration: none;
+  border: 1px solid var(--border-strong); border-radius: 6px; padding: 5px 9px; white-space: nowrap;
+}
+.legacy-link:hover { color: var(--fg); border-color: var(--accent); }
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); color: var(--fg); font: 13px var(--font); }
 a { color: inherit; }
