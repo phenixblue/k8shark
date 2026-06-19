@@ -255,7 +255,21 @@ k8shark UI running
 Open this URL in your browser. Press Ctrl+C to stop.
 ```
 
-### UI features (v1)
+The redesigned **dashboard UI is served at `/`** (it redirects to `/v2/`); the original explorer is
+preserved as the **legacy v1 UI at `/v1/`**. For a full walkthrough with screenshots, see
+**[docs/web-ui.md](web-ui.md)**.
+
+### UI features (dashboard)
+
+- Overview dashboard with KPIs, capture details, issues, and resource transitions
+- Cluster-wide namespaces, workloads, and pods lists with drill-down
+- Generic object view for any kind (incl. CRDs): YAML/JSON, relationships, history, diff
+- Chip/token filter bar with type-ahead, `key=value` facets, regex, and label selectors
+- Resources catalog with per-type/per-group toggles applied across the UI
+- Watch-event timeline and a time-travel scrubber
+- Light/dark theme
+
+### UI features (legacy v1)
 
 - Cluster and namespace drill-down
 - Workload, pod, and container navigation
@@ -268,10 +282,13 @@ Open this URL in your browser. Press Ctrl+C to stop.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--port` | random | Port for the local UI server |
-| `--api-port` | random | Port for the mock API server |
+| `--port` | from config (`ui.port`), else random | Port for the local UI server |
+| `--api-port` | from config (`ui.api_port`), else random | Port for the mock API server |
 | `--kubeconfig-out` | `~/.kube/k8shark-<id>.yaml` | Where to write the generated kubeconfig |
 | `--at` | latest records | Pin UI data to a specific timestamp (RFC3339 or relative duration) |
+
+Set consistent ports with a `ui:` block in your config file (see [docs/config.md](config.md)); CLI
+flags override it.
 
 ---
 

@@ -45,6 +45,12 @@ kubectl get pods -A
 
 ## Web UI (Experimental)
 
+`kshrk ui capture.khsrk` starts a local dashboard for browsing a capture — namespaces, workloads,
+pods, and every other captured resource — with object YAML/JSON, relationships, a watch-event
+timeline, and a time-travel scrubber. See **[docs/web-ui.md](docs/web-ui.md)** for a full tour.
+
+[![k8shark dashboard overview](docs/images/v2/overview.png)](docs/web-ui.md)
+
 ⚠️ **Note:** The web UI for cluster exploration is experimental. Large cluster captures may consume significant amounts of RAM (1-2+ GB) during replay. For large clusters, consider using an explicit resource list in your config file rather than `all: true` for auto-discovery to reduce the capture size.
 
 ## Documentation
@@ -52,6 +58,7 @@ kubectl get pods -A
 | Doc | Description |
 |-----|-------------|
 | [docs/usage.md](docs/usage.md) | Installation, capture and open workflows, all CLI flags, kubectl compatibility |
+| [docs/web-ui.md](docs/web-ui.md) | Web UI tour — dashboard, namespaces/workloads/pods, object views, filtering, timeline, themes |
 | [docs/config.md](docs/config.md) | Config file reference, namespaced vs cluster-scoped resources, example configs |
 | [docs/releases.md](docs/releases.md) | How to cut a release, GoReleaser pipeline, signing, Homebrew tap |
 | [docs/development.md](docs/development.md) | Building, testing, linting, KinD dev cluster, E2E tests, package layout |
