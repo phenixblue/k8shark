@@ -153,6 +153,11 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 		newWI[apiPath] = newWIEntry
 	}
 
+	// Record that this archive was redacted so the UI / inspect can surface it.
+	meta.Redacted = true
+	meta.SecretsRedacted = result.SecretsRedacted
+	meta.FieldsRedacted = result.FieldsRedacted
+
 	if err := sw.Finish(&meta, newIdx, newWI); err != nil {
 		return Result{}, fmt.Errorf("finishing output archive: %w", err)
 	}

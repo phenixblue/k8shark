@@ -18,6 +18,11 @@ import (
 	"github.com/google/uuid"
 	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/config"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/watch"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 )
@@ -59,6 +64,13 @@ type PodLogFailure struct {
 // how many resources are configured or auto-discovered.
 const maxConcurrentFetches = 32
 
+// perFetchTimeout caps any single list/discovery fetch (request + body read).
+// Without it a stalled HTTP/2 stream can leave io.ReadAll blocked indefinitely
+// while holding a fetchSem slot, starving every other fetch and stalling
+// capture startup. The cap lets the fetch fail fast; polling retries on its
+// next interval. Generous enough for large list responses on slow links.
+const perFetchTimeout = 30 * time.Second
+
 // Pod log fetch tuning.
 const (
 	// maxConcurrentLogFetches bounds the number of in-flight pod-log GETs.
@@ -79,6 +91,7 @@ type Engine struct {
 	cfg            *config.Config
 	verbose        bool
 	httpClient     *http.Client
+	dynClient      dynamic.Interface // client-go dynamic client used for watch streams
 	baseURL        string
 	mu             sync.Mutex
 	index          Index
@@ -90,6 +103,7 @@ type Engine struct {
 	warnedFallback map[string]bool // dedup set for allNotFound cluster-scoped fallback warnings
 	pathSeq        map[string]int  // per-path record sequence counter (matches archive on-disk seq)
 	fetchSem       chan struct{}   // semaphore bounding concurrent body reads
+	fetchTimeout   time.Duration   // per-fetch cap (request + body read); 0 means perFetchTimeout
 	// clusterListNamespacesSeen tracks, per wildcard-namespaced resource path,
 	// the set of namespaces that have produced items in any prior cluster-wide
 	// LIST response. Used by the demux so a namespace that empties out between
@@ -122,10 +136,21 @@ func NewEngine(cfg *config.Config, verbose bool) (*Engine, error) {
 		return nil, fmt.Errorf("building HTTP client: %w", err)
 	}
 
+	// Watch streams go through client-go's dynamic client (which uses the proper
+	// streaming watch decoder) rather than a hand-rolled HTTP request. It gets
+	// its OWN transport/connection (NewForConfig, not the shared httpClient) so
+	// long-lived watch streams don't contend with poll requests on a single
+	// connection.
+	dynClient, err := dynamic.NewForConfig(restCfg)
+	if err != nil {
+		return nil, fmt.Errorf("building dynamic client: %w", err)
+	}
+
 	return &Engine{
 		cfg:                       cfg,
 		verbose:                   verbose,
 		httpClient:                httpClient,
+		dynClient:                 dynClient,
 		baseURL:                   restCfg.Host,
 		index:                     make(Index),
 		watchIndex:                make(WatchIndex),
@@ -134,6 +159,7 @@ func NewEngine(cfg *config.Config, verbose bool) (*Engine, error) {
 		warnedFallback:            make(map[string]bool),
 		pathSeq:                   make(map[string]int),
 		fetchSem:                  make(chan struct{}, maxConcurrentFetches),
+		fetchTimeout:              perFetchTimeout,
 		clusterListNamespacesSeen: make(map[string]map[string]bool),
 	}, nil
 }
@@ -141,10 +167,16 @@ func NewEngine(cfg *config.Config, verbose bool) (*Engine, error) {
 // newEngineWith constructs an Engine with a pre-built HTTP client and base URL.
 // Used in tests to inject a fake API server.
 func newEngineWith(cfg *config.Config, client *http.Client, baseURL string, verbose bool) *Engine {
+	// Build a dynamic client backed by the injected test client/server so watch
+	// streams resolve against the fake API server. Errors are ignored because
+	// the watch-streaming tests that need it construct against a valid baseURL;
+	// non-watch tests never touch dynClient.
+	dynClient, _ := dynamic.NewForConfigAndClient(&rest.Config{Host: baseURL}, client)
 	return &Engine{
 		cfg:                       cfg,
 		verbose:                   verbose,
 		httpClient:                client,
+		dynClient:                 dynClient,
 		baseURL:                   baseURL,
 		index:                     make(Index),
 		watchIndex:                make(WatchIndex),
@@ -153,6 +185,7 @@ func newEngineWith(cfg *config.Config, client *http.Client, baseURL string, verb
 		warnedFallback:            make(map[string]bool),
 		pathSeq:                   make(map[string]int),
 		fetchSem:                  make(chan struct{}, maxConcurrentFetches),
+		fetchTimeout:              perFetchTimeout,
 		clusterListNamespacesSeen: make(map[string]map[string]bool),
 	}
 }
@@ -270,6 +303,10 @@ func (e *Engine) Run() (*CaptureSummary, error) {
 		ServerAddress:     serverAddr,
 		RecordCount:       e.sink.RecordCount(),
 		DeduplicatedCount: e.dedupSkipped,
+		AutoDiscovered:    e.cfg.AutoDiscover || hasAllDirective(e.cfg.Resources),
+		WatchEnabled:      anyWatchEnabled(e.cfg.Resources),
+		Intervals:         distinctIntervals(e.cfg.Resources),
+		UncompressedBytes: e.sink.UncompressedBytes(),
 	}
 
 	if e.verbose {
@@ -393,12 +430,7 @@ func (e *Engine) watchResourcePath(ctx context.Context, res config.Resource, nam
 			return
 		}
 
-		resourceVersion := ""
-		if body, code := e.doFetch(ctx, apiPath, "", res.DedupEnabled()); code == http.StatusOK && body != nil {
-			resourceVersion = extractResourceVersion(body)
-		}
-
-		if err := e.streamWatch(ctx, res, apiPath, resourceVersion); err != nil && ctx.Err() == nil && e.verbose {
+		if err := e.streamWatch(ctx, res, apiPath, namespace); err != nil && ctx.Err() == nil && e.verbose {
 			fmt.Fprintf(os.Stderr, "  [watch] %s: %v\n", apiPath, err)
 		}
 
@@ -415,108 +447,141 @@ func (e *Engine) watchResourcePath(ctx context.Context, res config.Resource, nam
 	}
 }
 
-func (e *Engine) streamWatch(ctx context.Context, res config.Resource, apiPath, resourceVersion string) error {
-	q := url.Values{}
-	q.Set("watch", "1")
-	if resourceVersion != "" {
-		q.Set("resourceVersion", resourceVersion)
-	}
-
+// streamWatch opens a single watch stream via client-go's dynamic client and
+// records each ADDED/MODIFIED/DELETED event. Using the dynamic client (rather
+// than a hand-rolled HTTP request + json.Decoder) means watch events are
+// decoded by client-go's StreamWatcher, which negotiates the correct content
+// type and reliably streams events over HTTP/2 — a raw request would connect
+// but never receive any frames against some API servers.
+//
+// namespace is "" for a cluster-wide stream (cluster-scoped resources and the
+// single stream used for wildcard-namespaced resources); otherwise it is the
+// specific namespace to watch. Returning nil/err drives watchResourcePath's
+// reconnect loop, which re-bootstraps a fresh resourceVersion before retrying.
+func (e *Engine) streamWatch(ctx context.Context, res config.Resource, apiPath, namespace string) error {
 	// Wildcard-namespace watches open a single cluster-wide stream but rewrite
 	// each event's stored APIPath to /api/.../namespaces/<ns>/<resource> so the
 	// replay server's per-namespace reconstruction logic continues to work
 	// without changes.
 	demuxPerNamespace := res.WildcardNamespaces && apiPath == buildAPIPath(res.Group, res.Version, res.Resource, "")
 
-	watchURL := e.baseURL + apiPath + "?" + q.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, watchURL, nil)
-	if err != nil {
-		return err
+	gvr := schema.GroupVersionResource{Group: res.Group, Version: res.Version, Resource: res.Resource}
+
+	var ri dynamic.ResourceInterface = e.dynClient.Resource(gvr)
+	if namespace != "" {
+		ri = e.dynClient.Resource(gvr).Namespace(namespace)
 	}
 
-	resp, err := e.httpClient.Do(req)
+	// Bootstrap a starting resourceVersion with a cheap one-item list so the
+	// watch streams only changes from this point forward rather than replaying
+	// every existing object as an ADDED event. The list metadata carries the
+	// collection resourceVersion regardless of how many items are returned.
+	opts := metav1.ListOptions{}
+	if l, err := ri.List(ctx, metav1.ListOptions{Limit: 1}); err == nil {
+		opts.ResourceVersion = l.GetResourceVersion()
+	} else if ctx.Err() != nil {
+		return nil
+	}
+
+	w, err := ri.Watch(ctx, opts)
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil
 		}
 		return err
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("watch status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
+	defer w.Stop()
 
 	if e.verbose {
 		fmt.Fprintf(os.Stdout, "  [watch] %s connected\n", apiPath)
 	}
 
-	dec := json.NewDecoder(resp.Body)
 	for {
-		var event struct {
-			Type   string          `json:"type"`
-			Object json.RawMessage `json:"object"`
-		}
-		if err := dec.Decode(&event); err != nil {
-			if err == io.EOF || ctx.Err() != nil {
+		select {
+		case <-ctx.Done():
+			return nil
+		case event, ok := <-w.ResultChan():
+			if !ok {
+				// Server closed the stream; the caller re-lists and reconnects.
 				return nil
 			}
-			return err
-		}
 
-		switch event.Type {
-		case "ADDED", "MODIFIED", "DELETED":
-			// Keep these event types.
-		default:
-			continue
-		}
-		if len(event.Object) == 0 {
-			continue
-		}
-
-		recordPath := apiPath
-		if demuxPerNamespace {
-			ns := extractNamespaceFromObject(event.Object)
-			if ns == "" {
-				// Namespaced resources should always have metadata.namespace
-				// set on watch events. Skip rather than store an unattributable
-				// event under the cluster-wide path where the replay server
-				// won't find it.
-				continue
-			}
-			recordPath = buildAPIPath(res.Group, res.Version, res.Resource, ns)
-		}
-
-		rec := &Record{
-			ID:           uuid.New().String(),
-			CapturedAt:   time.Now().UTC(),
-			APIPath:      recordPath,
-			EventType:    event.Type,
-			HTTPMethod:   http.MethodGet,
-			ResponseCode: http.StatusOK,
-			ResponseBody: event.Object,
-		}
-
-		if e.sink != nil {
-			if err := e.sink.WriteRecord(rec); err != nil {
+			var eventType string
+			switch event.Type {
+			case watch.Added:
+				eventType = "ADDED"
+			case watch.Modified:
+				eventType = "MODIFIED"
+			case watch.Deleted:
+				eventType = "DELETED"
+			case watch.Error:
+				// Typically a 410 Expired Status. Log and let the channel close
+				// so watchResourcePath re-lists for a fresh resourceVersion.
 				if e.verbose {
-					fmt.Fprintf(os.Stderr, "  [warn] writing watch record %s: %v\n", recordPath, err)
+					msg := "unknown watch error"
+					if st, ok := event.Object.(*metav1.Status); ok && st.Message != "" {
+						msg = st.Message
+					}
+					fmt.Fprintf(os.Stderr, "  [watch] %s: error event: %s\n", apiPath, msg)
 				}
 				continue
+			default:
+				// Bookmark and any other types are not transitions.
+				continue
 			}
-		}
 
-		e.mu.Lock()
-		if _, ok := e.watchIndex[recordPath]; !ok {
-			e.watchIndex[recordPath] = &WatchIndexEntry{APIPath: recordPath}
+			u, ok := event.Object.(*unstructured.Unstructured)
+			if !ok {
+				continue
+			}
+			body, err := u.MarshalJSON()
+			if err != nil {
+				continue
+			}
+
+			recordPath := apiPath
+			if demuxPerNamespace {
+				ns := u.GetNamespace()
+				if ns == "" {
+					// Namespaced resources should always have metadata.namespace
+					// set on watch events. Skip rather than store an unattributable
+					// event under the cluster-wide path where the replay server
+					// won't find it.
+					continue
+				}
+				recordPath = buildAPIPath(res.Group, res.Version, res.Resource, ns)
+			}
+
+			rec := &Record{
+				ID:           uuid.New().String(),
+				CapturedAt:   time.Now().UTC(),
+				APIPath:      recordPath,
+				EventType:    eventType,
+				HTTPMethod:   http.MethodGet,
+				ResponseCode: http.StatusOK,
+				ResponseBody: body,
+			}
+
+			if e.sink != nil {
+				if err := e.sink.WriteRecord(rec); err != nil {
+					if e.verbose {
+						fmt.Fprintf(os.Stderr, "  [warn] writing watch record %s: %v\n", recordPath, err)
+					}
+					continue
+				}
+			}
+
+			e.mu.Lock()
+			if _, ok := e.watchIndex[recordPath]; !ok {
+				e.watchIndex[recordPath] = &WatchIndexEntry{APIPath: recordPath}
+			}
+			seq := e.pathSeq[recordPath]
+			e.pathSeq[recordPath] = seq + 1
+			e.watchIndex[recordPath].Seqs = append(e.watchIndex[recordPath].Seqs, seq)
+			e.watchIndex[recordPath].Times = append(e.watchIndex[recordPath].Times, rec.CapturedAt)
+			e.watchIndex[recordPath].EventTypes = append(e.watchIndex[recordPath].EventTypes, rec.EventType)
+			e.mu.Unlock()
 		}
-		seq := e.pathSeq[recordPath]
-		e.pathSeq[recordPath] = seq + 1
-		e.watchIndex[recordPath].Seqs = append(e.watchIndex[recordPath].Seqs, seq)
-		e.watchIndex[recordPath].Times = append(e.watchIndex[recordPath].Times, rec.CapturedAt)
-		e.watchIndex[recordPath].EventTypes = append(e.watchIndex[recordPath].EventTypes, rec.EventType)
-		e.mu.Unlock()
 	}
 }
 
@@ -576,18 +641,6 @@ func extractStatusMessage(body []byte) string {
 	return s.Message
 }
 
-func extractResourceVersion(body []byte) string {
-	var meta struct {
-		Metadata struct {
-			ResourceVersion string `json:"resourceVersion"`
-		} `json:"metadata"`
-	}
-	if err := json.Unmarshal(body, &meta); err != nil {
-		return ""
-	}
-	return meta.Metadata.ResourceVersion
-}
-
 // tableIndexKey is the virtual index key used to store Table-format responses
 // alongside regular list responses. The sentinel "?as=Table" cannot appear in
 // real API paths captured by the engine.
@@ -616,12 +669,16 @@ func (e *Engine) fetchResource(ctx context.Context, res config.Resource) {
 	// Track whether every explicitly-namespaced fetch returned 404. If so, the
 	// resource is likely cluster-scoped and the config has 'namespaces:' set by
 	// mistake — warn and also capture the cluster-scoped path as a fallback.
+	// Only a genuine 404 counts as evidence of cluster scope: a code of 0 means
+	// the fetch failed transiently (timeout/transport/cancellation), which must
+	// not be mistaken for "this resource isn't served per-namespace" or every
+	// flaky fetch would trigger a spurious cluster-wide fallback.
 	allNotFound := len(res.Namespaces) > 0
 	dedupEnabled := res.DedupEnabled()
 	for _, ns := range namespaces {
 		apiPath := buildAPIPath(res.Group, res.Version, res.Resource, ns)
 		_, code := e.doFetch(ctx, apiPath, "", dedupEnabled)
-		if code != 0 && code != http.StatusNotFound {
+		if code != http.StatusNotFound {
 			allNotFound = false
 		}
 		e.doFetch(ctx, apiPath, tableIndexKeySuffix, dedupEnabled)
@@ -1126,6 +1183,31 @@ func hasAllDirective(resources []config.Resource) bool {
 	return false
 }
 
+// anyWatchEnabled reports whether any configured resource requested a watch.
+func anyWatchEnabled(resources []config.Resource) bool {
+	for _, r := range resources {
+		if r.Watch {
+			return true
+		}
+	}
+	return false
+}
+
+// distinctIntervals collects the unique human-readable poll intervals across
+// configured resources, for display in the capture-details panel.
+func distinctIntervals(resources []config.Resource) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, r := range resources {
+		if r.IntervalRaw == "" || seen[r.IntervalRaw] {
+			continue
+		}
+		seen[r.IntervalRaw] = true
+		out = append(out, r.IntervalRaw)
+	}
+	return out
+}
+
 func (e *Engine) validateWatchConcurrency() error {
 	watchStreams := 0
 	for _, r := range e.cfg.Resources {
@@ -1177,14 +1259,19 @@ func (e *Engine) fetchDiscovery(ctx context.Context) {
 	e.doFetch(ctx, "/openapi/v2", "", true)
 	openapiV3Body, _ := e.doFetch(ctx, "/openapi/v3", "", true)
 	if openapiV3Body != nil {
-		// Parse the v3 path index and fetch each per-group spec.
+		// Parse the v3 path index and fetch each per-group spec. These are
+		// numerous (100+ on OpenShift) and independent, so fetch them
+		// concurrently — done sequentially they can dominate (or exhaust) the
+		// whole capture window before polling/watching even begins.
 		var v3Index struct {
 			Paths map[string]json.RawMessage `json:"paths"`
 		}
 		if err := json.Unmarshal(openapiV3Body, &v3Index); err == nil {
+			paths := make([]string, 0, len(v3Index.Paths))
 			for p := range v3Index.Paths {
-				e.doFetch(ctx, "/openapi/v3/"+p, "", true)
+				paths = append(paths, "/openapi/v3/"+p)
 			}
+			e.fetchDiscoveryPaths(ctx, paths, false)
 		}
 	}
 
@@ -1202,15 +1289,42 @@ func (e *Engine) fetchDiscovery(ctx context.Context) {
 	if err := json.Unmarshal(apisBody, &groupList); err != nil {
 		return
 	}
+	gvPaths := make([]string, 0, len(groupList.Groups))
 	for _, g := range groupList.Groups {
 		for _, v := range g.Versions {
-			gvPath := "/apis/" + v.GroupVersion
-			gvBody, _ := e.doFetch(ctx, gvPath, "", true)
-			if gvBody != nil {
-				e.discoveryCache[gvPath] = gvBody
-			}
+			gvPaths = append(gvPaths, "/apis/"+v.GroupVersion)
 		}
 	}
+	e.fetchDiscoveryPaths(ctx, gvPaths, true)
+}
+
+// fetchDiscoveryPaths GETs each path concurrently (bounded), recording every
+// response via doFetch. When cache is true, successful bodies are also stored
+// in discoveryCache keyed by path so autoDiscoverResources can reuse them
+// without re-fetching. Concurrency keeps discovery from dominating short
+// captures on clusters with many API groups.
+func (e *Engine) fetchDiscoveryPaths(ctx context.Context, paths []string, cache bool) {
+	const discoveryWorkers = 16
+	sem := make(chan struct{}, discoveryWorkers)
+	var wg sync.WaitGroup
+	for _, p := range paths {
+		if ctx.Err() != nil {
+			break
+		}
+		wg.Add(1)
+		go func(path string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			body, _ := e.doFetch(ctx, path, "", true)
+			if cache && body != nil {
+				e.mu.Lock()
+				e.discoveryCache[path] = body
+				e.mu.Unlock()
+			}
+		}(p)
+	}
+	wg.Wait()
 }
 
 // doFetch issues one GET for apiPath. When tableKeySuffix is non-empty the
@@ -1235,7 +1349,17 @@ func (e *Engine) doFetch(ctx context.Context, apiPath, tableKeySuffix string, de
 func (e *Engine) rawFetch(ctx context.Context, apiPath, tableKeySuffix string) ([]byte, int) {
 	url := e.baseURL + apiPath
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	// Bound this fetch independently so a stalled HTTP/2 stream can't hang
+	// io.ReadAll forever (see perFetchTimeout). The deadline covers both the
+	// request and the body read because it rides on the request context.
+	timeout := e.fetchTimeout
+	if timeout <= 0 {
+		timeout = perFetchTimeout
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(fetchCtx, http.MethodGet, url, nil)
 	if err != nil {
 		if e.verbose {
 			fmt.Fprintf(os.Stderr, "  [warn] build request %s: %v\n", apiPath, err)
@@ -1257,11 +1381,17 @@ func (e *Engine) rawFetch(ctx context.Context, apiPath, tableKeySuffix string) (
 		}
 		return nil, 0
 	}
+	defer resp.Body.Close()
 
-	e.fetchSem <- struct{}{}
+	// Acquire a read slot without blocking past this fetch's deadline, so a
+	// saturated semaphore can't pin a timed-out fetch indefinitely.
+	select {
+	case e.fetchSem <- struct{}{}:
+	case <-fetchCtx.Done():
+		return nil, 0
+	}
 	body, err := io.ReadAll(resp.Body)
 	<-e.fetchSem
-	resp.Body.Close()
 	if err != nil {
 		if e.verbose {
 			fmt.Fprintf(os.Stderr, "  [warn] read body %s: %v\n", apiPath, err)

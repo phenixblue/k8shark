@@ -128,6 +128,19 @@ type Config struct {
 	// Redaction holds field-level redaction rules applied during capture and
 	// post-capture redact workflows.
 	Redaction RedactionConfig `mapstructure:"redaction"`
+	// UI holds settings for the `kshrk ui` web explorer. CLI flags override
+	// these when provided.
+	UI UIConfig `mapstructure:"ui"`
+}
+
+// UIConfig configures the `kshrk ui` servers. Ports are strings so "0" (a
+// random available port, the default) can be expressed; set them to pin a
+// consistent port across runs.
+type UIConfig struct {
+	// Port is the local web UI port. Empty or "0" means a random port.
+	Port string `mapstructure:"port"`
+	// APIPort is the mock Kubernetes API server port. Empty or "0" means random.
+	APIPort string `mapstructure:"api_port"`
 }
 
 // Load reads k8shark capture config. If configFile is empty, viper uses
