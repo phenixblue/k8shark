@@ -10,7 +10,7 @@
     const n = document.createElement(tag);
     for (const [k, v] of Object.entries(attrs)) {
       if (k === 'class') n.className = v;
-      else if (k === 'html') n.textContent = String(v);
+      else if (k === 'text' || k === 'html') n.textContent = String(v); // 'html' kept as deprecated alias
       else if (k.startsWith('on') && typeof v === 'function') n.addEventListener(k.slice(2), v);
       else if (v !== undefined && v !== null) n.setAttribute(k, v);
     }
