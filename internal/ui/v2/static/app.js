@@ -577,21 +577,25 @@
     const list = data.namespaces || [];
     const hq = new URLSearchParams((location.hash.split('?')[1]) || '');
     const unhealthyOnly = hq.get('health') === 'unhealthy';
-    const filter = el('input', {
-      placeholder: 'Filter namespaces…',
-      style: 'width:100%; max-width:380px; background:var(--bg-row); border:1px solid var(--border-strong); color:var(--fg); padding:7px 10px; border-radius:6px; outline:none; margin-bottom:14px;',
+    const nameList = [...new Set(list.map((n) => n.name).filter(Boolean))].sort();
+    const fb = filterBar({
+      placeholder: 'Filter namespaces… (name=, /regex/)',
+      facets: [{ key: 'name', label: 'name', field: (n) => n.name, suggest: () => nameList }],
+      bareFields: (n) => [n.name],
+      onChange: () => build(),
     });
+    const barWrap = el('div', { style: 'margin-bottom:14px; max-width:680px;' }, fb.el);
     const banner = unhealthyOnly ? el('div', { class: 'state', style: 'padding:10px 14px; margin-bottom:14px; display:flex; gap:12px; align-items:center;' },
       el('span', {}, 'Showing namespaces with unhealthy pods'),
       el('a', { onclick: () => go('#/namespaces'), style: 'cursor:pointer;' }, 'Show all →'),
     ) : null;
     const grid = el('div', { class: 'resource-grid', style: 'grid-template-columns:repeat(4, minmax(0,1fr));' });
-    function build(q) {
+    function build() {
       grid.innerHTML = '';
       let shown = 0;
       for (const ns of list) {
         if (unhealthyOnly && !(ns.unhealthy > 0)) continue;
-        if (q && !ns.name.toLowerCase().includes(q)) continue;
+        if (!fb.matches(ns)) continue;
         const card = el('div', {
           class: 'res-chip',
           style: 'cursor:pointer; padding:12px 14px;',
@@ -612,9 +616,8 @@
           unhealthyOnly ? 'No namespaces with unhealthy pods at this snapshot.' : 'No namespaces match.'));
       }
     }
-    filter.addEventListener('input', () => build(filter.value.trim().toLowerCase()));
-    build('');
-    setContent(filter, banner, grid);
+    build();
+    setContent(barWrap, banner, grid);
   }
 
   async function renderNamespace(ns) {
@@ -1039,17 +1042,24 @@
     const sub = el('div', { style: 'color:var(--fg-dim); font-size:12px; margin-bottom:14px;' });
     root.appendChild(sub);
 
-    const filter = el('input', { placeholder: 'Filter by name, kind or namespace…', style: listFilterStyle });
-    root.appendChild(el('div', { style: 'display:flex; gap:10px; align-items:center; margin-bottom:12px;' }, filter));
+    const nsList = [...new Set(all.map((w) => w.namespace).filter(Boolean))].sort();
+    const nameList = [...new Set(all.map((w) => w.name).filter(Boolean))].sort();
+    const kindList = [...new Set(all.map((w) => w.kind).filter(Boolean))].sort();
+    const fb = filterBar({
+      placeholder: 'Filter workloads… (ns=, kind=, name=, /regex/)',
+      facets: [
+        { key: 'ns', aliases: ['namespace'], label: 'namespace', field: (w) => w.namespace, suggest: () => nsList },
+        { key: 'kind', label: 'kind', field: (w) => w.kind, suggest: () => kindList },
+        { key: 'name', label: 'name', field: (w) => w.name, suggest: () => nameList },
+      ],
+      bareFields: (w) => [w.name, w.namespace, w.kind, w.status],
+      initial: nsExact ? [{ key: 'ns', value: nsExact }] : [],
+      onChange: () => build(),
+    });
+    root.appendChild(el('div', { style: 'display:flex; gap:10px; align-items:center; margin-bottom:12px;' }, fb.el));
 
     const wlBanner = resourceFilterBanner();
     if (wlBanner) root.appendChild(wlBanner);
-
-    if (nsExact) {
-      root.appendChild(el('div', { class: 'state', style: 'padding:10px 14px; margin-bottom:12px; display:flex; gap:12px; align-items:center;' },
-        el('span', {}, 'Showing namespace ' + nsExact),
-        el('a', { onclick: () => go('#/workloads'), style: 'cursor:pointer;' }, 'Show all →')));
-    }
 
     const card = el('div', { class: 'card' });
     card.appendChild(el('div', { class: 'objhead' },
@@ -1060,20 +1070,17 @@
     root.appendChild(card);
 
     function build() {
-      const term = filter.value.trim().toLowerCase();
       listWrap.innerHTML = '';
       let shown = 0;
       for (const w of all) {
         if (!resourceEnabled(w.resource)) continue;
-        if (nsExact && w.namespace !== nsExact) continue;
-        if (term && !(w.name.toLowerCase().includes(term) || w.namespace.toLowerCase().includes(term) || (w.kind || '').toLowerCase().includes(term))) continue;
+        if (!fb.matches(w)) continue;
         listWrap.appendChild(objRow({ severity: w.severity, kind: w.kind, namespace: w.namespace, name: w.name, status: w.status, num1: w.restarts ? String(w.restarts) : '', num2: w.age || '', link: w.link }));
         shown++;
       }
       if (!shown) listWrap.appendChild(el('div', { class: 'state', style: 'padding:18px;' }, 'No workloads match.'));
       sub.textContent = data.total + ' workloads · ' + shown + ' shown';
     }
-    filter.addEventListener('input', build);
     build();
     setContent(root);
   }
@@ -1319,13 +1326,19 @@
       setContent(root);
       return;
     }
-    const filter = el('input', { placeholder: 'Filter by name or namespace…', style: listFilterStyle });
-    root.appendChild(el('div', { style: 'display:flex; gap:10px; margin-bottom:12px;' }, filter));
-    if (nsParam) {
-      root.appendChild(el('div', { class: 'state', style: 'padding:10px 14px; margin-bottom:12px; display:flex; gap:12px; align-items:center;' },
-        el('span', {}, 'Showing namespace ' + nsParam),
-        el('a', { onclick: () => go('#/resource?resource=' + encodeURIComponent(resource)), style: 'cursor:pointer;' }, 'Show all →')));
-    }
+    const nsList = [...new Set(all.map((it) => it.namespace).filter(Boolean))].sort();
+    const nameList = [...new Set(all.map((it) => it.name).filter(Boolean))].sort();
+    const fb = filterBar({
+      placeholder: 'Filter ' + resource + '… (ns=, name=, /regex/)',
+      facets: [
+        { key: 'ns', aliases: ['namespace'], label: 'namespace', field: (it) => it.namespace, suggest: () => nsList },
+        { key: 'name', label: 'name', field: (it) => it.name, suggest: () => nameList },
+      ],
+      bareFields: (it) => [it.name, it.namespace],
+      initial: nsParam ? [{ key: 'ns', value: nsParam }] : [],
+      onChange: () => build(),
+    });
+    root.appendChild(el('div', { style: 'display:flex; gap:10px; margin-bottom:12px;' }, fb.el));
     const gridCols = 'grid-template-columns:200px 1fr 60px;';
     const card = el('div', { class: 'card' });
     card.appendChild(el('div', { class: 'objhead', style: gridCols }, el('span', {}, 'Namespace'), el('span', {}, 'Name'), el('span', { style: 'text-align:right;' }, 'Age')));
@@ -1333,11 +1346,10 @@
     card.appendChild(listWrap);
     root.appendChild(card);
     function build() {
-      const term = filter.value.trim().toLowerCase();
       listWrap.innerHTML = '';
       let shown = 0;
       for (const it of all) {
-        if (term && !((it.name || '').toLowerCase().includes(term) || (it.namespace || '').toLowerCase().includes(term))) continue;
+        if (!fb.matches(it)) continue;
         listWrap.appendChild(el('div', { class: 'objrow click', style: gridCols, onclick: () => go(it.link) },
           el('span', { class: 'ns' }, it.namespace || '—'),
           el('span', { class: 'nm' }, it.name || ''),
@@ -1347,7 +1359,6 @@
       if (!shown) listWrap.appendChild(el('div', { class: 'state', style: 'padding:18px;' }, 'No objects match.'));
       sub.textContent = d.total + ' ' + resource + ' · ' + shown + ' shown';
     }
-    filter.addEventListener('input', build);
     build();
     setContent(root);
   }
