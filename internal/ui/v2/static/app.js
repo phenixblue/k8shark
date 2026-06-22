@@ -1591,9 +1591,18 @@
       el('span', { class: 'age' }, formatShortTS(ev.time)),
     );
 
-    const metaRow = (k, v, color) => el('div', { style: 'display:grid; grid-template-columns:140px 1fr; gap:8px; font-size:12.5px;' },
-      el('span', { style: 'color:var(--fg-faint);' }, k),
-      el('span', { style: 'font-family:var(--mono); color:' + (color || 'var(--fg)') + ';' }, v));
+    // metaGrid lays out a group of key/value rows in a single shared grid so
+    // the key column auto-sizes to the widest key in the group (no fixed width)
+    // while keys stay aligned across rows. Values wrap in the remaining space.
+    const metaGrid = (rows) => {
+      const kids = [];
+      for (const r of rows) {
+        if (!r) continue;
+        kids.push(el('span', { style: 'color:var(--fg-faint); white-space:nowrap;' }, r.k));
+        kids.push(el('span', { style: 'font-family:var(--mono); color:' + (r.color || 'var(--fg)') + '; overflow-wrap:anywhere; min-width:0;' }, r.v));
+      }
+      return el('div', { style: 'display:grid; grid-template-columns:max-content 1fr; gap:6px 12px; font-size:12.5px; align-items:start;' }, ...kids);
+    };
 
     function buildSummary() {
       const wrap = el('div', {});
@@ -1615,10 +1624,12 @@
       wrap.appendChild(row1);
 
       const metaCard = el('div', { class: 'card' }, cardHeader('Metadata', ''));
-      if (d.related?.owner) metaCard.appendChild(metaRow('Owner', (d.related.owner.kind || '') + '/' + (d.related.owner.name || '')));
-      if (d.kpis?.node) metaCard.appendChild(metaRow('Node', d.kpis.node));
-      if (d.kpis?.pod_ip) metaCard.appendChild(metaRow('Pod IP', d.kpis.pod_ip));
-      if (d.metadata?.created_at) metaCard.appendChild(metaRow('Created', d.metadata.created_at));
+      const metaRows = [];
+      if (d.related?.owner) metaRows.push({ k: 'Owner', v: (d.related.owner.kind || '') + '/' + (d.related.owner.name || '') });
+      if (d.kpis?.node) metaRows.push({ k: 'Node', v: d.kpis.node });
+      if (d.kpis?.pod_ip) metaRows.push({ k: 'Pod IP', v: d.kpis.pod_ip });
+      if (d.metadata?.created_at) metaRows.push({ k: 'Created', v: d.metadata.created_at });
+      if (metaRows.length) metaCard.appendChild(metaGrid(metaRows));
       if (d.metadata?.labels && Object.keys(d.metadata.labels).length > 0) {
         metaCard.appendChild(el('div', { class: 'section-title', style: 'margin-top:10px;' }, 'Labels'));
         const labWrap = el('div', { class: 'labels', style: 'margin-top:10px;' });
@@ -1627,10 +1638,11 @@
       }
       if (d.metadata?.conditions && d.metadata.conditions.length > 0) {
         metaCard.appendChild(el('div', { class: 'section-title', style: 'margin-top:10px;' }, 'Conditions'));
-        for (const c of d.metadata.conditions) {
-          const sevColor = c.severity === 'good' ? 'var(--good)' : c.severity === 'bad' ? 'var(--bad)' : 'var(--fg-dim)';
-          metaCard.appendChild(metaRow(c.type, c.status + (c.reason ? ' · ' + c.reason : ''), sevColor));
-        }
+        metaCard.appendChild(metaGrid(d.metadata.conditions.map((c) => ({
+          k: c.type,
+          v: c.status + (c.reason ? ' · ' + c.reason : ''),
+          color: c.severity === 'good' ? 'var(--good)' : c.severity === 'bad' ? 'var(--bad)' : 'var(--fg-dim)',
+        }))));
       }
       wrap.appendChild(metaCard);
       return wrap;
