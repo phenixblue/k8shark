@@ -1598,7 +1598,7 @@
       const kids = [];
       for (const r of rows) {
         if (!r) continue;
-        kids.push(el('span', { style: 'color:var(--fg-faint); overflow-wrap:anywhere;' }, r.k));
+        kids.push(el('span', { style: 'color:var(--fg-faint); white-space:nowrap;' }, r.k));
         kids.push(el('span', { style: 'font-family:var(--mono); color:' + (r.color || 'var(--fg)') + '; overflow-wrap:anywhere; min-width:0;' }, r.v));
       }
       return el('div', { style: 'display:grid; grid-template-columns:max-content 1fr; gap:6px 12px; font-size:12.5px; align-items:start;' }, ...kids);
