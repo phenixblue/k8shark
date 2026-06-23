@@ -49,12 +49,24 @@ func (h *Handler) serveObject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	raw := body
+	// The parent List envelope carries the correctly-cased kind
+	// (e.g. "MutatingWebhookConfigurationList") and the real apiVersion, which
+	// individual items inside the list omit. Capture them as hints so we can
+	// restore them on the item without guessing casing from the resource name.
+	var apiVersionHint, kindHint string
 	if name != "" {
 		var list struct {
-			Items []json.RawMessage `json:"items"`
+			Kind       string            `json:"kind"`
+			APIVersion string            `json:"apiVersion"`
+			Items      []json.RawMessage `json:"items"`
 		}
 		found := false
 		if err := json.Unmarshal(body, &list); err == nil {
+			apiVersionHint = list.APIVersion
+			kindHint = strings.TrimSuffix(list.Kind, "List")
+			if kindHint == list.Kind { // didn't end in "List" — not a usable hint
+				kindHint = ""
+			}
 			for _, it := range list.Items {
 				if getName(it) == name {
 					raw = it
@@ -70,7 +82,7 @@ func (h *Handler) serveObject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp.Found = true
-	raw = normalizeObjectBody(raw, path)
+	raw = normalizeObjectBody(raw, path, apiVersionHint, kindHint)
 	resp.Kind, resp.Namespace = kindAndNamespace(raw)
 	resp.JSON = prettyJSON(raw)
 	resp.YAML = toYAML(raw)
@@ -378,10 +390,12 @@ func kindAndNamespace(raw json.RawMessage) (kind, namespace string) {
 }
 
 // normalizeObjectBody restores the top-level apiVersion and kind fields that
-// Kubernetes omits from objects nested inside a List response. They're inferred
-// from the capture path's group/version/resource. List and Table envelopes are
-// left untouched. The fix mirrors the legacy v1 UI's normalizeDetailBody.
-func normalizeObjectBody(raw json.RawMessage, path string) json.RawMessage {
+// Kubernetes omits from objects nested inside a List response. It prefers the
+// hints derived from the parent List envelope (which preserve correct casing,
+// e.g. "MutatingWebhookConfiguration") and falls back to inferring them from
+// the capture path's group/version/resource. List and Table envelopes are left
+// untouched. The fix mirrors the legacy v1 UI's normalizeDetailBody.
+func normalizeObjectBody(raw json.RawMessage, path, apiVersionHint, kindHint string) json.RawMessage {
 	var obj map[string]any
 	if err := json.Unmarshal(raw, &obj); err != nil {
 		return raw
@@ -396,17 +410,28 @@ func normalizeObjectBody(raw json.RawMessage, path string) json.RawMessage {
 
 	group, version, resource, _ := parseAPIPath(path)
 	changed := false
-	if s, _ := obj["apiVersion"].(string); s == "" && version != "" {
-		if group == "" {
+	if s, _ := obj["apiVersion"].(string); s == "" {
+		switch {
+		case apiVersionHint != "":
+			obj["apiVersion"] = apiVersionHint
+			changed = true
+		case version != "" && group == "":
 			obj["apiVersion"] = version
-		} else {
+			changed = true
+		case version != "":
 			obj["apiVersion"] = group + "/" + version
+			changed = true
 		}
-		changed = true
 	}
-	if s, _ := obj["kind"].(string); s == "" && resource != "" {
-		obj["kind"] = kindFromResource(resource)
-		changed = true
+	if s, _ := obj["kind"].(string); s == "" {
+		switch {
+		case kindHint != "":
+			obj["kind"] = kindHint
+			changed = true
+		case resource != "":
+			obj["kind"] = kindFromResource(resource)
+			changed = true
+		}
 	}
 	if !changed {
 		return raw
