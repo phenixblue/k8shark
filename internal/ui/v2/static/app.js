@@ -45,7 +45,7 @@
       else if (v !== undefined && v !== null) n.setAttribute(k, v);
     }
     for (const c of children) {
-      if (c === null || c === undefined || c === false) continue;
+      if (c === null || c === undefined) continue;
       if (typeof c === 'string' || typeof c === 'number' || typeof c === 'boolean' || typeof c === 'bigint') {
         n.appendChild(document.createTextNode(String(c)));
       } else if (isSafeChildNode(c)) {
