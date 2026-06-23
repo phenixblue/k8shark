@@ -9,24 +9,32 @@
   const FORBIDDEN_CHILD_TAGS = ['script', 'iframe', 'object', 'embed', 'link', 'meta', 'style'];
   const FORBIDDEN_CHILD_TAGS_SET = new Set(FORBIDDEN_CHILD_TAGS.map((t) => t.toUpperCase()));
   const FORBIDDEN_CHILD_SELECTOR = FORBIDDEN_CHILD_TAGS.join(',');
+  const SAFE_CHILD_NODE_CACHE = new WeakMap();
   const isSafeChildNode = (node) => {
     if (!(node instanceof Node)) return false;
+    const cached = SAFE_CHILD_NODE_CACHE.get(node);
+    if (cached !== undefined) return cached;
+
+    let ok = true;
     if (
       node.nodeType !== Node.ELEMENT_NODE &&
       node.nodeType !== Node.TEXT_NODE &&
       node.nodeType !== Node.DOCUMENT_FRAGMENT_NODE
     ) {
-      return false;
+      ok = false;
     }
-    if (node.nodeType === Node.ELEMENT_NODE || node.nodeType === Node.DOCUMENT_FRAGMENT_NODE) {
+
+    if (ok && (node.nodeType === Node.ELEMENT_NODE || node.nodeType === Node.DOCUMENT_FRAGMENT_NODE)) {
       // Block forbidden tags on the node itself (ELEMENT_NODE) and anywhere in its subtree.
       if (node.nodeType === Node.ELEMENT_NODE) {
         const tn = (node.tagName || '').toUpperCase();
-        if (FORBIDDEN_CHILD_TAGS_SET.has(tn)) return false;
+        if (FORBIDDEN_CHILD_TAGS_SET.has(tn)) ok = false;
       }
-      if (typeof node.querySelector === 'function' && node.querySelector(FORBIDDEN_CHILD_SELECTOR)) return false;
+      if (ok && typeof node.querySelector === 'function' && node.querySelector(FORBIDDEN_CHILD_SELECTOR)) ok = false;
     }
-    return true;
+
+    SAFE_CHILD_NODE_CACHE.set(node, ok);
+    return ok;
   };
   const el = (tag, attrs = {}, ...children) => {
     const n = document.createElement(tag);
