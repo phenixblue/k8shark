@@ -6,6 +6,7 @@
   'use strict';
 
   const $ = (id) => document.getElementById(id);
+  const FORBIDDEN_CHILD_TAGS = new Set(['SCRIPT', 'IFRAME', 'OBJECT', 'EMBED', 'LINK', 'META', 'STYLE']);
   const isSafeChildNode = (node) => {
     if (!(node instanceof Node)) return false;
     if (
@@ -17,9 +18,7 @@
     }
     if (node.nodeType === Node.ELEMENT_NODE) {
       const tn = (node.tagName || '').toUpperCase();
-      if (tn === 'SCRIPT' || tn === 'IFRAME' || tn === 'OBJECT' || tn === 'EMBED' || tn === 'LINK' || tn === 'META' || tn === 'STYLE') {
-        return false;
-      }
+      if (FORBIDDEN_CHILD_TAGS.has(tn)) return false;
     }
     return true;
   };
