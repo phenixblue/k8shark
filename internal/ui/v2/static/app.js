@@ -6,7 +6,9 @@
   'use strict';
 
   const $ = (id) => document.getElementById(id);
-  const FORBIDDEN_CHILD_TAGS = new Set(['SCRIPT', 'IFRAME', 'OBJECT', 'EMBED', 'LINK', 'META', 'STYLE']);
+  const FORBIDDEN_CHILD_TAGS = ['script', 'iframe', 'object', 'embed', 'link', 'meta', 'style'];
+  const FORBIDDEN_CHILD_TAGS_SET = new Set(FORBIDDEN_CHILD_TAGS.map((t) => t.toUpperCase()));
+  const FORBIDDEN_CHILD_SELECTOR = FORBIDDEN_CHILD_TAGS.join(',');
   const isSafeChildNode = (node) => {
     if (!(node instanceof Node)) return false;
     if (
@@ -20,10 +22,9 @@
       // Block forbidden tags on the node itself (ELEMENT_NODE) and anywhere in its subtree.
       if (node.nodeType === Node.ELEMENT_NODE) {
         const tn = (node.tagName || '').toUpperCase();
-        if (FORBIDDEN_CHILD_TAGS.has(tn)) return false;
+        if (FORBIDDEN_CHILD_TAGS_SET.has(tn)) return false;
       }
-      const sel = 'script,iframe,object,embed,link,meta,style';
-      if (typeof node.querySelector === 'function' && node.querySelector(sel)) return false;
+      if (typeof node.querySelector === 'function' && node.querySelector(FORBIDDEN_CHILD_SELECTOR)) return false;
     }
     return true;
   };
