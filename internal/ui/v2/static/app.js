@@ -6,6 +6,23 @@
   'use strict';
 
   const $ = (id) => document.getElementById(id);
+  const isSafeChildNode = (node) => {
+    if (!(node instanceof Node)) return false;
+    if (
+      node.nodeType !== Node.ELEMENT_NODE &&
+      node.nodeType !== Node.TEXT_NODE &&
+      node.nodeType !== Node.DOCUMENT_FRAGMENT_NODE
+    ) {
+      return false;
+    }
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      const tn = (node.tagName || '').toUpperCase();
+      if (tn === 'SCRIPT' || tn === 'IFRAME' || tn === 'OBJECT' || tn === 'EMBED' || tn === 'LINK' || tn === 'META' || tn === 'STYLE') {
+        return false;
+      }
+    }
+    return true;
+  };
   const el = (tag, attrs = {}, ...children) => {
     const n = document.createElement(tag);
     for (const [k, v] of Object.entries(attrs)) {
@@ -18,7 +35,7 @@
       if (c === null || c === undefined || c === false) continue;
       if (typeof c === 'string' || typeof c === 'number' || typeof c === 'boolean' || typeof c === 'bigint') {
         n.appendChild(document.createTextNode(String(c)));
-      } else if (c instanceof Node) {
+      } else if (isSafeChildNode(c)) {
         n.appendChild(c);
       } else {
         n.appendChild(document.createTextNode(String(c)));
