@@ -16,7 +16,13 @@
     }
     for (const c of children) {
       if (c === null || c === undefined || c === false) continue;
-      n.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
+      if (typeof c === 'string' || typeof c === 'number' || typeof c === 'boolean' || typeof c === 'bigint') {
+        n.appendChild(document.createTextNode(String(c)));
+      } else if (c instanceof Node) {
+        n.appendChild(c);
+      } else {
+        n.appendChild(document.createTextNode(String(c)));
+      }
     }
     return n;
   };
