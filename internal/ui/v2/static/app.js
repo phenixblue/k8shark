@@ -29,11 +29,14 @@
       }
       if (ok) {
         try {
-          const qs =
-            node.nodeType === Node.ELEMENT_NODE
-              ? Element.prototype.querySelector
-              : DocumentFragment.prototype.querySelector;
-          if (typeof qs === 'function' && qs.call(node, FORBIDDEN_CHILD_SELECTOR)) ok = false;
+          const walker = document.createTreeWalker(node, NodeFilter.SHOW_ELEMENT);
+          // For elements, include the element itself; for fragments, start at the first element child.
+          let cur = node.nodeType === Node.ELEMENT_NODE ? node : walker.nextNode();
+          while (cur) {
+            const tn = (cur.tagName || '').toUpperCase();
+            if (FORBIDDEN_CHILD_TAGS_SET.has(tn)) { ok = false; break; }
+            cur = walker.nextNode();
+          }
         } catch (_) {
           ok = false; // fail closed
         }
