@@ -19,4 +19,6 @@ planning/
 
 # Test / local capture data
 *.tar.gz
+*.khsrk
 k8shark-capture/
+scale-manifests/

@@ -49,12 +49,24 @@ func (h *Handler) serveObject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	raw := body
+	// The parent List envelope carries the correctly-cased kind
+	// (e.g. "MutatingWebhookConfigurationList") and the real apiVersion, which
+	// individual items inside the list omit. Capture them as hints so we can
+	// restore them on the item without guessing casing from the resource name.
+	var apiVersionHint, kindHint string
 	if name != "" {
 		var list struct {
-			Items []json.RawMessage `json:"items"`
+			Kind       string            `json:"kind"`
+			APIVersion string            `json:"apiVersion"`
+			Items      []json.RawMessage `json:"items"`
 		}
 		found := false
 		if err := json.Unmarshal(body, &list); err == nil {
+			apiVersionHint = list.APIVersion
+			kindHint = strings.TrimSuffix(list.Kind, "List")
+			if kindHint == list.Kind { // didn't end in "List" — not a usable hint
+				kindHint = ""
+			}
 			for _, it := range list.Items {
 				if getName(it) == name {
 					raw = it
@@ -70,6 +82,7 @@ func (h *Handler) serveObject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp.Found = true
+	raw = normalizeObjectBody(raw, path, apiVersionHint, kindHint)
 	resp.Kind, resp.Namespace = kindAndNamespace(raw)
 	resp.JSON = prettyJSON(raw)
 	resp.YAML = toYAML(raw)
@@ -374,6 +387,62 @@ func kindAndNamespace(raw json.RawMessage) (kind, namespace string) {
 		return "", ""
 	}
 	return m.Kind, m.Metadata.Namespace
+}
+
+// normalizeObjectBody restores the top-level apiVersion and kind fields that
+// Kubernetes omits from objects nested inside a List response. It prefers the
+// hints derived from the parent List envelope (which preserve correct casing,
+// e.g. "MutatingWebhookConfiguration") and falls back to inferring them from
+// the capture path's group/version/resource. List and Table envelopes are left
+// untouched. The fix mirrors the legacy v1 UI's normalizeDetailBody.
+func normalizeObjectBody(raw json.RawMessage, path, apiVersionHint, kindHint string) json.RawMessage {
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return raw
+	}
+	// Leave list/table envelopes as-is — they carry their own kind.
+	if _, hasItems := obj["items"]; hasItems {
+		return raw
+	}
+	if k, _ := obj["kind"].(string); strings.HasSuffix(k, "Table") {
+		return raw
+	}
+
+	group, version, resource, _ := parseAPIPath(path)
+	changed := false
+	if s, _ := obj["apiVersion"].(string); s == "" {
+		switch {
+		case apiVersionHint != "":
+			obj["apiVersion"] = apiVersionHint
+			changed = true
+		case version != "" && group == "":
+			obj["apiVersion"] = version
+			changed = true
+		case version != "":
+			obj["apiVersion"] = group + "/" + version
+			changed = true
+		}
+	}
+	if s, _ := obj["kind"].(string); s == "" {
+		switch {
+		case kindHint != "":
+			obj["kind"] = kindHint
+			changed = true
+		case resource != "":
+			obj["kind"] = kindFromResource(resource)
+			changed = true
+		}
+	}
+	if !changed {
+		return raw
+	}
+	// Re-marshaling sorts keys alphabetically, which happens to match the
+	// canonical apiVersion/kind/metadata/spec/status ordering.
+	b, err := json.Marshal(obj)
+	if err != nil {
+		return raw
+	}
+	return b
 }
 
 // prettyJSON re-indents a raw JSON body. Returns the original string on error.
