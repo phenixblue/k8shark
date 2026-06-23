@@ -70,6 +70,7 @@ func (h *Handler) serveObject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp.Found = true
+	raw = normalizeObjectBody(raw, path)
 	resp.Kind, resp.Namespace = kindAndNamespace(raw)
 	resp.JSON = prettyJSON(raw)
 	resp.YAML = toYAML(raw)
@@ -374,6 +375,49 @@ func kindAndNamespace(raw json.RawMessage) (kind, namespace string) {
 		return "", ""
 	}
 	return m.Kind, m.Metadata.Namespace
+}
+
+// normalizeObjectBody restores the top-level apiVersion and kind fields that
+// Kubernetes omits from objects nested inside a List response. They're inferred
+// from the capture path's group/version/resource. List and Table envelopes are
+// left untouched. The fix mirrors the legacy v1 UI's normalizeDetailBody.
+func normalizeObjectBody(raw json.RawMessage, path string) json.RawMessage {
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err != nil {
+		return raw
+	}
+	// Leave list/table envelopes as-is — they carry their own kind.
+	if _, hasItems := obj["items"]; hasItems {
+		return raw
+	}
+	if k, _ := obj["kind"].(string); strings.HasSuffix(k, "Table") {
+		return raw
+	}
+
+	group, version, resource, _ := parseAPIPath(path)
+	changed := false
+	if s, _ := obj["apiVersion"].(string); s == "" && version != "" {
+		if group == "" {
+			obj["apiVersion"] = version
+		} else {
+			obj["apiVersion"] = group + "/" + version
+		}
+		changed = true
+	}
+	if s, _ := obj["kind"].(string); s == "" && resource != "" {
+		obj["kind"] = kindFromResource(resource)
+		changed = true
+	}
+	if !changed {
+		return raw
+	}
+	// Re-marshaling sorts keys alphabetically, which happens to match the
+	// canonical apiVersion/kind/metadata/spec/status ordering.
+	b, err := json.Marshal(obj)
+	if err != nil {
+		return raw
+	}
+	return b
 }
 
 // prettyJSON re-indents a raw JSON body. Returns the original string on error.

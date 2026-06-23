@@ -1155,7 +1155,9 @@
       ybtn.className = 'btn' + (mode === 'yaml' ? ' primary' : '');
       jbtn.className = 'btn' + (mode === 'json' ? ' primary' : '');
     }
-    wrap.appendChild(el('div', { style: 'display:flex; gap:8px; margin-bottom:10px;' }, ybtn, jbtn, copyBtn, dlBtn));
+    wrap.appendChild(el('div', { style: 'display:flex; gap:8px; align-items:center; justify-content:space-between; margin-bottom:10px;' },
+      el('div', { style: 'display:flex; gap:8px;' }, ybtn, jbtn),
+      el('div', { style: 'display:flex; gap:8px;' }, copyBtn, dlBtn)));
     wrap.appendChild(host);
     getJSON('/v2/api/object?path=' + encodeURIComponent(path) + (name ? '&name=' + encodeURIComponent(name) : ''))
       .then((d) => { data = d; paint(); })

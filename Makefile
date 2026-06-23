@@ -1,4 +1,4 @@
-.PHONY: build test test-race test-cover bench fmt lint lint-ci-install lint-ci e2e kind-up kind-down release-snapshot release-local clean help
+.PHONY: build test test-race test-cover bench fmt lint lint-ci-install lint-ci e2e kind-up kind-chaos kind-scale kind-down release-snapshot release-local clean help
 
 BINARY  := kshrk
 VERSION ?= dev
@@ -40,9 +40,16 @@ e2e: build ## Build binary and run end-to-end tests (requires kind + kubectl)
 kind-up: ## Create a dev KinD cluster with test resources (use --reset to recreate)
 	./scripts/kind-up.sh $(ARGS)
 
-kind-down: ## Delete the dev KinD cluster (k8shark-dev)
-	kind delete cluster --name k8shark-dev
-	rm -f $(HOME)/.kube/k8shark-dev.yaml
+kind-chaos: ## Create a KinD cluster of unhealthy workloads for event/capture demos (ARGS=--churn 180)
+	./scripts/kind-chaos.sh $(ARGS)
+
+kind-scale: ## Create a multi-node KinD cluster with 50+ namespaces and dozens of workloads (ARGS=--namespaces 80)
+	./scripts/kind-scale.sh $(ARGS)
+
+kind-down: ## Delete the dev KinD clusters (k8shark-dev and k8shark-scale)
+	-kind delete cluster --name k8shark-dev
+	-kind delete cluster --name k8shark-scale
+	rm -f $(HOME)/.kube/k8shark-dev.yaml $(HOME)/.kube/k8shark-scale.yaml
 
 clean: ## Remove build artifacts
 	rm -f $(BINARY) coverage.out coverage.html
