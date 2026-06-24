@@ -15,7 +15,12 @@ func init() {
 var validateCmd = &cobra.Command{
 	Use:          "validate",
 	Short:        "Validate a capture config file without connecting to a cluster",
-	Long:         `Parse and validate a k8shark capture config file, reporting any errors or warnings without connecting to a cluster or making any API calls.`,
+	Long: `Parse and validate a k8shark capture config file, reporting any errors or
+warnings without connecting to a cluster or making any API calls. Hard errors
+(e.g. a missing resource/version, an unparseable duration) exit non-zero;
+warnings (e.g. a very short interval) are printed but exit zero.`,
+	Example: `  # Validate a capture config before running it
+  kshrk validate --config k8shark.yaml`,
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if cfgFile == "" {

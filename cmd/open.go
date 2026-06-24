@@ -10,8 +10,18 @@ import (
 var openCmd = &cobra.Command{
 	Use:   "open <capture.kshrk>",
 	Short: "Open a capture file and start a mock Kubernetes API server",
-	Long: `Extracts a k8shark capture archive, starts a local mock Kubernetes
-API server, and writes a kubeconfig so kubectl can connect immediately.`,
+	Long: `Reads a k8shark capture archive (in memory, without extracting to disk),
+starts a local mock Kubernetes API server, and writes a kubeconfig so kubectl
+can connect immediately. Use --at to replay the cluster as it looked at a
+specific point in the capture window.`,
+	Example: `  # Open a capture and start the mock API server
+  kshrk open capture.kshrk
+
+  # Replay the state 5 minutes before the capture ended
+  kshrk open capture.kshrk --at -5m
+
+  # Replay at a specific timestamp, on a fixed port
+  kshrk open capture.kshrk --at 2026-04-09T10:30:00Z --port 8443`,
 	Args: cobra.ExactArgs(1),
 	RunE: runOpen,
 }

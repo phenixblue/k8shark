@@ -17,7 +17,23 @@ var captureCmd = &cobra.Command{
 	Short: "Capture Kubernetes cluster state to a .kshrk archive",
 	Long: `Runs a series of Kubernetes API read operations at defined intervals
 for a configured duration. All responses are recorded and packaged into a
-single .kshrk capture file for later replay.`,
+single .kshrk capture file for later replay.
+
+Resources, namespaces, and intervals come from the --config file. Use
+--auto-discover to capture every available API resource without listing them,
+--output - to stream records as NDJSON to stdout, and --redact-secrets to
+scrub Secret values from the archive after capture.`,
+	Example: `  # Capture using a config file
+  kshrk capture --config k8shark.yaml
+
+  # Auto-discover and capture all resources for 5 minutes
+  kshrk capture --auto-discover --duration 5m
+
+  # Stream records as NDJSON to stdout instead of writing an archive
+  kshrk capture --config k8shark.yaml --output -
+
+  # Capture, then redact Secret values from the archive
+  kshrk capture --config k8shark.yaml --redact-secrets`,
 	RunE: runCapture,
 }
 

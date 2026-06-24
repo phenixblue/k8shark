@@ -16,8 +16,19 @@ import (
 var uiCmd = &cobra.Command{
 	Use:   "ui <capture.kshrk>",
 	Short: "Open an interactive web explorer for a capture archive",
-	Long: `Starts a local web UI for browsing a k8shark capture and also runs
-the mock Kubernetes API server with generated kubeconfig output.`,
+	Long: `Starts a local web UI for browsing a k8shark capture — namespaces,
+workloads, pods, object YAML/JSON, relationships, and a watch-event timeline —
+and also runs the mock Kubernetes API server with generated kubeconfig output.
+Ports default to random; pin them with --port / --api-port (or a ui: block in
+the config file).`,
+	Example: `  # Browse a capture in the web UI
+  kshrk ui capture.kshrk
+
+  # Pin the UI and mock API server ports
+  kshrk ui capture.kshrk --port 8080 --api-port 8081
+
+  # Open the UI pinned to a point in time
+  kshrk ui capture.kshrk --at -5m`,
 	Args: cobra.ExactArgs(1),
 	RunE: runUI,
 }

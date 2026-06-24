@@ -18,7 +18,22 @@ var transitionsCmd = &cobra.Command{
 events for captured resources, without starting a replay server.
 
 For watch-enabled captures, events are read directly from the watch-event index.
-For poll-only captures, consecutive snapshots are diff'd to infer changes.`,
+For poll-only captures, consecutive snapshots are diff'd to infer changes.
+
+Narrow the output with --resource / --namespace / --name and the --since/--until
+time window, add --diff to show field-level changes for MODIFIED events, and use
+-o json for machine-readable output.`,
+	Example: `  # List all state changes in a capture
+  kshrk transitions capture.kshrk
+
+  # Only Deployment changes in the "prod" namespace
+  kshrk transitions capture.kshrk --resource deployments --namespace prod
+
+  # Show field diffs for MODIFIED events within a time window
+  kshrk transitions capture.kshrk --diff --since 2026-04-09T10:00:00Z --until 2026-04-09T10:05:00Z
+
+  # Machine-readable output
+  kshrk transitions capture.kshrk -o json`,
 	Args: cobra.ExactArgs(1),
 	RunE: runTransitions,
 }
