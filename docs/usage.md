@@ -255,11 +255,10 @@ k8shark UI running
 Open this URL in your browser. Press Ctrl+C to stop.
 ```
 
-The redesigned **dashboard UI is served at `/`** (it redirects to `/v2/`); the original explorer is
-preserved as the **legacy v1 UI at `/v1/`**. For a full walkthrough with screenshots, see
-**[docs/web-ui.md](web-ui.md)**.
+The **dashboard UI is served at `/`** (it redirects to `/v2/`). For a full walkthrough with
+screenshots, see **[docs/web-ui.md](web-ui.md)**.
 
-### UI features (dashboard)
+### UI features
 
 - Overview dashboard with KPIs, capture details, issues, and resource transitions
 - Cluster-wide namespaces, workloads, and pods lists with drill-down
@@ -268,15 +267,6 @@ preserved as the **legacy v1 UI at `/v1/`**. For a full walkthrough with screens
 - Resources catalog with per-type/per-group toggles applied across the UI
 - Watch-event timeline and a time-travel scrubber
 - Light/dark theme
-
-### UI features (legacy v1)
-
-- Cluster and namespace drill-down
-- Workload, pod, and container navigation
-- Cluster-scoped resources at top level
-- Sidebar toggles by resource type
-- Search by name or label text
-- Click for detail panel with JSON/YAML views
 
 ### UI flags
 
