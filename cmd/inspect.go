@@ -66,6 +66,7 @@ func printInspectTable(cmd *cobra.Command, r *inspect.Report, wide bool) {
 	out := cmd.OutOrStdout()
 	duration := r.CapturedUntil.Sub(r.CapturedAt).Truncate(time.Second)
 
+	fmt.Fprintf(out, "Format:       v%d\n", r.FormatVersion)
 	fmt.Fprintf(out, "Capture ID:   %s\n", r.CaptureID)
 	fmt.Fprintf(out, "Captured:     %s → %s  (%s)\n",
 		r.CapturedAt.UTC().Format(time.RFC3339),

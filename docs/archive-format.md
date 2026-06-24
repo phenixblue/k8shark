@@ -24,6 +24,7 @@ Capture-level information. Written once at the end of the capture run.
 
 ```json
 {
+  "format_version":      1,
   "capture_id":          "550e8400-e29b-41d4-a716-446655440000",
   "captured_at":         "2026-04-09T10:00:00Z",
   "captured_until":      "2026-04-09T10:10:00Z",
@@ -35,12 +36,32 @@ Capture-level information. Written once at the end of the capture run.
 
 | Field | Description |
 |-------|-------------|
+| `format_version` | Archive schema version (see [below](#format-version--compatibility)). Absent in pre-versioning archives, which are read as version 1. |
 | `capture_id` | UUID, unique per capture run. Used in the generated kubeconfig filename. |
 | `captured_at` | UTC timestamp when the first poll fired (approximately `now - duration`). |
 | `captured_until` | UTC timestamp when the capture ended. |
 | `kubernetes_version` | `gitVersion` from `/version` on the source cluster. |
 | `server_address` | API server URL from the kubeconfig used during capture. |
 | `record_count` | Total number of individual records written. |
+
+## Format version & compatibility
+
+`metadata.json` carries an integer `format_version` identifying the archive
+schema. The current version is **1**.
+
+- **Additive changes don't bump it.** New optional metadata fields
+  (`omitempty`) and new optional archive entries (e.g. the watch index) are
+  backward-compatible: older readers ignore what they don't recognize and
+  newer readers tolerate their absence. These keep `format_version` at 1.
+- **Breaking changes bump it.** A structural change that an older reader cannot
+  safely parse increments the version.
+- **Pre-versioning archives** (captured before the field existed) omit
+  `format_version`; readers treat them as version 1, since they are
+  structurally identical.
+- **Newer archives are refused.** If an archive's `format_version` is greater
+  than the version a given `kshrk` build understands, the tool stops with a
+  clear "upgrade kshrk" error rather than risk misreading an incompatible
+  layout. Run `kshrk inspect <archive>` to see an archive's format version.
 
 ## index.json
 

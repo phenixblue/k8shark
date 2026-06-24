@@ -296,6 +296,7 @@ func (e *Engine) Run() (*CaptureSummary, error) {
 	}
 
 	meta := &CaptureMetadata{
+		FormatVersion:     CurrentFormatVersion,
 		CaptureID:         uuid.New().String(),
 		CapturedAt:        time.Now().UTC().Add(-e.cfg.Duration),
 		CapturedUntil:     time.Now().UTC(),
