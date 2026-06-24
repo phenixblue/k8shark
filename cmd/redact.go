@@ -15,16 +15,21 @@ var redactCmd = &cobra.Command{
 	Use:   "redact --in <capture.kshrk> [--out <redacted.kshrk>]",
 	Short: "Redact Secret data and arbitrary fields from a capture archive",
 	Long: `Produces a new capture archive with Kubernetes Secret data replaced by
-"REDACTED" and any configured field-level redaction rules applied.
-The original archive is not modified.
+"REDACTED" and any configured field-level redaction rules applied. The original
+archive is not modified; the output defaults to <in>-redacted.kshrk.
 
 Field rules can be supplied via --redact-field (repeatable) with the format:
   <fieldPath>:<Kind>:<replacement>[:<valueType>]
 
-Examples:
+Rules may also be loaded from a config file's redaction.rules block via --config.`,
+	Example: `  # Redact all Secret data and stringData values
   kshrk redact --in capture.kshrk --redact-secrets
+
+  # Apply a single field-level redaction rule
   kshrk redact --in capture.kshrk --redact-field "data.api-key:ConfigMap:REDACTED"
-  kshrk redact --in capture.kshrk --config k8shark.yaml`,
+
+  # Use redaction.rules from a config file, writing to a chosen path
+  kshrk redact --in capture.kshrk --out safe.kshrk --config k8shark.yaml`,
 	RunE: runRedact,
 }
 

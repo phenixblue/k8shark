@@ -21,8 +21,19 @@ func (e exitError) ExitCode() int { return e.code }
 var diffCmd = &cobra.Command{
 	Use:   "diff",
 	Short: "Compare two capture snapshots",
-	Long: `Compares resource state between two capture archives, or between two
-points in time within the same archive, and prints a diff.`,
+	Long: `Compares resource state between two capture archives (--before/--after),
+or between two points in time within a single archive (--archive with
+--before-at/--after-at), and prints a diff. Limit the scope with --resource and
+--namespace, and choose text or json output with -o. Exits non-zero when
+differences are found.`,
+	Example: `  # Diff two separate captures
+  kshrk diff --before before.kshrk --after after.kshrk
+
+  # Diff two points in time within one capture
+  kshrk diff --archive capture.kshrk --before-at -10m --after-at -1m
+
+  # Limit to a resource and namespace, as JSON
+  kshrk diff --before before.kshrk --after after.kshrk --resource pods --namespace default -o json`,
 	Args: cobra.NoArgs,
 	RunE: runDiff,
 }

@@ -15,8 +15,16 @@ import (
 var inspectCmd = &cobra.Command{
 	Use:   "inspect <capture.kshrk>",
 	Short: "Display a summary of a capture archive's contents",
-	Long: `Reads a k8shark capture archive and prints capture metadata and a
-table of captured resource types without starting a server.`,
+	Long: `Reads a k8shark capture archive and prints capture metadata (format
+version, capture window, Kubernetes version, record count) and a table of
+captured resource types, without starting a server. Use -o json or -o yaml
+for machine-readable output.`,
+	Example: `  # Summarize a capture as a table
+  kshrk inspect capture.kshrk
+
+  # Machine-readable output
+  kshrk inspect capture.kshrk -o json
+  kshrk inspect capture.kshrk -o yaml`,
 	Args: cobra.ExactArgs(1),
 	RunE: runInspect,
 }
