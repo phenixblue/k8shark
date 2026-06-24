@@ -3,6 +3,13 @@
 Guidance for Claude Code when working in this repository. For full dev setup,
 the KinD cluster, and the Make target reference, see `docs/development.md`.
 
+## Conventions
+
+- **American English** everywhere — docs, code comments, identifiers, log/error
+  strings, and commit messages. Use `color`, `behavior`, `summarize`,
+  `canceled`, `recognize`, `serialization`, etc. (not the `-our`/`-ise`/`-lled`
+  British forms). The repo was normalized to American English in #105.
+
 ## Building & verifying
 
 Use the Makefile rather than raw `go` commands:
