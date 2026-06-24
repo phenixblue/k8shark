@@ -19,7 +19,7 @@ import (
 func buildBenchStore(b *testing.B, n int) *CaptureStore {
 	b.Helper()
 	dir := b.TempDir()
-	outPath := filepath.Join(dir, "bench.khsrk")
+	outPath := filepath.Join(dir, "bench.kshrk")
 
 	sw, err := archive.NewStreamWriter(outPath)
 	if err != nil {

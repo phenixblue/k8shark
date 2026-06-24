@@ -20,7 +20,7 @@ import (
 func buildPollArchive(t *testing.T, apiPath string, bodies []string) string {
 	t.Helper()
 	dir := t.TempDir()
-	outPath := filepath.Join(dir, "test.khsrk")
+	outPath := filepath.Join(dir, "test.kshrk")
 
 	t0 := time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC)
 	idx := make(capture.Index)
@@ -70,7 +70,7 @@ func buildPollArchive(t *testing.T, apiPath string, bodies []string) string {
 func buildWatchArchive(t *testing.T, apiPath, snapBody string, events []watchEvent) string {
 	t.Helper()
 	dir := t.TempDir()
-	outPath := filepath.Join(dir, "test.khsrk")
+	outPath := filepath.Join(dir, "test.kshrk")
 
 	t0 := time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC)
 

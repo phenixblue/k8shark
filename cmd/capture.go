@@ -14,16 +14,16 @@ import (
 
 var captureCmd = &cobra.Command{
 	Use:   "capture",
-	Short: "Capture Kubernetes cluster state to a .khsrk archive",
+	Short: "Capture Kubernetes cluster state to a .kshrk archive",
 	Long: `Runs a series of Kubernetes API read operations at defined intervals
 for a configured duration. All responses are recorded and packaged into a
-single .khsrk capture file for later replay.`,
+single .kshrk capture file for later replay.`,
 	RunE: runCapture,
 }
 
 func init() {
 	rootCmd.AddCommand(captureCmd)
-	captureCmd.Flags().StringP("output", "o", "", "output file path (default: ./k8shark-<timestamp>.khsrk)")
+	captureCmd.Flags().StringP("output", "o", "", "output file path (default: ./k8shark-<timestamp>.kshrk)")
 	captureCmd.Flags().String("kubeconfig", "", "path to kubeconfig (defaults to KUBECONFIG env, then ~/.kube/config)")
 	captureCmd.Flags().String("duration", "", "capture duration, overrides config file value (e.g. 10m, 1h)")
 	captureCmd.Flags().Bool("auto-discover", false, "auto-discover and capture all available API resources")

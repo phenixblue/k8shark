@@ -6,7 +6,7 @@ namespaces, workloads, pods, and every other captured resource — and to step b
 through the capture window.
 
 ```sh
-kshrk ui capture.khsrk
+kshrk ui capture.kshrk
 ```
 
 ```

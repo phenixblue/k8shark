@@ -148,7 +148,7 @@ func TestOpen_ServesV2(t *testing.T) {
 
 func writeMinimalArchive(t *testing.T) string {
 	t.Helper()
-	out := filepath.Join(t.TempDir(), "capture.khsrk")
+	out := filepath.Join(t.TempDir(), "capture.kshrk")
 	now := time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC)
 	podList := `{"apiVersion":"v1","kind":"PodList","items":[{"metadata":{"name":"p","namespace":"default"}}]}`
 	recs := []*capture.Record{

@@ -40,7 +40,7 @@ func buildArchive(t *testing.T, records []*capture.Record) string {
 		RecordCount:       len(records),
 	}
 
-	outPath := filepath.Join(dir, "test.khsrk")
+	outPath := filepath.Join(dir, "test.kshrk")
 	sw, err := archive.NewStreamWriter(outPath)
 	if err != nil {
 		t.Fatalf("buildArchive NewStreamWriter: %v", err)

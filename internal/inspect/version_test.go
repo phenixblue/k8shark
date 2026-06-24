@@ -45,7 +45,7 @@ func buildArchiveWithVersion(t *testing.T, version int) string {
 		CapturedUntil: now,
 		RecordCount:   1,
 	}
-	out := filepath.Join(t.TempDir(), "future.khsrk")
+	out := filepath.Join(t.TempDir(), "future.kshrk")
 	sw, err := archive.NewStreamWriter(out)
 	if err != nil {
 		t.Fatalf("NewStreamWriter: %v", err)

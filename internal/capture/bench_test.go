@@ -51,7 +51,7 @@ func BenchmarkEngine_CaptureToArchive(b *testing.B) {
 		cfg := &config.Config{
 			DurationRaw: "500ms",
 			Duration:    500 * time.Millisecond,
-			Output:      filepath.Join(b.TempDir(), "capture.khsrk"),
+			Output:      filepath.Join(b.TempDir(), "capture.kshrk"),
 			Resources: []config.Resource{
 				{Version: "v1", Resource: "pods", Namespaces: []string{"default"}, IntervalRaw: "200ms", Interval: 200 * time.Millisecond},
 				{Version: "v1", Resource: "nodes", IntervalRaw: "200ms", Interval: 200 * time.Millisecond},

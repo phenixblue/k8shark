@@ -20,13 +20,13 @@ A customer hands over one file. A support engineer queries the environment inter
 
 ```mermaid
 flowchart LR
-    A[Your Cluster] -->|kshrk capture| B(capture.khsrk)
+    A[Your Cluster] -->|kshrk capture| B(capture.kshrk)
     B -->|kshrk open| C[Mock API Server]
     C -->|kubectl| D[Offline Debugging]
 ```
 
-1. **Capture** — `kshrk capture` polls the Kubernetes API at configured intervals for a set duration and packages all responses into a single `.khsrk` archive.
-2. **Open** — `kshrk open capture.khsrk` reads the archive, starts a local mock HTTPS API server, and writes a kubeconfig. Set `KUBECONFIG` and use `kubectl` normally.
+1. **Capture** — `kshrk capture` polls the Kubernetes API at configured intervals for a set duration and packages all responses into a single `.kshrk` archive.
+2. **Open** — `kshrk open capture.kshrk` reads the archive, starts a local mock HTTPS API server, and writes a kubeconfig. Set `KUBECONFIG` and use `kubectl` normally.
 
 ## Quick start
 
@@ -38,14 +38,14 @@ brew install phenixblue/tap/k8shark
 kshrk capture --config k8shark.yaml
 
 # Replay the capture
-kshrk open capture.khsrk
+kshrk open capture.kshrk
 export KUBECONFIG=~/.kube/k8shark-<id>.yaml
 kubectl get pods -A
 ```
 
 ## Web UI (Experimental)
 
-`kshrk ui capture.khsrk` starts a local dashboard for browsing a capture — namespaces, workloads,
+`kshrk ui capture.kshrk` starts a local dashboard for browsing a capture — namespaces, workloads,
 pods, and every other captured resource — with object YAML/JSON, relationships, a watch-event
 timeline, and a time-travel scrubber. See **[docs/web-ui.md](docs/web-ui.md)** for a full tour.
 
@@ -62,7 +62,7 @@ timeline, and a time-travel scrubber. See **[docs/web-ui.md](docs/web-ui.md)** f
 | [docs/config.md](docs/config.md) | Config file reference, namespaced vs cluster-scoped resources, example configs |
 | [docs/releases.md](docs/releases.md) | How to cut a release, GoReleaser pipeline, signing, Homebrew tap |
 | [docs/development.md](docs/development.md) | Building, testing, linting, KinD dev cluster, E2E tests, package layout |
-| [docs/archive-format.md](docs/archive-format.md) | Internal `.khsrk` (ZIP+Zstd) layout, record and index JSON schemas |
+| [docs/archive-format.md](docs/archive-format.md) | Internal `.kshrk` (ZIP+Zstd) layout, record and index JSON schemas |
 
 ## License
 

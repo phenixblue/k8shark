@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// CurrentFormatVersion is the .khsrk archive schema version written by this
+// CurrentFormatVersion is the .kshrk archive schema version written by this
 // build. It is bumped ONLY on a breaking, structurally-incompatible change.
 // Additive, backward-compatible changes (new omitempty metadata fields, new
 // optional archive entries) keep the same version. Archives written before this

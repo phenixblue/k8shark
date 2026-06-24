@@ -118,7 +118,7 @@ Run `make help` to print all targets:
 │   ├── validate.go            # kshrk validate
 │   └── version.go             # kshrk version
 └── internal/
-    ├── archive/               # .khsrk (ZIP+Zstd) read/write
+    ├── archive/               # .kshrk (ZIP+Zstd) read/write
     ├── capture/               # capture engine + record types
     │   ├── engine.go          # polling loop, doFetch, buildAPIPath
     │   └── record.go          # Record, Index, CaptureMetadata types

@@ -1,11 +1,11 @@
 # Archive Format
 
-A k8shark capture is a `.khsrk` file: a ZIP container whose entries are
+A k8shark capture is a `.kshrk` file: a ZIP container whose entries are
 individually Zstandard-compressed JSON (except `metadata.json`, which is stored
 uncompressed for fast header reads). It can be listed with any ZIP tool.
 
 ```sh
-unzip -l capture.khsrk
+unzip -l capture.kshrk
 ```
 
 ## Layout
@@ -143,13 +143,13 @@ only uncompressed entry):
 
 ```sh
 # List entries
-unzip -l capture.khsrk
+unzip -l capture.kshrk
 
 # Read the (uncompressed) metadata
-unzip -p capture.khsrk k8shark-capture/metadata.json | python3 -m json.tool
+unzip -p capture.kshrk k8shark-capture/metadata.json | python3 -m json.tool
 
 # Read the (zstd-compressed) index and find the latest seq for a path
-unzip -p capture.khsrk k8shark-capture/index.json.zst | zstd -d \
+unzip -p capture.kshrk k8shark-capture/index.json.zst | zstd -d \
   | python3 -c "
 import json,sys
 idx=json.load(sys.stdin)
@@ -157,7 +157,7 @@ entry=idx['/api/v1/namespaces/default/pods']
 print('latest seq:', entry['seqs'][-1])
 "
 # then read that record (replace <pathDir> and <seq>):
-# unzip -p capture.khsrk k8shark-capture/records/<pathDir>/<seq>.json.zst | zstd -d | python3 -m json.tool
+# unzip -p capture.kshrk k8shark-capture/records/<pathDir>/<seq>.json.zst | zstd -d | python3 -m json.tool
 ```
 
 ## Redacted archives
@@ -176,12 +176,12 @@ usable with `kshrk open` — `kubectl get secret` will show the secret names and
 types, but all values will be `REDACTED`.
 
 ```sh
-kshrk redact --in capture.khsrk --out capture-redacted.khsrk
+kshrk redact --in capture.kshrk --out capture-redacted.kshrk
 ```
 
 ## Streaming mode (NDJSON stdout)
 
-When `output: "-"` is set in the configuration (or `--output -` on the command line), k8shark writes records to stdout in **newline-delimited JSON (NDJSON)** format instead of writing a `.khsrk` file. Each line is a complete JSON record object identical to the individual record files described above.
+When `output: "-"` is set in the configuration (or `--output -` on the command line), k8shark writes records to stdout in **newline-delimited JSON (NDJSON)** format instead of writing a `.kshrk` file. Each line is a complete JSON record object identical to the individual record files described above.
 
 ```sh
 kshrk capture --config capture.yaml --output - | jq 'select(.api_path == "/api/v1/namespaces/default/pods")'

@@ -58,7 +58,7 @@ func TestRunInspect_Table(t *testing.T) {
 
 func TestRunInspect_MissingArchive(t *testing.T) {
 	cmd := newTestInspectCommand()
-	if err := runInspect(cmd, []string{"/no/such/archive.khsrk"}); err == nil {
+	if err := runInspect(cmd, []string{"/no/such/archive.kshrk"}); err == nil {
 		t.Error("expected error for missing archive")
 	}
 }

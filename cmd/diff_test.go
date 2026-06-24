@@ -82,7 +82,7 @@ func newTestDiffCommand() *cobra.Command {
 
 func buildDiffArchive(t *testing.T, body string) string {
 	t.Helper()
-	out := filepath.Join(t.TempDir(), "capture.khsrk")
+	out := filepath.Join(t.TempDir(), "capture.kshrk")
 	now := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
 	rec := &capture.Record{ID: "rec-1", CapturedAt: now, APIPath: "/api/v1/namespaces/default/pods", HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(body)}
 	meta := &capture.CaptureMetadata{CaptureID: "test-capture", CapturedAt: now, CapturedUntil: now, RecordCount: 1}

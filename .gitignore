@@ -19,6 +19,8 @@ planning/
 
 # Test / local capture data
 *.tar.gz
+*.kshrk
+# legacy extension (pre-rename captures)
 *.khsrk
 k8shark-capture/
 scale-manifests/

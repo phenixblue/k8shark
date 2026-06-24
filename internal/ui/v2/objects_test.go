@@ -187,7 +187,7 @@ func newObjectTestHandler(t *testing.T) *Handler {
 // mirroring the helper used by the legacy UI tests.
 func buildV2TestStore(t *testing.T, recs []*capture.Record, idx capture.Index, meta *capture.CaptureMetadata) *server.CaptureStore {
 	t.Helper()
-	out := filepath.Join(t.TempDir(), "capture.khsrk")
+	out := filepath.Join(t.TempDir(), "capture.kshrk")
 	sw, err := archive.NewStreamWriter(out)
 	if err != nil {
 		t.Fatalf("NewStreamWriter: %v", err)

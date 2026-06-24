@@ -19,7 +19,7 @@ import (
 func buildTestArchive(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	outPath := filepath.Join(dir, "test.khsrk")
+	outPath := filepath.Join(dir, "test.kshrk")
 
 	podList := `{"apiVersion":"v1","kind":"PodList","metadata":{},"items":[{"metadata":{"name":"nginx","namespace":"default"}}]}`
 	now := time.Now().UTC()

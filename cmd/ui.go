@@ -14,7 +14,7 @@ import (
 )
 
 var uiCmd = &cobra.Command{
-	Use:   "ui <capture.khsrk>",
+	Use:   "ui <capture.kshrk>",
 	Short: "Open an interactive web explorer for a capture archive",
 	Long: `Starts a local web UI for browsing a k8shark capture and also runs
 the mock Kubernetes API server with generated kubeconfig output.`,
