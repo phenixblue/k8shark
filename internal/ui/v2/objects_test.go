@@ -142,8 +142,11 @@ func TestServeObject_MissingPath(t *testing.T) {
 
 func doObject(t *testing.T, h *Handler, path, name string) ObjectDetail {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet,
-		"/v2/api/object?path="+path+"&name="+name, nil)
+	req := httptest.NewRequest(http.MethodGet, "/v2/api/object", nil)
+	q := req.URL.Query()
+	q.Set("path", path)
+	q.Set("name", name)
+	req.URL.RawQuery = q.Encode()
 	w := httptest.NewRecorder()
 	h.serveObject(w, req)
 	if w.Code != http.StatusOK {
