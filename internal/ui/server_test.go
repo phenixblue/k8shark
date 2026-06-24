@@ -79,6 +79,28 @@ func TestServeRoot(t *testing.T) {
 	})
 }
 
+// TestOpen_ClosesArchiveOnShutdown is a regression test for the file-handle
+// leak introduced when the UI moved to the held-open ZIP archive: Shutdown must
+// release the archive's underlying file descriptor. We assert this by checking
+// that a second Close on the archive errors — proving Shutdown already closed it
+// (closing an already-closed *os.File returns os.ErrClosed).
+func TestOpen_ClosesArchiveOnShutdown(t *testing.T) {
+	path := writeMinimalArchive(t)
+	srv, err := Open(OpenOptions{ArchivePath: path, Port: "0"})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if srv.archive == nil {
+		t.Fatal("Server did not retain the archive; it can never be closed")
+	}
+
+	srv.Shutdown()
+
+	if err := srv.archive.Close(); err == nil {
+		t.Error("archive still open after Shutdown; expected it to be closed (file-handle leak)")
+	}
+}
+
 // TestOpen_ServesV2 is an end-to-end check that Open wires the v2 dashboard:
 // "/" redirects to /v2/ and the v2 API responds.
 func TestOpen_ServesV2(t *testing.T) {
