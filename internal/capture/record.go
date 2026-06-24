@@ -17,8 +17,12 @@ const CurrentFormatVersion = 1
 // CheckFormatVersion reports whether an archive can be read by this build.
 // A version newer than this build understands is rejected so we never silently
 // misread an incompatible layout. A zero version (pre-versioning archive) is
-// compatible.
+// compatible. A negative version is invalid — it only arises from a corrupt or
+// tampered metadata.json, so it is rejected rather than rendered as "v-1".
 func CheckFormatVersion(m CaptureMetadata) error {
+	if m.FormatVersion < 0 {
+		return fmt.Errorf("archive format version %d is invalid (corrupt metadata?)", m.FormatVersion)
+	}
 	if m.FormatVersion > CurrentFormatVersion {
 		return fmt.Errorf("archive format version %d is newer than this kshrk supports (%d); upgrade kshrk to read it", m.FormatVersion, CurrentFormatVersion)
 	}

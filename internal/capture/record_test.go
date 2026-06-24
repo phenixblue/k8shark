@@ -18,4 +18,9 @@ func TestCheckFormatVersion(t *testing.T) {
 			t.Error("expected error for a newer-than-supported format version")
 		}
 	})
+	t.Run("negative is rejected", func(t *testing.T) {
+		if err := CheckFormatVersion(CaptureMetadata{FormatVersion: -1}); err == nil {
+			t.Error("expected error for a negative (corrupt) format version")
+		}
+	})
 }
