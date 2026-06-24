@@ -123,7 +123,7 @@ func toYAML(body []byte) string {
 }
 
 // unifiedDiffLines computes a unified diff and breaks it into typed lines so
-// the frontend can colour add/del/context distinctly.
+// the frontend can color add/del/context distinctly.
 func unifiedDiffLines(before, after, beforeName, afterName string) []DiffHunk {
 	diff := difflib.UnifiedDiff{
 		A:        difflib.SplitLines(before),

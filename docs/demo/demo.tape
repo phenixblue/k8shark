@@ -18,13 +18,13 @@ Enter
 Sleep 7500ms
 
 # ── Inspect the capture ────────────────────────────────────────────────────────
-Type "kshrk inspect demo-capture.tar.gz"
+Type "kshrk inspect demo-capture.khsrk"
 Sleep 300ms
 Enter
 Sleep 3s
 
 # ── Open the archive in the background ────────────────────────────────────────
-Type "kshrk open demo-capture.tar.gz &"
+Type "kshrk open demo-capture.khsrk &"
 Sleep 500ms
 Enter
 Sleep 3750ms

@@ -606,7 +606,7 @@ func (s *CaptureStore) AggregateAcrossNamespaces(clusterPath string, at time.Tim
 	suffix := "/" + resource
 
 	// Safety cap: resources like packagemanifests return the full cluster list
-	// for every namespace (OLM behaviour). Aggregating across all namespaces
+	// for every namespace (OLM behavior). Aggregating across all namespaces
 	// would multiply the item count by the number of namespaces and materialise
 	// hundreds of millions of items. Cap the aggregate at 10 000 unique items
 	// (keyed by uid or name) to prevent unbounded memory use.

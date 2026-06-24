@@ -19,7 +19,7 @@ const (
 	maxIssuesShown   = 8
 )
 
-// workloadResources is the set of resource types categorised as "workloads"
+// workloadResources is the set of resource types categorized as "workloads"
 // for KPI counting. Mirrors the existing /api/ui drill-down classifier.
 var workloadResources = map[string]bool{
 	"deployments":  true,

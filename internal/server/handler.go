@@ -811,7 +811,7 @@ func (h *handler) handleWatch(w http.ResponseWriter, r *http.Request, path strin
 }
 
 // serveLog serves a pod log sub-resource (e.g. /api/v1/namespaces/<ns>/pods/<name>/log).
-// Recognised query parameters:
+// Recognized query parameters:
 //   - container=<c>  — request a specific container's log
 //   - previous=true  — request the previous-container log (kubectl logs --previous)
 //

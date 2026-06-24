@@ -169,7 +169,7 @@ func TestRun_TableKeysSkipped(t *testing.T) {
 	}
 	defer ar.Close()
 
-	// Manually inject a Table index entry; verify that summariseResources skips
+	// Manually inject a Table index entry; verify that summarizeResources skips
 	// paths containing "?" via the unit function directly.
 	idx := capture.Index{
 		"/api/v1/namespaces/default/pods": {
@@ -183,7 +183,7 @@ func TestRun_TableKeysSkipped(t *testing.T) {
 			Times:   []time.Time{time.Now()},
 		},
 	}
-	summaries := summariseResources(ar, idx)
+	summaries := summarizeResources(ar, idx)
 	if len(summaries) != 1 {
 		t.Errorf("expected 1 summary (Table key excluded), got %d", len(summaries))
 	}

@@ -839,7 +839,7 @@ func TestExpandWildcard_DiscoveryCancelledByDuration(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected timeout/cancellation error, got nil")
 	}
-	if !strings.Contains(err.Error(), "request cancelled before completion") {
+	if !strings.Contains(err.Error(), "request canceled before completion") {
 		t.Errorf("expected cancellation hint in error, got: %v", err)
 	}
 }

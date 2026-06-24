@@ -122,7 +122,7 @@ func inferType(v interface{}) string {
 }
 
 // convertReplacement parses the string replacement into a typed Go value whose
-// JSON serialisation will match the expected type.
+// JSON serialization will match the expected type.
 func convertReplacement(replacement, valueType string) (interface{}, error) {
 	switch strings.ToLower(valueType) {
 	case "string":

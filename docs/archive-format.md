@@ -1,22 +1,30 @@
 # Archive Format
 
-A k8shark capture is a standard `.tar.gz` file. It can be inspected with any tar tool.
+A k8shark capture is a `.khsrk` file: a ZIP container whose entries are
+individually Zstandard-compressed JSON (except `metadata.json`, which is stored
+uncompressed for fast header reads). It can be listed with any ZIP tool.
 
 ```sh
-tar -tzf capture.tar.gz
+unzip -l capture.khsrk
 ```
 
 ## Layout
 
 ```
 k8shark-capture/
-  metadata.json
-  index.json
+  metadata.json              # uncompressed
+  index.json.zst             # zstd-compressed
+  watch-index.json.zst       # zstd-compressed; only when watch: true was used
   records/
-    <uuid>.json
-    <uuid>.json
-    ...
+    <pathDir>/               # <pathDir> = first 16 hex chars of SHA-256(apiPath)
+      0.json.zst             # one file per record, named by sequence number
+      1.json.zst
+      ...
 ```
+
+Each record lives under a directory derived from a hash of its API path, and is
+named by its 0-based sequence number within that path (`<seq>.json.zst`). The
+`index.json.zst` maps each API path to its ordered sequence numbers.
 
 ## metadata.json
 
@@ -63,34 +71,35 @@ schema. The current version is **1**.
   clear "upgrade kshrk" error rather than risk misreading an incompatible
   layout. Run `kshrk inspect <archive>` to see an archive's format version.
 
-## index.json
+## index.json.zst
 
-Maps canonical API paths to the ordered list of record IDs captured for each path. The mock server uses this to find records without scanning all files.
+Maps canonical API paths to the ordered sequence numbers captured for each path. The mock server uses this to find records without scanning all files. The entry is Zstd-compressed JSON.
 
 ```json
 {
   "/api/v1/namespaces/default/pods": {
     "api_path": "/api/v1/namespaces/default/pods",
-    "record_ids": ["uuid-1", "uuid-2", "uuid-3"],
-    "times":      ["2026-04-09T10:00:00Z", "2026-04-09T10:00:30Z", "2026-04-09T10:01:00Z"]
+    "seqs":     [0, 1, 2],
+    "times":    ["2026-04-09T10:00:00Z", "2026-04-09T10:00:30Z", "2026-04-09T10:01:00Z"],
+    "counts":   [4, 4, 5]
   },
   "/api/v1/namespaces/default/pods?as=Table": {
     "api_path": "/api/v1/namespaces/default/pods?as=Table",
-    "record_ids": ["uuid-4", "uuid-5"],
-    "times":      ["2026-04-09T10:00:00Z", "2026-04-09T10:00:30Z"]
+    "seqs":     [0, 1],
+    "times":    ["2026-04-09T10:00:00Z", "2026-04-09T10:00:30Z"]
   }
 }
 ```
 
-`record_ids` and `times` are parallel arrays, both ordered by capture time ascending.
+`seqs`, `times`, and `counts` are parallel arrays, ordered by capture time ascending. `seqs[i]` is the sequence number used in the record filename (`records/<pathDir>/<seq>.json.zst`). `counts` is optional — it records the number of top-level items in each list response and is omitted in older archives.
 
 ### Table response keys
 
 For each resource path, k8shark also captures the Kubernetes Table-format response (the data `kubectl get -o wide` uses). These are stored under the same path with a `?as=Table` suffix. This suffix is a convention internal to k8shark — it does not appear in real API URLs.
 
-## records/\<uuid\>.json
+## records/\<pathDir\>/\<seq\>.json.zst
 
-One file per polled API response.
+One Zstd-compressed file per polled API response, named by its sequence number.
 
 ```json
 {
@@ -105,7 +114,7 @@ One file per polled API response.
 
 | Field | Description |
 |-------|-------------|
-| `id` | UUID, matches the filename. |
+| `id` | UUID identifying this record (the on-disk filename is the sequence number, not this id). |
 | `captured_at` | When this specific poll was recorded. |
 | `api_path` | The canonical path key (includes `?as=Table` suffix for Table records). |
 | `http_method` | Always `GET`. |
@@ -128,25 +137,27 @@ In addition to resource paths, k8shark captures API discovery and OpenAPI endpoi
 
 ## Reading a capture manually
 
-```sh
-# List all captured API paths
-python3 -c "
-import json, sys
-idx = json.load(open('k8shark-capture/index.json'))
-for path in sorted(idx):
-    print(len(idx[path]['record_ids']), path)
-" 
+`kshrk inspect <archive>` is the easiest way to summarize a capture. To poke at
+the raw entries, use a ZIP tool plus a Zstd decompressor (`metadata.json` is the
+only uncompressed entry):
 
-# Extract the most recent pod list from default namespace
-tar -xOf capture.tar.gz k8shark-capture/index.json \
+```sh
+# List entries
+unzip -l capture.khsrk
+
+# Read the (uncompressed) metadata
+unzip -p capture.khsrk k8shark-capture/metadata.json | python3 -m json.tool
+
+# Read the (zstd-compressed) index and find the latest seq for a path
+unzip -p capture.khsrk k8shark-capture/index.json.zst | zstd -d \
   | python3 -c "
 import json,sys
 idx=json.load(sys.stdin)
 entry=idx['/api/v1/namespaces/default/pods']
-print(entry['record_ids'][-1])
+print('latest seq:', entry['seqs'][-1])
 "
-# then:
-# tar -xOf capture.tar.gz k8shark-capture/records/<uuid>.json | python3 -m json.tool
+# then read that record (replace <pathDir> and <seq>):
+# unzip -p capture.khsrk k8shark-capture/records/<pathDir>/<seq>.json.zst | zstd -d | python3 -m json.tool
 ```
 
 ## Redacted archives
@@ -159,17 +170,18 @@ Secret record has its `data` and `stringData` fields scrubbed:
 - All other Secret fields (name, namespace, labels, annotations, type) are unchanged
 - Non-Secret records are written verbatim
 
-The `index.json` and `metadata.json` are written unchanged. A redacted archive is
-fully usable with `kshrk open` — `kubectl get secret` will show the secret names
-and types, but all values will be `REDACTED`.
+The index is written unchanged; `metadata.json` records a `redacted` flag plus
+the counts `secrets_redacted` and `fields_redacted`. A redacted archive is fully
+usable with `kshrk open` — `kubectl get secret` will show the secret names and
+types, but all values will be `REDACTED`.
 
 ```sh
-kshrk redact --in capture.tar.gz --out capture-redacted.tar.gz
+kshrk redact --in capture.khsrk --out capture-redacted.khsrk
 ```
 
 ## Streaming mode (NDJSON stdout)
 
-When `output: "-"` is set in the configuration (or `--output -` on the command line), k8shark writes records to stdout in **newline-delimited JSON (NDJSON)** format instead of writing a `.tar.gz` file. Each line is a complete JSON record object identical to the individual record files described above.
+When `output: "-"` is set in the configuration (or `--output -` on the command line), k8shark writes records to stdout in **newline-delimited JSON (NDJSON)** format instead of writing a `.khsrk` file. Each line is a complete JSON record object identical to the individual record files described above.
 
 ```sh
 kshrk capture --config capture.yaml --output - | jq 'select(.api_path == "/api/v1/namespaces/default/pods")'
