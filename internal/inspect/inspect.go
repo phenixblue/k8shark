@@ -11,7 +11,7 @@ import (
 	"github.com/phenixblue/k8shark/internal/capture"
 )
 
-// Report summarises the contents of a capture archive.
+// Report summarizes the contents of a capture archive.
 type Report struct {
 	FormatVersion     int               `json:"format_version"`
 	CaptureID         string            `json:"capture_id"`
@@ -57,7 +57,7 @@ func Run(archivePath string) (*Report, error) {
 		return nil, fmt.Errorf("reading index: %w", err)
 	}
 
-	resources := summariseResources(ar, idx)
+	resources := summarizeResources(ar, idx)
 
 	// Pre-versioning archives (0) are treated as version 1.
 	formatVersion := meta.FormatVersion
@@ -79,9 +79,9 @@ func Run(archivePath string) (*Report, error) {
 	}, nil
 }
 
-// summariseResources aggregates per-resource information from the index.
+// summarizeResources aggregates per-resource information from the index.
 // Item counts are read from the latest record for each path directly from the archive.
-func summariseResources(ar *archive.Archive, idx capture.Index) []ResourceSummary {
+func summarizeResources(ar *archive.Archive, idx capture.Index) []ResourceSummary {
 	type key struct{ group, version, resource string }
 	type accum struct {
 		namespaced bool

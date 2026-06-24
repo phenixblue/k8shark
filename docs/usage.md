@@ -416,7 +416,7 @@ See [config.md](config.md#redaction) for the full `redaction:` config block refe
 
 ## kubectl compatibility
 
-The mock server is designed to be a drop-in replacement for `kubectl`'s real server. Supported behaviours:
+The mock server is designed to be a drop-in replacement for `kubectl`'s real server. Supported behaviors:
 
 | kubectl feature | Status |
 |-----------------|--------|

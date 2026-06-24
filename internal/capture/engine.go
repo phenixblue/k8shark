@@ -197,7 +197,7 @@ func (e *Engine) Run() (*CaptureSummary, error) {
 	defer cancel()
 
 	// Install SIGTERM/SIGINT handler so the capture can be wound down gracefully:
-	// the context is cancelled, polling stops, and Finish() still writes a valid
+	// the context is canceled, polling stops, and Finish() still writes a valid
 	// (partial) archive.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
@@ -1470,7 +1470,7 @@ func (e *Engine) storeRecord(indexKey string, body []byte, statusCode int, dedup
 }
 
 // countListItems peeks at a JSON response body and returns the number of
-// top-level items in it. Recognises both standard <Kind>List responses
+// top-level items in it. Recognizes both standard <Kind>List responses
 // (items[]) and meta.k8s.io/v1 Table responses (rows[]). Returns 0 for
 // non-list bodies (single objects, discovery, OpenAPI). Used to populate
 // IndexEntry.Counts so the UI can show namespace card counts without
@@ -1789,7 +1789,7 @@ func (e *Engine) expandWildcardNamespaces(ctx context.Context) error {
 		if code != http.StatusOK || nsBody == nil {
 			if code == 0 {
 				if err := ctx.Err(); err != nil {
-					return fmt.Errorf("namespace discovery failed: request cancelled before completion (try a longer --duration): %w", err)
+					return fmt.Errorf("namespace discovery failed: request canceled before completion (try a longer --duration): %w", err)
 				}
 				return fmt.Errorf("namespace discovery failed (HTTP 0): request could not be completed; check kubeconfig/context and cluster connectivity")
 			}

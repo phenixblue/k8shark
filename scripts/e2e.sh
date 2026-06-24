@@ -623,7 +623,7 @@ out=$(kubectl "${EKC[@]}" get pods -n k8shark-test \
 assert_not_empty "field selector metadata.namespace returns pods" "$out"
 
 # ── Watch: --request-timeout=5s lets kubectl exit naturally when the server
-#           closes the stream (our server honours timeoutSeconds).
+#           closes the stream (our server honors timeoutSeconds).
 WATCH_LOG=$(mktemp)
 kubectl --kubeconfig "$E2E_KUBECONFIG" --request-timeout=5s \
   get pods -n k8shark-test --watch -o name >"$WATCH_LOG" 2>&1 || true

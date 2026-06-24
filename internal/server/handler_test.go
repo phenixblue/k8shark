@@ -871,7 +871,7 @@ func TestHandler_ProxySubResource405(t *testing.T) {
 // TestHandler_NamespaceQueryFallsBackToClusterPath verifies that a request for
 // namespace-scoped pods (e.g. kubectl get pods -n default) returns the correct
 // items even when the capture only stored the cluster-scoped /api/v1/pods path
-// (no per-namespace paths in the index). This matches the behaviour when a
+// (no per-namespace paths in the index). This matches the behavior when a
 // config entry for pods omits namespaces: or when the allNotFound fallback fires
 // during auto-discovery.
 func TestHandler_NamespaceQueryFallsBackToClusterPath(t *testing.T) {

@@ -111,7 +111,7 @@ Use `"*"` as a namespace value to automatically capture from all namespaces disc
   interval: 30s
 ```
 
-**Behaviour:**
+**Behavior:**
 - `namespaces: ["*"]` expands to every namespace present at the start of the capture. Namespaces created _during_ the capture are not included.
 - Mixed lists such as `namespaces: ["production", "*"]` are supported — explicit namespaces appear first, then all remaining discovered namespaces are appended, deduplicated.
 - If namespace discovery fails (e.g. RBAC permissions), the capture exits with a clear error.
@@ -561,7 +561,7 @@ resources:
     interval: 60s
 ```
 
-**Auto-discovery behaviour:**
+**Auto-discovery behavior:**
 - Walks `/apis` once at the start of the capture.
 - For each discovered non-core group-version, reads the resource list and adds
   an entry for every non-sub-resource type.
