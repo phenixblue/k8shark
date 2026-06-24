@@ -20,9 +20,7 @@ k8shark UI running
 Open this URL in your browser. Press Ctrl+C to stop.
 ```
 
-Open the printed address in a browser. The redesigned **v2 dashboard** is served at `/` (it redirects
-to `/v2/`); the original explorer is preserved as the **legacy v1 UI** at `/v1/`. The two link to each
-other from their headers.
+Open the printed address in a browser. The **dashboard** is served at `/` (it redirects to `/v2/`).
 
 > ⚠️ The web UI is experimental. Large cluster captures can use significant RAM (1–2+ GB) during
 > replay. For very large clusters, prefer an explicit resource list over `all: true` to keep captures
@@ -147,9 +145,3 @@ Use the toggle at the far right of the header to switch between dark (default) a
 preference is remembered.
 
 ![Overview in light theme](images/v2/overview-light.png)
-
-## Legacy v1 UI
-
-The original explorer remains available at `/v1/` and is reachable from the **Legacy UI ↗** link in the
-v2 header. It offers cluster/namespace drill-down, a resource-type sidebar with toggles, text search, and
-JSON/YAML detail panels. Its features are summarized in [docs/usage.md](usage.md#ui-features-legacy-v1).
