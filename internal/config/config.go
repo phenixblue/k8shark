@@ -110,7 +110,7 @@ type Config struct {
 	DurationRaw string `mapstructure:"duration"`
 	// Duration is parsed from DurationRaw.
 	Duration time.Duration `mapstructure:"-"`
-	// Output is the path to write the resulting .khsrk file.
+	// Output is the path to write the resulting .kshrk file.
 	Output string `mapstructure:"output"`
 	// Kubeconfig is the path to the kubeconfig to use. Empty = default resolution.
 	Kubeconfig string `mapstructure:"kubeconfig"`
@@ -173,7 +173,7 @@ func (c *Config) Validate() error {
 	c.Duration = d
 
 	if c.Output == "" {
-		c.Output = fmt.Sprintf("k8shark-%s.khsrk", time.Now().UTC().Format("20060102-150405"))
+		c.Output = fmt.Sprintf("k8shark-%s.kshrk", time.Now().UTC().Format("20060102-150405"))
 	}
 
 	if c.Kubeconfig == "" {

@@ -42,7 +42,7 @@ func buildTestArchive(t *testing.T, records []*capture.Record) string {
 		RecordCount:       len(records),
 	}
 
-	outPath := filepath.Join(dir, "test.khsrk")
+	outPath := filepath.Join(dir, "test.kshrk")
 	sw, err := archive.NewStreamWriter(outPath)
 	if err != nil {
 		t.Fatalf("buildTestArchive NewStreamWriter: %v", err)
@@ -126,7 +126,7 @@ func TestRedact_SecretDataRedacted(t *testing.T) {
 	src := buildTestArchive(t, []*capture.Record{
 		secretRecord("r1", "default", "db-creds", map[string]string{"password": encoded}, nil),
 	})
-	dst := src + "-redacted.khsrk"
+	dst := src + "-redacted.kshrk"
 	t.Cleanup(func() { os.Remove(dst) })
 
 	result, err := Archive(src, dst, Options{RedactSecrets: true})
@@ -166,7 +166,7 @@ func TestRedact_StringDataRedacted(t *testing.T) {
 	src := buildTestArchive(t, []*capture.Record{
 		secretRecord("r2", "default", "plain-secret", nil, map[string]string{"token": "s3cr3t"}),
 	})
-	dst := src + "-redacted.khsrk"
+	dst := src + "-redacted.kshrk"
 	t.Cleanup(func() { os.Remove(dst) })
 
 	_, err := Archive(src, dst, Options{RedactSecrets: true})
@@ -200,7 +200,7 @@ func TestRedact_AllowList(t *testing.T) {
 	src := buildTestArchive(t, []*capture.Record{
 		secretRecord("r3", "default", "allowed-secret", map[string]string{"key": encoded}, nil),
 	})
-	dst := src + "-redacted.khsrk"
+	dst := src + "-redacted.kshrk"
 	t.Cleanup(func() { os.Remove(dst) })
 
 	result, err := Archive(src, dst, Options{RedactSecrets: true, AllowList: map[string]bool{"default/allowed-secret": true}})
@@ -236,7 +236,7 @@ func TestRedact_NonSecretUnchanged(t *testing.T) {
 	src := buildTestArchive(t, []*capture.Record{
 		podRecord("r4", "default"),
 	})
-	dst := src + "-redacted.khsrk"
+	dst := src + "-redacted.kshrk"
 	t.Cleanup(func() { os.Remove(dst) })
 
 	result, err := Archive(src, dst, Options{RedactSecrets: true})
@@ -259,7 +259,7 @@ func TestRedact_SecretListRedacted(t *testing.T) {
 	src := buildTestArchive(t, []*capture.Record{
 		secretListRecord("r5", "k8shark-test", []map[string]any{item}),
 	})
-	dst := src + "-redacted.khsrk"
+	dst := src + "-redacted.kshrk"
 	t.Cleanup(func() { os.Remove(dst) })
 
 	result, err := Archive(src, dst, Options{RedactSecrets: true})
@@ -310,7 +310,7 @@ func TestRedact_SecretList_AllowList(t *testing.T) {
 	src := buildTestArchive(t, []*capture.Record{
 		secretListRecord("r6", "default", []map[string]any{item}),
 	})
-	dst := src + "-redacted.khsrk"
+	dst := src + "-redacted.kshrk"
 	t.Cleanup(func() { os.Remove(dst) })
 
 	result, err := Archive(src, dst, Options{RedactSecrets: true, AllowList: map[string]bool{"default/allowed-secret": true}})
@@ -378,7 +378,7 @@ func TestArchive_FieldRules_RedactsConfigMapKey(t *testing.T) {
 	src := buildTestArchive(t, []*capture.Record{
 		configMapRecord("cm1", "default", "app-config", map[string]interface{}{"api-key": "super-secret"}),
 	})
-	dst := src + "-redacted.khsrk"
+	dst := src + "-redacted.kshrk"
 	t.Cleanup(func() { os.Remove(dst) })
 
 	result, err := Archive(src, dst, Options{
@@ -423,7 +423,7 @@ func TestArchive_FieldRules_CombinedWithSecrets(t *testing.T) {
 		secretRecord("s1", "default", "db-creds", map[string]string{"password": encoded}, nil),
 		configMapRecord("cm2", "default", "app-config", map[string]interface{}{"api-key": "my-key"}),
 	})
-	dst := src + "-redacted.khsrk"
+	dst := src + "-redacted.kshrk"
 	t.Cleanup(func() { os.Remove(dst) })
 
 	result, err := Archive(src, dst, Options{
@@ -451,7 +451,7 @@ func TestArchive_FieldRules_RecursiveDescent(t *testing.T) {
 			"safe-key":       "keep-me",
 		}),
 	})
-	dst := src + "-redacted.khsrk"
+	dst := src + "-redacted.kshrk"
 	t.Cleanup(func() { os.Remove(dst) })
 
 	_, err := Archive(src, dst, Options{

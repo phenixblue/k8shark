@@ -37,7 +37,7 @@ func loadStoreWithVersion(t *testing.T, version int) (*CaptureStore, error) {
 	}
 	meta := &capture.CaptureMetadata{FormatVersion: version, CaptureID: "ver-test", CapturedAt: now, CapturedUntil: now, RecordCount: 1}
 
-	out := filepath.Join(t.TempDir(), "capture.khsrk")
+	out := filepath.Join(t.TempDir(), "capture.kshrk")
 	sw, err := archive.NewStreamWriter(out)
 	if err != nil {
 		t.Fatalf("NewStreamWriter: %v", err)

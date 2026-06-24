@@ -303,8 +303,8 @@ printf '    kubectl get pods -n %s -o wide\n' "$NS"
 printf '    kubectl get events -n %s --sort-by=.lastTimestamp\n\n' "$NS"
 info "Capture it with k8shark (run for a few minutes so events keep flowing):"
 printf '    make build\n'
-printf '    ./kshrk capture --kubeconfig %s --auto-discover --duration 3m -o chaos.khsrk\n\n' "$KIND_KUBECONFIG"
+printf '    ./kshrk capture --kubeconfig %s --auto-discover --duration 3m -o chaos.kshrk\n\n' "$KIND_KUBECONFIG"
 info "Then explore the capture (UI on 18080/18081):"
-printf '    ./kshrk ui chaos.khsrk --port 18080 --api-port 18081\n\n'
+printf '    ./kshrk ui chaos.kshrk --port 18080 --api-port 18081\n\n'
 info "Tear down when finished:"
 printf '    make kind-down\n\n'

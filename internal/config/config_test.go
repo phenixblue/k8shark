@@ -8,7 +8,7 @@ import (
 
 func validatedCfg(t *testing.T, dur string, resources []Resource) *Config {
 	t.Helper()
-	cfg := &Config{DurationRaw: dur, Output: "/tmp/k8shark-test-out.khsrk", Resources: resources}
+	cfg := &Config{DurationRaw: dur, Output: "/tmp/k8shark-test-out.kshrk", Resources: resources}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestWarnings_ClusterScopedWithNamespaces(t *testing.T) {
 }
 
 func TestWarnings_OutputExists(t *testing.T) {
-	f, err := os.CreateTemp("", "k8shark-test-*.khsrk")
+	f, err := os.CreateTemp("", "k8shark-test-*.kshrk")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestResourceDedupEnabled_ExplicitFalse(t *testing.T) {
 func TestValidate_AllDirective_NoResourceFieldsRequired(t *testing.T) {
 	cfg := &Config{
 		DurationRaw: "10m",
-		Output:      "/tmp/k8shark-test-out.khsrk",
+		Output:      "/tmp/k8shark-test-out.kshrk",
 		Resources: []Resource{{
 			All:        true,
 			Scope:      "namespaced",
@@ -191,7 +191,7 @@ func TestValidate_AllDirective_NoResourceFieldsRequired(t *testing.T) {
 func TestValidate_AllDirective_InvalidScope(t *testing.T) {
 	cfg := &Config{
 		DurationRaw: "10m",
-		Output:      "/tmp/k8shark-test-out.khsrk",
+		Output:      "/tmp/k8shark-test-out.kshrk",
 		Resources: []Resource{{
 			All:   true,
 			Scope: "invalid-scope",
@@ -205,7 +205,7 @@ func TestValidate_AllDirective_InvalidScope(t *testing.T) {
 func TestValidate_DiscoveryStartup_TooShortDuration_WithAllDirective(t *testing.T) {
 	cfg := &Config{
 		DurationRaw: "2s",
-		Output:      "/tmp/k8shark-test-out.khsrk",
+		Output:      "/tmp/k8shark-test-out.kshrk",
 		Resources: []Resource{{
 			All: true,
 		}},
@@ -222,7 +222,7 @@ func TestValidate_DiscoveryStartup_TooShortDuration_WithAllDirective(t *testing.
 func TestValidate_DiscoveryStartup_TooShortDuration_WithWildcardNamespaces(t *testing.T) {
 	cfg := &Config{
 		DurationRaw: "2s",
-		Output:      "/tmp/k8shark-test-out.khsrk",
+		Output:      "/tmp/k8shark-test-out.kshrk",
 		Resources: []Resource{{
 			Version:    "v1",
 			Resource:   "pods",
@@ -241,7 +241,7 @@ func TestValidate_DiscoveryStartup_TooShortDuration_WithWildcardNamespaces(t *te
 func TestValidate_DiscoveryStartup_NormalResource_AllowsShortDuration(t *testing.T) {
 	cfg := &Config{
 		DurationRaw: "2s",
-		Output:      "/tmp/k8shark-test-out.khsrk",
+		Output:      "/tmp/k8shark-test-out.kshrk",
 		Resources: []Resource{{
 			Version:  "v1",
 			Resource: "pods",
@@ -255,7 +255,7 @@ func TestValidate_DiscoveryStartup_NormalResource_AllowsShortDuration(t *testing
 func TestRedactionConfig_ParsesCorrectly(t *testing.T) {
 	cfg := &Config{
 		DurationRaw: "5m",
-		Output:      "/tmp/k8shark-test-out.khsrk",
+		Output:      "/tmp/k8shark-test-out.kshrk",
 		Resources:   []Resource{{Resource: "pods", Version: "v1", IntervalRaw: "30s"}},
 		Redaction: RedactionConfig{
 			RedactSecrets: true,
@@ -307,7 +307,7 @@ func TestRedactionConfig_ParsesCorrectly(t *testing.T) {
 func TestRedactionConfig_EmptyIsValid(t *testing.T) {
 	cfg := &Config{
 		DurationRaw: "5m",
-		Output:      "/tmp/k8shark-test-out.khsrk",
+		Output:      "/tmp/k8shark-test-out.kshrk",
 		Resources:   []Resource{{Resource: "pods", Version: "v1", IntervalRaw: "30s"}},
 	}
 	if err := cfg.Validate(); err != nil {

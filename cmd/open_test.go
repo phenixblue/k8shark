@@ -19,7 +19,7 @@ func TestRunOpen_MissingArchive(t *testing.T) {
 	cmd := newTestOpenCommand()
 	// A nonexistent archive must fail before the server starts (which would
 	// otherwise block on Wait()).
-	if err := runOpen(cmd, []string{"/no/such/archive.khsrk"}); err == nil {
+	if err := runOpen(cmd, []string{"/no/such/archive.kshrk"}); err == nil {
 		t.Error("expected error for missing archive")
 	}
 }

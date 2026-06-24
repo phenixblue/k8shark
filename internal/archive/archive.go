@@ -74,7 +74,7 @@ func zstdDecompress(data []byte) ([]byte, error) {
 	return io.ReadAll(dec)
 }
 
-// StreamWriter streams each record directly into a .khsrk (ZIP+Zstd) archive.
+// StreamWriter streams each record directly into a .kshrk (ZIP+Zstd) archive.
 // metadata.json, index.json, and watch-index.json are written by Finish().
 // Thread-safe.
 type StreamWriter struct {
