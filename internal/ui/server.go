@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -32,11 +33,15 @@ type Server struct {
 	address    string
 	httpServer *http.Server
 	done       chan struct{}
+
+	archive   *archive.Archive
+	closeOnce sync.Once
 }
 
 // Open loads the archive, mounts the v2 dashboard, and starts serving on the
 // requested port (random when empty/"0"). The archive is kept open for the life
-// of the server so the store can read records on demand.
+// of the server so the store can read records on demand, and is closed by
+// Shutdown/Wait once the server stops.
 func Open(opts OpenOptions) (*Server, error) {
 	ar, err := archive.Open(opts.ArchivePath)
 	if err != nil {
@@ -84,7 +89,17 @@ func Open(opts OpenOptions) (*Server, error) {
 	}()
 
 	addr := fmt.Sprintf("http://127.0.0.1:%d", ln.Addr().(*net.TCPAddr).Port)
-	return &Server{address: addr, httpServer: httpSrv, done: done}, nil
+	return &Server{address: addr, httpServer: httpSrv, done: done, archive: ar}, nil
+}
+
+// closeArchive releases the underlying archive file handle. It is safe to call
+// from both Shutdown and Wait; only the first call closes the archive.
+func (s *Server) closeArchive() {
+	s.closeOnce.Do(func() {
+		if s.archive != nil {
+			_ = s.archive.Close()
+		}
+	})
 }
 
 // Address returns the base URL the server is listening on.
@@ -96,6 +111,7 @@ func (s *Server) Shutdown() {
 	defer cancel()
 	_ = s.httpServer.Shutdown(ctx)
 	<-s.done
+	s.closeArchive()
 }
 
 // Wait blocks until the server stops or an interrupt signal is received.
@@ -110,6 +126,7 @@ func (s *Server) Wait() error {
 		_ = s.httpServer.Shutdown(ctx)
 		<-s.done
 	}
+	s.closeArchive()
 	return nil
 }
 
