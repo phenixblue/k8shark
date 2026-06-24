@@ -49,19 +49,6 @@ func runInspect(cmd *cobra.Command, args []string) error {
 	}
 }
 
-func humanBytes(b int64) string {
-	const unit = 1024
-	if b < unit {
-		return fmt.Sprintf("%d B", b)
-	}
-	div, exp := int64(unit), 0
-	for n := b / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %ciB", float64(b)/float64(div), "KMGTPE"[exp])
-}
-
 func printInspectTable(cmd *cobra.Command, r *inspect.Report, wide bool) {
 	out := cmd.OutOrStdout()
 	duration := r.CapturedUntil.Sub(r.CapturedAt).Truncate(time.Second)
@@ -73,7 +60,7 @@ func printInspectTable(cmd *cobra.Command, r *inspect.Report, wide bool) {
 		duration)
 	fmt.Fprintf(out, "Kubernetes:   %s\n", r.KubernetesVersion)
 	fmt.Fprintf(out, "Server:       %s\n", r.ServerAddress)
-	fmt.Fprintf(out, "Archive:      %s (%s)\n", r.ArchivePath, humanBytes(r.ArchiveSize))
+	fmt.Fprintf(out, "Archive:      %s (%s)\n", r.ArchivePath, formatBytes(r.ArchiveSize))
 	fmt.Fprintf(out, "Records:      %d\n\n", r.RecordCount)
 
 	if len(r.Resources) == 0 {
