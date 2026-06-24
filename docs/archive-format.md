@@ -137,7 +137,7 @@ In addition to resource paths, k8shark captures API discovery and OpenAPI endpoi
 
 ## Reading a capture manually
 
-`kshrk inspect <archive>` is the easiest way to summarise a capture. To poke at
+`kshrk inspect <archive>` is the easiest way to summarize a capture. To poke at
 the raw entries, use a ZIP tool plus a Zstd decompressor (`metadata.json` is the
 only uncompressed entry):
 
@@ -170,8 +170,8 @@ Secret record has its `data` and `stringData` fields scrubbed:
 - All other Secret fields (name, namespace, labels, annotations, type) are unchanged
 - Non-Secret records are written verbatim
 
-The index is written unchanged; `metadata.json` records the redaction counts
-(`redacted`, `secrets_redacted`, `fields_redacted`). A redacted archive is fully
+The index is written unchanged; `metadata.json` records a `redacted` flag plus
+the counts `secrets_redacted` and `fields_redacted`. A redacted archive is fully
 usable with `kshrk open` — `kubectl get secret` will show the secret names and
 types, but all values will be `REDACTED`.
 

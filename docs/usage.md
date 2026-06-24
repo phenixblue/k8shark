@@ -166,7 +166,7 @@ kshrk inspect capture.khsrk -o yaml
 
 ## Open
 
-`kshrk open` extracts the archive, starts a local mock HTTPS API server on `127.0.0.1`, and writes a kubeconfig pointing at it.
+`kshrk open` reads the archive, starts a local mock HTTPS API server on `127.0.0.1`, and writes a kubeconfig pointing at it.
 
 ```sh
 kshrk open capture.khsrk
