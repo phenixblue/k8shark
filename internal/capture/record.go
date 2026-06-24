@@ -2,8 +2,32 @@ package capture
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 )
+
+// CurrentFormatVersion is the .khsrk archive schema version written by this
+// build. It is bumped ONLY on a breaking, structurally-incompatible change.
+// Additive, backward-compatible changes (new omitempty metadata fields, new
+// optional archive entries) keep the same version. Archives written before this
+// field existed report 0 and are treated as version 1 — they are structurally
+// identical, the marker is simply the only addition.
+const CurrentFormatVersion = 1
+
+// CheckFormatVersion reports whether an archive can be read by this build.
+// A version newer than this build understands is rejected so we never silently
+// misread an incompatible layout. A zero version (pre-versioning archive) is
+// compatible. A negative version is invalid — it only arises from a corrupt or
+// tampered metadata.json, so it is rejected rather than rendered as "v-1".
+func CheckFormatVersion(m CaptureMetadata) error {
+	if m.FormatVersion < 0 {
+		return fmt.Errorf("archive format version %d is invalid (corrupt metadata?)", m.FormatVersion)
+	}
+	if m.FormatVersion > CurrentFormatVersion {
+		return fmt.Errorf("archive format version %d is newer than this kshrk supports (%d); upgrade kshrk to read it", m.FormatVersion, CurrentFormatVersion)
+	}
+	return nil
+}
 
 // Record holds one polled API response.
 type Record struct {
@@ -19,6 +43,9 @@ type Record struct {
 
 // CaptureMetadata is written as metadata.json inside the archive.
 type CaptureMetadata struct {
+	// FormatVersion is the archive schema version (see CurrentFormatVersion).
+	// Omitted/zero in pre-versioning archives, which are treated as version 1.
+	FormatVersion     int       `json:"format_version,omitempty"`
 	CaptureID         string    `json:"capture_id"`
 	CapturedAt        time.Time `json:"captured_at"`
 	CapturedUntil     time.Time `json:"captured_until"`

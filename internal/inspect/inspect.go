@@ -13,6 +13,7 @@ import (
 
 // Report summarises the contents of a capture archive.
 type Report struct {
+	FormatVersion     int               `json:"format_version"`
 	CaptureID         string            `json:"capture_id"`
 	CapturedAt        time.Time         `json:"captured_at"`
 	CapturedUntil     time.Time         `json:"captured_until"`
@@ -47,6 +48,9 @@ func Run(archivePath string) (*Report, error) {
 	if err := ar.ReadMetadata(&meta); err != nil {
 		return nil, fmt.Errorf("reading metadata: %w", err)
 	}
+	if err := capture.CheckFormatVersion(meta); err != nil {
+		return nil, err
+	}
 
 	var idx capture.Index
 	if err := ar.ReadIndex(&idx); err != nil {
@@ -55,7 +59,14 @@ func Run(archivePath string) (*Report, error) {
 
 	resources := summariseResources(ar, idx)
 
+	// Pre-versioning archives (0) are treated as version 1.
+	formatVersion := meta.FormatVersion
+	if formatVersion == 0 {
+		formatVersion = 1
+	}
+
 	return &Report{
+		FormatVersion:     formatVersion,
 		CaptureID:         meta.CaptureID,
 		CapturedAt:        meta.CapturedAt,
 		CapturedUntil:     meta.CapturedUntil,

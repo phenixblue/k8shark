@@ -86,6 +86,9 @@ func LoadStore(ar *archive.Archive) (*CaptureStore, error) {
 	if err := ar.ReadMetadata(&meta); err != nil {
 		return nil, fmt.Errorf("reading metadata: %w", err)
 	}
+	if err := capture.CheckFormatVersion(meta); err != nil {
+		return nil, err
+	}
 
 	var idx capture.Index
 	if err := ar.ReadIndex(&idx); err != nil {

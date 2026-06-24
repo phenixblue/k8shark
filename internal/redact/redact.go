@@ -46,6 +46,12 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 	if err := ar.ReadMetadata(&meta); err != nil {
 		return Result{}, fmt.Errorf("reading metadata: %w", err)
 	}
+	if err := capture.CheckFormatVersion(meta); err != nil {
+		return Result{}, err
+	}
+	// The redacted archive is written by the current writer, so stamp it with
+	// the current format version.
+	meta.FormatVersion = capture.CurrentFormatVersion
 
 	var idx capture.Index
 	if err := ar.ReadIndex(&idx); err != nil {
