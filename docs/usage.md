@@ -35,7 +35,7 @@ make build
 
 ## Capture
 
-Run `kshrk capture` while connected to the cluster. It polls the Kubernetes API at defined intervals and packages all responses into a `.tar.gz` archive.
+Run `kshrk capture` while connected to the cluster. It polls the Kubernetes API at defined intervals and packages all responses into a `.khsrk` archive.
 
 ```sh
 kshrk capture --config k8shark.yaml
@@ -44,10 +44,10 @@ kshrk capture --config k8shark.yaml
 The command shows a spinner while running, then prints a summary:
 
 ```
-Starting capture -> ./capture.tar.gz
+Starting capture -> ./capture.khsrk
   capturing |
 Capture complete
-  Output:    ./capture.tar.gz (1.2 MB)
+  Output:    ./capture.khsrk (1.2 MB)
   Records:   480 across 12 resource path(s)
   Duration:  10m0s
 ```
@@ -57,7 +57,7 @@ Capture complete
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--config` | | `./config.yaml`, then `~/.config/kshrk/config.yaml` | Path to config file |
-| `--output` | `-o` | `./k8shark-<timestamp>.tar.gz` | Output archive path |
+| `--output` | `-o` | `./k8shark-<timestamp>.khsrk` | Output archive path |
 | `--duration` | | from config | Override capture duration (e.g. `5m`) |
 | `--kubeconfig` | | `$KUBECONFIG` / `~/.kube/config` | Source cluster kubeconfig |
 | `--auto-discover` | | false | Auto-discover and capture all available API resources |
@@ -128,7 +128,7 @@ warning: resources[3] (events): interval 2s is very short and may produce a larg
 `kshrk inspect` reads a capture archive and prints a summary of its contents without starting a server.
 
 ```sh
-kshrk inspect capture.tar.gz
+kshrk inspect capture.khsrk
 ```
 
 Example output:
@@ -138,7 +138,7 @@ Capture ID:   a1b2c3d4-e5f6-7890-abcd-ef1234567890
 Captured:     2026-04-09T08:00:00Z → 2026-04-09T08:10:00Z  (10m0s)
 Kubernetes:   v1.29.0
 Server:       https://192.168.1.100:6443
-Archive:      capture.tar.gz (1245184 bytes)
+Archive:      capture.khsrk (1245184 bytes)
 Records:      480
 
 RESOURCE              GROUP  VERSION  NAMESPACED  NAMESPACES              RECORDS
@@ -152,8 +152,8 @@ statefulsets          apps   v1       yes         production              30
 Use `-o json` or `-o yaml` for machine-readable output:
 
 ```sh
-kshrk inspect capture.tar.gz -o json
-kshrk inspect capture.tar.gz -o yaml
+kshrk inspect capture.khsrk -o json
+kshrk inspect capture.khsrk -o yaml
 ```
 
 ### Inspect flags
@@ -169,7 +169,7 @@ kshrk inspect capture.tar.gz -o yaml
 `kshrk open` extracts the archive, starts a local mock HTTPS API server on `127.0.0.1`, and writes a kubeconfig pointing at it.
 
 ```sh
-kshrk open capture.tar.gz
+kshrk open capture.khsrk
 ```
 
 Output:
@@ -216,8 +216,8 @@ The server stays running until `Ctrl+C`.
 Every captured record is timestamped. `--at` lets you replay the capture as it looked at a specific point in time — the server returns the most recent record for each resource whose timestamp is ≤ the given time.
 
 ```sh
-kshrk open capture.tar.gz --at 2026-04-09T10:30:00Z
-kshrk open capture.tar.gz --at -5m
+kshrk open capture.khsrk --at 2026-04-09T10:30:00Z
+kshrk open capture.khsrk --at -5m
 ```
 
 `--at` accepts either:
@@ -236,7 +236,7 @@ This is useful when you have a long capture (e.g. 1h) and want to compare cluste
 `kshrk ui` starts a local web-based explorer and the mock Kubernetes API server for a capture archive.
 
 ```sh
-kshrk ui capture.tar.gz
+kshrk ui capture.khsrk
 ```
 
 Example output:
@@ -289,13 +289,13 @@ flags override it.
 Compare two archives:
 
 ```sh
-kshrk diff --before before.tar.gz --after after.tar.gz
+kshrk diff --before before.khsrk --after after.khsrk
 ```
 
 Compare two points within one archive:
 
 ```sh
-kshrk diff --archive capture.tar.gz \
+kshrk diff --archive capture.khsrk \
   --before-at 2026-04-09T10:40:00Z \
   --after-at -1m
 ```
@@ -303,14 +303,14 @@ kshrk diff --archive capture.tar.gz \
 Scope the output:
 
 ```sh
-kshrk diff --before before.tar.gz --after after.tar.gz \
+kshrk diff --before before.khsrk --after after.khsrk \
   --resource pods --namespace default
 ```
 
 Emit machine-readable JSON instead of unified diff text:
 
 ```sh
-kshrk diff --before before.tar.gz --after after.tar.gz --output json
+kshrk diff --before before.khsrk --after after.khsrk --output json
 ```
 
 ### Diff flags
@@ -343,18 +343,18 @@ Produces a **new** archive with Kubernetes Secret data replaced and any configur
 
 ```sh
 # Redact secrets only
-kshrk redact --in capture.tar.gz --redact-secrets
+kshrk redact --in capture.khsrk --redact-secrets
 
 # Redact secrets + specific fields via CLI flags
-kshrk redact --in capture.tar.gz --redact-secrets \
+kshrk redact --in capture.khsrk --redact-secrets \
   --redact-field "data.api-key:ConfigMap:REDACTED" \
   --redact-field "spec.containers[*].env[*].value:Pod:REDACTED:string"
 
 # Reuse the redaction rules from your capture config
-kshrk redact --in capture.tar.gz --out safe-capture.tar.gz --config k8shark.yaml
+kshrk redact --in capture.khsrk --out safe-capture.khsrk --config k8shark.yaml
 
 # Preserve specific secrets from redaction
-kshrk redact --in capture.tar.gz --redact-secrets \
+kshrk redact --in capture.khsrk --redact-secrets \
   --allow-secret default/pull-secret \
   --allow-secret kube-system/bootstrap-token
 ```
@@ -402,7 +402,7 @@ Examples:
 | Flag | Command | Default | Description |
 |------|---------|---------|-------------|
 | `--in` | `redact` | (required) | Source capture archive |
-| `--out` | `redact` | `<in>-redacted.tar.gz` | Output archive path |
+| `--out` | `redact` | `<in>-redacted.khsrk` | Output archive path |
 | `--redact-secrets` | both | `false` | Redact all Secret `data`/`stringData` values |
 | `--allow-secret` | both | | `namespace/name` of secret to preserve (repeatable) |
 | `--redact-field` | both | | Field redaction rule (repeatable). Format: `<path>:<Kind>:<replacement>[:<type>]` |
@@ -544,7 +544,7 @@ the mock server. Any tool that can be configured with a kubeconfig or a
 
 ```sh
 # Start the mock server
-kshrk open capture.tar.gz
+kshrk open capture.khsrk
 # Note the printed kubeconfig path, e.g. /tmp/k8shark-kubeconfig-1234
 
 # Use with istioctl

@@ -112,7 +112,7 @@ Run `make help` to print all targets:
 │   ├── open.go                # kshrk open
 │   └── version.go             # kshrk version
 └── internal/
-    ├── archive/               # tar.gz read/write
+    ├── archive/               # .khsrk (ZIP+Zstd) read/write
     ├── capture/               # capture engine + record types
     │   ├── engine.go          # polling loop, doFetch, buildAPIPath
     │   └── record.go          # Record, Index, CaptureMetadata types

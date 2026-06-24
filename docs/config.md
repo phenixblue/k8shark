@@ -7,7 +7,7 @@ k8shark reads a YAML config file that controls what gets captured, from which na
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `duration` | duration string | `10m` | Total time to run the capture. Polling continues until time runs out. |
-| `output` | string | `./k8shark-<timestamp>.tar.gz` | Path for the output archive. |
+| `output` | string | `./k8shark-<timestamp>.khsrk` | Path for the output archive. |
 | `kubeconfig` | string | `$KUBECONFIG` → `~/.kube/config` | Path to the kubeconfig for the source cluster. |
 | `resources` | list | required | Resource types to capture. See below. |
 | `auto_discover` | bool | `false` | Legacy global discovery toggle. Prefer `resources: - all: true` for fine-grained control. |
@@ -56,7 +56,7 @@ Use `all: true` to auto-discover resources via Kubernetes API discovery (includi
 
 ```yaml
 duration: 10m
-output: ./cluster-snapshot.tar.gz
+output: ./cluster-snapshot.khsrk
 
 resources:
   - all: true
@@ -161,7 +161,7 @@ Behavior:
 
 ```yaml
 duration: 5m
-output: ./capture.tar.gz
+output: ./capture.khsrk
 
 resources:
   - group: ""
@@ -175,7 +175,7 @@ resources:
 
 ```yaml
 duration: 10m
-output: ./workload-capture.tar.gz
+output: ./workload-capture.khsrk
 
 resources:
   - group: ""
@@ -212,7 +212,7 @@ resources:
 
 ```yaml
 duration: 10m
-output: ./storage-capture.tar.gz
+output: ./storage-capture.khsrk
 
 resources:
   - group: ""
@@ -242,7 +242,7 @@ resources:
 
 ```yaml
 duration: 30m
-output: ./support-capture.tar.gz
+output: ./support-capture.khsrk
 kubeconfig: /path/to/customer.kubeconfig
 
 resources:
@@ -397,7 +397,7 @@ Invalid replacements (e.g. `"not-a-number"` for an integer field) fail early wit
 
 ```yaml
 duration: 10m
-output: ./capture.tar.gz
+output: ./capture.khsrk
 kubeconfig: ~/.kube/config
 
 resources:
@@ -448,7 +448,7 @@ redaction:
 The same config can be passed to `kshrk redact` to apply exactly the same rules to an existing archive:
 
 ```bash
-kshrk redact --in capture.tar.gz --out redacted.tar.gz --config k8shark.yaml
+kshrk redact --in capture.khsrk --out redacted.khsrk --config k8shark.yaml
 ```
 
 ---
@@ -488,7 +488,7 @@ kubectl api-resources --api-group=networking.istio.io
 
 ```yaml
 duration: 10m
-output: ./istio-capture.tar.gz
+output: ./istio-capture.khsrk
 
 resources:
   - group: ""
@@ -542,7 +542,7 @@ automatically add every non-core resource type it finds.
 
 ```yaml
 duration: 10m
-output: ./full-capture.tar.gz
+output: ./full-capture.khsrk
 auto_discover: true
 
 # Explicit entries are still captured and take precedence over auto-discovered

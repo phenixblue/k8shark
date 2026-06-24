@@ -20,13 +20,13 @@ A customer hands over one file. A support engineer queries the environment inter
 
 ```mermaid
 flowchart LR
-    A[Your Cluster] -->|kshrk capture| B(capture.tar.gz)
+    A[Your Cluster] -->|kshrk capture| B(capture.khsrk)
     B -->|kshrk open| C[Mock API Server]
     C -->|kubectl| D[Offline Debugging]
 ```
 
-1. **Capture** — `kshrk capture` polls the Kubernetes API at configured intervals for a set duration and packages all responses into a `.tar.gz` file.
-2. **Open** — `kshrk open capture.tar.gz` extracts the archive, starts a local mock HTTPS API server, and writes a kubeconfig. Set `KUBECONFIG` and use `kubectl` normally.
+1. **Capture** — `kshrk capture` polls the Kubernetes API at configured intervals for a set duration and packages all responses into a single `.khsrk` archive.
+2. **Open** — `kshrk open capture.khsrk` reads the archive, starts a local mock HTTPS API server, and writes a kubeconfig. Set `KUBECONFIG` and use `kubectl` normally.
 
 ## Quick start
 
@@ -38,7 +38,7 @@ brew install phenixblue/tap/k8shark
 kshrk capture --config k8shark.yaml
 
 # Replay the capture
-kshrk open capture.tar.gz
+kshrk open capture.khsrk
 export KUBECONFIG=~/.kube/k8shark-<id>.yaml
 kubectl get pods -A
 ```
@@ -62,7 +62,7 @@ timeline, and a time-travel scrubber. See **[docs/web-ui.md](docs/web-ui.md)** f
 | [docs/config.md](docs/config.md) | Config file reference, namespaced vs cluster-scoped resources, example configs |
 | [docs/releases.md](docs/releases.md) | How to cut a release, GoReleaser pipeline, signing, Homebrew tap |
 | [docs/development.md](docs/development.md) | Building, testing, linting, KinD dev cluster, E2E tests, package layout |
-| [docs/archive-format.md](docs/archive-format.md) | Internal `.tar.gz` layout, record and index JSON schemas |
+| [docs/archive-format.md](docs/archive-format.md) | Internal `.khsrk` (ZIP+Zstd) layout, record and index JSON schemas |
 
 ## License
 

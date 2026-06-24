@@ -6,8 +6,8 @@
 # How long to run the capture. Polling continues until time runs out.
 duration: 10m
 
-# Output archive path. Defaults to ./k8shark-<timestamp>.tar.gz if omitted.
-output: ./capture.tar.gz
+# Output archive path. Defaults to ./k8shark-<timestamp>.khsrk if omitted.
+output: ./capture.khsrk
 
 # Path to kubeconfig for the source cluster.
 # Defaults to $KUBECONFIG env, then ~/.kube/config.
