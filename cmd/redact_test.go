@@ -29,15 +29,16 @@ func TestParseRedactField(t *testing.T) {
 		}
 	})
 
-	t.Run("replacement may contain colons", func(t *testing.T) {
-		// SplitN(…, 4) keeps everything after the 3rd colon as valueType, so a
-		// replacement with a colon and an explicit valueType still parses.
-		rule, err := parseRedactField("f:Kind:a:b")
+	t.Run("valueType keeps everything after the 3rd colon", func(t *testing.T) {
+		// SplitN(…, 4) caps the split at 4 fields, so any further colons stay in
+		// the 4th field (valueType). The replacement is still just the 3rd field.
+		rule, err := parseRedactField("f:Kind:a:b:c")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if rule.Replacement != "a" || rule.ValueType != "b" {
-			t.Errorf("got replacement=%q valueType=%q", rule.Replacement, rule.ValueType)
+		if rule.Replacement != "a" || rule.ValueType != "b:c" {
+			t.Errorf("got replacement=%q valueType=%q, want replacement=%q valueType=%q",
+				rule.Replacement, rule.ValueType, "a", "b:c")
 		}
 	})
 
