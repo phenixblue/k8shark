@@ -2,10 +2,9 @@ package cmd
 
 import "testing"
 
-// formatBytes (capture.go) and humanBytes (inspect.go) are byte-for-byte
-// identical IEC formatters; this exercises both so either implementation
-// drifting would be caught.
-func TestByteFormatters(t *testing.T) {
+// formatBytes is the single shared IEC byte formatter (cmd/format.go), used by
+// both the capture summary and the inspect output.
+func TestFormatBytes(t *testing.T) {
 	cases := []struct {
 		in   int64
 		want string
@@ -21,9 +20,6 @@ func TestByteFormatters(t *testing.T) {
 	for _, c := range cases {
 		if got := formatBytes(c.in); got != c.want {
 			t.Errorf("formatBytes(%d) = %q, want %q", c.in, got, c.want)
-		}
-		if got := humanBytes(c.in); got != c.want {
-			t.Errorf("humanBytes(%d) = %q, want %q", c.in, got, c.want)
 		}
 	}
 }
