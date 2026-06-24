@@ -6,6 +6,49 @@
   'use strict';
 
   const $ = (id) => document.getElementById(id);
+  const FORBIDDEN_CHILD_TAGS = ['script', 'iframe', 'object', 'embed', 'link', 'meta', 'style'];
+  const FORBIDDEN_CHILD_TAGS_SET = new Set(FORBIDDEN_CHILD_TAGS.map((t) => t.toUpperCase()));
+  const FORBIDDEN_CHILD_SELECTOR = FORBIDDEN_CHILD_TAGS.join(',');
+  const isSafeChildNode = (node) => {
+    let ok = node instanceof Node;
+
+    if (
+      ok &&
+      node.nodeType !== Node.ELEMENT_NODE &&
+      node.nodeType !== Node.TEXT_NODE &&
+      node.nodeType !== Node.DOCUMENT_FRAGMENT_NODE
+    ) {
+      ok = false;
+    }
+
+    if (ok && (node.nodeType === Node.ELEMENT_NODE || node.nodeType === Node.DOCUMENT_FRAGMENT_NODE)) {
+      // Block forbidden tags on the node itself (ELEMENT_NODE) and anywhere in its subtree.
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        const tn = (node.tagName || '').toUpperCase();
+        if (FORBIDDEN_CHILD_TAGS_SET.has(tn)) ok = false;
+      }
+      if (ok) {
+        try {
+          if (typeof node.querySelector === 'function') {
+            if (node.querySelector(FORBIDDEN_CHILD_SELECTOR)) ok = false;
+          } else {
+            const walker = document.createTreeWalker(node, NodeFilter.SHOW_ELEMENT);
+            // For elements, include the element itself; for fragments, start at the first element child.
+            let cur = node.nodeType === Node.ELEMENT_NODE ? node : walker.nextNode();
+            while (cur) {
+              const tn = (cur.tagName || '').toUpperCase();
+              if (FORBIDDEN_CHILD_TAGS_SET.has(tn)) { ok = false; break; }
+              cur = walker.nextNode();
+            }
+          }
+        } catch (_) {
+          ok = false; // fail closed
+        }
+      }
+    }
+
+    return ok;
+  };
   const el = (tag, attrs = {}, ...children) => {
     const n = document.createElement(tag);
     for (const [k, v] of Object.entries(attrs)) {
@@ -15,8 +58,14 @@
       else if (v !== undefined && v !== null) n.setAttribute(k, v);
     }
     for (const c of children) {
-      if (c === null || c === undefined || c === false) continue;
-      n.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
+      if (c === null || c === undefined) continue;
+      if (typeof c === 'string' || typeof c === 'number' || typeof c === 'bigint') {
+        n.appendChild(document.createTextNode(String(c)));
+      } else if (isSafeChildNode(c)) {
+        n.appendChild(c);
+      } else {
+        n.appendChild(document.createTextNode(String(c)));
+      }
     }
     return n;
   };
