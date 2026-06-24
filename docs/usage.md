@@ -4,7 +4,7 @@
 
 - `kubectl` in your `PATH`
 - A valid `~/.kube/config` (or `KUBECONFIG` env set) pointing at a cluster — for `capture` only
-- Go 1.22+ if building from source
+- Go 1.26+ if building from source
 
 ## Installation
 

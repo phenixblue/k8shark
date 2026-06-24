@@ -4,7 +4,7 @@
 
 | Tool | Minimum version | Notes |
 |------|----------------|-------|
-| Go | 1.22 | Check `go.mod` for the exact minimum |
+| Go | 1.26 | Check `go.mod` for the exact minimum |
 | `kind` | any recent | Required for `make e2e` and `make kind-up` |
 | `kubectl` | any recent | Required for E2E and manual testing |
 | `goreleaser` | v2 | Required for `make release-snapshot` / `make release-local` only |
@@ -107,9 +107,15 @@ Run `make help` to print all targets:
 .
 ├── main.go                    # entry point — calls cmd.Execute()
 ├── cmd/                       # cobra CLI commands
-│   ├── root.go                # kshrk root command + config init
+│   ├── root.go                # root command + config discovery
 │   ├── capture.go             # kshrk capture
 │   ├── open.go                # kshrk open
+│   ├── ui.go                  # kshrk ui
+│   ├── inspect.go             # kshrk inspect
+│   ├── diff.go                # kshrk diff
+│   ├── redact.go              # kshrk redact
+│   ├── transitions.go         # kshrk transitions
+│   ├── validate.go            # kshrk validate
 │   └── version.go             # kshrk version
 └── internal/
     ├── archive/               # .khsrk (ZIP+Zstd) read/write
@@ -117,11 +123,17 @@ Run `make help` to print all targets:
     │   ├── engine.go          # polling loop, doFetch, buildAPIPath
     │   └── record.go          # Record, Index, CaptureMetadata types
     ├── config/                # config file loading + validation
-    └── server/                # mock API server
-        ├── server.go          # TLS server lifecycle, archive extraction
-        ├── handler.go         # HTTP routing + serveResource
-        ├── store.go           # CaptureStore, Latest, Aggregate*, parseAPIPath
-        ├── selector.go        # label + field selector filtering
-        ├── tls.go             # self-signed cert generation
-        └── kubeconfig.go      # kubeconfig writer
+    ├── server/                # mock API server
+    │   ├── server.go          # TLS server lifecycle, archive loading
+    │   ├── handler.go         # HTTP routing + serveResource
+    │   ├── store.go           # CaptureStore, Latest, Aggregate*, parseAPIPath
+    │   ├── selector.go        # label + field selector filtering
+    │   ├── tls.go             # self-signed cert generation
+    │   └── kubeconfig.go      # kubeconfig writer
+    ├── ui/                    # web UI server (hosts the v2 dashboard)
+    │   └── v2/                # dashboard handlers + embedded static assets
+    ├── inspect/               # archive summary (kshrk inspect)
+    ├── diff/                  # before/after archive diff
+    ├── redact/                # secret + field redaction
+    └── transitions/           # watch-event state-change timeline
 ```
