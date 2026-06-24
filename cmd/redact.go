@@ -66,7 +66,10 @@ func runRedact(cmd *cobra.Command, _ []string) error {
 	cfgFile, _ := cmd.Flags().GetString("config")
 
 	if out == "" {
-		base := strings.TrimSuffix(in, ".kshrk")
+		// Trim either the current or the legacy extension so redacting a
+		// "*.khsrk" capture yields "<in>-redacted.kshrk", not
+		// "<in>.khsrk-redacted.kshrk".
+		base := strings.TrimSuffix(strings.TrimSuffix(in, ".kshrk"), ".khsrk")
 		out = base + "-redacted.kshrk"
 	}
 
