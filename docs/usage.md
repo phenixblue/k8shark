@@ -31,6 +31,41 @@ make build
 # binary written to ./kshrk
 ```
 
+### Shell completion
+
+`kshrk` ships tab-completion for `bash`, `zsh`, `fish`, and PowerShell. It
+completes subcommand and `--flag` names, scopes positional and archive-valued
+flags (`--in`, `--out`, `--before`, `--after`, `--archive`) to `*.kshrk` files,
+restricts `--config` to YAML files, and offers the valid choices for output
+formats (e.g. `-o table|json|yaml`).
+
+Generate the script for your shell with `kshrk completion <shell>`:
+
+```sh
+# zsh — write into a directory on your fpath, then restart the shell
+kshrk completion zsh > "${fpath[1]}/_kshrk"
+
+# bash — Linux
+kshrk completion bash > /etc/bash_completion.d/kshrk
+# bash — macOS (Homebrew bash-completion@2)
+kshrk completion bash > "$(brew --prefix)/etc/bash_completion.d/kshrk"
+
+# fish
+kshrk completion fish > ~/.config/fish/completions/kshrk.fish
+
+# PowerShell — add to your profile to persist across sessions
+kshrk completion powershell | Out-String | Invoke-Expression
+```
+
+To try completion in the current shell without installing it, source the script
+directly, e.g. `source <(kshrk completion bash)`. Run
+`kshrk completion <shell> --help` for shell-specific installation notes.
+
+> **kubectl plugin:** when `kshrk` is installed as the `kubectl-k8shark` plugin
+> (see [#27](https://github.com/phenixblue/k8shark/issues/27)), `kubectl`
+> drives completion through its own plugin-completion mechanism rather than the
+> scripts above.
+
 ---
 
 ## Capture

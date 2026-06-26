@@ -34,8 +34,9 @@ time window, add --diff to show field-level changes for MODIFIED events, and use
 
   # Machine-readable output
   kshrk transitions capture.kshrk -o json`,
-	Args: cobra.ExactArgs(1),
-	RunE: runTransitions,
+	Args:              cobra.ExactArgs(1),
+	ValidArgsFunction: completeArchiveArg,
+	RunE:              runTransitions,
 }
 
 func init() {
@@ -47,6 +48,8 @@ func init() {
 	transitionsCmd.Flags().String("until", "", "end of time window (RFC3339)")
 	transitionsCmd.Flags().Bool("diff", false, "show field diffs for MODIFIED events")
 	transitionsCmd.Flags().StringP("output", "o", "table", "output format: table or json")
+	_ = transitionsCmd.RegisterFlagCompletionFunc("output",
+		cobra.FixedCompletions([]string{"table", "json"}, cobra.ShellCompDirectiveNoFileComp))
 }
 
 func runTransitions(cmd *cobra.Command, args []string) error {

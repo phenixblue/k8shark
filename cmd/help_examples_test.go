@@ -8,7 +8,9 @@ import "testing"
 func TestUserFacingCommandsHaveExamples(t *testing.T) {
 	exempt := map[string]bool{"version": true, "help": true, "completion": true}
 	for _, c := range rootCmd.Commands() {
-		if exempt[c.Name()] {
+		// Hidden commands (e.g. Cobra's "__complete" helper, added once
+		// completion is requested) aren't user-facing.
+		if c.Hidden || exempt[c.Name()] {
 			continue
 		}
 		if c.Example == "" {

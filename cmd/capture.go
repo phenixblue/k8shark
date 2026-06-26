@@ -50,6 +50,7 @@ func init() {
 	_ = viper.BindPFlag("kubeconfig", captureCmd.Flags().Lookup("kubeconfig"))
 	_ = viper.BindPFlag("duration", captureCmd.Flags().Lookup("duration"))
 	_ = viper.BindPFlag("auto_discover", captureCmd.Flags().Lookup("auto-discover"))
+	_ = captureCmd.MarkFlagFilename("output", captureExt)
 }
 
 func runCapture(cmd *cobra.Command, args []string) error {
