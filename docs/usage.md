@@ -35,9 +35,9 @@ make build
 
 `kshrk` ships tab-completion for `bash`, `zsh`, `fish`, and PowerShell. It
 completes subcommand and `--flag` names, scopes positional and archive-valued
-flags (`--in`, `--out`, `--before`, `--after`, `--archive`) to `*.kshrk` files,
-restricts `--config` to YAML files, and offers the valid choices for output
-formats (e.g. `-o table|json|yaml`).
+flags (`--in`, `--out`, `--before`, `--after`, `--archive`, and `capture
+--output`) to `*.kshrk` files, restricts `--config` to YAML files, and offers
+the valid choices for output formats (e.g. `-o table|json|yaml`).
 
 Generate the script for your shell with `kshrk completion <shell>`:
 

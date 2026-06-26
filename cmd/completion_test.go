@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -10,8 +11,8 @@ import (
 
 // runCompletion drives Cobra's hidden completion command (the same entry point
 // the generated shell scripts call) and returns the suggested completions plus
-// the trailing ShellCompDirective token (e.g. ":8").
-func runCompletion(t *testing.T, args ...string) ([]string, string) {
+// the parsed ShellCompDirective.
+func runCompletion(t *testing.T, args ...string) ([]string, cobra.ShellCompDirective) {
 	t.Helper()
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
@@ -22,13 +23,17 @@ func runCompletion(t *testing.T, args ...string) ([]string, string) {
 	}
 
 	var comps []string
-	var directive string
+	directive := cobra.ShellCompDirectiveError
 	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
 		if line == "" {
 			continue
 		}
 		if strings.HasPrefix(line, ":") {
-			directive = line
+			n, err := strconv.Atoi(line[1:])
+			if err != nil {
+				t.Fatalf("completion request %v: bad directive line %q: %v", args, line, err)
+			}
+			directive = cobra.ShellCompDirective(n)
 			continue
 		}
 		// Suggestions may carry a tab-separated description; keep the value.
@@ -63,8 +68,8 @@ func TestPositionalArchiveCompletionRegistered(t *testing.T) {
 		if !contains(comps, captureExt) {
 			t.Errorf("%s positional completion = %v, want it to include %q", name, comps, captureExt)
 		}
-		if !strings.HasSuffix(directive, "8") { // ShellCompDirectiveFilterFileExt == 8
-			t.Errorf("%s directive = %q, want file-extension filter", name, directive)
+		if directive&cobra.ShellCompDirectiveFilterFileExt == 0 {
+			t.Errorf("%s directive = %d, want the FilterFileExt bit set", name, directive)
 		}
 	}
 }
@@ -89,21 +94,53 @@ func TestOutputFlagEnumCompletion(t *testing.T) {
 }
 
 func TestArchiveFlagFilenameCompletion(t *testing.T) {
-	// diff's --before/--after/--archive and redact's --in/--out are scoped to
-	// *.kshrk via MarkFlagFilename, which yields a file-extension-filter
+	// diff's --before/--after/--archive, redact's --in/--out, and capture's
+	// --output are scoped to *.kshrk, which yields a file-extension-filter
 	// directive.
 	for _, c := range [][2]string{
 		{"diff", "--before"},
+		{"diff", "--after"},
 		{"diff", "--archive"},
 		{"redact", "--in"},
 		{"redact", "--out"},
+		{"capture", "--output"},
 	} {
 		comps, directive := runCompletion(t, c[0], c[1], "")
 		if !contains(comps, captureExt) {
 			t.Errorf("%s %s completion = %v, want %q", c[0], c[1], comps, captureExt)
 		}
-		if !strings.HasSuffix(directive, "8") {
-			t.Errorf("%s %s directive = %q, want file-extension filter", c[0], c[1], directive)
+		if directive&cobra.ShellCompDirectiveFilterFileExt == 0 {
+			t.Errorf("%s %s directive = %d, want the FilterFileExt bit set", c[0], c[1], directive)
+		}
+	}
+}
+
+func TestCaptureOutputCompletesStdout(t *testing.T) {
+	// "-" (stream NDJSON to stdout) is still offered when the user starts
+	// typing it, even though plain completion is scoped to *.kshrk files.
+	// A dash-prefixed flag value is completed via the "--flag=value" form
+	// (Cobra can't tell a space-separated "-" from the start of a new flag).
+	comps, directive := runCompletion(t, "capture", "--output=-")
+	if !contains(comps, "-") {
+		t.Errorf("capture --output completion = %v, want it to include %q", comps, "-")
+	}
+	if directive&cobra.ShellCompDirectiveNoFileComp == 0 {
+		t.Errorf("capture --output - directive = %d, want the NoFileComp bit set", directive)
+	}
+}
+
+func TestConfigFlagYAMLCompletion(t *testing.T) {
+	// The root persistent --config flag (used here via validate) and redact's
+	// own --config flag are both scoped to YAML files.
+	for _, name := range []string{"validate", "redact"} {
+		comps, directive := runCompletion(t, name, "--config", "")
+		for _, ext := range configExts {
+			if !contains(comps, ext) {
+				t.Errorf("%s --config completion = %v, want it to include %q", name, comps, ext)
+			}
+		}
+		if directive&cobra.ShellCompDirectiveFilterFileExt == 0 {
+			t.Errorf("%s --config directive = %d, want the FilterFileExt bit set", name, directive)
 		}
 	}
 }
