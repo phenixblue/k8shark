@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -46,7 +47,10 @@ func varyPodList(ns string, snap, pods int) json.RawMessage {
 			},
 		})
 	}
-	b, _ := json.Marshal(map[string]any{"kind": "PodList", "apiVersion": "v1", "items": items})
+	b, err := json.Marshal(map[string]any{"kind": "PodList", "apiVersion": "v1", "items": items})
+	if err != nil {
+		panic(fmt.Sprintf("varyPodList marshal: %v", err))
+	}
 	return b
 }
 
@@ -107,12 +111,19 @@ func writeLargeArchive(tb testing.TB, path string, namespaces, snapshots, pods i
 	return recCount, rawBytes
 }
 
-// sweep simulates open/ui usage: reconstruct every list path at several points
-// in time, which populates the record + response caches.
-func sweep(store *CaptureStore, at time.Time) {
+// sweep simulates open/ui usage: reconstruct every list path at time at, which
+// populates the record + response caches. Returns the number of paths that
+// failed to reconstruct, so callers can surface silent reconstruction errors
+// instead of measuring against a broken store.
+func sweep(store *CaptureStore, at time.Time) int {
+	fails := 0
 	for path := range store.Index {
-		_, _, _ = store.ReconstructAt(path, at)
+		body, code, err := store.ReconstructAt(path, at)
+		if err != nil || code != http.StatusOK || len(body) == 0 {
+			fails++
+		}
 	}
+	return fails
 }
 
 func envInt(key string, def int) int {
@@ -141,7 +152,14 @@ func BenchmarkServeLargeCapture(b *testing.B) {
 	end := store.Metadata.CapturedUntil
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		sweep(store, end)
+		// Use a unique `at` each iteration so the (path, at) response cache
+		// (10s TTL) doesn't serve repeats — we want to measure reconstruction
+		// work, not cache hits. A few ns past the end still resolves to the
+		// latest snapshot.
+		at := end.Add(time.Duration(i) * time.Nanosecond)
+		if sweep(store, at) > 0 {
+			b.Fatal("reconstruction failed during sweep")
+		}
 	}
 }
 
@@ -158,7 +176,10 @@ func TestLargeCaptureMemory(t *testing.T) {
 
 	path := filepath.Join(t.TempDir(), "large.kshrk")
 	recs, raw := writeLargeArchive(t, path, ns, snaps, pods)
-	fi, _ := os.Stat(path)
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat archive: %v", err)
+	}
 
 	ar, err := archive.Open(path)
 	if err != nil {
@@ -174,13 +195,19 @@ func TestLargeCaptureMemory(t *testing.T) {
 	for _, frac := range []float64{0.25, 0.5, 0.75, 1.0} {
 		span := store.Metadata.CapturedUntil.Sub(store.Metadata.CapturedAt)
 		at := store.Metadata.CapturedAt.Add(time.Duration(float64(span) * frac))
-		sweep(store, at)
+		if f := sweep(store, at); f > 0 {
+			t.Fatalf("%d paths failed to reconstruct during warm sweep", f)
+		}
 	}
 
+	// GC first so the number reflects memory *retained* by the loaded store and
+	// its caches during replay, not transient garbage from archive generation
+	// or the sweeps. This is the steady-state footprint, not an instantaneous peak.
+	runtime.GC()
 	var m runtime.MemStats
 	runtime.ReadMemStats(&m)
 	mib := func(b uint64) float64 { return float64(b) / (1 << 20) }
-	t.Logf("LARGE CAPTURE MEMORY")
+	t.Logf("LARGE CAPTURE MEMORY (retained after cache-warming sweep, post-GC)")
 	t.Logf("  namespaces=%d snapshots=%d podsPerList=%d", ns, snaps, pods)
 	t.Logf("  records=%d  raw record bytes=%.1f MiB  archive on disk=%.1f MiB",
 		recs, float64(raw)/(1<<20), float64(fi.Size())/(1<<20))

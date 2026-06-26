@@ -51,7 +51,7 @@ timeline, and a time-travel scrubber. See **[docs/web-ui.md](docs/web-ui.md)** f
 
 [![k8shark dashboard overview](docs/images/v2/overview.png)](docs/web-ui.md)
 
-⚠️ **Note:** The web UI for cluster exploration is experimental. Replay memory is bounded by in-memory caches (≈128 MiB of record bodies + 32 MiB of responses) plus the capture index, so it stays modest even for large captures: a synthetic capture with ~480 MiB of record data (30k records, 45 MiB archive) replays in well under 200 MiB of heap. Even so, for very large clusters you can keep captures smaller with an explicit resource list instead of `all: true`. (See `BenchmarkServeLargeCapture` / `TestLargeCaptureMemory` in `internal/server` to reproduce.)
+⚠️ **Note:** The web UI for cluster exploration is experimental. Replay memory is bounded by in-memory caches (≈128 MiB of record bodies + 32 MiB of responses) plus the capture index, so it stays modest even for large captures: a synthetic capture with ~480 MiB of record data (30k records, 45 MiB archive) replays with a peak runtime footprint of ~150 MiB (≈15 MiB retained steady-state) — bounded by the caches, not the capture size. Even so, for very large clusters you can keep captures smaller with an explicit resource list instead of `all: true`. (See `BenchmarkServeLargeCapture` / `TestLargeCaptureMemory` in `internal/server` to reproduce.)
 
 ## Documentation
 
