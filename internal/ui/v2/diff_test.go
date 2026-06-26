@@ -58,4 +58,9 @@ func TestServeDiff_Errors(t *testing.T) {
 	if code := getJSONInto(t, h, h.serveDiff, "/v2/api/diff", q, nil); code != http.StatusBadRequest {
 		t.Errorf("invalid before timestamp: status = %d, want 400", code)
 	}
+	nh := &Handler{}
+	gp := "?path=" + url.QueryEscape("/api/v1/namespaces/default/pods")
+	if code := getJSONInto(t, nh, nh.serveDiff, "/v2/api/diff", gp, nil); code != http.StatusInternalServerError {
+		t.Errorf("nil store: status = %d, want 500", code)
+	}
 }

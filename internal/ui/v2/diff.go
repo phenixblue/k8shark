@@ -29,6 +29,10 @@ type DiffHunk struct {
 }
 
 func (h *Handler) serveDiff(w http.ResponseWriter, r *http.Request) {
+	if h.Store == nil {
+		writeError(w, http.StatusInternalServerError, "store not initialized")
+		return
+	}
 	path := r.URL.Query().Get("path")
 	if path == "" {
 		writeError(w, http.StatusBadRequest, "missing path query parameter")

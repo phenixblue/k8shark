@@ -78,4 +78,8 @@ func TestServeEvents_FilterAndBadRequest(t *testing.T) {
 	if code := getJSONInto(t, h, h.serveEvents, "/v2/api/events", "", nil); code != http.StatusBadRequest {
 		t.Errorf("missing ns: status = %d, want 400", code)
 	}
+	nh := &Handler{}
+	if code := getJSONInto(t, nh, nh.serveEvents, "/v2/api/events", "?ns=default", nil); code != http.StatusInternalServerError {
+		t.Errorf("nil store: status = %d, want 500", code)
+	}
 }

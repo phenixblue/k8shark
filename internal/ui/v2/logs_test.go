@@ -53,4 +53,8 @@ func TestServeLogs_Errors(t *testing.T) {
 	if code := getJSONInto(t, h, h.serveLogs, "/v2/api/logs", "?ns=default&pod=web", nil); code != http.StatusNotFound {
 		t.Errorf("no captured logs: status = %d, want 404", code)
 	}
+	nh := &Handler{}
+	if code := getJSONInto(t, nh, nh.serveLogs, "/v2/api/logs", "?ns=default&pod=web", nil); code != http.StatusInternalServerError {
+		t.Errorf("nil store: status = %d, want 500", code)
+	}
 }

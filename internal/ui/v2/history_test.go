@@ -110,4 +110,8 @@ func TestServeObjectHistory_BadRequest(t *testing.T) {
 	if code := getJSONInto(t, h, h.serveObjectHistory, "/v2/api/object-history", "", nil); code != http.StatusBadRequest {
 		t.Errorf("missing path: status = %d, want 400", code)
 	}
+	nh := &Handler{}
+	if code := getJSONInto(t, nh, nh.serveObjectHistory, "/v2/api/object-history", "?path=/x", nil); code != http.StatusInternalServerError {
+		t.Errorf("nil store: status = %d, want 500", code)
+	}
 }

@@ -39,3 +39,10 @@ func TestServeTimestamps(t *testing.T) {
 		t.Errorf("CapturedUntil = %v, want %v", resp.CapturedUntil, t1)
 	}
 }
+
+func TestServeTimestamps_NilStore(t *testing.T) {
+	h := &Handler{}
+	if code := getJSONInto(t, h, h.serveTimestamps, "/v2/api/timestamps", "", nil); code != http.StatusInternalServerError {
+		t.Errorf("nil store: status = %d, want 500", code)
+	}
+}
