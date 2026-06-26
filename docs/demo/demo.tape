@@ -30,7 +30,9 @@ Enter
 Sleep 3750ms
 
 # ── Point kubectl at the mock server ──────────────────────────────────────────
-Type "export KUBECONFIG=/tmp/kshrk-demo.kubeconfig"
+# Wait for the backgrounded `kshrk open` to write its kubeconfig before
+# exporting it, so kubectl never races the server on slower machines.
+Type "until [ -s /tmp/kshrk-demo.kubeconfig ]; do sleep 0.1; done; export KUBECONFIG=/tmp/kshrk-demo.kubeconfig"
 Sleep 300ms
 Enter
 Sleep 750ms
