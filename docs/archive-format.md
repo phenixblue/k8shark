@@ -75,13 +75,15 @@ The **stable surface** is the logical structure, not the bytes:
 These are implementation details and may change without a version bump, because
 the reader does not depend on them:
 
-- The **ZIP compression method** of each entry (Store vs Deflate). Payloads
-  carry their own Zstd compression; the ZIP layer just stores them.
+- The **ZIP compression method** of each entry (Store vs Deflate). The payload
+  entries are already Zstd-compressed, so the writer typically just stores them
+  in the ZIP — but Deflate-stored archives are equally valid and still read.
 - Entry **ordering** within the ZIP and per-entry **timestamps**.
 - Exact byte size / Zstd encoder level.
 
-Read `.kshrk` files via a ZIP reader + a Zstd decoder and the documented
-schemas — never by assuming a fixed byte layout.
+Read `.kshrk` files via a ZIP reader plus the documented schemas, Zstd-decoding
+only the `*.json.zst` entries (`metadata.json` is plain JSON) — never by
+assuming a fixed byte layout.
 
 ### Evolution rules
 
