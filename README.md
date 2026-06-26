@@ -62,7 +62,7 @@ timeline, and a time-travel scrubber. See **[docs/web-ui.md](docs/web-ui.md)** f
 | [docs/config.md](docs/config.md) | Config file reference, namespaced vs cluster-scoped resources, example configs |
 | [docs/releases.md](docs/releases.md) | How to cut a release, GoReleaser pipeline, signing, Homebrew tap |
 | [docs/development.md](docs/development.md) | Building, testing, linting, KinD dev cluster, E2E tests, package layout |
-| [docs/archive-format.md](docs/archive-format.md) | Internal `.kshrk` (ZIP+Zstd) layout, record and index JSON schemas |
+| [docs/archive-format.md](docs/archive-format.md) | Internal `.kshrk` (ZIP+Zstd) layout, record and index JSON schemas, and the format-compatibility guarantee |
 
 ## License
 
