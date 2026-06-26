@@ -48,6 +48,11 @@ func init() {
 	diffCmd.Flags().String("resource", "", "limit diff to one resource type, e.g. pods")
 	diffCmd.Flags().String("namespace", "", "limit diff to one namespace")
 	diffCmd.Flags().StringP("output", "o", "text", "output format: text or json")
+	for _, f := range []string{"before", "after", "archive"} {
+		_ = diffCmd.MarkFlagFilename(f, captureExt)
+	}
+	_ = diffCmd.RegisterFlagCompletionFunc("output",
+		cobra.FixedCompletions([]string{"text", "json"}, cobra.ShellCompDirectiveNoFileComp))
 }
 
 func runDiff(cmd *cobra.Command, _ []string) error {

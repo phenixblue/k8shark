@@ -42,6 +42,9 @@ func init() {
 	redactCmd.Flags().StringArray("redact-field", nil, "field redaction rule: <fieldPath>:<Kind>:<replacement>[:<valueType>] (repeatable)")
 	redactCmd.Flags().String("config", "", "capture config file whose redaction.rules block is applied")
 	_ = redactCmd.MarkFlagRequired("in")
+	_ = redactCmd.MarkFlagFilename("in", captureExt)
+	_ = redactCmd.MarkFlagFilename("out", captureExt)
+	_ = redactCmd.MarkFlagFilename("config", configExts...)
 }
 
 // parseRedactField parses a --redact-field flag value of the form:

@@ -25,14 +25,17 @@ for machine-readable output.`,
   # Machine-readable output
   kshrk inspect capture.kshrk -o json
   kshrk inspect capture.kshrk -o yaml`,
-	Args: cobra.ExactArgs(1),
-	RunE: runInspect,
+	Args:              cobra.ExactArgs(1),
+	ValidArgsFunction: completeArchiveArg,
+	RunE:              runInspect,
 }
 
 func init() {
 	rootCmd.AddCommand(inspectCmd)
 	inspectCmd.Flags().StringP("output", "o", "table", "Output format: table, json, or yaml")
 	inspectCmd.Flags().BoolP("wide", "w", false, "Show full namespace list in table output")
+	_ = inspectCmd.RegisterFlagCompletionFunc("output",
+		cobra.FixedCompletions([]string{"table", "json", "yaml"}, cobra.ShellCompDirectiveNoFileComp))
 }
 
 func runInspect(cmd *cobra.Command, args []string) error {

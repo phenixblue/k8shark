@@ -29,8 +29,9 @@ the config file).`,
 
   # Open the UI pinned to a point in time
   kshrk ui capture.kshrk --at -5m`,
-	Args: cobra.ExactArgs(1),
-	RunE: runUI,
+	Args:              cobra.ExactArgs(1),
+	ValidArgsFunction: completeArchiveArg,
+	RunE:              runUI,
 }
 
 func init() {

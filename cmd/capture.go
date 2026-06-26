@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/phenixblue/k8shark/internal/capture"
@@ -50,6 +51,14 @@ func init() {
 	_ = viper.BindPFlag("kubeconfig", captureCmd.Flags().Lookup("kubeconfig"))
 	_ = viper.BindPFlag("duration", captureCmd.Flags().Lookup("duration"))
 	_ = viper.BindPFlag("auto_discover", captureCmd.Flags().Lookup("auto-discover"))
+	// --output writes a *.kshrk archive, but also accepts "-" to stream NDJSON
+	// to stdout. Scope file completion to *.kshrk while still offering "-".
+	_ = captureCmd.RegisterFlagCompletionFunc("output", func(_ *cobra.Command, _ []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if strings.HasPrefix(toComplete, "-") {
+			return []string{"-\tstream NDJSON to stdout"}, cobra.ShellCompDirectiveNoFileComp
+		}
+		return []string{captureExt}, cobra.ShellCompDirectiveFilterFileExt
+	})
 }
 
 func runCapture(cmd *cobra.Command, args []string) error {

@@ -22,8 +22,9 @@ specific point in the capture window.`,
 
   # Replay at a specific timestamp, on a fixed port
   kshrk open capture.kshrk --at 2026-04-09T10:30:00Z --port 8443`,
-	Args: cobra.ExactArgs(1),
-	RunE: runOpen,
+	Args:              cobra.ExactArgs(1),
+	ValidArgsFunction: completeArchiveArg,
+	RunE:              runOpen,
 }
 
 func init() {
