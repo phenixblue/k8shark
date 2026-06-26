@@ -405,8 +405,15 @@ func (a *Archive) readZstd(name string) ([]byte, error) {
 
 // ---- helpers used by StreamWriter ----
 
+// writeBytes adds a ZIP entry using the Store method (no ZIP-level
+// compression). Record/index/watch payloads are already Zstd-compressed, so
+// running them through the ZIP writer's default Deflate would burn CPU for no
+// size benefit; metadata.json is small and kept uncompressed for fast header
+// reads. The ZIP method is an implementation detail, not part of the archive
+// format contract — readers handle any method, so older Deflate archives still
+// open. ZIP still records a per-entry CRC32 for integrity.
 func writeBytes(zw *zip.Writer, name string, data []byte) error {
-	w, err := zw.Create(name)
+	w, err := zw.CreateHeader(&zip.FileHeader{Name: name, Method: zip.Store})
 	if err != nil {
 		return fmt.Errorf("creating zip entry %s: %w", name, err)
 	}
