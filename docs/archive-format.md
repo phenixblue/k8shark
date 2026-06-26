@@ -55,21 +55,64 @@ Capture-level information. Written once at the end of the capture run.
 ## Format version & compatibility
 
 `metadata.json` carries an integer `format_version` identifying the archive
-schema. The current version is **1**.
+schema. The current version is **1**. This is the stability promise for the
+`.kshrk` format.
 
-- **Additive changes don't bump it.** New optional metadata fields
+### What is guaranteed (the contract)
+
+The **stable surface** is the logical structure, not the bytes:
+
+- The **entry layout** — the `k8shark-capture/` tree and the names/roles of
+  `metadata.json`, `index.json.zst`, `watch-index.json.zst`, and
+  `records/<pathDir>/<seq>.json.zst`.
+- The **JSON schemas** of the metadata, index, watch-index, and record objects
+  documented on this page.
+- The **`pathDir` derivation** (first 16 hex chars of SHA-256 of the API path)
+  and the per-path 0-based `seq` numbering.
+
+### What is NOT part of the contract
+
+These are implementation details and may change without a version bump, because
+the reader does not depend on them:
+
+- The **ZIP compression method** of each entry (Store vs Deflate). The payload
+  entries are already Zstd-compressed, so the writer typically just stores them
+  in the ZIP — but Deflate-stored archives are equally valid and still read.
+- Entry **ordering** within the ZIP and per-entry **timestamps**.
+- Exact byte size / Zstd encoder level.
+
+Read `.kshrk` files via a ZIP reader plus the documented schemas, Zstd-decoding
+only the `*.json.zst` entries (`metadata.json` is plain JSON) — never by
+assuming a fixed byte layout.
+
+### Evolution rules
+
+- **Additive changes don't bump the version.** New optional metadata fields
   (`omitempty`) and new optional archive entries (e.g. the watch index) are
-  backward-compatible: older readers ignore what they don't recognize and
-  newer readers tolerate their absence. These keep `format_version` at 1.
-- **Breaking changes bump it.** A structural change that an older reader cannot
-  safely parse increments the version.
+  backward-compatible. Consumers **must ignore unknown fields and entries** so
+  they keep working against newer archives.
+- **Breaking changes bump `format_version`** — any structural change an older
+  reader could not safely parse.
+
+### Reader compatibility promise
+
+- A given `kshrk` **MAJOR** release reads **every** archive whose
+  `format_version` is ≤ the version that build understands. The `1.x` line reads
+  all version-1 archives for the life of the `1.x` series.
 - **Pre-versioning archives** (captured before the field existed) omit
-  `format_version`; readers treat them as version 1, since they are
-  structurally identical.
-- **Newer archives are refused.** If an archive's `format_version` is greater
-  than the version a given `kshrk` build understands, the tool stops with a
-  clear "upgrade kshrk" error rather than risk misreading an incompatible
-  layout. Run `kshrk inspect <archive>` to see an archive's format version.
+  `format_version`; they are treated as version 1, since they are structurally
+  identical.
+- **Newer archives are refused, not mis-read.** If an archive's `format_version`
+  is greater than the build understands, `kshrk` stops with a clear "upgrade
+  kshrk" error. Run `kshrk inspect <archive>` to see an archive's format
+  version.
+
+### Changing the format (for contributors)
+
+A breaking format change must, in one change: bump `CurrentFormatVersion`
+(`internal/capture`), update this section, and extend the golden-fixture test
+(`internal/archive`) so the new build still reads older fixtures. Additive
+changes need only an `omitempty` field / optional entry and a note here.
 
 ## index.json.zst
 
