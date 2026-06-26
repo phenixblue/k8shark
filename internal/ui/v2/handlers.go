@@ -25,6 +25,10 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 // serveEvents returns events filtered by involvedObject. Used by the pod
 // drilldown for its events panel.
 func (h *Handler) serveEvents(w http.ResponseWriter, r *http.Request) {
+	if h.Store == nil {
+		writeError(w, http.StatusInternalServerError, "store not initialized")
+		return
+	}
 	ns := r.URL.Query().Get("ns")
 	if ns == "" {
 		writeError(w, http.StatusBadRequest, "missing ns query parameter")
@@ -86,5 +90,9 @@ func jsonUnmarshalBody(b []byte, v any) error { return json.Unmarshal(b, v) }
 // serveTimestamps delegates to the scrubber timestamp endpoint defined in
 // timestamps.go.
 func (h *Handler) serveTimestamps(w http.ResponseWriter, r *http.Request) {
+	if h.Store == nil {
+		writeError(w, http.StatusInternalServerError, "store not initialized")
+		return
+	}
 	h.timestampsHandler(w, r)
 }

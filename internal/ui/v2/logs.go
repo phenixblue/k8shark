@@ -30,6 +30,10 @@ type LogsContainerOpt struct {
 }
 
 func (h *Handler) serveLogs(w http.ResponseWriter, r *http.Request) {
+	if h.Store == nil {
+		writeError(w, http.StatusInternalServerError, "store not initialized")
+		return
+	}
 	ns := r.URL.Query().Get("ns")
 	pod := r.URL.Query().Get("pod")
 	if ns == "" || pod == "" {
