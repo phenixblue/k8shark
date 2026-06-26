@@ -24,13 +24,15 @@ Enter
 Sleep 3s
 
 # ── Open the archive in the background ────────────────────────────────────────
-Type "kshrk open demo-capture.kshrk &"
+Type "kshrk open demo-capture.kshrk --kubeconfig-out /tmp/kshrk-demo.kubeconfig &"
 Sleep 500ms
 Enter
 Sleep 3750ms
 
 # ── Point kubectl at the mock server ──────────────────────────────────────────
-Type "export KUBECONFIG=$(ls ~/.kube/k8shark-*.yaml | tail -1)"
+# Wait for the backgrounded `kshrk open` to write its kubeconfig before
+# exporting it, so kubectl never races the server on slower machines.
+Type "until [ -s /tmp/kshrk-demo.kubeconfig ]; do sleep 0.1; done; export KUBECONFIG=/tmp/kshrk-demo.kubeconfig"
 Sleep 300ms
 Enter
 Sleep 750ms
