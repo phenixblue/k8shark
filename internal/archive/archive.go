@@ -12,9 +12,16 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/klauspost/compress/zstd"
 )
+
+// epochModTime is a fixed, valid timestamp used for every ZIP entry so archives
+// are deterministic. The ZIP/DOS time epoch is 1980-01-01; we use noon UTC so
+// the date stays on 1980-01-01 across common timezones (a zero time renders as
+// the invalid "00-00-1980").
+var epochModTime = time.Date(1980, 1, 1, 12, 0, 0, 0, time.UTC)
 
 // RecordSink accepts individual capture records as they arrive.
 type RecordSink interface {
@@ -405,8 +412,15 @@ func (a *Archive) readZstd(name string) ([]byte, error) {
 
 // ---- helpers used by StreamWriter ----
 
+// writeBytes adds a ZIP entry using the Store method (no ZIP-level
+// compression). Record/index/watch payloads are already Zstd-compressed, so
+// running them through the ZIP writer's default Deflate would burn CPU for no
+// size benefit; metadata.json is small and kept uncompressed for fast header
+// reads. The ZIP method is an implementation detail, not part of the archive
+// format contract — readers handle any method, so older Deflate archives still
+// open. ZIP still records a per-entry CRC32 for integrity.
 func writeBytes(zw *zip.Writer, name string, data []byte) error {
-	w, err := zw.Create(name)
+	w, err := zw.CreateHeader(&zip.FileHeader{Name: name, Method: zip.Store, Modified: epochModTime})
 	if err != nil {
 		return fmt.Errorf("creating zip entry %s: %w", name, err)
 	}
