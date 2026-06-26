@@ -44,6 +44,13 @@ func TestArchiveFormatContract(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "capture.kshrk")
 	sampleArchive(t, path)
 
+	// Pin the pathDir derivation with a literal so a change to the hashing
+	// scheme (which changes the on-disk layout) fails here independently.
+	const podsPathDir = "4871feacc5b6fa6e" // SHA-256("/api/v1/namespaces/default/pods")[:8]
+	if got := pathDir("/api/v1/namespaces/default/pods"); got != podsPathDir {
+		t.Errorf("pathDir derivation changed: got %q, want %q — this changes the on-disk layout (bump format_version?)", got, podsPathDir)
+	}
+
 	zr, err := zip.OpenReader(path)
 	if err != nil {
 		t.Fatalf("OpenReader: %v", err)
@@ -51,9 +58,9 @@ func TestArchiveFormatContract(t *testing.T) {
 	defer zr.Close()
 
 	want := map[string]bool{
-		"k8shark-capture/metadata.json":  false,
-		"k8shark-capture/index.json.zst": false,
-		"k8shark-capture/records/" + pathDir("/api/v1/namespaces/default/pods") + "/0.json.zst": false,
+		"k8shark-capture/metadata.json":                          false,
+		"k8shark-capture/index.json.zst":                         false,
+		"k8shark-capture/records/" + podsPathDir + "/0.json.zst": false,
 	}
 	for _, f := range zr.File {
 		if _, ok := want[f.Name]; ok {
@@ -98,16 +105,32 @@ func TestReaderAcceptsDeflateEntries(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 	zw := zip.NewWriter(f)
-	// zw.Create uses Deflate — the old behavior.
-	metaW, _ := zw.Create("k8shark-capture/metadata.json")
-	_, _ = metaW.Write([]byte(`{"format_version":1,"capture_id":"deflate"}`))
-	idxW, _ := zw.Create("k8shark-capture/index.json.zst")
-	idxZ, _ := zstdCompress([]byte(`{}`))
-	_, _ = idxW.Write(idxZ)
+	// zw.Create uses Deflate — the old behavior. Check every error so a write
+	// failure can't masquerade as a passing test against a corrupt archive.
+	metaW, err := zw.Create("k8shark-capture/metadata.json")
+	if err != nil {
+		t.Fatalf("create metadata: %v", err)
+	}
+	if _, err := metaW.Write([]byte(`{"format_version":1,"capture_id":"deflate"}`)); err != nil {
+		t.Fatalf("write metadata: %v", err)
+	}
+	idxZ, err := zstdCompress([]byte(`{}`))
+	if err != nil {
+		t.Fatalf("zstdCompress: %v", err)
+	}
+	idxW, err := zw.Create("k8shark-capture/index.json.zst")
+	if err != nil {
+		t.Fatalf("create index: %v", err)
+	}
+	if _, err := idxW.Write(idxZ); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
 	if err := zw.Close(); err != nil {
 		t.Fatalf("zip close: %v", err)
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		t.Fatalf("file close: %v", err)
+	}
 
 	ar, err := Open(path)
 	if err != nil {
