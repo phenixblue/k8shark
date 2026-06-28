@@ -19,8 +19,17 @@ const (
 // severityRank orders severities for sorting and --fail-on comparisons.
 var severityRank = map[string]int{SeverityInfo: 0, SeverityWarning: 1, SeverityCritical: 2}
 
-// SeverityAtLeast reports whether a is at least as severe as min.
-func SeverityAtLeast(a, min string) bool { return severityRank[a] >= severityRank[min] }
+// SeverityAtLeast reports whether a is at least as severe as min. Unknown
+// severities never satisfy the comparison, so a stray/typo'd value can't
+// silently pass a filter.
+func SeverityAtLeast(a, min string) bool {
+	ra, okA := severityRank[a]
+	rm, okMin := severityRank[min]
+	if !okA || !okMin {
+		return false
+	}
+	return ra >= rm
+}
 
 // ObjectRef identifies the object a finding is about.
 type ObjectRef struct {

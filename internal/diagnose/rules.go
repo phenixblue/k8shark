@@ -98,7 +98,9 @@ func schedulingFindings(store *server.CaptureStore, at time.Time) []Finding {
 					if msg == "" {
 						msg = c.Reason
 					}
-					key := "scheduling.unschedulable|" + ns + "|" + msg
+					// Key on owner too so distinct workloads with the same generic
+					// message ("0/N nodes available…") aren't merged into one finding.
+					key := "scheduling.unschedulable|" + ns + "|" + p.owner() + "|" + msg
 					g.add(key, Finding{
 						RuleID: "scheduling.unschedulable", Severity: SeverityWarning, Category: "scheduling",
 						Title:      "Pod cannot be scheduled",
@@ -138,7 +140,8 @@ func pvcFindings(store *server.CaptureStore, at time.Time) []Finding {
 			if pvc.Spec.StorageClassName != nil {
 				sc = *pvc.Spec.StorageClassName
 			}
-			key := "storage.pvc-unbound|" + ns + "|" + sc + "|" + pvc.Status.Phase
+			// Key per claim — each PVC is a distinct object, don't collapse them.
+			key := "storage.pvc-unbound|" + ns + "|" + pvc.Metadata.Name
 			g.add(key, Finding{
 				RuleID: "storage.pvc-unbound", Severity: SeverityWarning, Category: "storage",
 				Title:      "PersistentVolumeClaim not bound",

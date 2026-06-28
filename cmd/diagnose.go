@@ -131,12 +131,19 @@ func parseDiagnoseAt(raw string, start, end time.Time) (time.Time, error) {
 	if raw == "" {
 		return time.Time{}, nil
 	}
+	var at time.Time
 	if t, err := time.Parse(time.RFC3339, raw); err == nil {
-		return t, nil
-	}
-	d, err := time.ParseDuration(raw)
-	if err != nil {
+		at = t
+	} else if d, derr := time.ParseDuration(raw); derr == nil {
+		at = end.Add(d)
+	} else {
 		return time.Time{}, fmt.Errorf("parsing --at %q: must be RFC3339 or a relative duration like -5m", raw)
 	}
-	return end.Add(d), nil
+	// Reject times outside the capture window — otherwise reconstruction returns
+	// 404s and diagnose would misleadingly report "No findings".
+	if (!start.IsZero() && at.Before(start)) || (!end.IsZero() && at.After(end)) {
+		return time.Time{}, fmt.Errorf("--at %q resolves to %s, outside the capture window %s..%s",
+			raw, at.UTC().Format(time.RFC3339), start.UTC().Format(time.RFC3339), end.UTC().Format(time.RFC3339))
+	}
+	return at, nil
 }
