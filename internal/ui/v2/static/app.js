@@ -94,7 +94,7 @@
     if (qIdx >= 0) h = h.slice(0, qIdx);
     const parts = h.split('/').filter(Boolean);
     if (parts.length === 0) return { name: 'overview' };
-    if (parts[0] === 'overview' || parts[0] === 'namespaces' || parts[0] === 'pods' || parts[0] === 'workloads' || parts[0] === 'resources' || parts[0] === 'resource' || parts[0] === 'object' || parts[0] === 'timeline' || parts[0] === 'logs' || parts[0] === 'diff') {
+    if (parts[0] === 'overview' || parts[0] === 'namespaces' || parts[0] === 'pods' || parts[0] === 'workloads' || parts[0] === 'resources' || parts[0] === 'resource' || parts[0] === 'object' || parts[0] === 'timeline' || parts[0] === 'logs' || parts[0] === 'diff' || parts[0] === 'diagnostics') {
       return { name: parts[0] };
     }
     if (parts[0] === 'ns' && parts[1]) {
@@ -128,6 +128,7 @@
       { key: 'workloads',  label: 'Workloads',  hash: '#/workloads' },
       { key: 'pods',       label: 'Pods',       hash: '#/pods' },
       { key: 'resources',  label: 'Resources',  hash: '#/resources' },
+      { key: 'diagnostics', label: 'Diagnostics', hash: '#/diagnostics' },
       { key: 'timeline',   label: 'Timeline',   hash: '#/timeline' },
     ];
     const activeKey = state.route.name === 'namespace' ? 'namespaces'
@@ -1832,6 +1833,50 @@
   }
 
   // ── Timeline ─────────────────────────────────────────────────────────────
+  async function renderDiagnostics() {
+    setContent(loadingState('Running diagnostics…'));
+    let rep;
+    try {
+      rep = await getJSON('/v2/api/diagnostics');
+    } catch (e) {
+      setContent(errorState(e.message));
+      return;
+    }
+    const findings = rep.findings || [];
+    const s = rep.summary || {};
+    const root = el('div', {});
+    root.appendChild(el('div', { class: 'section-title', style: 'font-size:15px; margin-bottom:2px;' }, 'Diagnostics'));
+    root.appendChild(el('div', { style: 'color:var(--fg-dim); font-size:12px; margin-bottom:14px;' },
+      findings.length + ' finding(s) · ' + (s.critical || 0) + ' critical · ' + (s.warning || 0) + ' warning · ' + (s.info || 0) + ' info'));
+
+    if (!findings.length) {
+      root.appendChild(el('div', { class: 'state', style: 'padding:24px;' }, 'No findings — the captured cluster looks healthy. ✓'));
+      setContent(root);
+      return;
+    }
+
+    const sevColor = (sev) => sev === 'critical' ? 'var(--bad)' : sev === 'warning' ? 'var(--warn)' : 'var(--fg-dim)';
+    const card = el('div', { class: 'card' });
+    for (const f of findings) {
+      const o = f.object || {};
+      const obj = (o.namespace ? o.namespace + '/' : '') + (o.name || o.kind || '');
+      const countSuffix = f.count > 1 ? ' (+' + (f.count - 1) + ')' : '';
+      const link = o.namespace ? '#/ns/' + encodeURIComponent(o.namespace) : '';
+      const row = el('div', { style: 'display:flex; gap:12px; padding:10px 4px; border-bottom:1px solid var(--border);' + (link ? ' cursor:pointer;' : '') });
+      if (link) row.addEventListener('click', () => go(link));
+      const color = sevColor(f.severity);
+      row.appendChild(el('span', { style: 'flex:none; align-self:flex-start; font-size:10.5px; font-weight:600; text-transform:uppercase; color:' + color + '; border:1px solid ' + color + '; border-radius:5px; padding:1px 6px;' }, f.severity));
+      row.appendChild(el('div', { style: 'min-width:0;' },
+        el('div', { style: 'font-size:13px;' }, f.title || f.rule_id),
+        el('div', { style: 'font-size:12px; color:var(--fg-dim);' }, [f.category, obj + countSuffix].filter(Boolean).join(' · ')),
+        f.evidence ? el('div', { style: 'font-size:12px; color:var(--fg-dim); margin-top:2px;' }, f.evidence) : null,
+        f.suggestion ? el('div', { style: 'font-size:12px; color:var(--fg-faint); margin-top:2px;' }, '→ ' + f.suggestion) : null));
+      card.appendChild(row);
+    }
+    root.appendChild(card);
+    setContent(root);
+  }
+
   async function renderTimeline() {
     setContent(loadingState('Loading timeline…'));
     let data;
@@ -2069,6 +2114,7 @@
     if (r.name === 'object') return renderObject();
     if (r.name === 'namespace') return renderNamespace(r.ns);
     if (r.name === 'pod') return renderPod(r.ns, r.pod);
+    if (r.name === 'diagnostics') return renderDiagnostics();
     if (r.name === 'timeline') return renderTimeline();
     if (r.name === 'logs') return renderLogs();
     if (r.name === 'diff') return renderDiff();
