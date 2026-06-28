@@ -199,6 +199,95 @@ kshrk inspect capture.kshrk -o yaml
 
 ---
 
+## Diagnose
+
+`kshrk diagnose` analyzes a capture and prints **severity-ranked findings** — likely problems and their remediation — without starting a server. It is the offline equivalent of tools like popeye / kube-score, run against a `.kshrk` archive.
+
+```sh
+kshrk diagnose capture.kshrk
+```
+
+Example table output:
+
+```
+SEVERITY  CATEGORY    OBJECT              FINDING
+CRITICAL  workload    prod/web-rs (+2)    CrashLoopBackOff — CrashLoopBackOff
+CRITICAL  workload    prod/cache          OOMKilled — OOMKilled
+WARNING   scheduling  prod/batch          Pod cannot be scheduled — 0/3 nodes available: insufficient cpu
+WARNING   storage     prod/data-claim     PersistentVolumeClaim not bound — phase=Pending, storageClass=missing-sc
+
+4 finding(s): 2 critical, 2 warning, 0 info
+```
+
+### Diagnose flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--output` / `-o` | `table` | Output format: `table`, `json`, or `yaml` |
+| `--at` | latest | Analyze state at a timestamp (RFC3339 or relative duration like `-5m`); must be within the capture window |
+| `--severity` | `info` | Minimum severity to report: `info`, `warning`, or `critical` |
+| `--category` | (all) | Only report one category: `workload`, `scheduling`, `storage`, `node`, `cluster` |
+| `--fail-on` | (off) | Exit non-zero if any finding is at least this severity — for CI gating |
+
+```sh
+# Only warnings and above, scheduling category, as JSON
+kshrk diagnose capture.kshrk --severity warning --category scheduling -o json
+
+# Fail a pipeline if anything critical is found
+kshrk diagnose capture.kshrk --fail-on critical
+```
+
+### Rules
+
+| rule_id | Severity | Category | Detects |
+|---------|----------|----------|---------|
+| `pod.crashloopbackoff` | critical | workload | Containers in CrashLoopBackOff |
+| `pod.oomkilled` | critical | workload | Containers OOMKilled |
+| `pod.image-pull` | critical | workload | ImagePullBackOff / ErrImagePull / InvalidImageName |
+| `pod.config-error` | critical | workload | CreateContainerConfigError / CreateContainerError (missing ConfigMap/Secret/key, bad container config) |
+| `pod.container-error` | warning | workload | Container terminated with an error |
+| `pod.failed` / `pod.unknown` | warning | workload | Pod in Failed / Unknown phase |
+| `scheduling.unschedulable` | warning | scheduling | Pending pods that can't be scheduled (with reason) |
+| `storage.pvc-unbound` | warning | storage | PersistentVolumeClaims not Bound |
+| `workload.no-requests` | warning | workload | Containers without resource requests |
+| `workload.no-limits` | info | workload | Containers without resource limits |
+| `workload.replicas-unavailable` | warning | workload | Deployment/StatefulSet/ReplicaSet/DaemonSet not fully available |
+| `node.not-ready` | critical | node | Node Ready condition not True |
+| `node.pressure` | warning | node | Node under Disk/Memory/PID pressure |
+| `cluster.version-skew` | warning | cluster | kubelet ≥3 minor versions from the control plane |
+| `cluster.deprecated-api` | warning | cluster | Captured use of removed/deprecated API group-versions |
+
+Rules degrade gracefully — a rule whose inputs weren't captured (e.g. no nodes) is simply skipped.
+
+### JSON output schema
+
+`-o json` emits a stable, documented shape (pinned by `schema_version`):
+
+```json
+{
+  "schema_version": 1,
+  "capture_id": "550e8400-…",
+  "at": "2026-04-09T10:05:00Z",
+  "summary": { "critical": 2, "warning": 2, "info": 0 },
+  "findings": [
+    {
+      "rule_id": "pod.crashloopbackoff",
+      "severity": "critical",
+      "category": "workload",
+      "title": "CrashLoopBackOff",
+      "object": { "kind": "Pod", "namespace": "prod", "name": "web-rs", "api_path": "/api/v1/namespaces/prod/pods" },
+      "evidence": "CrashLoopBackOff",
+      "suggestion": "Container is repeatedly crashing — check its logs and previous exit code.",
+      "count": 3
+    }
+  ]
+}
+```
+
+`count` is always present and is the number of objects a finding represents (≥1; greater than 1 when several objects of one owner are grouped, e.g. multiple pods of a ReplicaSet). `at` is only present when the report was pinned to a timestamp with `--at`; otherwise it is omitted (the report reflects the latest records). The same findings are shown in the web UI's **Diagnostics** view.
+
+---
+
 ## Open
 
 `kshrk open` reads the archive, starts a local mock HTTPS API server on `127.0.0.1`, and writes a kubeconfig pointing at it.

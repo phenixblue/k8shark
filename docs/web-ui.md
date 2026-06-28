@@ -22,9 +22,12 @@ Open this URL in your browser. Press Ctrl+C to stop.
 
 Open the printed address in a browser. The **dashboard** is served at `/` (it redirects to `/v2/`).
 
-> ⚠️ The web UI is experimental. Large cluster captures can use significant RAM (1–2+ GB) during
-> replay. For very large clusters, prefer an explicit resource list over `all: true` to keep captures
-> smaller. See [docs/config.md](config.md).
+> ⚠️ The web UI is experimental. Replay memory is bounded by in-memory caches (≈128 MiB of record
+> bodies + 32 MiB of responses, a ~160 MiB ceiling) plus the capture index, so it stays modest even
+> for large captures — e.g. a synthetic capture with ~470 MiB of record data (48k records, ~56 MiB
+> archive) replays with a steady-state retained footprint of ~20 MiB (measured post-GC), bounded by
+> the caches rather than the capture size. For very large clusters you can still prefer an explicit
+> resource list over `all: true` to keep captures smaller. See [docs/config.md](config.md).
 
 ## Launching
 
@@ -106,6 +109,17 @@ The **Relationships** tab resolves links to and from the object: owner reference
 (e.g. a Deployment's ReplicaSets), and volume/env references (PVC ↔ PV ↔ Pod, ConfigMap/Secret → Pod).
 
 ![Object view — Relationships](images/v2/object-relationships.png)
+
+## Diagnostics
+
+The **Diagnostics** tab runs the same analysis as `kshrk diagnose` over the capture and lists
+**severity-ranked findings** — CrashLoopBackOff/OOMKilled/image-pull, unschedulable pods, unbound
+PVCs, missing requests/limits, unavailable replicas, node pressure/NotReady, version skew, and
+deprecated API usage. Each finding shows its category, the affected object (with a grouped count when
+several share a cause), the evidence, and a remediation hint; namespaced findings link to the
+namespace drill-down. The view honors the time-travel scrubber, so you can diagnose the cluster as it
+looked at any point in the capture window. See [docs/usage.md](usage.md#diagnose) for the full rule
+catalog and JSON schema.
 
 ## Filtering
 

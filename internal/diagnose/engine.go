@@ -32,6 +32,14 @@ func Run(store *server.CaptureStore, opts Options) Report {
 	fs = append(fs, nodeConditionFindings(store, at)...)
 	fs = append(fs, deprecatedAPIFindings(store)...)
 
+	// Every finding represents at least one object; normalize so count is a
+	// stable, always-present field for JSON/CI consumers.
+	for i := range fs {
+		if fs[i].Count == 0 {
+			fs[i].Count = 1
+		}
+	}
+
 	// Filter.
 	min := opts.MinSeverity
 	if min == "" {

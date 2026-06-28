@@ -101,6 +101,13 @@ func TestRun_AllRules(t *testing.T) {
 	if c := by["pod.crashloopbackoff"].Count; c != 2 {
 		t.Errorf("crashloop count = %d, want 2", c)
 	}
+	// count is normalized to ≥1 for every finding (including non-grouping rules).
+	if c := by["pod.oomkilled"].Count; c != 1 {
+		t.Errorf("singleton oomkilled count = %d, want 1", c)
+	}
+	if c := by["cluster.version-skew"].Count; c != 1 {
+		t.Errorf("version-skew count = %d, want 1", c)
+	}
 	// Severities.
 	if by["pod.oomkilled"].Severity != SeverityCritical {
 		t.Errorf("oomkilled severity = %q", by["pod.oomkilled"].Severity)
