@@ -27,6 +27,10 @@ func Run(store *server.CaptureStore, opts Options) Report {
 	fs = append(fs, schedulingFindings(store, at)...)
 	fs = append(fs, pvcFindings(store, at)...)
 	fs = append(fs, versionSkewFindings(store, at)...)
+	fs = append(fs, missingResourceFindings(store, at)...)
+	fs = append(fs, replicaFindings(store, at)...)
+	fs = append(fs, nodeConditionFindings(store, at)...)
+	fs = append(fs, deprecatedAPIFindings(store)...)
 
 	// Filter.
 	min := opts.MinSeverity
