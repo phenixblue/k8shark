@@ -107,6 +107,17 @@ The **Relationships** tab resolves links to and from the object: owner reference
 
 ![Object view — Relationships](images/v2/object-relationships.png)
 
+## Diagnostics
+
+The **Diagnostics** tab runs the same analysis as `kshrk diagnose` over the capture and lists
+**severity-ranked findings** — CrashLoopBackOff/OOMKilled/image-pull, unschedulable pods, unbound
+PVCs, missing requests/limits, unavailable replicas, node pressure/NotReady, version skew, and
+deprecated API usage. Each finding shows its category, the affected object (with a grouped count when
+several share a cause), the evidence, and a remediation hint; namespaced findings link to the
+namespace drill-down. The view honors the time-travel scrubber, so you can diagnose the cluster as it
+looked at any point in the capture window. See [docs/usage.md](usage.md#diagnose) for the full rule
+catalog and JSON schema.
+
 ## Filtering
 
 Every list surface (Pods, Workloads, resource lists, Namespaces, Timeline, and the Resources catalog)

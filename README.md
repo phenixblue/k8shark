@@ -27,6 +27,7 @@ flowchart LR
 
 1. **Capture** — `kshrk capture` polls the Kubernetes API at configured intervals for a set duration and packages all responses into a single `.kshrk` archive.
 2. **Open** — `kshrk open capture.kshrk` reads the archive, starts a local mock HTTPS API server, and writes a kubeconfig. Set `KUBECONFIG` and use `kubectl` normally.
+3. **Diagnose** — `kshrk diagnose capture.kshrk` analyzes the capture offline and prints severity-ranked findings (crashing pods, unschedulable workloads, unbound PVCs, version skew, …). Also available in the web UI's Diagnostics tab.
 
 ## Quick start
 
