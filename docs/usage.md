@@ -244,7 +244,7 @@ kshrk diagnose capture.kshrk --fail-on critical
 | `pod.crashloopbackoff` | critical | workload | Containers in CrashLoopBackOff |
 | `pod.oomkilled` | critical | workload | Containers OOMKilled |
 | `pod.image-pull` | critical | workload | ImagePullBackOff / ErrImagePull / InvalidImageName |
-| `pod.config-error` | critical | workload | CreateContainerConfigError (missing ConfigMap/Secret/key) |
+| `pod.config-error` | critical | workload | CreateContainerConfigError / CreateContainerError (missing ConfigMap/Secret/key, bad container config) |
 | `pod.container-error` | warning | workload | Container terminated with an error |
 | `pod.failed` / `pod.unknown` | warning | workload | Pod in Failed / Unknown phase |
 | `scheduling.unschedulable` | warning | scheduling | Pending pods that can't be scheduled (with reason) |
@@ -284,7 +284,7 @@ Rules degrade gracefully — a rule whose inputs weren't captured (e.g. no nodes
 }
 ```
 
-`count` is present (>1) when a finding groups several objects (e.g. multiple pods of one owner). The same findings are shown in the web UI's **Diagnostics** view.
+`count` is always present and is the number of objects a finding represents (≥1; greater than 1 when several objects of one owner are grouped, e.g. multiple pods of a ReplicaSet). `at` is only present when the report was pinned to a timestamp with `--at`; otherwise it is omitted (the report reflects the latest records). The same findings are shown in the web UI's **Diagnostics** view.
 
 ---
 

@@ -49,7 +49,7 @@ type Finding struct {
 	Object     ObjectRef `json:"object"`             // the (representative) affected object
 	Evidence   string    `json:"evidence,omitempty"` // what was observed
 	Suggestion string    `json:"suggestion,omitempty"`
-	Count      int       `json:"count,omitempty"` // >1 when this finding groups several objects
+	Count      int       `json:"count"` // number of objects this finding represents (≥1; >1 when grouped)
 }
 
 // Report is the top-level diagnose output.
