@@ -23,10 +23,11 @@ Open this URL in your browser. Press Ctrl+C to stop.
 Open the printed address in a browser. The **dashboard** is served at `/` (it redirects to `/v2/`).
 
 > ⚠️ The web UI is experimental. Replay memory is bounded by in-memory caches (≈128 MiB of record
-> bodies + 32 MiB of responses) plus the capture index, so it stays modest even for large captures —
-> e.g. a synthetic capture with ~480 MiB of record data (45 MiB archive) replays with a peak runtime
-> footprint of ~150 MiB. For very large clusters you can still prefer an explicit resource list over
-> `all: true` to keep captures smaller. See [docs/config.md](config.md).
+> bodies + 32 MiB of responses, a ~160 MiB ceiling) plus the capture index, so it stays modest even
+> for large captures — e.g. a synthetic capture with ~470 MiB of record data (48k records, ~56 MiB
+> archive) replays with a steady-state retained footprint of ~20 MiB (measured post-GC), bounded by
+> the caches rather than the capture size. For very large clusters you can still prefer an explicit
+> resource list over `all: true` to keep captures smaller. See [docs/config.md](config.md).
 
 ## Launching
 
