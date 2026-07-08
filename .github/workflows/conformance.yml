@@ -1,0 +1,95 @@
+name: conformance
+
+# Measures how faithfully the k8shark mock API server (internal/server,
+# started by `kshrk open`) reproduces a real Kubernetes apiserver, by diffing
+# the mock's responses against a live KinD apiserver for the read/discovery
+# surface it serves (issue #136). Fails only on NEW divergences relative to
+# scripts/conformance-baseline.json.
+
+on:
+  pull_request:
+    paths:
+      - 'internal/server/**'
+      - 'internal/capture/**'
+      - 'scripts/conformance*.sh'
+      - 'scripts/conformance_diff.py'
+      - 'scripts/conformance-baseline.json'
+      - '.github/workflows/conformance.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'internal/server/**'
+      - 'internal/capture/**'
+      - 'scripts/conformance*'
+      - '.github/workflows/conformance.yml'
+
+permissions:
+  contents: read
+  # The results comment is posted via the Issues comments API (PR conversation
+  # comments are issue comments). Grant both so the scope matches the API used.
+  pull-requests: write
+  issues: write
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Build kshrk
+        run: make build
+
+      - name: Run mock-server conformance diff
+        env:
+          # Pin the Kubernetes version so the baseline is stable and doesn't
+          # churn with kind's default node image. Bump deliberately (and
+          # refresh the baseline) rather than letting it drift.
+          NODE_IMAGE: kindest/node:v1.36.1
+          # Emit a Markdown report for the job summary and the PR comment.
+          CONFORMANCE_MD: /tmp/conformance.md
+        run: |
+          set -o pipefail
+          ./scripts/conformance.sh 2>&1 | tee /tmp/conformance.out
+
+      - name: Publish job summary
+        if: always()
+        run: |
+          if [ -f /tmp/conformance.md ]; then
+            cat /tmp/conformance.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Comment results on PR
+        # Skip on forked PRs, where GITHUB_TOKEN is read-only and the API call
+        # would 403. continue-on-error keeps a comment hiccup from failing the
+        # gate — the conformance check itself already set the job status.
+        if: >-
+          always() && github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          [ -f /tmp/conformance.md ] || { echo "no report to post"; exit 0; }
+          marker='<!-- conformance-report -->'
+          # Find an existing report comment (by marker) and update it, else create.
+          # --slurp collects every page into one array first (add flattens the
+          # page arrays) so the jq runs once over all comments and yields a
+          # single id, rather than per-page (which could emit multiple lines).
+          cid=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --slurp \
+                  --jq "add | map(select(.body | contains(\"$marker\"))) | .[0].id // empty")
+          if [ -n "$cid" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$cid" -F body=@/tmp/conformance.md >/dev/null
+            echo "updated comment $cid"
+          else
+            gh api "repos/$REPO/issues/$PR/comments" -F body=@/tmp/conformance.md >/dev/null
+            echo "created new comment"
+          fi
