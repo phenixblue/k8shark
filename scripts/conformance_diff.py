@@ -350,9 +350,9 @@ def check_openapi(live, mock):
     else:
         record("openapi", "/openapi/v2 served", "UNEXPECTED", f"mock status={mc} (live=200)")
 
-    # /openapi/v3 — compare mock and live status symmetrically.
-    lc3, _ = live.get("/openapi/v3")
-    mc3, _ = mock.get("/openapi/v3")
+    # /openapi/v3 — compare the index status symmetrically.
+    lc3, l3 = live.get_json("/openapi/v3")
+    mc3, m3 = mock.get_json("/openapi/v3")
     if lc3 != 200:
         record("openapi", "/openapi/v3 served", "UNEXPECTED",
                f"live /openapi/v3 unexpected status={lc3} (mock={mc3}); cannot compare")
@@ -361,6 +361,34 @@ def check_openapi(live, mock):
     else:
         record("openapi", "/openapi/v3 served", "EXPECTED",
                f"mock returns {mc3} (live=200); only served when captured")
+
+    # /openapi/v3/<gv> — exercise a representative per-GV document, not just the
+    # index. Use each server's own index URL (the ?hash= differs per server).
+    lpaths = l3.get("paths") if isinstance(l3, dict) else {}
+    mpaths = m3.get("paths") if isinstance(m3, dict) else {}
+    if isinstance(lpaths, dict) and isinstance(mpaths, dict) and lpaths and mpaths:
+        common = set(lpaths) & set(mpaths)
+        sample = next((gv for gv in ("api/v1", "apis/apps/v1") if gv in common),
+                      next(iter(sorted(common)), None))
+        if not sample:
+            record("openapi", "/openapi/v3 per-GV document", "EXPECTED",
+                   "no group-version common to both /openapi/v3 indexes to sample")
+        else:
+            lurl = (lpaths[sample] or {}).get("serverRelativeURL", f"/openapi/v3/{sample}")
+            murl = (mpaths[sample] or {}).get("serverRelativeURL", f"/openapi/v3/{sample}")
+            lcd, ld = live.get_json(lurl)
+            mcd, md = mock.get_json(murl)
+            if lcd != 200 or not isinstance(ld, dict) or "openapi" not in ld:
+                record("openapi", "/openapi/v3 per-GV document", "UNEXPECTED",
+                       f"live {lurl} unreadable (status={lcd}); cannot compare")
+            elif mcd == 200 and isinstance(md, dict) and ("openapi" in md or "components" in md):
+                record("openapi", "/openapi/v3 per-GV document", "PASS", f"sampled {sample}: live=mock=200")
+            elif mcd != 200:
+                record("openapi", "/openapi/v3 per-GV document", "EXPECTED",
+                       f"mock returns {mcd} for {sample} (live=200); per-GV doc only served when captured")
+            else:
+                record("openapi", "/openapi/v3 per-GV document", "UNEXPECTED",
+                       f"mock {sample} doc shape unexpected: keys={list(md.keys())[:8]}")
 
 
 # ── D. Resource reads ────────────────────────────────────────────────────────────
@@ -392,6 +420,43 @@ def check_resources(live, mock):
                "" if env_ok else f"apiVersion/metadata.resourceVersion/items mismatch: keys={list(mb.keys())}")
         # per-item structural comparison for an object present in both
         compare_item_structure(path, lb, mb)
+
+    # Single-object GET (not just LIST) for a representative resource.
+    list_path = f"/api/v1/namespaces/{PROBE_NS}/pods"
+    _, lb = live.get_json(list_path)
+    _, mb = mock.get_json(list_path)
+    name = first_common_name(lb, mb)
+    if not name:
+        record("reads", "single-object GET envelope", "EXPECTED", "no common object to GET")
+    else:
+        obj_path = f"{list_path}/{name}"
+        lc, lo = live.get_json(obj_path)
+        mc, mo = mock.get_json(obj_path)
+        if lc != 200 or not isinstance(lo, dict):
+            record("reads", "single-object GET envelope", "UNEXPECTED",
+                   f"live GET {obj_path} unreadable (status={lc}); cannot compare")
+        elif (mc == 200 and isinstance(mo, dict) and mo.get("kind") == lo.get("kind")
+              and mo.get("apiVersion") == lo.get("apiVersion")
+              and mo.get("metadata", {}).get("name") == name):
+            record("reads", "single-object GET envelope", "PASS",
+                   f"GET {obj_path}: kind={mo.get('kind')} apiVersion={mo.get('apiVersion')}")
+        else:
+            record("reads", "single-object GET envelope", "UNEXPECTED",
+                   f"mock GET status={mc} kind={mo.get('kind') if isinstance(mo, dict) else None} "
+                   f"apiVersion={mo.get('apiVersion') if isinstance(mo, dict) else None} "
+                   f"want kind={lo.get('kind')} apiVersion={lo.get('apiVersion')}")
+
+
+def first_common_name(lb, mb):
+    """Name of the first object present in both the live and mock list items."""
+    if not isinstance(lb, dict) or not isinstance(mb, dict):
+        return None
+    live_names = {i["metadata"]["name"] for i in lb.get("items", []) if i.get("metadata")}
+    for mi in mb.get("items", []):
+        n = mi.get("metadata", {}).get("name")
+        if n in live_names:
+            return n
+    return None
 
 
 def compare_item_structure(path, lb, mb):
