@@ -725,12 +725,12 @@ func (h *handler) handleWatch(w http.ResponseWriter, r *http.Request, path strin
 		}
 	}
 
-	// Use resourceVersion from the list metadata; fall back to capture timestamp.
+	// Use resourceVersion from the list metadata; fall back to a capture time.
 	// Treat "0" as unspecified too — aggregated/synthesized empty lists carry
 	// RV "0", but watch clients expect a non-zero BOOKMARK resourceVersion.
 	rv := list.ResourceVersion
 	if rv == "" || rv == "0" {
-		rv = fmt.Sprintf("%d", h.store.Metadata.CapturedAt.Unix())
+		rv = bookmarkResourceVersion(h.store.Metadata.CapturedAt, h.store.Metadata.CapturedUntil, at)
 	}
 
 	// BOOKMARK signals end of initial list; kubectl -w then waits for new events.
@@ -871,4 +871,17 @@ func statusObj(code int, msg string) map[string]any {
 		"message":    msg,
 		"code":       code,
 	}
+}
+
+// bookmarkResourceVersion returns a non-zero, non-negative resourceVersion for a
+// BOOKMARK. It uses the first candidate time with a positive Unix value, falling
+// back to wall-clock so watch clients get a sensible RV even for older/corrupt
+// archives whose metadata bounds are missing (zero → negative Unix).
+func bookmarkResourceVersion(candidates ...time.Time) string {
+	for _, t := range candidates {
+		if u := t.Unix(); u > 0 {
+			return strconv.FormatInt(u, 10)
+		}
+	}
+	return strconv.FormatInt(time.Now().Unix(), 10)
 }

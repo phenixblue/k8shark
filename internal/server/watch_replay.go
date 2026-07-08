@@ -237,10 +237,11 @@ func (h *handler) streamReplayWatch(w http.ResponseWriter, r *http.Request, path
 	}
 	emitBookmark := func(l watchList) {
 		// Treat "0" as unspecified — aggregated/synthesized empty lists carry RV
-		// "0", but watch clients expect a non-zero BOOKMARK resourceVersion.
+		// "0", but watch clients expect a non-zero BOOKMARK resourceVersion. In
+		// replay mode the window start is always a valid, positive time.
 		rv := l.ResourceVersion
 		if rv == "" || rv == "0" {
-			rv = fmt.Sprintf("%d", h.store.Metadata.CapturedAt.Unix())
+			rv = bookmarkResourceVersion(windowStart, h.store.Metadata.CapturedAt, h.store.Metadata.CapturedUntil)
 		}
 		bookmarkKind := strings.TrimSuffix(l.Kind, "List")
 		bookmarkAPIVersion := l.APIVersion
