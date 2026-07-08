@@ -212,7 +212,7 @@ def parse_group_versions(index):
     out = {}
     if not isinstance(index, dict):
         return out
-    for g in index.get("groups", []):
+    for g in index.get("groups") or []:
         if not isinstance(g, dict) or not g.get("name"):
             continue
         gvs = {v["groupVersion"] for v in g.get("versions", []) or []
@@ -275,7 +275,7 @@ def compare_resource_list(live, mock, gv_path):
     field_diffs, verb_diffs, missing_sub, missing_meta = [], [], [], []
     verbs_reduced = False  # mock replaced live's verbs with a usable read-only subset
     mock_names = set()
-    for r in mr.get("resources", []):
+    for r in mr.get("resources") or []:
         if not isinstance(r, dict) or not r.get("name"):
             field_diffs.append(f"malformed resource entry: {r!r}")
             continue
@@ -497,7 +497,7 @@ def named_items(container):
     ignoring malformed entries so upstream format drift can't crash the harness."""
     if not isinstance(container, dict):
         return
-    for i in container.get("items", []):
+    for i in container.get("items") or []:
         if isinstance(i, dict) and isinstance(i.get("metadata"), dict):
             name = i["metadata"].get("name")
             if name:
