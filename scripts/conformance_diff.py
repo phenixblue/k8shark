@@ -44,9 +44,16 @@ WRITE_BASELINE = os.environ.get("WRITE_BASELINE") == "1"
 def load_baseline():
     try:
         with open(BASELINE_PATH) as f:
-            return set(json.load(f).get("accepted", []))
+            data = json.load(f)
     except FileNotFoundError:
-        return set()
+        return set()  # no baseline yet — every divergence is "new"
+    except (json.JSONDecodeError, OSError) as e:
+        # A corrupt baseline (merge conflict, partial write) must fail loudly
+        # rather than silently accepting nothing or crashing with a stack trace.
+        sys.exit(f"conformance: baseline {BASELINE_PATH} is unreadable/malformed: {e}")
+    if not isinstance(data, dict) or not isinstance(data.get("accepted", []), list):
+        sys.exit(f"conformance: baseline {BASELINE_PATH} must be an object with an 'accepted' list")
+    return set(data.get("accepted", []))
 
 
 BASELINE = load_baseline()
