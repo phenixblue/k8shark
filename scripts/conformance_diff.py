@@ -201,7 +201,7 @@ def check_discovery(live, mock):
 
     # /api (APIVersions) — static envelope; validate the mock's shape.
     _, cm = mock.get_json("/api")
-    if cm and cm.get("kind") == "APIVersions" and "v1" in cm.get("versions", []):
+    if isinstance(cm, dict) and cm.get("kind") == "APIVersions" and "v1" in cm.get("versions", []):
         record("discovery", "/api APIVersions envelope", "PASS")
     else:
         record("discovery", "/api APIVersions envelope", "UNEXPECTED", f"mock returned: {cm}")
@@ -236,10 +236,11 @@ def check_discovery(live, mock):
 def compare_resource_list(live, mock, gv_path):
     _, lr = live.get_json(gv_path)
     _, mr = mock.get_json(gv_path)
-    if not mr or mr.get("kind") != "APIResourceList":
+    if not isinstance(mr, dict) or mr.get("kind") != "APIResourceList":
         record("discovery", f"{gv_path} APIResourceList", "UNEXPECTED", f"mock returned: {mr}")
         return
-    live_by_name = {r["name"]: r for r in ((lr or {}).get("resources") or [])}
+    live_resources = lr.get("resources", []) if isinstance(lr, dict) else []
+    live_by_name = {r["name"]: r for r in (live_resources or [])}
     field_diffs, missing_sub, missing_meta = [], [], []
     verbs_reduced = False  # mock replaced live's verbs with a read-only subset
     verbs_diverged = False  # mock verbs differ in some other (unexpected) way
@@ -366,13 +367,18 @@ def check_resources(live, mock):
         (f"/apis/apps/v1/namespaces/{PROBE_NS}/deployments", "DeploymentList"),
     ]
     for path, want_kind in targets:
-        _, lb = live.get_json(path)
+        lc, lb = live.get_json(path)
         code, mb = mock.get_json(path)
-        if not mb or mb.get("kind") != want_kind:
+        # Live is the reference: if it can't be read, flag rather than compare.
+        if lc != 200 or not isinstance(lb, dict) or lb.get("kind") != want_kind:
             record("reads", f"{path} list envelope", "UNEXPECTED",
-                   f"mock status={code} kind={mb.get('kind') if mb else None} want {want_kind}")
+                   f"live {path} unreadable (status={lc}, kind={lb.get('kind') if isinstance(lb, dict) else None}); cannot compare")
             continue
-        env_ok = mb.get("apiVersion") == (lb or {}).get("apiVersion") and \
+        if not isinstance(mb, dict) or mb.get("kind") != want_kind:
+            record("reads", f"{path} list envelope", "UNEXPECTED",
+                   f"mock status={code} kind={mb.get('kind') if isinstance(mb, dict) else None} want {want_kind}")
+            continue
+        env_ok = mb.get("apiVersion") == lb.get("apiVersion") and \
             "resourceVersion" in mb.get("metadata", {}) and isinstance(mb.get("items"), list)
         record("reads", f"{path} list envelope", "PASS" if env_ok else "UNEXPECTED",
                "" if env_ok else f"apiVersion/metadata.resourceVersion/items mismatch: keys={list(mb.keys())}")
@@ -423,28 +429,34 @@ def check_health(live, mock):
 # ── F. Error shapes ──────────────────────────────────────────────────────────────
 def check_errors(live, mock):
     print(f"\n{BOLD}{CYN}== F. Error shapes =={RST}")
-    # not-found for a real, captured resource type
+    # not-found for a real, captured resource type. Confirm live returns the
+    # canonical 404 Status shape first, then require the mock to match it.
     nf = f"/api/v1/namespaces/{PROBE_NS}/pods/does-not-exist-xyz"
     lc, lb = live.get_json(nf)
     mc, mb = mock.get_json(nf)
-    ok = (mc == 404 and isinstance(mb, dict) and mb.get("kind") == "Status"
-          and mb.get("status") == "Failure" and mb.get("reason") == "NotFound"
-          and mb.get("code") == 404)
-    if ok:
-        record("errors", "404 not-found Status object", "PASS",
-               f"live code={lc} reason={lb.get('reason') if isinstance(lb, dict) else None}")
-    else:
+    live_ok = (lc == 404 and isinstance(lb, dict) and lb.get("kind") == "Status"
+               and lb.get("reason") == "NotFound")
+    if not live_ok:
         record("errors", "404 not-found Status object", "UNEXPECTED",
-               f"mock status={mc} body={mb}")
-    # unknown group/version
+               f"live not-found shape unexpected: status={lc} body={lb}; cannot compare")
+    else:
+        mock_ok = (mc == 404 and isinstance(mb, dict) and mb.get("kind") == "Status"
+                   and mb.get("status") == "Failure" and mb.get("reason") == "NotFound"
+                   and mb.get("code") == 404)
+        record("errors", "404 not-found Status object", "PASS" if mock_ok else "UNEXPECTED",
+               f"live reason={lb.get('reason')}" if mock_ok else f"mock status={mc} body={mb}")
+    # unknown group/version — live must 404; the mock should match.
     ug = "/apis/nonexistent.example.com/v1"
     lc, _ = live.get(ug)
     mc, mb = mock.get_json(ug)
-    if mc == 404:
-        record("errors", "404 for unknown group/version", "PASS", f"live={lc} mock={mc}")
+    if lc != 404:
+        record("errors", "404 for unknown group/version", "UNEXPECTED",
+               f"live returned status={lc} for unknown group (expected 404); cannot compare")
+    elif mc == 404:
+        record("errors", "404 for unknown group/version", "PASS", "live=mock=404")
     else:
         record("errors", "404 for unknown group/version", "UNEXPECTED",
-               f"mock status={mc} (live={lc}) body={mb}")
+               f"mock status={mc} (live=404) body={mb}")
 
 
 # ── summary ──────────────────────────────────────────────────────────────────────
