@@ -117,12 +117,24 @@ class Proxy:
         raise RuntimeError(f"kubectl proxy for {self.kubeconfig} did not start")
 
     def stop(self):
-        if self.proc:
-            self.proc.terminate()
+        if not self.proc:
+            return
+        # The proxy may have already exited (e.g. a bad kubeconfig); terminate
+        # only if it's still running, swallow the race where it dies in between,
+        # and always wait() to reap the child.
+        if self.proc.poll() is None:
             try:
-                self.proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
+                self.proc.terminate()
+            except ProcessLookupError:
+                pass
+        try:
+            self.proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
                 self.proc.kill()
+            except ProcessLookupError:
+                pass
+            self.proc.wait()
 
     def get(self, path):
         """Return (status_code, body_bytes). status 0 on transport error."""
@@ -650,6 +662,19 @@ def summarize():
                 print(f"  - {cat}::{name}")
         print(f"{DIM}  If a divergence is intentional, add its key to "
               f"{os.path.basename(BASELINE_PATH)} (or run WRITE_BASELINE=1).{RST}")
+
+    # Flag baseline entries that were NOT observed as divergences this run.
+    # Such keys may be stale (the divergence was fixed) — leaving them in would
+    # silently accept a future regression that reintroduces them. Warn only:
+    # some entries are legitimately version-conditional (e.g. version-specific
+    # /version keys that only differ on newer Kubernetes).
+    observed = {f"{cat}::{name}" for cat, name, v, _ in RESULTS if v == "ACCEPTED"}
+    stale = sorted(BASELINE - observed)
+    if stale:
+        print(f"\n{YEL}{BOLD}Baseline entries not observed this run "
+              f"(remove if fixed, or ignore if version-conditional):{RST}")
+        for key in stale:
+            print(f"{YEL}  - {key}{RST}")
 
     if REPORT_MD:
         write_markdown(REPORT_MD, cats, total, passed, expected, accepted, unexpected, score)
