@@ -321,21 +321,32 @@ def check_version(live, mock):
 # ── C. OpenAPI ───────────────────────────────────────────────────────────────────
 def check_openapi(live, mock):
     print(f"\n{BOLD}{CYN}== C. OpenAPI =={RST}")
+    # /openapi/v2 — the live apiserver is the reference; validate it first so an
+    # unreadable live response is a divergence rather than a silent mock PASS.
     lc, lb = live.get_json("/openapi/v2")
     mc, mb = mock.get_json("/openapi/v2")
-    if mc == 200 and isinstance(mb, dict) and "swagger" in mb:
+    if lc != 200 or not isinstance(lb, dict) or "swagger" not in lb:
+        record("openapi", "/openapi/v2 served", "UNEXPECTED",
+               f"live /openapi/v2 unreadable (status={lc}); cannot compare")
+    elif mc == 200 and isinstance(mb, dict) and "swagger" in mb:
         real = bool(mb.get("definitions"))
         record("openapi", "/openapi/v2 served", "PASS" if real else "EXPECTED",
-               "" if real else "mock serves a minimal stub (no definitions) when the capture lacks OpenAPI")
+               f"live status={lc}, mock served full spec" if real else
+               "mock serves a minimal stub (no definitions) when the capture lacks OpenAPI")
     else:
-        record("openapi", "/openapi/v2 served", "UNEXPECTED", f"mock status={mc}")
-    mc3, _ = mock.get("/openapi/v3")
+        record("openapi", "/openapi/v2 served", "UNEXPECTED", f"mock status={mc} (live=200)")
+
+    # /openapi/v3 — compare mock and live status symmetrically.
     lc3, _ = live.get("/openapi/v3")
-    if mc3 == 200:
-        record("openapi", "/openapi/v3 served", "PASS")
+    mc3, _ = mock.get("/openapi/v3")
+    if lc3 != 200:
+        record("openapi", "/openapi/v3 served", "UNEXPECTED",
+               f"live /openapi/v3 unexpected status={lc3} (mock={mc3}); cannot compare")
+    elif mc3 == 200:
+        record("openapi", "/openapi/v3 served", "PASS", f"live=mock={mc3}")
     else:
         record("openapi", "/openapi/v3 served", "EXPECTED",
-               f"mock returns {mc3} (live={lc3}); only served when captured")
+               f"mock returns {mc3} (live=200); only served when captured")
 
 
 # ── D. Resource reads ────────────────────────────────────────────────────────────
