@@ -45,7 +45,10 @@ cleanup() {
     info "  mock kubeconfig: ${MOCK_KUBECONFIG:-<not started>}"
     return
   fi
-  [[ -n "$SERVER_PID" ]] && kill "$SERVER_PID" 2>/dev/null || true
+  if [[ -n "$SERVER_PID" ]]; then
+    kill "$SERVER_PID" 2>/dev/null || true
+    wait "$SERVER_PID" 2>/dev/null || true
+  fi
   kind delete cluster --name "$CLUSTER_NAME" 2>/dev/null || true
   rm -f "$CAPTURE_FILE" "$CAPTURE_CONFIG" "$KIND_KUBECONFIG" "$SERVER_LOG" "$MOCK_KUBECONFIG"
 }
@@ -61,8 +64,11 @@ info "all tools present; binary at $BINARY"
 
 # ── KinD cluster ──────────────────────────────────────────────────────────────
 log "Creating KinD cluster '$CLUSTER_NAME'${NODE_IMAGE:+ (image $NODE_IMAGE)}"
-kind create cluster --name "$CLUSTER_NAME" --kubeconfig "$KIND_KUBECONFIG" \
-  ${NODE_IMAGE:+--image "$NODE_IMAGE"} --wait 90s
+if [[ -n "$NODE_IMAGE" ]]; then
+  kind create cluster --name "$CLUSTER_NAME" --kubeconfig "$KIND_KUBECONFIG" --image "$NODE_IMAGE" --wait 90s
+else
+  kind create cluster --name "$CLUSTER_NAME" --kubeconfig "$KIND_KUBECONFIG" --wait 90s
+fi
 KC=(--kubeconfig "$KIND_KUBECONFIG")
 K8S_VERSION=$(kubectl "${KC[@]}" version -o json | jq -r '.serverVersion.gitVersion')
 info "cluster ready ($K8S_VERSION)"

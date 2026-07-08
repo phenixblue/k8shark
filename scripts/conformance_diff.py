@@ -193,9 +193,8 @@ def main():
 def check_discovery(live, mock):
     print(f"\n{BOLD}{CYN}== A. Discovery =={RST}")
 
-    # /api (APIVersions)
-    _, lm = live.get_json("/api")
-    cm_code, cm = mock.get_json("/api")
+    # /api (APIVersions) — static envelope; validate the mock's shape.
+    _, cm = mock.get_json("/api")
     if cm and cm.get("kind") == "APIVersions" and "v1" in cm.get("versions", []):
         record("discovery", "/api APIVersions envelope", "PASS")
     else:
