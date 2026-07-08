@@ -255,7 +255,10 @@ def compare_resource_list(live, mock, gv_path):
         # the mock ever serves real verbs from a captured discovery document.
         lverbs, mverbs = set(lref.get("verbs", [])), set(r.get("verbs", []))
         if mverbs != lverbs:
-            if mverbs <= {"get", "list", "watch"}:
+            # A legitimate read-only reduction must still be usable: a subset of
+            # {get,list,watch} that at least keeps get+list. An empty set or one
+            # missing get/list is a real regression, not an "expected" reduction.
+            if mverbs <= {"get", "list", "watch"} and {"get", "list"} <= mverbs:
                 verbs_reduced = True
             else:
                 verbs_diverged = True

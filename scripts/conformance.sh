@@ -78,7 +78,7 @@ log "Deploying test resources"
 kubectl "${KC[@]}" create namespace conf-test >/dev/null
 kubectl "${KC[@]}" create configmap app-config --from-literal=env=prod -n conf-test >/dev/null
 kubectl "${KC[@]}" create secret generic app-secret --from-literal=note=placeholder-not-a-secret -n conf-test >/dev/null
-kubectl "${KC[@]}" create deployment nginx --image=nginx:alpine --replicas=2 -n conf-test >/dev/null
+kubectl "${KC[@]}" create deployment nginx --image=nginx:1.27-alpine --replicas=2 -n conf-test >/dev/null
 kubectl "${KC[@]}" expose deployment nginx --port=80 -n conf-test >/dev/null
 kubectl "${KC[@]}" apply -n conf-test -f - >/dev/null <<'YAML'
 apiVersion: batch/v1
