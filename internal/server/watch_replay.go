@@ -238,15 +238,16 @@ func (h *handler) streamReplayWatch(w http.ResponseWriter, r *http.Request, path
 		}
 		return true
 	}
-	emitBookmark := func(l watchList) {
+	// emitBookmark writes the BOOKMARK marking the end of a (re)list. `at` is the
+	// time the list was reconstructed at, used for the RV fallback so the bookmark
+	// stays coherent with the list-as-of time (rather than drifting to clock.Now()
+	// if the clock advances while a large list streams).
+	emitBookmark := func(l watchList, at time.Time) {
 		// Treat "0" as unspecified — aggregated/synthesized empty lists carry RV
-		// "0", but watch clients expect a non-zero BOOKMARK resourceVersion. Lead
-		// with the clock's current position so the bookmark aligns with the
-		// list-as-of time (after a seek/relist the emitted state is as-of the
-		// clock, not the window start).
+		// "0", but watch clients expect a non-zero BOOKMARK resourceVersion.
 		rv := l.ResourceVersion
 		if rv == "" || rv == "0" {
-			rv = bookmarkResourceVersion(clock.Now(), windowStart, h.store.Metadata.CapturedAt, h.store.Metadata.CapturedUntil)
+			rv = bookmarkResourceVersion(at, windowStart, h.store.Metadata.CapturedAt, h.store.Metadata.CapturedUntil)
 		}
 		bookmarkKind := strings.TrimSuffix(l.Kind, "List")
 		bookmarkAPIVersion := l.APIVersion
@@ -283,14 +284,14 @@ func (h *handler) streamReplayWatch(w http.ResponseWriter, r *http.Request, path
 		for _, item := range l.Items {
 			emit("ADDED", item)
 		}
-		emitBookmark(l)
+		emitBookmark(l, at)
 	}
 
-	// Initial list burst + bookmark.
+	// Initial list burst + bookmark (as-of startAt).
 	for _, item := range list.Items {
 		emit("ADDED", item)
 	}
-	emitBookmark(list)
+	emitBookmark(list, startAt)
 
 	after := startAt
 	epoch := startEpoch
