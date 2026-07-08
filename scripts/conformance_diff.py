@@ -409,7 +409,17 @@ def check_openapi(live, mock):
     # index. Use each server's own index URL (the ?hash= differs per server).
     lpaths = l3.get("paths") if isinstance(l3, dict) else {}
     mpaths = m3.get("paths") if isinstance(m3, dict) else {}
-    if isinstance(lpaths, dict) and isinstance(mpaths, dict) and lpaths and mpaths:
+    if not (isinstance(lpaths, dict) and lpaths):
+        # Always record, so the check count stays stable and a regression can't
+        # hide by simply omitting this check.
+        record("openapi", "/openapi/v3 per-GV document", "UNEXPECTED",
+               "live /openapi/v3 index has no paths map; cannot sample a per-GV document")
+    elif not (isinstance(mpaths, dict) and mpaths):
+        # The index-status check above already covers served/not-served; a mock
+        # index with no paths is consistent with "only served when captured".
+        record("openapi", "/openapi/v3 per-GV document", "EXPECTED",
+               "mock /openapi/v3 index has no paths to sample (only served when captured)")
+    else:
         common = set(lpaths) & set(mpaths)
         sample = next((gv for gv in ("api/v1", "apis/apps/v1") if gv in common),
                       next(iter(sorted(common)), None))
