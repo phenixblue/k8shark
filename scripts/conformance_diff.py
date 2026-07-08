@@ -462,7 +462,7 @@ def summarize():
           f"{RED}new divergences: {unexpected}{RST}")
     # Compatibility score treats expected + accepted diffs as compatible.
     score = (passed + expected + accepted) / total * 100 if total else 0
-    print(f"  {BOLD}contract compatibility (match + accepted): {score:.0f}%{RST}")
+    print(f"  {BOLD}contract compatibility (match + expected + accepted): {score:.0f}%{RST}")
     if unexpected:
         print(f"\n{RED}{BOLD}NEW divergences (not in baseline — failing the gate):{RST}")
         for cat, name, verdict, _ in RESULTS:
