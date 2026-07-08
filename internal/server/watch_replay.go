@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -216,12 +215,8 @@ func (h *handler) streamReplayWatch(w http.ResponseWriter, r *http.Request, path
 	timeline := h.store.watchTimeline(watchPath)
 
 	// Honor ?timeoutSeconds: nil channel blocks forever (no timeout).
-	var timer <-chan time.Time
-	if secs := r.URL.Query().Get("timeoutSeconds"); secs != "" {
-		if n, err := strconv.Atoi(secs); err == nil && n > 0 {
-			timer = time.After(time.Duration(n) * time.Second)
-		}
-	}
+	timer, stopTimer := watchTimeout(r.URL.Query().Get("timeoutSeconds"))
+	defer stopTimer()
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Transfer-Encoding", "chunked")
@@ -229,7 +224,12 @@ func (h *handler) streamReplayWatch(w http.ResponseWriter, r *http.Request, path
 	flusher, canFlush := w.(http.Flusher)
 
 	emit := func(typ string, obj json.RawMessage) {
-		data, _ := json.Marshal(map[string]any{"type": typ, "object": obj})
+		// Skip malformed frames rather than writing a blank line: a captured
+		// object body could be invalid JSON, which would fail to marshal.
+		data, err := json.Marshal(map[string]any{"type": typ, "object": obj})
+		if err != nil {
+			return
+		}
 		_, _ = fmt.Fprintf(w, "%s\n", data)
 		if canFlush {
 			flusher.Flush()

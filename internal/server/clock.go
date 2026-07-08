@@ -78,6 +78,12 @@ func (c *ReplayClock) sample() (pos time.Time, epoch int, ended bool) {
 	if !c.loop {
 		return c.to, c.baseEpoch, true
 	}
+	// Loop: position `to` is the end of the current epoch, not the start of the
+	// next — wrap only once raw is strictly after `to`, so events timestamped
+	// exactly at the window end aren't skipped by an early epoch change.
+	if !raw.After(c.to) {
+		return c.to, c.baseEpoch, false
+	}
 	over := raw.Sub(c.from)
 	wraps := int(over / span)
 	rem := over % span

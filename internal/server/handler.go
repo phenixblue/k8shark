@@ -704,12 +704,8 @@ func (h *handler) handleWatch(w http.ResponseWriter, r *http.Request, path strin
 	}
 
 	// Honor ?timeoutSeconds: nil channel blocks forever (no timeout).
-	var timer <-chan time.Time
-	if secs := r.URL.Query().Get("timeoutSeconds"); secs != "" {
-		if n, err := strconv.Atoi(secs); err == nil && n > 0 {
-			timer = time.After(time.Duration(n) * time.Second)
-		}
-	}
+	timer, stopTimer := watchTimeout(r.URL.Query().Get("timeoutSeconds"))
+	defer stopTimer()
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Transfer-Encoding", "chunked")
@@ -871,6 +867,22 @@ func statusObj(code int, msg string) map[string]any {
 		"message":    msg,
 		"code":       code,
 	}
+}
+
+// watchTimeout parses ?timeoutSeconds into a channel that fires after the given
+// duration, plus a stop function to release the underlying timer when the watch
+// ends early (a plain time.After can't be stopped and would linger). An empty or
+// non-positive value yields a nil channel (no timeout) and a no-op stop.
+func watchTimeout(secs string) (<-chan time.Time, func()) {
+	if secs == "" {
+		return nil, func() {}
+	}
+	n, err := strconv.Atoi(secs)
+	if err != nil || n <= 0 {
+		return nil, func() {}
+	}
+	t := time.NewTimer(time.Duration(n) * time.Second)
+	return t.C, func() { t.Stop() }
 }
 
 // bookmarkResourceVersion returns a non-zero, non-negative resourceVersion for a
