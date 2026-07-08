@@ -410,10 +410,14 @@ def check_health(live, mock):
     for p in ("/healthz", "/readyz", "/livez"):
         lc, _ = live.get(p)
         mc, mb = mock.get(p)
-        if mc == 200:
-            record("health", f"{p} 200", "PASS", f"live={lc} mock={mc} body={mb.decode()[:16]!r}")
+        # Symmetric: the live apiserver is the reference. A non-200 from live is
+        # an environmental problem, not a mock match.
+        if lc != 200:
+            record("health", f"{p} 200", "UNEXPECTED", f"live {p} status={lc} (mock={mc}); cannot compare")
+        elif mc == 200:
+            record("health", f"{p} 200", "PASS", f"live=mock=200 body={mb.decode()[:16]!r}")
         else:
-            record("health", f"{p} 200", "UNEXPECTED", f"mock status={mc}")
+            record("health", f"{p} 200", "UNEXPECTED", f"mock status={mc} (live=200)")
 
 
 # ── F. Error shapes ──────────────────────────────────────────────────────────────
