@@ -320,7 +320,10 @@ def compare_resource_list(live, mock, gv_path):
     else:
         record("discovery", f"{gv_path} resource fields (kind/namespaced/singular/shortNames)", "PASS")
     if missing_sub:
-        record("discovery", f"{gv_path} subresources", "EXPECTED",
+        # Subresources are in-scope: a mock that drops them is a real regression
+        # that should gate. Baseline it explicitly if a specific omission is
+        # ever intentional, rather than treating all omissions as expected.
+        record("discovery", f"{gv_path} subresources", "UNEXPECTED",
                "mock omits subresource entries live advertises: " + ", ".join(sorted(missing_sub)))
     else:
         record("discovery", f"{gv_path} subresources", "PASS")
