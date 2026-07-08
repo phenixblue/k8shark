@@ -414,15 +414,21 @@ func (h *handler) replayPass(ctx context.Context, timer <-chan time.Time, clock 
 			if !pos.Before(ev.t) {
 				break
 			}
-			wait := time.Duration(float64(ev.t.Sub(pos)) / clock.Speed())
-			// Cap the wait so we stay responsive to pause/seek/loop, but never
-			// impose a floor: closely-spaced events at high speed must not each
-			// incur an artificial poll-interval delay.
-			if wait > replayPollInterval {
-				wait = replayPollInterval
-			}
-			if wait < 0 {
+			// Compute the scaled wait in float space and cap it BEFORE converting
+			// to a time.Duration: a very small speed makes the division huge, and
+			// converting that to int64 nanoseconds would overflow to a negative
+			// value (collapsing to 0 and spinning). Cap keeps us responsive to
+			// pause/seek/loop; no floor, so closely-spaced events at high speed
+			// aren't each delayed a poll interval.
+			scaled := float64(ev.t.Sub(pos)) / clock.Speed()
+			var wait time.Duration
+			switch {
+			case scaled <= 0:
 				wait = 0
+			case scaled >= float64(replayPollInterval):
+				wait = replayPollInterval
+			default:
+				wait = time.Duration(scaled)
 			}
 			if sleepInterruptible(ctx, timer, wait) {
 				return passCanceled
