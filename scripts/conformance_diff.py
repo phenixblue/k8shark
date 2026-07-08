@@ -294,9 +294,13 @@ def compare_resource_list(live, mock, gv_path):
     if missing_sub:
         record("discovery", f"{gv_path} subresources", "EXPECTED",
                "mock omits subresource entries live advertises: " + ", ".join(sorted(missing_sub)))
+    else:
+        record("discovery", f"{gv_path} subresources", "PASS")
     if missing_meta:
         record("discovery", f"{gv_path} resource metadata", "EXPECTED",
                "mock omits live-only fields: " + ", ".join(sorted(missing_meta)))
+    else:
+        record("discovery", f"{gv_path} resource metadata", "PASS")
     if verbs_reduced and not verbs_diverged:
         record("discovery", f"{gv_path} verbs (read-only)", "EXPECTED",
                "mock advertises a read-only verb subset (e.g. {get,list,watch}); "
@@ -481,6 +485,14 @@ def compare_item_structure(path, lb, mb):
             # Mock replays the captured object, so structural loss here is a real concern.
             record("reads", f"{path} item structure ({name})", "UNEXPECTED", "\n".join(detail))
         return  # one representative item per list is enough
+    # No object present in both lists: record explicitly rather than silently
+    # skipping, so a PASS on the list envelope can't imply a structural check ran.
+    if not live_items:
+        record("reads", f"{path} item structure", "EXPECTED",
+               "live list is empty; no object to compare structurally")
+    else:
+        record("reads", f"{path} item structure", "UNEXPECTED",
+               "live has items but none are present in the mock list")
 
 
 # ── E. Health ────────────────────────────────────────────────────────────────────
