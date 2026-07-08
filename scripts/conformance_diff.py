@@ -196,6 +196,22 @@ def main():
 
 
 # ── A. Discovery ────────────────────────────────────────────────────────────────
+def parse_group_versions(index):
+    """Map group name -> set of groupVersion strings from an APIGroupList,
+    ignoring malformed groups/versions so an unexpected shape can't crash the
+    harness (it degrades to fewer groups rather than raising)."""
+    out = {}
+    if not isinstance(index, dict):
+        return out
+    for g in index.get("groups", []):
+        if not isinstance(g, dict) or not g.get("name"):
+            continue
+        gvs = {v["groupVersion"] for v in g.get("versions", []) or []
+               if isinstance(v, dict) and v.get("groupVersion")}
+        out[g["name"]] = gvs
+    return out
+
+
 def check_discovery(live, mock):
     print(f"\n{BOLD}{CYN}== A. Discovery =={RST}")
 
@@ -214,8 +230,8 @@ def check_discovery(live, mock):
                f"could not read /apis as JSON (live={type(la).__name__}, mock={type(ma).__name__}); "
                "skipping per-group comparison")
         return
-    live_groups = {g["name"]: {v["groupVersion"] for v in g["versions"]} for g in la.get("groups", [])}
-    mock_groups = {g["name"]: {v["groupVersion"] for v in g.get("versions", [])} for g in ma.get("groups", [])}
+    live_groups = parse_group_versions(la)
+    mock_groups = parse_group_versions(ma)
     missing = [g for g in mock_groups if g not in live_groups]
     if missing:
         record("discovery", "/apis groups subset of live", "UNEXPECTED",
