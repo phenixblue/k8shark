@@ -39,7 +39,7 @@ A kubeconfig is written just like 'open'; point kubectl or a controller at it.`,
 func init() {
 	rootCmd.AddCommand(replayCmd)
 	replayCmd.Flags().String("port", "0", "port for the mock API server (0 = random available port)")
-	replayCmd.Flags().String("kubeconfig-out", "", "where to write the generated kubeconfig (default: ~/.kube/k8shark-<id>)")
+	replayCmd.Flags().String("kubeconfig-out", "", "where to write the generated kubeconfig (default: ~/.kube/k8shark-<id>.yaml)")
 	replayCmd.Flags().String("speed", "1x", "playback speed factor, e.g. 2x, 3x, 0.5x")
 	replayCmd.Flags().String("from", "", "replay window start: RFC3339 or relative duration like -10m (default: capture start)")
 	replayCmd.Flags().String("to", "", "replay window end: RFC3339 or relative duration like -1m (default: capture end)")

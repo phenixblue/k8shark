@@ -207,4 +207,11 @@ func TestParseReplayWindow(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "--to") {
 		t.Errorf("zero end-bound error = %v, want it to ask for --to", err)
 	}
+
+	// A relative duration with no capture end bound is an actionable error, not a
+	// silent resolve against year 0001.
+	_, _, err = parseReplayWindow(capture.CaptureMetadata{}, "-5m", "")
+	if err == nil || !strings.Contains(err.Error(), "capture end time is unknown") {
+		t.Errorf("relative --from with no end bound: err = %v, want 'capture end time is unknown'", err)
+	}
 }

@@ -220,6 +220,11 @@ func parseReplayTime(meta capture.CaptureMetadata, raw, flag string) (time.Time,
 		if derr != nil {
 			return time.Time{}, fmt.Errorf("parsing %s %q: must be RFC3339 or a relative duration like -5m", flag, raw)
 		}
+		// Relative durations are anchored to the capture end; without one we'd
+		// silently resolve against year 0001, so require an absolute time instead.
+		if meta.CapturedUntil.IsZero() {
+			return time.Time{}, fmt.Errorf("parsing %s %q: capture end time is unknown; use an absolute RFC3339 time", flag, raw)
+		}
 		at = meta.CapturedUntil.Add(d)
 	}
 
