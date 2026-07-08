@@ -203,6 +203,13 @@ func (s *Server) Wait() error {
 }
 
 func parseReplayAt(meta capture.CaptureMetadata, raw string) (time.Time, error) {
+	return parseReplayTime(meta, raw, "--at")
+}
+
+// parseReplayTime parses an RFC3339 timestamp or a duration relative to the
+// capture end (e.g. -5m), validating it lies within the capture window. flag is
+// the CLI flag name used in error messages so callers report the right flag.
+func parseReplayTime(meta capture.CaptureMetadata, raw, flag string) (time.Time, error) {
 	if raw == "" {
 		return time.Time{}, nil
 	}
@@ -211,16 +218,16 @@ func parseReplayAt(meta capture.CaptureMetadata, raw string) (time.Time, error) 
 	if err != nil {
 		d, derr := time.ParseDuration(raw)
 		if derr != nil {
-			return time.Time{}, fmt.Errorf("parsing --at %q: must be RFC3339 or a relative duration like -5m", raw)
+			return time.Time{}, fmt.Errorf("parsing %s %q: must be RFC3339 or a relative duration like -5m", flag, raw)
 		}
 		at = meta.CapturedUntil.Add(d)
 	}
 
 	if !meta.CapturedAt.IsZero() && at.Before(meta.CapturedAt) {
-		return time.Time{}, fmt.Errorf("parsing --at %q: requested replay time %s is before capture start %s", raw, at.Format(time.RFC3339), meta.CapturedAt.Format(time.RFC3339))
+		return time.Time{}, fmt.Errorf("parsing %s %q: requested replay time %s is before capture start %s", flag, raw, at.Format(time.RFC3339), meta.CapturedAt.Format(time.RFC3339))
 	}
 	if !meta.CapturedUntil.IsZero() && at.After(meta.CapturedUntil) {
-		return time.Time{}, fmt.Errorf("parsing --at %q: requested replay time %s is after capture end %s", raw, at.Format(time.RFC3339), meta.CapturedUntil.Format(time.RFC3339))
+		return time.Time{}, fmt.Errorf("parsing %s %q: requested replay time %s is after capture end %s", flag, raw, at.Format(time.RFC3339), meta.CapturedUntil.Format(time.RFC3339))
 	}
 
 	return at, nil
@@ -234,13 +241,13 @@ func parseReplayWindow(meta capture.CaptureMetadata, fromRaw, toRaw string) (fro
 	to = meta.CapturedUntil
 
 	if fromRaw != "" {
-		from, err = parseReplayAt(meta, fromRaw)
+		from, err = parseReplayTime(meta, fromRaw, "--from")
 		if err != nil {
 			return time.Time{}, time.Time{}, err
 		}
 	}
 	if toRaw != "" {
-		to, err = parseReplayAt(meta, toRaw)
+		to, err = parseReplayTime(meta, toRaw, "--to")
 		if err != nil {
 			return time.Time{}, time.Time{}, err
 		}

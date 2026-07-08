@@ -86,7 +86,12 @@ func (h *handler) resolveWatchList(watchPath string, at time.Time, labelSelector
 		return watchList{}, false, nil
 	}
 
-	body, _ := applySelectors(rawBody, labelSelector, fieldSelector)
+	body, serr := applySelectors(rawBody, labelSelector, fieldSelector)
+	if serr != nil {
+		// Best-effort: fall back to the unfiltered list rather than failing the
+		// whole watch on a selector/marshal error.
+		body = rawBody
+	}
 
 	var parsed struct {
 		APIVersion string `json:"apiVersion"`
@@ -97,7 +102,7 @@ func (h *handler) resolveWatchList(watchPath string, at time.Time, labelSelector
 		Items []json.RawMessage `json:"items"`
 	}
 	if err := json.Unmarshal(body, &parsed); err != nil {
-		return watchList{}, false, fmt.Errorf("parsing list")
+		return watchList{}, false, fmt.Errorf("parsing watch list for %s: %w", watchPath, err)
 	}
 	return watchList{
 		APIVersion:      parsed.APIVersion,
@@ -146,7 +151,18 @@ func (s *CaptureStore) watchTimeline(watchPath string) []replayEvent {
 		}
 	}
 
-	sort.SliceStable(evs, func(i, j int) bool { return evs[i].t.Before(evs[j].t) })
+	// Sort by timestamp, with a deterministic tiebreak (apiPath then seq) so
+	// equal-time events don't flip order across runs — the merged input order
+	// depends on map iteration for the cluster-wide aggregation case.
+	sort.Slice(evs, func(i, j int) bool {
+		if !evs[i].t.Equal(evs[j].t) {
+			return evs[i].t.Before(evs[j].t)
+		}
+		if evs[i].apiPath != evs[j].apiPath {
+			return evs[i].apiPath < evs[j].apiPath
+		}
+		return evs[i].seq < evs[j].seq
+	})
 	return evs
 }
 
@@ -343,8 +359,14 @@ func (h *handler) replayPass(ctx context.Context, timer <-chan time.Time, clock 
 				break
 			}
 			wait := time.Duration(float64(ev.t.Sub(pos)) / clock.Speed())
-			if wait > replayPollInterval || wait <= 0 {
+			// Cap the wait so we stay responsive to pause/seek/loop, but never
+			// impose a floor: closely-spaced events at high speed must not each
+			// incur an artificial poll-interval delay.
+			if wait > replayPollInterval {
 				wait = replayPollInterval
+			}
+			if wait < 0 {
+				wait = 0
 			}
 			select {
 			case <-ctx.Done():

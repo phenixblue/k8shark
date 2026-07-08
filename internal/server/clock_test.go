@@ -1,6 +1,7 @@
 package server
 
 import (
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -185,5 +186,11 @@ func TestParseReplayWindow(t *testing.T) {
 	// to must be after from.
 	if _, _, err := parseReplayWindow(meta, "-1m", "-5m"); err == nil {
 		t.Error("expected error when --to precedes --from")
+	}
+
+	// Errors name the offending flag, not "--at".
+	_, _, err = parseReplayWindow(meta, "garbage", "")
+	if err == nil || !strings.Contains(err.Error(), "--from") {
+		t.Errorf("invalid --from error = %v, want it to mention --from", err)
 	}
 }
