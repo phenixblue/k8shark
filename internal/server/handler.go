@@ -31,8 +31,11 @@ func newHandler(store *CaptureStore, at time.Time, verbose bool) *handler {
 	return &handler{store: store, at: at, verbose: verbose}
 }
 
-// timelineFor returns the memoized replay timeline for a watch path.
+// timelineFor returns the memoized replay timeline for a watch path. The key is
+// normalized (trailing "/" trimmed) so a LIST on ".../pods/" and a WATCH on
+// ".../pods" share one timeline — keeping their RVs coherent and the cache warm.
 func (h *handler) timelineFor(watchPath string) []replayEvent {
+	watchPath = strings.TrimSuffix(watchPath, "/")
 	h.timelineMu.Lock()
 	defer h.timelineMu.Unlock()
 	if h.timelineCache == nil {
@@ -526,7 +529,9 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 	// as-of the clock, so a following WATCH(resourceVersion=RV) aligns with the
 	// event stream's monotonic RVs.
 	if h.clock != nil {
-		body = rewriteListResourceVersion(body, rvAsOf(h.timelineFor(path), at))
+		body = rewriteListResourceVersion(body, func() int64 {
+			return rvAsOf(h.timelineFor(path), at)
+		})
 	}
 
 	w.Header().Set("Content-Type", "application/json")

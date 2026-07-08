@@ -16,8 +16,12 @@ import (
 // For informer-grade correctness, replay assigns every object a monotonic RV
 // derived from a single time-sorted event timeline per watch path:
 //
-//   - rv(event i) = i + 1            (strictly increasing, 1-based)
-//   - rvAsOf(T)   = count(t <= T)    (the RV of the state as-of clock time T)
+//   - rv(event i) = replayRVBase + i + 1          (strictly increasing)
+//   - rvAsOf(T)   = replayRVBase + count(t <= T)  (RV of the state as-of T)
+//
+// replayRVBase (1) offsets every RV so the window-start / empty-timeline value
+// is 1, not the special "0"; consequently the first event's RV is 2. rvAsOf(T)
+// equals the rv of the last event with t <= T (or replayRVBase when none).
 //
 // The LIST served at clock T returns metadata.resourceVersion = rvAsOf(T); a
 // WATCH streams events with rv > the requested RV, each carrying its own rv on
@@ -178,9 +182,12 @@ func withResourceVersion(obj json.RawMessage, rv int64) json.RawMessage {
 	return out
 }
 
-// rewriteListResourceVersion sets metadata.resourceVersion to rv on a list body
-// (one with an "items" field), leaving non-list bodies untouched.
-func rewriteListResourceVersion(body []byte, rv int64) []byte {
+// rewriteListResourceVersion sets metadata.resourceVersion on a list body (one
+// with an "items" field), leaving non-list bodies untouched. rvFn is called only
+// once the body is confirmed to be a list, so callers can avoid computing an
+// expensive RV (e.g. building a poll-only timeline) for single-object, discovery,
+// or Table responses.
+func rewriteListResourceVersion(body []byte, rvFn func() int64) []byte {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(body, &m); err != nil {
 		return body
@@ -188,6 +195,7 @@ func rewriteListResourceVersion(body []byte, rv int64) []byte {
 	if _, ok := m["items"]; !ok {
 		return body
 	}
+	rv := rvFn()
 	meta := map[string]json.RawMessage{}
 	if raw, ok := m["metadata"]; ok {
 		if err := json.Unmarshal(raw, &meta); err != nil {
