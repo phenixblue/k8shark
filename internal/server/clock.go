@@ -29,6 +29,7 @@ type ReplayClock struct {
 	wallAnchor    time.Time // wall-clock instant the current segment started
 	captureAnchor time.Time // capture-time position at wallAnchor (within [from,to])
 	baseEpoch     int       // loop wraps accumulated before the current segment
+	seekGen       int       // increments on each Seek, so watchers can restart
 
 	events atomic.Int64
 
@@ -150,6 +151,16 @@ func (c *ReplayClock) Seek(t time.Time) {
 	}
 	c.captureAnchor = t
 	c.wallAnchor = c.now()
+	c.seekGen++
+}
+
+// SeekGen returns a counter that increments on every Seek. A watch stream polls
+// it to detect a seek (which, unlike a loop wrap, doesn't change the epoch) and
+// restart from the new position.
+func (c *ReplayClock) SeekGen() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.seekGen
 }
 
 // SetSpeed changes the speed factor, preserving the current position.

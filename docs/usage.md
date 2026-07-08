@@ -439,6 +439,7 @@ The status response looks like:
   "paused": false,
   "loop": false,
   "ended": false,
+  "epoch": 0,
   "events_emitted": 47
 }
 ```

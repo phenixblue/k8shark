@@ -16,6 +16,62 @@ func podBody(name string) string {
 	return `{"apiVersion":"v1","kind":"Pod","metadata":{"name":"` + name + `","namespace":"default"}}`
 }
 
+// watchEvent is a decoded frame from a watch stream.
+type watchEvent struct {
+	Type   string `json:"type"`
+	Object struct {
+		Metadata struct {
+			Name string `json:"name"`
+		} `json:"metadata"`
+	} `json:"object"`
+}
+
+// openWatchStream connects to a watch URL and returns a `next` that reads the
+// following frame (failing on a 3s timeout). The returned cancel closes the
+// stream.
+func openWatchStream(t *testing.T, url string) (next func() watchEvent, cancel func()) {
+	t.Helper()
+	ctx, cancelCtx := context.WithCancel(context.Background())
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		cancelCtx()
+		t.Fatalf("new request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		cancelCtx()
+		t.Fatalf("watch request: %v", err)
+	}
+	lines := make(chan watchEvent, 32)
+	go func() {
+		sc := bufio.NewScanner(resp.Body)
+		sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
+		for sc.Scan() {
+			var e watchEvent
+			if err := json.Unmarshal(sc.Bytes(), &e); err != nil {
+				continue
+			}
+			select {
+			case lines <- e:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	next = func() watchEvent {
+		t.Helper()
+		select {
+		case e := <-lines:
+			return e
+		case <-time.After(3 * time.Second):
+			t.Fatal("timed out waiting for watch event")
+			return watchEvent{}
+		}
+	}
+	cancel = func() { cancelCtx(); resp.Body.Close() }
+	return next, cancel
+}
+
 // TestStreamReplayWatch_EmitsEventsInOrder is the core acceptance test: a watch
 // client receives the captured ADDED/MODIFIED/DELETED events in timestamp order
 // as the replay clock advances.
@@ -149,5 +205,87 @@ func TestWatchTimeline_AggregatesAcrossNamespaces(t *testing.T) {
 	}
 	if timeline[0].apiPath != ns1 || timeline[1].apiPath != ns2 {
 		t.Errorf("unexpected merge order: %s then %s", timeline[0].apiPath, timeline[1].apiPath)
+	}
+}
+
+// buildPodWatchStore builds a store with an empty initial pod list and two
+// ADDED events, plus a manually-driven clock over [from, from+windowSecs].
+func buildPodWatchStore(t *testing.T, from time.Time, windowSecs int, loop bool) (*handler, *ReplayClock, func(time.Duration)) {
+	t.Helper()
+	const podsPath = "/api/v1/namespaces/default/pods"
+	store := buildTestStoreWithWatch(t,
+		map[string]watchTestRecord{
+			podsPath: {id: "snap0", at: from, body: emptyPodList},
+		},
+		[]watchTestEvent{
+			{id: "e1", apiPath: podsPath, at: from.Add(2 * time.Second), eventType: "ADDED", objectBody: podBody("pod-a")},
+			{id: "e2", apiPath: podsPath, at: from.Add(4 * time.Second), eventType: "ADDED", objectBody: podBody("pod-b")},
+		},
+	)
+	clock, advance := newTestClock(t, from, from.Add(time.Duration(windowSecs)*time.Second), 1, loop, false)
+	h := newHandler(store, time.Time{}, false)
+	h.clock = clock
+	return h, clock, advance
+}
+
+// TestStreamReplayWatch_SeekTriggersRelist verifies that a seek during an idle
+// watch (timeline exhausted) restarts the stream: it re-lists (BOOKMARK) and
+// replays events after the new position.
+func TestStreamReplayWatch_SeekTriggersRelist(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	h, clock, advance := buildPodWatchStore(t, from, 20, false)
+
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	next, cancel := openWatchStream(t, srv.URL+"/api/v1/namespaces/default/pods?watch=1")
+	defer cancel()
+
+	if e := next(); e.Type != "BOOKMARK" {
+		t.Fatalf("first frame = %q, want BOOKMARK", e.Type)
+	}
+	advance(20 * time.Second) // stream both events
+	if e := next(); e.Type != "ADDED" || e.Object.Metadata.Name != "pod-a" {
+		t.Fatalf("frame = (%s %s), want ADDED pod-a", e.Type, e.Object.Metadata.Name)
+	}
+	if e := next(); e.Object.Metadata.Name != "pod-b" {
+		t.Fatalf("frame = %s, want pod-b", e.Object.Metadata.Name)
+	}
+
+	// Seek back to the start: the idle stream should re-list (BOOKMARK) and then,
+	// once the clock advances again, replay the events.
+	clock.Seek(from)
+	if e := next(); e.Type != "BOOKMARK" {
+		t.Fatalf("after seek: frame = %q, want relist BOOKMARK", e.Type)
+	}
+	advance(20 * time.Second)
+	if e := next(); e.Type != "ADDED" || e.Object.Metadata.Name != "pod-a" {
+		t.Fatalf("after seek+advance: frame = (%s %s), want ADDED pod-a", e.Type, e.Object.Metadata.Name)
+	}
+}
+
+// TestStreamReplayWatch_LoopRelistsWithBookmark verifies that on a loop wrap the
+// stream re-lists with a BOOKMARK (matching the initial list behavior).
+func TestStreamReplayWatch_LoopRelistsWithBookmark(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	h, _, advance := buildPodWatchStore(t, from, 10, true)
+
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	next, cancel := openWatchStream(t, srv.URL+"/api/v1/namespaces/default/pods?watch=1")
+	defer cancel()
+
+	if e := next(); e.Type != "BOOKMARK" {
+		t.Fatalf("first frame = %q, want BOOKMARK", e.Type)
+	}
+	advance(5 * time.Second) // within the window: stream both events
+	if e := next(); e.Object.Metadata.Name != "pod-a" {
+		t.Fatalf("frame = %s, want pod-a", e.Object.Metadata.Name)
+	}
+	if e := next(); e.Object.Metadata.Name != "pod-b" {
+		t.Fatalf("frame = %s, want pod-b", e.Object.Metadata.Name)
+	}
+	advance(6 * time.Second) // cross the window end → loop wrap
+	if e := next(); e.Type != "BOOKMARK" {
+		t.Fatalf("on loop wrap: frame = %q, want relist BOOKMARK", e.Type)
 	}
 }

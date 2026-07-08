@@ -13,9 +13,10 @@ import (
 // under /api and /apis.
 const replayControlPrefix = "/_k8shark/replay"
 
-// handleReplayControl implements the replay transport-control API. All responses
-// are the current replay status so a client (CLI, UI scrubber, script) always
-// sees the resulting state.
+// handleReplayControl implements the replay transport-control API. A successful
+// request returns the current replay status (JSON) so a client (CLI, UI
+// scrubber, script) sees the resulting state; invalid requests return an error
+// status (405/400/404) with a plain-text message.
 //
 //	GET  /_k8shark/replay              → current status
 //	POST /_k8shark/replay/pause        → pause the clock

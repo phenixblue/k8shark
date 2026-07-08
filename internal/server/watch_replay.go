@@ -264,16 +264,18 @@ func (h *handler) streamReplayWatch(w http.ResponseWriter, r *http.Request, path
 
 	ctx := r.Context()
 
-	// relist re-emits the state as-of the window start as an ADDED burst; used on
-	// each loop wrap so a long-lived watcher sees the timeline replay again.
-	relist := func() {
-		l, ok, err := h.resolveWatchList(watchPath, windowStart, labelSel, fieldSel)
+	// relistAt re-emits the state as-of `at` as an ADDED burst + BOOKMARK, so a
+	// long-lived watcher sees a fresh, clearly-delimited list after a loop wrap
+	// or a seek — mirroring the initial list behavior.
+	relistAt := func(at time.Time) {
+		l, ok, err := h.resolveWatchList(watchPath, at, labelSel, fieldSel)
 		if err != nil || !ok {
 			return
 		}
 		for _, item := range l.Items {
 			emit("ADDED", item)
 		}
+		emitBookmark(l)
 	}
 
 	// Initial list burst + bookmark.
@@ -284,49 +286,67 @@ func (h *handler) streamReplayWatch(w http.ResponseWriter, r *http.Request, path
 
 	after := startAt
 	epoch := startEpoch
+	seekGen := clock.SeekGen()
 	for {
-		switch h.replayPass(ctx, timer, clock, timeline, after, epoch, labelSel, fieldSel, emit) {
-		case passCanceled:
+		res := h.replayPass(ctx, timer, clock, timeline, after, epoch, seekGen, labelSel, fieldSel, emit)
+		if res == passCanceled {
 			return
-		case passLooped:
-			// Clock wrapped mid-pass: re-list and replay from the window start.
-			relist()
-			_, epoch, _ = clock.Sample()
-			after = windowStart
-		case passDone:
-			// Timeline exhausted for this epoch. Without loop, hold open until the
-			// client disconnects or the watch times out.
-			if !clock.Loop() {
-				select {
-				case <-ctx.Done():
-				case <-timer:
-				}
-				return
-			}
-			// With loop, wait for the next wrap, then re-list and replay again.
-			if !waitForLoop(ctx, timer, clock, epoch) {
-				return
-			}
-			relist()
-			_, epoch, _ = clock.Sample()
-			after = windowStart
 		}
+		if res == passDone {
+			// Timeline exhausted for this epoch. Wait for a restart trigger (a
+			// loop wrap or a seek) or shutdown.
+			switch waitForRestart(ctx, timer, clock, epoch, seekGen) {
+			case restartNone:
+				return
+			case restartLoop:
+				res = passLooped
+			case restartSeek:
+				res = passSeeked
+			}
+		}
+
+		// Re-list and choose the next start point: a loop wrap replays the whole
+		// window from the start; a seek resumes from the new clock position.
+		if res == passLooped {
+			relistAt(windowStart)
+			after = windowStart
+		} else { // passSeeked
+			pos := clock.Now()
+			relistAt(pos)
+			after = pos
+		}
+		_, epoch, _ = clock.Sample()
+		seekGen = clock.SeekGen()
 	}
 }
 
-// waitForLoop blocks until the clock's epoch advances past `epoch` (a loop
-// wrap), returning true. It returns false if the request is canceled or the
-// watch times out first.
-func waitForLoop(ctx context.Context, timer <-chan time.Time, clock *ReplayClock, epoch int) bool {
+// restartTrigger explains why a paused/idle stream should resume streaming.
+type restartTrigger int
+
+const (
+	restartNone restartTrigger = iota // canceled or timed out
+	restartLoop                       // the clock wrapped (loop)
+	restartSeek                       // the clock was seeked
+)
+
+// waitForRestart blocks until the clock wraps past `epoch`, is seeked past
+// `seekGen`, or the request is canceled/times out. A single ticker avoids
+// allocating a timer on every poll.
+func waitForRestart(ctx context.Context, timer <-chan time.Time, clock *ReplayClock, epoch, seekGen int) restartTrigger {
+	ticker := time.NewTicker(replayPollInterval)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			return false
+			return restartNone
 		case <-timer:
-			return false
-		case <-time.After(replayPollInterval):
+			return restartNone
+		case <-ticker.C:
+			if clock.SeekGen() != seekGen {
+				return restartSeek
+			}
 			if _, e, _ := clock.Sample(); e != epoch {
-				return true
+				return restartLoop
 			}
 		}
 	}
@@ -336,21 +356,52 @@ type passResult int
 
 const (
 	passDone     passResult = iota // reached the end of the timeline
-	passLooped                     // clock wrapped mid-pass; caller should re-list
+	passLooped                     // clock wrapped mid-pass; caller should re-list at window start
+	passSeeked                     // clock was seeked mid-pass; caller should re-list at new position
 	passCanceled                   // client disconnected or timeout elapsed
 )
 
+// sleepInterruptible waits for d, returning true if the request is canceled or
+// the watch times out first. It uses a stoppable timer (stopped on return) so
+// canceled waits don't leave timers lingering under load; a non-positive d
+// returns immediately after a non-blocking cancellation check.
+func sleepInterruptible(ctx context.Context, timer <-chan time.Time, d time.Duration) bool {
+	if d <= 0 {
+		select {
+		case <-ctx.Done():
+			return true
+		case <-timer:
+			return true
+		default:
+			return false
+		}
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return true
+	case <-timer:
+		return true
+	case <-t.C:
+		return false
+	}
+}
+
 // replayPass streams timeline events with timestamp after `after`, each held
 // until the clock crosses it, until the timeline is exhausted (passDone), the
-// clock loops past the current epoch (passLooped), or the request is canceled
-// or times out (passCanceled).
-func (h *handler) replayPass(ctx context.Context, timer <-chan time.Time, clock *ReplayClock, timeline []replayEvent, after time.Time, epoch int, labelSel, fieldSel string, emit func(string, json.RawMessage)) passResult {
+// clock loops past `epoch` (passLooped) or is seeked past `seekGen`
+// (passSeeked), or the request is canceled/times out (passCanceled).
+func (h *handler) replayPass(ctx context.Context, timer <-chan time.Time, clock *ReplayClock, timeline []replayEvent, after time.Time, epoch, seekGen int, labelSel, fieldSel string, emit func(string, json.RawMessage)) passResult {
 	for _, ev := range timeline {
 		if !ev.t.After(after) {
 			continue
 		}
 		// Wait until the clock reaches this event's timestamp.
 		for {
+			if clock.SeekGen() != seekGen {
+				return passSeeked
+			}
 			pos, ep, _ := clock.Sample()
 			if ep != epoch {
 				return passLooped
@@ -368,12 +419,8 @@ func (h *handler) replayPass(ctx context.Context, timer <-chan time.Time, clock 
 			if wait < 0 {
 				wait = 0
 			}
-			select {
-			case <-ctx.Done():
+			if sleepInterruptible(ctx, timer, wait) {
 				return passCanceled
-			case <-timer:
-				return passCanceled
-			case <-time.After(wait):
 			}
 		}
 
