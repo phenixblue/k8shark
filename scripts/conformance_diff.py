@@ -20,6 +20,7 @@ import select
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 
 LIVE_KC = os.environ["LIVE_KUBECONFIG"]
@@ -146,8 +147,11 @@ def key_paths(obj, prefix=""):
             p = f"{prefix}.{k}" if prefix else k
             paths.add(p)
             paths |= key_paths(v, p)
-    elif isinstance(obj, list) and obj:
-        paths |= key_paths(obj[0], prefix + "[]")
+    elif isinstance(obj, list):
+        # Union over every element: later items (e.g. extra containers, env
+        # entries) can carry keys the first item lacks.
+        for item in obj:
+            paths |= key_paths(item, prefix + "[]")
     return paths
 
 
@@ -168,9 +172,11 @@ def strip_volatile_item(item):
 def main():
     live = Proxy(LIVE_KC)
     mock = Proxy(MOCK_KC)
-    live.start()
-    mock.start()
     try:
+        # Inside the try so a failure in either start() still tears down the
+        # other proxy in the finally block.
+        live.start()
+        mock.start()
         check_discovery(live, mock)
         check_version(live, mock)
         check_openapi(live, mock)

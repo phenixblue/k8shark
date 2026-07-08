@@ -63,7 +63,13 @@ jobs:
           fi
 
       - name: Comment results on PR
-        if: always() && github.event_name == 'pull_request'
+        # Skip on forked PRs, where GITHUB_TOKEN is read-only and the API call
+        # would 403. continue-on-error keeps a comment hiccup from failing the
+        # gate — the conformance check itself already set the job status.
+        if: >-
+          always() && github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}

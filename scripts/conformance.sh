@@ -71,7 +71,7 @@ info "cluster ready ($K8S_VERSION)"
 log "Deploying test resources"
 kubectl "${KC[@]}" create namespace conf-test >/dev/null
 kubectl "${KC[@]}" create configmap app-config --from-literal=env=prod -n conf-test >/dev/null
-kubectl "${KC[@]}" create secret generic app-secret --from-literal=pw=s3cr3t -n conf-test >/dev/null
+kubectl "${KC[@]}" create secret generic app-secret --from-literal=note=placeholder-not-a-secret -n conf-test >/dev/null
 kubectl "${KC[@]}" create deployment nginx --image=nginx:alpine --replicas=2 -n conf-test >/dev/null
 kubectl "${KC[@]}" expose deployment nginx --port=80 -n conf-test >/dev/null
 kubectl "${KC[@]}" apply -n conf-test -f - >/dev/null <<'YAML'
@@ -132,7 +132,6 @@ info "mock server up at ${MOCK_ADDR:-?} (kubeconfig $MOCK_KUBECONFIG)"
 log "Running differential comparison (mock vs live apiserver)"
 LIVE_KUBECONFIG="$KIND_KUBECONFIG" \
 MOCK_KUBECONFIG="$MOCK_KUBECONFIG" \
-MOCK_ADDR="$MOCK_ADDR" \
 PROBE_NS="conf-test" \
 K8S_VERSION="$K8S_VERSION" \
 WRITE_BASELINE="${WRITE_BASELINE:-}" \
