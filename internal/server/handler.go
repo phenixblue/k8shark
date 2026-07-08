@@ -43,6 +43,14 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fmt.Printf("  --> %s %s\n", r.Method, path)
 	}
 
+	// Replay transport controls live under a reserved prefix that can't collide
+	// with the Kubernetes API (which is served under /api, /apis, …). They accept
+	// POST, so intercept before the read-only method check below.
+	if h.clock != nil && strings.HasPrefix(path, replayControlPrefix) {
+		h.handleReplayControl(w, r, path)
+		return
+	}
+
 	// Intercept interactive sub-resources that can never work against a capture
 	// replay. Doing this before the method check ensures we return a specific,
 	// actionable error instead of the generic "write operations are not

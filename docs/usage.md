@@ -405,6 +405,44 @@ The primary use case is **local development and testing of controllers/operators
 | `--kubeconfig-out` | `~/.kube/k8shark-<id>.yaml` | Where to write the generated kubeconfig |
 | `--verbose` / `-v` | false | Log every request the server receives |
 
+### Controlling playback
+
+The replay server exposes a small HTTP control API under `/_k8shark/replay` on the same address (a reserved prefix that never collides with the Kubernetes API). Every response returns the current status, so a script — or a future UI scrubber — can drive playback:
+
+| Request | Effect |
+|---------|--------|
+| `GET /_k8shark/replay` | Return current status |
+| `POST /_k8shark/replay/pause` | Pause the clock |
+| `POST /_k8shark/replay/play` | Resume the clock |
+| `POST /_k8shark/replay/speed?value=2x` | Change speed |
+| `POST /_k8shark/replay/seek?to=<RFC3339\|duration>` | Seek to a time (duration is relative to the window end, e.g. `-2m`) |
+| `POST /_k8shark/replay/seek?offset=<duration>` | Seek to `window start + duration`, e.g. `90s` |
+
+```sh
+# The server uses a self-signed cert, so pass -k
+curl -sk https://127.0.0.1:<port>/_k8shark/replay
+curl -sk -X POST https://127.0.0.1:<port>/_k8shark/replay/pause
+curl -sk -X POST "https://127.0.0.1:<port>/_k8shark/replay/speed?value=0.5x"
+curl -sk -X POST "https://127.0.0.1:<port>/_k8shark/replay/seek?offset=30s"
+```
+
+The status response looks like:
+
+```json
+{
+  "position": "2026-04-09T10:03:12Z",
+  "from": "2026-04-09T10:00:00Z",
+  "to": "2026-04-09T10:10:00Z",
+  "elapsed_seconds": 192,
+  "total_seconds": 600,
+  "speed": 2,
+  "paused": false,
+  "loop": false,
+  "ended": false,
+  "events_emitted": 47
+}
+```
+
 ---
 
 ## UI

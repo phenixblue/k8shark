@@ -83,8 +83,10 @@ func runReplay(cmd *cobra.Command, args []string) error {
 	if loop {
 		fmt.Printf("  Loop:       on\n")
 	}
+	fmt.Printf("  Control:    %s/_k8shark/replay\n", srv.Address())
 	fmt.Printf("\nRun: export KUBECONFIG=%s\n", srv.KubeconfigPath())
 	fmt.Printf("Then watch it change, e.g.: kubectl get pods -A --watch\n")
+	fmt.Printf("Drive playback, e.g.: curl -sk -X POST %s/_k8shark/replay/pause\n", srv.Address())
 
 	if !srv.HasWatchEvents() {
 		fmt.Printf("\nNote: this capture has no watch events, so no changes will stream.\n")
