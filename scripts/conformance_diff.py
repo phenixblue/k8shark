@@ -97,10 +97,14 @@ class Proxy:
         # kubectl prints: "Starting to serve on 127.0.0.1:PORT". Use select so a
         # silent/blocked proxy can't hang readline() past the deadline.
         deadline = time.time() + 15
-        while time.time() < deadline:
+        while True:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                break
             if self.proc.poll() is not None:
                 break  # proxy exited before serving
-            ready, _, _ = select.select([self.proc.stdout], [], [], deadline - time.time())
+            # remaining is > 0 here, so select never gets a negative timeout.
+            ready, _, _ = select.select([self.proc.stdout], [], [], remaining)
             if not ready:
                 continue
             line = self.proc.stdout.readline()
