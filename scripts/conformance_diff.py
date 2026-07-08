@@ -135,7 +135,7 @@ class Proxy:
 # ── normalization ───────────────────────────────────────────────────────────────
 VOLATILE_META = {
     "resourceVersion", "creationTimestamp", "uid", "generation",
-    "managedFields", "selfLink", "annotations",
+    "managedFields", "selfLink",
 }
 
 
@@ -163,6 +163,12 @@ def strip_volatile_item(item):
     for k in list(meta):
         if k in VOLATILE_META:
             meta.pop(k, None)
+    # Compare annotations at map-presence level only: keep the `annotations`
+    # key so a mock that drops the whole map is caught, but don't descend into
+    # individual annotation keys, whose set legitimately drifts between capture
+    # time and the live 'now' (controllers add revision/last-applied/etc.).
+    if isinstance(meta.get("annotations"), dict):
+        meta["annotations"] = {}
     # status drifts constantly for live workloads; compare spec/metadata shape only.
     item.pop("status", None)
     return item
