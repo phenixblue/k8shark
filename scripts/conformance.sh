@@ -25,16 +25,19 @@ umask 077
 
 PROJ_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CLUSTER_NAME="k8shark-conf-$$"
-CAPTURE_FILE="/tmp/k8shark-conf-$$.kshrk"
-CAPTURE_CONFIG="/tmp/k8shark-conf-$$.yaml"
-KIND_KUBECONFIG="/tmp/k8shark-conf-kind-$$.yaml"
-SERVER_LOG="/tmp/k8shark-conf-server-$$.log"
+# Private, unpredictable temp dir (mode 0700) so all artifacts — including the
+# generated kubeconfigs — are isolated from symlink/collision attacks on /tmp.
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/k8shark-conf.XXXXXX")"
+CAPTURE_FILE="$TMP_DIR/capture.kshrk"
+CAPTURE_CONFIG="$TMP_DIR/capture.yaml"
+KIND_KUBECONFIG="$TMP_DIR/kind.yaml"
+SERVER_LOG="$TMP_DIR/server.log"
+# The generated mock kubeconfig lives in the temp dir too (rather than the
+# default ~/.kube/k8shark-<id>) so it's isolated and cleaned up with the rest.
+MOCK_KUBECONFIG="$TMP_DIR/mock.yaml"
 BINARY="${BINARY:-${PROJ_ROOT}/kshrk}"
 NODE_IMAGE="${NODE_IMAGE:-}"
 SERVER_PID=""
-# Pin the generated mock kubeconfig under /tmp (rather than the default
-# ~/.kube/k8shark-<id>) so cleanup can remove it like the other temp files.
-MOCK_KUBECONFIG="/tmp/k8shark-conf-mock-$$.yaml"
 
 log()  { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
 info() { printf '    %s\n' "$*"; }
@@ -43,8 +46,9 @@ die()  { printf '\n\033[1;31mFATAL: %s\033[0m\n' "$*" >&2; exit 1; }
 cleanup() {
   if [[ "${KEEP:-}" == "1" ]]; then
     info "KEEP=1 — leaving cluster '$CLUSTER_NAME' and mock (pid $SERVER_PID) running"
+    info "  temp dir:        $TMP_DIR"
     info "  live kubeconfig: $KIND_KUBECONFIG"
-    info "  mock kubeconfig: ${MOCK_KUBECONFIG:-<not started>}"
+    info "  mock kubeconfig: $MOCK_KUBECONFIG"
     return
   fi
   if [[ -n "$SERVER_PID" ]]; then
@@ -52,7 +56,7 @@ cleanup() {
     wait "$SERVER_PID" 2>/dev/null || true
   fi
   kind delete cluster --name "$CLUSTER_NAME" 2>/dev/null || true
-  rm -f "$CAPTURE_FILE" "$CAPTURE_CONFIG" "$KIND_KUBECONFIG" "$SERVER_LOG" "$MOCK_KUBECONFIG"
+  [[ -n "${TMP_DIR:-}" ]] && rm -rf "$TMP_DIR"
 }
 trap cleanup EXIT
 

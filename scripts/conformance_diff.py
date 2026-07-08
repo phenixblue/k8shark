@@ -261,12 +261,17 @@ def compare_resource_list(live, mock, gv_path):
         record("discovery", f"{gv_path} APIResourceList", "UNEXPECTED",
                f"live {gv_path} unreadable ({type(lr).__name__}); cannot compare")
         return
-    live_by_name = {r["name"]: r for r in (lr.get("resources") or [])}
-    field_diffs, missing_sub, missing_meta = [], [], []
-    verbs_reduced = False  # mock replaced live's verbs with a read-only subset
-    verbs_diverged = False  # mock verbs differ in some other (unexpected) way
+    live_by_name = {r["name"]: r for r in (lr.get("resources") or [])
+                    if isinstance(r, dict) and r.get("name")}
+    field_diffs, verb_diffs, missing_sub, missing_meta = [], [], [], []
+    verbs_reduced = False  # mock replaced live's verbs with a usable read-only subset
+    mock_names = set()
     for r in mr.get("resources", []):
+        if not isinstance(r, dict) or not r.get("name"):
+            field_diffs.append(f"malformed resource entry: {r!r}")
+            continue
         name = r["name"]
+        mock_names.add(name)
         lref = live_by_name.get(name)
         if not lref:
             field_diffs.append(f"{name}: not present on live server")
@@ -282,8 +287,7 @@ def compare_resource_list(live, mock, gv_path):
             if mverbs <= {"get", "list", "watch"} and {"get", "list"} <= mverbs:
                 verbs_reduced = True
             else:
-                verbs_diverged = True
-                field_diffs.append(f"{name}.verbs {sorted(mverbs)} != live {sorted(lverbs)}")
+                verb_diffs.append(f"{name}.verbs {sorted(mverbs)} != live {sorted(lverbs)}")
         for f in ("kind", "namespaced", "singularName"):
             if r.get(f) != lref.get(f):
                 field_diffs.append(f"{name}.{f}={r.get(f)!r} != live {lref.get(f)!r}")
@@ -297,7 +301,6 @@ def compare_resource_list(live, mock, gv_path):
     # subresources live lists but the mock does not (e.g. pods/status, .../scale).
     # Only count those whose parent the mock serves but the subresource itself
     # is genuinely absent from the mock's list.
-    mock_names = {r["name"] for r in mr.get("resources", [])}
     mock_parents = {n.split("/")[0] for n in mock_names}
     for name in live_by_name:
         if "/" in name and name.split("/")[0] in mock_parents and name not in mock_names:
@@ -317,12 +320,14 @@ def compare_resource_list(live, mock, gv_path):
                "mock omits live-only fields: " + ", ".join(sorted(missing_meta)))
     else:
         record("discovery", f"{gv_path} resource metadata", "PASS")
-    if verbs_reduced and not verbs_diverged:
-        record("discovery", f"{gv_path} verbs (read-only)", "EXPECTED",
-               "mock advertises a read-only verb subset (e.g. {get,list,watch}); "
-               "live advertises the full write set")
-    elif not verbs_reduced and not verbs_diverged:
-        record("discovery", f"{gv_path} verbs match live", "PASS")
+    # verbs — always exactly one record so the check count stays stable.
+    if verb_diffs:
+        record("discovery", f"{gv_path} verbs", "UNEXPECTED", "\n".join(verb_diffs))
+    elif verbs_reduced:
+        record("discovery", f"{gv_path} verbs", "EXPECTED",
+               "mock advertises a read-only verb subset ({get,list,watch}); live advertises full write verbs")
+    else:
+        record("discovery", f"{gv_path} verbs", "PASS")
 
 
 # ── B. Version ───────────────────────────────────────────────────────────────────
@@ -350,6 +355,8 @@ def check_version(live, mock):
         record("version", "/version major/minor", "EXPECTED",
                f"mock major/minor={mv.get('major')}/{mv.get('minor')} != live "
                f"{lv.get('major')}/{lv.get('minor')} (hard-coded stub)")
+    else:
+        record("version", "/version major/minor", "PASS")
 
 
 # ── C. OpenAPI ───────────────────────────────────────────────────────────────────
