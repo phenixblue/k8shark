@@ -27,7 +27,7 @@ OpenAPI v2/v3, resource LIST/GET envelopes and item structure, health
 (`/healthz`, `/readyz`, `/livez`), and error shapes (not-found, unknown
 group/version).
 
-Run it locally (needs `kind`, `kubectl`, `jq`, `python3`, `curl`):
+Run it locally (needs `kind`, `kubectl`, `jq`, `python3`):
 
 ```sh
 make build

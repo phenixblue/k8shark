@@ -16,6 +16,7 @@ access with the server's real status codes and raw (error) bodies.
 import json
 import os
 import re
+import select
 import subprocess
 import sys
 import time
@@ -81,9 +82,15 @@ class Proxy:
             ["kubectl", "--kubeconfig", self.kubeconfig, "proxy", "--port=0"],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
         )
-        # kubectl prints: "Starting to serve on 127.0.0.1:PORT"
+        # kubectl prints: "Starting to serve on 127.0.0.1:PORT". Use select so a
+        # silent/blocked proxy can't hang readline() past the deadline.
         deadline = time.time() + 15
         while time.time() < deadline:
+            if self.proc.poll() is not None:
+                break  # proxy exited before serving
+            ready, _, _ = select.select([self.proc.stdout], [], [], deadline - time.time())
+            if not ready:
+                continue
             line = self.proc.stdout.readline()
             if not line:
                 break
@@ -187,6 +194,11 @@ def check_discovery(live, mock):
     # /apis (APIGroupList) — mock is a subset of live; verify each mock group exists in live.
     _, la = live.get_json("/apis")
     _, ma = mock.get_json("/apis")
+    if not isinstance(la, dict) or not isinstance(ma, dict):
+        record("discovery", "/apis APIGroupList", "UNEXPECTED",
+               f"could not read /apis as JSON (live={type(la).__name__}, mock={type(ma).__name__}); "
+               "skipping per-group comparison")
+        return
     live_groups = {g["name"]: {v["groupVersion"] for v in g["versions"]} for g in la.get("groups", [])}
     mock_groups = {g["name"]: {v["groupVersion"] for v in g.get("versions", [])} for g in ma.get("groups", [])}
     missing = [g for g in mock_groups if g not in live_groups]
@@ -212,7 +224,7 @@ def compare_resource_list(live, mock, gv_path):
     if not mr or mr.get("kind") != "APIResourceList":
         record("discovery", f"{gv_path} APIResourceList", "UNEXPECTED", f"mock returned: {mr}")
         return
-    live_by_name = {r["name"]: r for r in (lr.get("resources") or [])}
+    live_by_name = {r["name"]: r for r in ((lr or {}).get("resources") or [])}
     field_diffs, missing_sub, missing_meta = [], [], []
     verbs_reduced = False  # mock replaced live's verbs with a read-only subset
     verbs_diverged = False  # mock verbs differ in some other (unexpected) way
@@ -274,8 +286,9 @@ def check_version(live, mock):
     print(f"\n{BOLD}{CYN}== B. Version =={RST}")
     _, lv = live.get_json("/version")
     _, mv = mock.get_json("/version")
-    if not mv:
-        record("version", "/version payload", "UNEXPECTED", "mock returned no JSON")
+    if not isinstance(mv, dict) or not isinstance(lv, dict):
+        record("version", "/version payload", "UNEXPECTED",
+               f"could not read /version as JSON (live={type(lv).__name__}, mock={type(mv).__name__})")
         return
     missing_keys = set(lv) - set(mv)
     if missing_keys:
@@ -333,7 +346,7 @@ def check_resources(live, mock):
             record("reads", f"{path} list envelope", "UNEXPECTED",
                    f"mock status={code} kind={mb.get('kind') if mb else None} want {want_kind}")
             continue
-        env_ok = mb.get("apiVersion") == lb.get("apiVersion") and \
+        env_ok = mb.get("apiVersion") == (lb or {}).get("apiVersion") and \
             "resourceVersion" in mb.get("metadata", {}) and isinstance(mb.get("items"), list)
         record("reads", f"{path} list envelope", "PASS" if env_ok else "UNEXPECTED",
                "" if env_ok else f"apiVersion/metadata.resourceVersion/items mismatch: keys={list(mb.keys())}")
@@ -342,7 +355,7 @@ def check_resources(live, mock):
 
 
 def compare_item_structure(path, lb, mb):
-    live_items = {i["metadata"]["name"]: i for i in lb.get("items", []) if i.get("metadata")}
+    live_items = {i["metadata"]["name"]: i for i in (lb or {}).get("items", []) if i.get("metadata")}
     for mi in mb.get("items", []):
         name = mi.get("metadata", {}).get("name")
         li = live_items.get(name)
@@ -408,8 +421,15 @@ def check_errors(live, mock):
 def summarize():
     if WRITE_BASELINE:
         keys = sorted(f"{cat}::{name}" for cat, name, v, _ in RESULTS if v in ("UNEXPECTED", "ACCEPTED"))
+        doc = {
+            "_comment": ("Accepted mock<->upstream divergences (issue #136). Each key is "
+                         "'category::name' from conformance_diff.py. Entries here are reported "
+                         "but do NOT fail the run; the gate fires only on NEW divergences. See "
+                         "docs/conformance.md for the rationale. Regenerate with WRITE_BASELINE=1."),
+            "accepted": keys,
+        }
         with open(BASELINE_PATH, "w") as f:
-            json.dump({"accepted": keys}, f, indent=2)
+            json.dump(doc, f, indent=2)
             f.write("\n")
         print(f"\n{YEL}WROTE baseline ({len(keys)} accepted divergences) -> {BASELINE_PATH}{RST}")
 

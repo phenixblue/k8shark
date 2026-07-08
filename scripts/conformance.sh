@@ -18,7 +18,7 @@
 #          NODE_IMAGE=kindest/node:v1.32.0   pin a Kubernetes version
 #          WRITE_BASELINE=1   rewrite the baseline from the current run
 #
-# Prerequisites: kind, kubectl, jq, python3, curl (must be in PATH)
+# Prerequisites: kind, kubectl, jq, python3 (must be in PATH)
 set -euo pipefail
 
 PROJ_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -30,6 +30,9 @@ SERVER_LOG="/tmp/k8shark-conf-server-$$.log"
 BINARY="${BINARY:-${PROJ_ROOT}/kshrk}"
 NODE_IMAGE="${NODE_IMAGE:-}"
 SERVER_PID=""
+# Pin the generated mock kubeconfig under /tmp (rather than the default
+# ~/.kube/k8shark-<id>) so cleanup can remove it like the other temp files.
+MOCK_KUBECONFIG="/tmp/k8shark-conf-mock-$$.yaml"
 
 log()  { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
 info() { printf '    %s\n' "$*"; }
@@ -44,13 +47,13 @@ cleanup() {
   fi
   [[ -n "$SERVER_PID" ]] && kill "$SERVER_PID" 2>/dev/null || true
   kind delete cluster --name "$CLUSTER_NAME" 2>/dev/null || true
-  rm -f "$CAPTURE_FILE" "$CAPTURE_CONFIG" "$KIND_KUBECONFIG" "$SERVER_LOG"
+  rm -f "$CAPTURE_FILE" "$CAPTURE_CONFIG" "$KIND_KUBECONFIG" "$SERVER_LOG" "$MOCK_KUBECONFIG"
 }
 trap cleanup EXIT
 
 # ── Prerequisites ─────────────────────────────────────────────────────────────
 log "Checking prerequisites"
-for tool in kind kubectl jq python3 curl; do
+for tool in kind kubectl jq python3; do
   command -v "$tool" >/dev/null 2>&1 || die "'$tool' not found in PATH"
 done
 [[ -x "$BINARY" ]] || die "Binary not found at '$BINARY'. Run 'make build' first."
@@ -106,25 +109,23 @@ info "capture written: $(du -h "$CAPTURE_FILE" | cut -f1)"
 
 # ── Open the mock replay server ───────────────────────────────────────────────
 log "Opening mock replay server"
-"$BINARY" open "$CAPTURE_FILE" >"$SERVER_LOG" 2>&1 &
+# Write the kubeconfig to our /tmp path (so cleanup can remove it) instead of
+# the default ~/.kube/k8shark-<id>.
+"$BINARY" open "$CAPTURE_FILE" --kubeconfig-out "$MOCK_KUBECONFIG" >"$SERVER_LOG" 2>&1 &
 SERVER_PID=$!
-MOCK_KUBECONFIG=""
-MOCK_ADDR=""
-for _ in $(seq 1 40); do
-  if grep -q "Kubeconfig:" "$SERVER_LOG" 2>/dev/null; then
-    MOCK_KUBECONFIG=$(grep "Kubeconfig:" "$SERVER_LOG" | awk '{print $2}')
-    MOCK_ADDR=$(grep "Address:" "$SERVER_LOG" | awk '{print $2}')
+# The mock is ready once its kubeconfig has been written and it answers a
+# request. Gate on those directly rather than parsing the startup log, so a
+# not-yet-written line can't trip `set -e`.
+for _ in $(seq 1 60); do
+  if [[ -s "$MOCK_KUBECONFIG" ]] &&
+     kubectl --kubeconfig "$MOCK_KUBECONFIG" --request-timeout=2s get namespaces &>/dev/null; then
     break
   fi
   sleep 0.5
 done
-[[ -n "$MOCK_KUBECONFIG" ]] || { cat "$SERVER_LOG"; die "mock server did not start"; }
-# Wait until it answers.
-for _ in $(seq 1 40); do
-  kubectl --kubeconfig "$MOCK_KUBECONFIG" --request-timeout=2s get namespaces &>/dev/null && break
-  sleep 0.5
-done
-info "mock server up at $MOCK_ADDR (kubeconfig $MOCK_KUBECONFIG)"
+[[ -s "$MOCK_KUBECONFIG" ]] || { cat "$SERVER_LOG"; die "mock server did not start"; }
+MOCK_ADDR=$(grep "Address:" "$SERVER_LOG" | awk '{print $2}') || true
+info "mock server up at ${MOCK_ADDR:-?} (kubeconfig $MOCK_KUBECONFIG)"
 
 # ── Differential comparison ───────────────────────────────────────────────────
 log "Running differential comparison (mock vs live apiserver)"

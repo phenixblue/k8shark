@@ -43,6 +43,11 @@ jobs:
         run: make build
 
       - name: Run mock-server conformance diff
+        env:
+          # Pin the Kubernetes version so the baseline is stable and doesn't
+          # churn with kind's default node image. Bump deliberately (and
+          # refresh the baseline) rather than letting it drift.
+          NODE_IMAGE: kindest/node:v1.36.1
         run: |
           set -o pipefail
           ./scripts/conformance.sh 2>&1 | tee /tmp/conformance.out
