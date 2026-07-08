@@ -355,6 +355,97 @@ This is useful when you have a long capture (e.g. 1h) and want to compare cluste
 
 ---
 
+## Replay
+
+`kshrk replay` plays a capture **forward through time** at a chosen speed, streaming captured watch events (ADDED / MODIFIED / DELETED) to clients as a replay clock advances. This is different from `open --at`, which jumps the whole view to a single instant: replay advances a clock and streams change *over time*, so controllers/operators and `kubectl get --watch` observe the cluster changing exactly as it did during capture.
+
+```sh
+# Replay the whole capture at twice its original speed
+kshrk replay capture.kshrk --speed 2x
+
+# Slow motion
+kshrk replay capture.kshrk --speed 0.5x
+
+# Loop the last 10 minutes of the capture
+kshrk replay capture.kshrk --from -10m --to -1m --loop
+
+# Start paused, then press Enter to begin
+kshrk replay capture.kshrk --start-paused
+```
+
+Like `open`, it writes a kubeconfig — point `kubectl` or a controller at it:
+
+```sh
+export KUBECONFIG=~/.kube/k8shark-<id>.yaml
+kubectl get pods -A --watch
+```
+
+A live status line shows the clock position, speed, and how many events have streamed:
+
+```
+replaying 14:03:12Z (+2m18s / 10m) · 2x · 47 events emitted
+```
+
+The primary use case is **local development and testing of controllers/operators**: point one at a replayed capture and watch how it reacts to a real (or reproduced-incident) sequence of changes. LIST and GET return state as-of the clock (the same time-travel semantics as `--at`), and the watch stream delivers events in timestamp order, paced by clock × speed.
+
+> **Read-only.** The mock server replays a captured timeline; a controller's writes won't persist or feed back into the replay. You observe "how my controller reacts to this sequence," not a closed loop.
+>
+> **Watch events required.** Replay streams the events recorded with `watch: true` (see [docs/config.md](config.md)). A poll-only capture has no watch events, so `replay` still serves LIST/GET as-of the clock but streams nothing — `kshrk replay` prints a note when this is the case. (Inferring events for poll-only captures by diffing snapshots is a planned enhancement.)
+
+### Replay flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--speed` | `1x` | Playback speed factor, e.g. `2x`, `3x`, `0.5x` |
+| `--from` | capture start | Window start: RFC3339 or relative duration like `-10m` |
+| `--to` | capture end | Window end: RFC3339 or relative duration like `-1m` |
+| `--loop` | false | Restart from the window start when the end is reached |
+| `--start-paused` | false | Start paused; press Enter to begin playback |
+| `--port` | random | Port for the mock API server |
+| `--kubeconfig-out` | `~/.kube/k8shark-<id>.yaml` | Where to write the generated kubeconfig |
+| `--verbose` / `-v` | false | Log every request the server receives |
+
+### Controlling playback
+
+The replay server exposes a small HTTP control API under `/_k8shark/replay` on the same address (a reserved prefix that never collides with the Kubernetes API). A successful request returns the current status as JSON (so a script — or a future UI scrubber — can drive playback); an invalid request returns a Kubernetes-style Status JSON body with the appropriate code (`405` wrong method, `400` bad argument, `404` unknown control):
+
+| Request | Effect |
+|---------|--------|
+| `GET /_k8shark/replay` | Return current status |
+| `POST /_k8shark/replay/pause` | Pause the clock |
+| `POST /_k8shark/replay/play` | Resume the clock |
+| `POST /_k8shark/replay/speed?value=2x` | Change speed |
+| `POST /_k8shark/replay/seek?to=<RFC3339\|duration>` | Seek to a time (duration is relative to the window end, e.g. `-2m`) |
+| `POST /_k8shark/replay/seek?offset=<duration>` | Seek to `window start + duration`, e.g. `90s` |
+
+```sh
+# The server uses a self-signed cert, so pass -k
+curl -sk https://127.0.0.1:<port>/_k8shark/replay
+curl -sk -X POST https://127.0.0.1:<port>/_k8shark/replay/pause
+curl -sk -X POST "https://127.0.0.1:<port>/_k8shark/replay/speed?value=0.5x"
+curl -sk -X POST "https://127.0.0.1:<port>/_k8shark/replay/seek?offset=30s"
+```
+
+The status response looks like:
+
+```json
+{
+  "position": "2026-04-09T10:03:12Z",
+  "from": "2026-04-09T10:00:00Z",
+  "to": "2026-04-09T10:10:00Z",
+  "elapsed_seconds": 192,
+  "total_seconds": 600,
+  "speed": 2,
+  "paused": false,
+  "loop": false,
+  "ended": false,
+  "epoch": 0,
+  "events_emitted": 47
+}
+```
+
+---
+
 ## UI
 
 `kshrk ui` starts a local web-based explorer and the mock Kubernetes API server for a capture archive.
