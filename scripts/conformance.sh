@@ -64,7 +64,8 @@ log "Creating KinD cluster '$CLUSTER_NAME'${NODE_IMAGE:+ (image $NODE_IMAGE)}"
 kind create cluster --name "$CLUSTER_NAME" --kubeconfig "$KIND_KUBECONFIG" \
   ${NODE_IMAGE:+--image "$NODE_IMAGE"} --wait 90s
 KC=(--kubeconfig "$KIND_KUBECONFIG")
-info "cluster ready ($(kubectl "${KC[@]}" version -o json | jq -r '.serverVersion.gitVersion'))"
+K8S_VERSION=$(kubectl "${KC[@]}" version -o json | jq -r '.serverVersion.gitVersion')
+info "cluster ready ($K8S_VERSION)"
 
 # ── Deploy a spread of resources across core / apps / batch groups ────────────
 log "Deploying test resources"
@@ -133,6 +134,8 @@ LIVE_KUBECONFIG="$KIND_KUBECONFIG" \
 MOCK_KUBECONFIG="$MOCK_KUBECONFIG" \
 MOCK_ADDR="$MOCK_ADDR" \
 PROBE_NS="conf-test" \
+K8S_VERSION="$K8S_VERSION" \
 WRITE_BASELINE="${WRITE_BASELINE:-}" \
+CONFORMANCE_MD="${CONFORMANCE_MD:-}" \
 CONFORMANCE_BASELINE="${CONFORMANCE_BASELINE:-${PROJ_ROOT}/scripts/conformance-baseline.json}" \
   python3 "${PROJ_ROOT}/scripts/conformance_diff.py"

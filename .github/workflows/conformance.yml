@@ -26,6 +26,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write   # post/update the conformance results comment
 
 jobs:
   conformance:
@@ -48,18 +49,35 @@ jobs:
           # churn with kind's default node image. Bump deliberately (and
           # refresh the baseline) rather than letting it drift.
           NODE_IMAGE: kindest/node:v1.36.1
+          # Emit a Markdown report for the job summary and the PR comment.
+          CONFORMANCE_MD: /tmp/conformance.md
         run: |
           set -o pipefail
           ./scripts/conformance.sh 2>&1 | tee /tmp/conformance.out
 
-      - name: Publish summary
+      - name: Publish job summary
         if: always()
         run: |
-          {
-            echo '## Mock ↔ upstream conformance'
-            echo '```'
-            # Strip ANSI, keep the report from the differential section onward.
-            sed 's/\x1b\[[0-9;]*m//g' /tmp/conformance.out \
-              | sed -n '/== A. Discovery/,$p'
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -f /tmp/conformance.md ]; then
+            cat /tmp/conformance.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Comment results on PR
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          [ -f /tmp/conformance.md ] || { echo "no report to post"; exit 0; }
+          marker='<!-- conformance-report -->'
+          # Find an existing report comment (by marker) and update it, else create.
+          cid=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+                  --jq "map(select(.body | contains(\"$marker\"))) | .[0].id // empty")
+          if [ -n "$cid" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$cid" -F body=@/tmp/conformance.md >/dev/null
+            echo "updated comment $cid"
+          else
+            gh api "repos/$REPO/issues/$PR/comments" -F body=@/tmp/conformance.md >/dev/null
+            echo "created new comment"
+          fi

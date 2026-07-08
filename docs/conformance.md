@@ -35,6 +35,10 @@ make build
 KEEP=1 ./scripts/conformance.sh     # leave cluster + mock running to poke at
 ```
 
+Set `CONFORMANCE_MD=/path/report.md` to also write a Markdown summary (the CI
+workflow uses this for the job summary and posts it as a sticky PR comment that
+is updated in place on each run).
+
 ## Why not the CNCF conformance suite?
 
 The upstream CNCF suite (Sonobuoy / hydrophone / `e2e.test`) is a **non-goal**.
