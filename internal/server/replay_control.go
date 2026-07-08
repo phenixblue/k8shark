@@ -14,9 +14,9 @@ import (
 const replayControlPrefix = "/_k8shark/replay"
 
 // handleReplayControl implements the replay transport-control API. A successful
-// request returns the current replay status (JSON) so a client (CLI, UI
-// scrubber, script) sees the resulting state; invalid requests return an error
-// status (405/400/404) with a plain-text message.
+// request returns the current replay status as JSON so a client (CLI, UI
+// scrubber, script) sees the resulting state; an invalid request returns a
+// Kubernetes-style Status JSON body with the appropriate code (405/400/404).
 //
 //	GET  /_k8shark/replay              → current status
 //	POST /_k8shark/replay/pause        → pause the clock
@@ -30,21 +30,21 @@ func (h *handler) handleReplayControl(w http.ResponseWriter, r *http.Request, pa
 
 	switch action {
 	case "":
-		if !requireMethod(w, r, http.MethodGet) {
+		if !h.requireMethod(w, r, http.MethodGet) {
 			return
 		}
 	case "pause":
-		if !requireMethod(w, r, http.MethodPost) {
+		if !h.requireMethod(w, r, http.MethodPost) {
 			return
 		}
 		clock.Pause()
 	case "play", "resume":
-		if !requireMethod(w, r, http.MethodPost) {
+		if !h.requireMethod(w, r, http.MethodPost) {
 			return
 		}
 		clock.Resume()
 	case "speed":
-		if !requireMethod(w, r, http.MethodPost) {
+		if !h.requireMethod(w, r, http.MethodPost) {
 			return
 		}
 		s, err := parseSpeed(r.URL.Query().Get("value"))
@@ -54,7 +54,7 @@ func (h *handler) handleReplayControl(w http.ResponseWriter, r *http.Request, pa
 		}
 		clock.SetSpeed(s)
 	case "seek":
-		if !requireMethod(w, r, http.MethodPost) {
+		if !h.requireMethod(w, r, http.MethodPost) {
 			return
 		}
 		target, err := parseSeekTarget(clock, r.URL.Query())
@@ -71,15 +71,15 @@ func (h *handler) handleReplayControl(w http.ResponseWriter, r *http.Request, pa
 	writeJSON(w, http.StatusOK, replayStatus(clock))
 }
 
-// requireMethod writes a 405 (with an Allow header) and returns false if the
-// request method doesn't match.
-func requireMethod(w http.ResponseWriter, r *http.Request, method string) bool {
+// requireMethod writes a 405 Status JSON (with an Allow header) and returns
+// false if the request method doesn't match, keeping control-API error
+// responses consistently JSON.
+func (h *handler) requireMethod(w http.ResponseWriter, r *http.Request, method string) bool {
 	if r.Method == method {
 		return true
 	}
 	w.Header().Set("Allow", method)
-	w.WriteHeader(http.StatusMethodNotAllowed)
-	_, _ = w.Write([]byte(fmt.Sprintf("%s required", method)))
+	h.writeStatus(w, http.StatusMethodNotAllowed, fmt.Sprintf("%s required for this replay control", method))
 	return false
 }
 

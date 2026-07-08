@@ -407,7 +407,7 @@ The primary use case is **local development and testing of controllers/operators
 
 ### Controlling playback
 
-The replay server exposes a small HTTP control API under `/_k8shark/replay` on the same address (a reserved prefix that never collides with the Kubernetes API). Every response returns the current status, so a script — or a future UI scrubber — can drive playback:
+The replay server exposes a small HTTP control API under `/_k8shark/replay` on the same address (a reserved prefix that never collides with the Kubernetes API). A successful request returns the current status as JSON (so a script — or a future UI scrubber — can drive playback); an invalid request returns a Kubernetes-style Status JSON body with the appropriate code (`405` wrong method, `400` bad argument, `404` unknown control):
 
 | Request | Effect |
 |---------|--------|
