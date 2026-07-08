@@ -45,8 +45,10 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Replay transport controls live under a reserved prefix that can't collide
 	// with the Kubernetes API (which is served under /api, /apis, …). They accept
-	// POST, so intercept before the read-only method check below.
-	if h.clock != nil && strings.HasPrefix(path, replayControlPrefix) {
+	// POST, so intercept before the read-only method check below. Match the exact
+	// prefix or a subpath boundary so paths like "/_k8shark/replayfoo" don't route
+	// here.
+	if h.clock != nil && (path == replayControlPrefix || strings.HasPrefix(path, replayControlPrefix+"/")) {
 		h.handleReplayControl(w, r, path)
 		return
 	}
