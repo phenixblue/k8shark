@@ -223,17 +223,20 @@ func (h *handler) streamReplayWatch(w http.ResponseWriter, r *http.Request, path
 	w.WriteHeader(http.StatusOK)
 	flusher, canFlush := w.(http.Flusher)
 
-	emit := func(typ string, obj json.RawMessage) {
+	// emit writes a watch frame and reports whether it was actually written, so
+	// callers only count frames that reached the client.
+	emit := func(typ string, obj json.RawMessage) bool {
 		// Skip malformed frames rather than writing a blank line: a captured
 		// object body could be invalid JSON, which would fail to marshal.
 		data, err := json.Marshal(map[string]any{"type": typ, "object": obj})
 		if err != nil {
-			return
+			return false
 		}
 		_, _ = fmt.Fprintf(w, "%s\n", data)
 		if canFlush {
 			flusher.Flush()
 		}
+		return true
 	}
 	emitBookmark := func(l watchList) {
 		// Treat "0" as unspecified — aggregated/synthesized empty lists carry RV
@@ -397,7 +400,7 @@ func sleepInterruptible(ctx context.Context, timer <-chan time.Time, d time.Dura
 // until the clock crosses it, until the timeline is exhausted (passDone), the
 // clock loops past `epoch` (passLooped) or is seeked past `seekGen`
 // (passSeeked), or the request is canceled/times out (passCanceled).
-func (h *handler) replayPass(ctx context.Context, timer <-chan time.Time, clock *ReplayClock, timeline []replayEvent, after time.Time, epoch, seekGen int, labelSel, fieldSel string, emit func(string, json.RawMessage)) passResult {
+func (h *handler) replayPass(ctx context.Context, timer <-chan time.Time, clock *ReplayClock, timeline []replayEvent, after time.Time, epoch, seekGen int, labelSel, fieldSel string, emit func(string, json.RawMessage) bool) passResult {
 	for _, ev := range timeline {
 		if !ev.t.After(after) {
 			continue
@@ -442,8 +445,9 @@ func (h *handler) replayPass(ctx context.Context, timer <-chan time.Time, clock 
 		if !matchesSelectors(rec.ResponseBody, labelSel, fieldSel) {
 			continue
 		}
-		emit(ev.typ, rec.ResponseBody)
-		clock.AddEvents(1)
+		if emit(ev.typ, rec.ResponseBody) {
+			clock.AddEvents(1)
+		}
 	}
 	return passDone
 }
