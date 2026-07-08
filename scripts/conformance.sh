@@ -123,14 +123,18 @@ SERVER_PID=$!
 # The mock is ready once its kubeconfig has been written and it answers a
 # request. Gate on those directly rather than parsing the startup log, so a
 # not-yet-written line can't trip `set -e`.
+ready=""
 for _ in $(seq 1 60); do
   if [[ -s "$MOCK_KUBECONFIG" ]] &&
      kubectl --kubeconfig "$MOCK_KUBECONFIG" --request-timeout=2s get namespaces &>/dev/null; then
+    ready=1
     break
   fi
   sleep 0.5
 done
-[[ -s "$MOCK_KUBECONFIG" ]] || { cat "$SERVER_LOG"; die "mock server did not start"; }
+# Require the readiness probe itself to have succeeded, not just the kubeconfig
+# to exist — otherwise a written-but-unresponsive mock falls through silently.
+[[ -n "$ready" ]] || { cat "$SERVER_LOG"; die "mock server did not become ready"; }
 MOCK_ADDR=$(grep "Address:" "$SERVER_LOG" | awk '{print $2}') || true
 info "mock server up at ${MOCK_ADDR:-?} (kubeconfig $MOCK_KUBECONFIG)"
 

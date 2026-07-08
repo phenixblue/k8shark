@@ -239,8 +239,13 @@ def compare_resource_list(live, mock, gv_path):
     if not isinstance(mr, dict) or mr.get("kind") != "APIResourceList":
         record("discovery", f"{gv_path} APIResourceList", "UNEXPECTED", f"mock returned: {mr}")
         return
-    live_resources = lr.get("resources", []) if isinstance(lr, dict) else []
-    live_by_name = {r["name"]: r for r in (live_resources or [])}
+    if not isinstance(lr, dict):
+        # Live is the reference; an unreadable live response is one clear
+        # divergence, not a cascade of "not present on live" per-resource diffs.
+        record("discovery", f"{gv_path} APIResourceList", "UNEXPECTED",
+               f"live {gv_path} unreadable ({type(lr).__name__}); cannot compare")
+        return
+    live_by_name = {r["name"]: r for r in (lr.get("resources") or [])}
     field_diffs, missing_sub, missing_meta = [], [], []
     verbs_reduced = False  # mock replaced live's verbs with a read-only subset
     verbs_diverged = False  # mock verbs differ in some other (unexpected) way
@@ -509,7 +514,9 @@ def summarize():
     if REPORT_MD:
         write_markdown(REPORT_MD, cats, total, passed, expected, accepted, unexpected, score)
         print(f"\n{DIM}wrote markdown report -> {REPORT_MD}{RST}")
-    sys.exit(1 if unexpected else 0)
+    # When refreshing the baseline, the observed divergences are exactly what we
+    # just wrote into it, so exit success to keep refresh workflows simple.
+    sys.exit(0 if WRITE_BASELINE else (1 if unexpected else 0))
 
 
 def write_markdown(path, cats, total, passed, expected, accepted, unexpected, score):
