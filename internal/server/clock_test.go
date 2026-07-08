@@ -141,6 +141,10 @@ func TestParseSpeed(t *testing.T) {
 		{"0x", 0, true},
 		{"-2x", 0, true},
 		{"fast", 0, true},
+		{"inf", 0, true},
+		{"Inf", 0, true},
+		{"NaN", 0, true},
+		{"1e9", 0, true}, // above the sanity cap
 	}
 	for _, tc := range cases {
 		got, err := parseSpeed(tc.in)

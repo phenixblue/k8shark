@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -42,6 +43,12 @@ func openWatchStream(t *testing.T, url string) (next func() watchEvent, cancel f
 	if err != nil {
 		cancelCtx()
 		t.Fatalf("watch request: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		cancelCtx()
+		t.Fatalf("watch request: status %d: %s", resp.StatusCode, body)
 	}
 	lines := make(chan watchEvent, 32)
 	go func() {

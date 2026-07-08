@@ -2,6 +2,7 @@ package server
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"sync"
@@ -205,8 +206,16 @@ func parseSpeed(raw string) (float64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("invalid --speed %q: use forms like 2x, 0.5x, 3", raw)
 	}
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0, fmt.Errorf("invalid --speed %q: must be a finite number", raw)
+	}
 	if f <= 0 {
 		return 0, fmt.Errorf("invalid --speed %q: must be greater than 0", raw)
+	}
+	// Cap absurd values so speed × elapsed can't overflow time.Duration later.
+	const maxSpeed = 1e6
+	if f > maxSpeed {
+		return 0, fmt.Errorf("invalid --speed %q: must be at most %g", raw, maxSpeed)
 	}
 	return f, nil
 }
