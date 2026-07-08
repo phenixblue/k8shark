@@ -20,6 +20,8 @@
 #
 # Prerequisites: kind, kubectl, jq, python3 (must be in PATH)
 set -euo pipefail
+# Generated kubeconfigs hold cluster credentials; keep temp files owner-only.
+umask 077
 
 PROJ_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CLUSTER_NAME="k8shark-conf-$$"

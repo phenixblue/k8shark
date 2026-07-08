@@ -391,8 +391,9 @@ def check_openapi(live, mock):
                 record("openapi", "/openapi/v3 per-GV document", "EXPECTED",
                        f"mock returns {mcd} for {sample} (live=200); per-GV doc only served when captured")
             else:
+                shape = list(md.keys())[:8] if isinstance(md, dict) else repr(md)[:80]
                 record("openapi", "/openapi/v3 per-GV document", "UNEXPECTED",
-                       f"mock {sample} doc shape unexpected: keys={list(md.keys())[:8]}")
+                       f"mock {sample} doc shape unexpected (status={mcd}): {shape}")
 
 
 # ── D. Resource reads ────────────────────────────────────────────────────────────
@@ -451,22 +452,30 @@ def check_resources(live, mock):
                    f"want kind={lo.get('kind')} apiVersion={lo.get('apiVersion')}")
 
 
+def named_items(container):
+    """Yield (name, item) for well-formed list items with a metadata.name,
+    ignoring malformed entries so upstream format drift can't crash the harness."""
+    if not isinstance(container, dict):
+        return
+    for i in container.get("items", []):
+        if isinstance(i, dict) and isinstance(i.get("metadata"), dict):
+            name = i["metadata"].get("name")
+            if name:
+                yield name, i
+
+
 def first_common_name(lb, mb):
     """Name of the first object present in both the live and mock list items."""
-    if not isinstance(lb, dict) or not isinstance(mb, dict):
-        return None
-    live_names = {i["metadata"]["name"] for i in lb.get("items", []) if i.get("metadata")}
-    for mi in mb.get("items", []):
-        n = mi.get("metadata", {}).get("name")
-        if n in live_names:
-            return n
+    live_names = {name for name, _ in named_items(lb)}
+    for name, _ in named_items(mb):
+        if name in live_names:
+            return name
     return None
 
 
 def compare_item_structure(path, lb, mb):
-    live_items = {i["metadata"]["name"]: i for i in (lb or {}).get("items", []) if i.get("metadata")}
-    for mi in mb.get("items", []):
-        name = mi.get("metadata", {}).get("name")
+    live_items = dict(named_items(lb))
+    for name, mi in named_items(mb):
         li = live_items.get(name)
         if not li:
             continue
