@@ -25,6 +25,19 @@ type OpenOptions struct {
 	Verbose       bool
 }
 
+// ReplayOptions holds parameters for replaying a capture forward through time.
+type ReplayOptions struct {
+	ArchivePath   string
+	Port          string
+	KubeconfigOut string
+	Speed         string // speed factor, e.g. "2x", "0.5x" (empty = real time)
+	From          string // window start: RFC3339 or relative like -10m (empty = capture start)
+	To            string // window end: RFC3339 or relative like -1m (empty = capture end)
+	Loop          bool
+	StartPaused   bool
+	Verbose       bool
+}
+
 // Server represents a running mock API server.
 type Server struct {
 	address        string
@@ -32,32 +45,60 @@ type Server struct {
 	ar             *archive.Archive
 	httpServer     *http.Server
 	done           chan struct{}
+	clock          *ReplayClock // non-nil in replay mode
+	hasWatch       bool         // capture contains watch events
 }
 
 // Open opens a capture archive, starts the mock HTTPS server, and writes
 // a kubeconfig pointing at it.
 func Open(opts OpenOptions) (*Server, error) {
-	// Open the archive for direct in-memory access (no extraction).
 	ar, err := archive.Open(opts.ArchivePath)
 	if err != nil {
 		return nil, fmt.Errorf("opening archive: %w", err)
 	}
-
-	// Load the capture index into memory.
 	store, err := LoadStore(ar)
 	if err != nil {
 		_ = ar.Close()
 		return nil, fmt.Errorf("loading capture: %w", err)
 	}
-
-	// Parse optional replay timestamp.
 	at, err := parseReplayAt(store.Metadata, opts.At)
 	if err != nil {
 		_ = ar.Close()
 		return nil, err
 	}
+	return serve(ar, store, at, nil, opts.Port, opts.KubeconfigOut, opts.Verbose)
+}
 
-	// Generate a self-signed TLS certificate.
+// Replay opens a capture and starts the mock HTTPS server in replay mode: a
+// clock advances through the [from, to] window at the given speed, streaming
+// captured watch events over time. LIST/GET return state as-of the clock.
+func Replay(opts ReplayOptions) (*Server, error) {
+	ar, err := archive.Open(opts.ArchivePath)
+	if err != nil {
+		return nil, fmt.Errorf("opening archive: %w", err)
+	}
+	store, err := LoadStore(ar)
+	if err != nil {
+		_ = ar.Close()
+		return nil, fmt.Errorf("loading capture: %w", err)
+	}
+	speed, err := parseSpeed(opts.Speed)
+	if err != nil {
+		_ = ar.Close()
+		return nil, err
+	}
+	from, to, err := parseReplayWindow(store.Metadata, opts.From, opts.To)
+	if err != nil {
+		_ = ar.Close()
+		return nil, err
+	}
+	clock := NewReplayClock(from, to, speed, opts.Loop, opts.StartPaused)
+	return serve(ar, store, time.Time{}, clock, opts.Port, opts.KubeconfigOut, opts.Verbose)
+}
+
+// serve brings up the shared TLS listener, kubeconfig, and HTTP server. When
+// clock is non-nil the handler runs in replay mode.
+func serve(ar *archive.Archive, store *CaptureStore, at time.Time, clock *ReplayClock, port, kubeconfigOut string, verbose bool) (*Server, error) {
 	certPEM, keyPEM, err := generateSelfSignedCert()
 	if err != nil {
 		_ = ar.Close()
@@ -69,8 +110,6 @@ func Open(opts OpenOptions) (*Server, error) {
 		return nil, fmt.Errorf("loading TLS cert: %w", err)
 	}
 
-	// Listen on requested port (0 = any available port).
-	port := opts.Port
 	if port == "" || port == "0" {
 		port = "0"
 	}
@@ -82,8 +121,7 @@ func Open(opts OpenOptions) (*Server, error) {
 
 	addr := fmt.Sprintf("https://127.0.0.1:%d", ln.Addr().(*net.TCPAddr).Port)
 
-	// Write kubeconfig.
-	kubeconfigPath := opts.KubeconfigOut
+	kubeconfigPath := kubeconfigOut
 	if kubeconfigPath == "" {
 		home, _ := os.UserHomeDir()
 		kubeconfigPath = filepath.Join(home, ".kube", "k8shark-"+store.Metadata.CaptureID+".yaml")
@@ -94,13 +132,14 @@ func Open(opts OpenOptions) (*Server, error) {
 		return nil, fmt.Errorf("writing kubeconfig: %w", err)
 	}
 
-	// Wrap the listener with TLS.
 	tlsListener := tls.NewListener(ln, &tls.Config{
 		Certificates: []tls.Certificate{tlsCert},
 		MinVersion:   tls.VersionTLS12,
 	})
 
-	httpSrv := &http.Server{Handler: newHandler(store, at, opts.Verbose)}
+	h := newHandler(store, at, verbose)
+	h.clock = clock
+	httpSrv := &http.Server{Handler: h}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -113,6 +152,8 @@ func Open(opts OpenOptions) (*Server, error) {
 		ar:             ar,
 		httpServer:     httpSrv,
 		done:           done,
+		clock:          clock,
+		hasWatch:       len(store.WatchIndex) > 0,
 	}, nil
 }
 
@@ -121,6 +162,15 @@ func (s *Server) Address() string { return s.address }
 
 // KubeconfigPath returns the path to the generated kubeconfig.
 func (s *Server) KubeconfigPath() string { return s.kubeconfigPath }
+
+// Clock returns the replay clock, or nil when the server is not in replay mode.
+func (s *Server) Clock() *ReplayClock { return s.clock }
+
+// HasWatchEvents reports whether the capture contains watch events to stream.
+// Poll-only captures return false; replay still serves LIST/GET as-of the clock
+// but emits no watch events (inferring events for poll-only captures is a later
+// phase).
+func (s *Server) HasWatchEvents() bool { return s.hasWatch }
 
 // Shutdown immediately stops the server and closes the archive.
 // Useful in tests and programmatic usage; Wait() is preferred for CLI use.
@@ -174,4 +224,29 @@ func parseReplayAt(meta capture.CaptureMetadata, raw string) (time.Time, error) 
 	}
 
 	return at, nil
+}
+
+// parseReplayWindow resolves the [from, to] replay window. Empty from/to default
+// to the capture bounds; non-empty values are RFC3339 timestamps or durations
+// relative to the capture end (e.g. -10m), validated to lie within the capture.
+func parseReplayWindow(meta capture.CaptureMetadata, fromRaw, toRaw string) (from, to time.Time, err error) {
+	from = meta.CapturedAt
+	to = meta.CapturedUntil
+
+	if fromRaw != "" {
+		from, err = parseReplayAt(meta, fromRaw)
+		if err != nil {
+			return time.Time{}, time.Time{}, err
+		}
+	}
+	if toRaw != "" {
+		to, err = parseReplayAt(meta, toRaw)
+		if err != nil {
+			return time.Time{}, time.Time{}, err
+		}
+	}
+	if !to.After(from) {
+		return time.Time{}, time.Time{}, fmt.Errorf("--to %s must be after --from %s", to.Format(time.RFC3339), from.Format(time.RFC3339))
+	}
+	return from, to, nil
 }

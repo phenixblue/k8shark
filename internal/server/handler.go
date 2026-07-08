@@ -14,6 +14,10 @@ type handler struct {
 	store   *CaptureStore
 	at      time.Time
 	verbose bool
+	// clock, when non-nil, puts the handler in replay mode: LIST/GET reconstruct
+	// state as-of the clock's advancing position and watches stream captured
+	// events over time (see streamReplayWatch). nil for plain `open`/`ui`.
+	clock *ReplayClock
 }
 
 func newHandler(store *CaptureStore, at time.Time, verbose bool) *handler {
@@ -21,8 +25,13 @@ func newHandler(store *CaptureStore, at time.Time, verbose bool) *handler {
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Per-request timestamp override via header.
+	// In replay mode the effective time is the clock's current position;
+	// otherwise it's the server's fixed --at.
 	replayAt := h.at
+	if h.clock != nil {
+		replayAt = h.clock.Now()
+	}
+	// Per-request timestamp override via header (UI time travel).
 	if v := r.Header.Get("X-K8shark-At"); v != "" {
 		if t, err := time.Parse(time.RFC3339, v); err == nil {
 			replayAt = t
@@ -110,9 +119,14 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Watch requests get a synthetic event stream.
+	// Watch requests get a synthetic event stream. In replay mode the stream is
+	// paced by the clock; otherwise it's the snapshot-burst-then-idle behavior.
 	if r.URL.Query().Get("watch") == "1" || r.URL.Query().Get("watch") == "true" {
-		h.handleWatch(w, r, path, replayAt)
+		if h.clock != nil {
+			h.streamReplayWatch(w, r, path)
+		} else {
+			h.handleWatch(w, r, path, replayAt)
+		}
 		return
 	}
 
@@ -671,82 +685,13 @@ func (h *handler) trySingleItemGet(path string, at time.Time) ([]byte, int) {
 
 func (h *handler) handleWatch(w http.ResponseWriter, r *http.Request, path string, at time.Time) {
 	watchPath := strings.TrimSuffix(path, "/")
-	rawBody, code, err := h.store.ReconstructAt(watchPath, at)
+	list, ok, err := h.resolveWatchList(watchPath, at, r.URL.Query().Get("labelSelector"), r.URL.Query().Get("fieldSelector"))
 	if err != nil {
 		h.writeStatus(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-
-	if code == 404 {
-		// Only aggregate across namespaces for cluster-wide watch paths.
-		if _, _, _, reqNS := parseAPIPath(watchPath); reqNS == "" {
-			rawBody, code, err = h.store.AggregateAcrossNamespaces(watchPath, at)
-			if err != nil {
-				h.writeStatus(w, http.StatusInternalServerError, err.Error())
-				return
-			}
-		}
-	}
-
-	if code == 404 {
-		// Cluster-scoped fallback: resource was captured at the cluster path
-		// (e.g. /api/v1/pods) but the watch targets a specific namespace.
-		// Filter by metadata.namespace so k9s pod/container watchers that use
-		// a namespaced watch path see the right items.
-		g, v, resource, ns := parseAPIPath(watchPath)
-		if ns != "" && resource != "" {
-			var clusterPath string
-			if g == "" {
-				clusterPath = "/api/" + v + "/" + resource
-			} else {
-				clusterPath = "/apis/" + g + "/" + v + "/" + resource
-			}
-			clusterBody, clusterCode, cerr := h.store.ReconstructAt(clusterPath, at)
-			if cerr == nil && clusterCode == 200 {
-				filtered, ferr := applySelectors(clusterBody, "", "metadata.namespace="+ns)
-				if ferr == nil {
-					rawBody, code = filtered, 200
-				}
-			}
-		}
-	}
-
-	if code == 404 {
-		g, v, resource, _ := parseAPIPath(watchPath)
-		if resource != "" {
-			av := v
-			if g != "" {
-				av = g + "/" + v
-			}
-			emptyList, _ := json.Marshal(map[string]any{
-				"apiVersion": av,
-				"kind":       resourceToKind(resource) + "List",
-				"metadata":   map[string]string{"resourceVersion": "0"},
-				"items":      []any{},
-			})
-			rawBody = emptyList
-			code = 200
-		}
-	}
-
-	if code != 200 {
+	if !ok {
 		h.writeStatus(w, http.StatusNotFound, fmt.Sprintf("%q not found in capture", path))
-		return
-	}
-
-	// Apply selectors before streaming watch events.
-	body, _ := applySelectors(rawBody, r.URL.Query().Get("labelSelector"), r.URL.Query().Get("fieldSelector"))
-
-	var list struct {
-		APIVersion string `json:"apiVersion"`
-		Kind       string `json:"kind"`
-		Metadata   struct {
-			ResourceVersion string `json:"resourceVersion"`
-		} `json:"metadata"`
-		Items []json.RawMessage `json:"items"`
-	}
-	if err := json.Unmarshal(body, &list); err != nil {
-		h.writeStatus(w, http.StatusInternalServerError, "parsing list")
 		return
 	}
 
@@ -773,7 +718,7 @@ func (h *handler) handleWatch(w http.ResponseWriter, r *http.Request, path strin
 	}
 
 	// Use resourceVersion from the list metadata; fall back to capture timestamp.
-	rv := list.Metadata.ResourceVersion
+	rv := list.ResourceVersion
 	if rv == "" {
 		rv = fmt.Sprintf("%d", h.store.Metadata.CapturedAt.Unix())
 	}
