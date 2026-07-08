@@ -159,7 +159,9 @@ def strip_volatile_item(item):
     """Drop fields that legitimately drift between capture time and 'now'."""
     if not isinstance(item, dict):
         return item
-    meta = item.get("metadata", {})
+    meta = item.get("metadata")
+    if not isinstance(meta, dict):
+        return item
     for k in list(meta):
         if k in VOLATILE_META:
             meta.pop(k, None)
@@ -443,7 +445,8 @@ def check_resources(live, mock):
                    f"mock status={code} kind={mb.get('kind') if isinstance(mb, dict) else None} want {want_kind}")
             continue
         env_ok = mb.get("apiVersion") == lb.get("apiVersion") and \
-            "resourceVersion" in mb.get("metadata", {}) and isinstance(mb.get("items"), list)
+            isinstance(mb.get("metadata"), dict) and "resourceVersion" in mb["metadata"] and \
+            isinstance(mb.get("items"), list)
         record("reads", f"{path} list envelope", "PASS" if env_ok else "UNEXPECTED",
                "" if env_ok else f"apiVersion/metadata.resourceVersion/items mismatch: keys={list(mb.keys())}")
         # per-item structural comparison for an object present in both
@@ -465,7 +468,7 @@ def check_resources(live, mock):
                    f"live GET {obj_path} unreadable (status={lc}); cannot compare")
         elif (mc == 200 and isinstance(mo, dict) and mo.get("kind") == lo.get("kind")
               and mo.get("apiVersion") == lo.get("apiVersion")
-              and mo.get("metadata", {}).get("name") == name):
+              and isinstance(mo.get("metadata"), dict) and mo["metadata"].get("name") == name):
             record("reads", "single-object GET envelope", "PASS",
                    f"GET {obj_path}: kind={mo.get('kind')} apiVersion={mo.get('apiVersion')}")
         else:
