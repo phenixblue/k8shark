@@ -410,12 +410,19 @@ func (h *handler) replayPass(ctx context.Context, timer <-chan time.Time, clock 
 			if clock.SeekGen() != seekGen {
 				return passSeeked
 			}
-			pos, ep, _ := clock.Sample()
+			pos, ep, ended := clock.Sample()
 			if ep != epoch {
 				return passLooped
 			}
 			if !pos.Before(ev.t) {
 				break
+			}
+			// Window ended (loop disabled) and the clock won't advance to this
+			// event's timestamp — e.g. events after a --to sub-range end. Stop the
+			// pass so the stream goes idle (a later seek restarts it) instead of
+			// waiting forever.
+			if ended {
+				return passDone
 			}
 			// Compute the scaled wait in float space and cap it BEFORE converting
 			// to a time.Duration: a very small speed makes the division huge, and

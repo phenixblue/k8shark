@@ -28,10 +28,11 @@ type watchEvent struct {
 	} `json:"object"`
 }
 
-// openWatchStream connects to a watch URL and returns a `next` that reads the
-// following frame (failing on a 3s timeout). The returned cancel closes the
-// stream.
-func openWatchStream(t *testing.T, url string) (next func() watchEvent, cancel func()) {
+// openWatchStream connects to a watch URL and returns `next` (reads the next
+// frame, failing on a 3s timeout), `tryNext` (reads the next frame within a
+// caller-supplied timeout, reporting ok=false if none arrives), and a cancel
+// that closes the stream.
+func openWatchStream(t *testing.T, url string) (next func() watchEvent, tryNext func(time.Duration) (watchEvent, bool), cancel func()) {
 	t.Helper()
 	ctx, cancelCtx := context.WithCancel(context.Background())
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -76,8 +77,16 @@ func openWatchStream(t *testing.T, url string) (next func() watchEvent, cancel f
 			return watchEvent{}
 		}
 	}
+	tryNext = func(d time.Duration) (watchEvent, bool) {
+		select {
+		case e := <-lines:
+			return e, true
+		case <-time.After(d):
+			return watchEvent{}, false
+		}
+	}
 	cancel = func() { cancelCtx(); resp.Body.Close() }
-	return next, cancel
+	return next, tryNext, cancel
 }
 
 // TestStreamReplayWatch_EmitsEventsInOrder is the core acceptance test: a watch
@@ -245,7 +254,7 @@ func TestStreamReplayWatch_SeekTriggersRelist(t *testing.T) {
 
 	srv := httptest.NewServer(h)
 	defer srv.Close()
-	next, cancel := openWatchStream(t, srv.URL+"/api/v1/namespaces/default/pods?watch=1")
+	next, _, cancel := openWatchStream(t, srv.URL+"/api/v1/namespaces/default/pods?watch=1")
 	defer cancel()
 
 	if e := next(); e.Type != "BOOKMARK" {
@@ -279,7 +288,7 @@ func TestStreamReplayWatch_LoopRelistsWithBookmark(t *testing.T) {
 
 	srv := httptest.NewServer(h)
 	defer srv.Close()
-	next, cancel := openWatchStream(t, srv.URL+"/api/v1/namespaces/default/pods?watch=1")
+	next, _, cancel := openWatchStream(t, srv.URL+"/api/v1/namespaces/default/pods?watch=1")
 	defer cancel()
 
 	if e := next(); e.Type != "BOOKMARK" {
@@ -308,7 +317,7 @@ func TestStreamReplayWatch_BookmarkRVNonZero(t *testing.T) {
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 	// Watch a resource with no captured data → empty-list synthesis (RV "0").
-	next, cancel := openWatchStream(t, srv.URL+"/api/v1/namespaces/default/services?watch=1")
+	next, _, cancel := openWatchStream(t, srv.URL+"/api/v1/namespaces/default/services?watch=1")
 	defer cancel()
 
 	e := next()
@@ -317,5 +326,34 @@ func TestStreamReplayWatch_BookmarkRVNonZero(t *testing.T) {
 	}
 	if rv := e.Object.Metadata.ResourceVersion; rv == "" || rv == "0" {
 		t.Errorf("BOOKMARK resourceVersion = %q, want non-zero", rv)
+	}
+}
+
+// TestStreamReplayWatch_EventsAfterWindowEnd verifies that events timestamped
+// after a --to sub-range end don't hang the stream: in-window events are emitted
+// and the stream goes idle (rather than waiting forever for the clock to reach
+// an event it will never advance to).
+func TestStreamReplayWatch_EventsAfterWindowEnd(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	// Window ends at from+3s: pod-a (at +2s) is inside; pod-b (at +4s) is after.
+	h, _, advance := buildPodWatchStore(t, from, 3, false)
+
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	next, tryNext, cancel := openWatchStream(t, srv.URL+"/api/v1/namespaces/default/pods?watch=1")
+	defer cancel()
+
+	if e := next(); e.Type != "BOOKMARK" {
+		t.Fatalf("first frame = %q, want BOOKMARK", e.Type)
+	}
+	advance(10 * time.Second) // clock clamps at the window end (from+3s)
+
+	if e := next(); e.Type != "ADDED" || e.Object.Metadata.Name != "pod-a" {
+		t.Fatalf("frame = (%s %s), want ADDED pod-a", e.Type, e.Object.Metadata.Name)
+	}
+	// pod-b is past the window end: it must not be emitted, and the stream must
+	// not hang — it should simply idle.
+	if e, ok := tryNext(500 * time.Millisecond); ok {
+		t.Errorf("unexpected frame after window end: (%s %s)", e.Type, e.Object.Metadata.Name)
 	}
 }
