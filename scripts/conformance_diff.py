@@ -389,14 +389,18 @@ def check_openapi(live, mock):
     else:
         record("openapi", "/openapi/v2 served", "UNEXPECTED", f"mock status={mc} (live=200)")
 
-    # /openapi/v3 — compare the index status symmetrically.
+    # /openapi/v3 — compare the index symmetrically, validating the body shape
+    # (a valid index is a JSON object with a "paths" map), not just the status.
     lc3, l3 = live.get_json("/openapi/v3")
     mc3, m3 = mock.get_json("/openapi/v3")
-    if lc3 != 200:
+    if lc3 != 200 or not isinstance(l3, dict) or "paths" not in l3:
         record("openapi", "/openapi/v3 served", "UNEXPECTED",
-               f"live /openapi/v3 unexpected status={lc3} (mock={mc3}); cannot compare")
+               f"live /openapi/v3 unreadable/invalid (status={lc3}); cannot compare")
+    elif mc3 == 200 and isinstance(m3, dict) and "paths" in m3:
+        record("openapi", "/openapi/v3 served", "PASS", "live=mock=200 (valid index)")
     elif mc3 == 200:
-        record("openapi", "/openapi/v3 served", "PASS", f"live=mock={mc3}")
+        record("openapi", "/openapi/v3 served", "UNEXPECTED",
+               f"mock returned 200 but not a valid v3 index (type={type(m3).__name__})")
     else:
         record("openapi", "/openapi/v3 served", "EXPECTED",
                f"mock returns {mc3} (live=200); only served when captured")
