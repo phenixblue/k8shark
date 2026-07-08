@@ -193,4 +193,14 @@ func TestParseReplayWindow(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "--from") {
 		t.Errorf("invalid --from error = %v, want it to mention --from", err)
 	}
+
+	// Missing capture bounds give an actionable error, not a zero-time compare.
+	_, _, err = parseReplayWindow(capture.CaptureMetadata{}, "", "")
+	if err == nil || !strings.Contains(err.Error(), "--from") {
+		t.Errorf("zero-bounds error = %v, want it to ask for --from", err)
+	}
+	_, _, err = parseReplayWindow(capture.CaptureMetadata{}, "2026-04-09T10:00:00Z", "")
+	if err == nil || !strings.Contains(err.Error(), "--to") {
+		t.Errorf("zero end-bound error = %v, want it to ask for --to", err)
+	}
 }

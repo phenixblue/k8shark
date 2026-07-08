@@ -252,6 +252,14 @@ func parseReplayWindow(meta capture.CaptureMetadata, fromRaw, toRaw string) (fro
 			return time.Time{}, time.Time{}, err
 		}
 	}
+	// If the capture metadata lacks bounds (absent/corrupt) and the caller didn't
+	// supply them, report that clearly instead of comparing zero times.
+	if from.IsZero() {
+		return time.Time{}, time.Time{}, fmt.Errorf("capture start time is unknown; specify an explicit --from")
+	}
+	if to.IsZero() {
+		return time.Time{}, time.Time{}, fmt.Errorf("capture end time is unknown; specify an explicit --to")
+	}
 	if !to.After(from) {
 		return time.Time{}, time.Time{}, fmt.Errorf("--to %s must be after --from %s", to.Format(time.RFC3339), from.Format(time.RFC3339))
 	}

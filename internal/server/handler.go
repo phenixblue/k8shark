@@ -726,8 +726,10 @@ func (h *handler) handleWatch(w http.ResponseWriter, r *http.Request, path strin
 	}
 
 	// Use resourceVersion from the list metadata; fall back to capture timestamp.
+	// Treat "0" as unspecified too — aggregated/synthesized empty lists carry
+	// RV "0", but watch clients expect a non-zero BOOKMARK resourceVersion.
 	rv := list.ResourceVersion
-	if rv == "" {
+	if rv == "" || rv == "0" {
 		rv = fmt.Sprintf("%d", h.store.Metadata.CapturedAt.Unix())
 	}
 

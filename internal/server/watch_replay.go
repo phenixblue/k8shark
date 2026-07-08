@@ -236,8 +236,10 @@ func (h *handler) streamReplayWatch(w http.ResponseWriter, r *http.Request, path
 		}
 	}
 	emitBookmark := func(l watchList) {
+		// Treat "0" as unspecified — aggregated/synthesized empty lists carry RV
+		// "0", but watch clients expect a non-zero BOOKMARK resourceVersion.
 		rv := l.ResourceVersion
-		if rv == "" {
+		if rv == "" || rv == "0" {
 			rv = fmt.Sprintf("%d", h.store.Metadata.CapturedAt.Unix())
 		}
 		bookmarkKind := strings.TrimSuffix(l.Kind, "List")

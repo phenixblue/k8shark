@@ -21,7 +21,8 @@ type watchEvent struct {
 	Type   string `json:"type"`
 	Object struct {
 		Metadata struct {
-			Name string `json:"name"`
+			Name            string `json:"name"`
+			ResourceVersion string `json:"resourceVersion"`
 		} `json:"metadata"`
 	} `json:"object"`
 }
@@ -287,5 +288,27 @@ func TestStreamReplayWatch_LoopRelistsWithBookmark(t *testing.T) {
 	advance(6 * time.Second) // cross the window end → loop wrap
 	if e := next(); e.Type != "BOOKMARK" {
 		t.Fatalf("on loop wrap: frame = %q, want relist BOOKMARK", e.Type)
+	}
+}
+
+// TestStreamReplayWatch_BookmarkRVNonZero verifies that a synthesized empty list
+// (a watch on a resource with no captured data) still yields a non-zero BOOKMARK
+// resourceVersion, which watch clients require.
+func TestStreamReplayWatch_BookmarkRVNonZero(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	h, _, _ := buildPodWatchStore(t, from, 20, false)
+
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	// Watch a resource with no captured data → empty-list synthesis (RV "0").
+	next, cancel := openWatchStream(t, srv.URL+"/api/v1/namespaces/default/services?watch=1")
+	defer cancel()
+
+	e := next()
+	if e.Type != "BOOKMARK" {
+		t.Fatalf("first frame = %q, want BOOKMARK", e.Type)
+	}
+	if rv := e.Object.Metadata.ResourceVersion; rv == "" || rv == "0" {
+		t.Errorf("BOOKMARK resourceVersion = %q, want non-zero", rv)
 	}
 }
