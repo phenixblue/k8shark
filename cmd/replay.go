@@ -89,8 +89,9 @@ func runReplay(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Drive playback, e.g.: curl -sk -X POST %s/_k8shark/replay/pause\n", srv.Address())
 
 	if !srv.HasWatchEvents() {
-		fmt.Printf("\nNote: this capture has no watch events, so no changes will stream.\n")
-		fmt.Printf("      Re-capture with 'watch: true' to record ADDED/MODIFIED/DELETED over time.\n")
+		fmt.Printf("\nNote: this capture has no watch events; changes will be inferred by diffing\n")
+		fmt.Printf("      consecutive snapshots. Re-capture with 'watch: true' for precise,\n")
+		fmt.Printf("      higher-resolution ADDED/MODIFIED/DELETED events.\n")
 	}
 
 	if startPaused {

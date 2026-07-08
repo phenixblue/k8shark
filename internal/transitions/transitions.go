@@ -96,6 +96,16 @@ func LoadTransitions(archivePath string, opts FilterOpts) ([]Transition, error) 
 	return all, nil
 }
 
+// InferPollTransitions synthesizes ADDED/MODIFIED/DELETED transitions for a
+// single poll-only API path by diffing its consecutive snapshots in an
+// already-open archive. It is used by replay mode to build an event stream for
+// captures taken without watch: true. The returned transitions are sorted by
+// time.
+func InferPollTransitions(ar *archive.Archive, apiPath string, entry *capture.IndexEntry) ([]Transition, error) {
+	g, v, r, ns := parseAPIPath(apiPath)
+	return pollTransitions(ar, apiPath, entry, g, v, r, ns, FilterOpts{})
+}
+
 // watchTransitions emits transitions for a watch-captured API path by walking
 // the watch-index entries in chronological order. Per-object state is tracked
 // so that Before is populated accurately for MODIFIED and DELETED events.

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -18,10 +19,31 @@ type handler struct {
 	// state as-of the clock's advancing position and watches stream captured
 	// events over time (see streamReplayWatch). nil for plain `open`/`ui`.
 	clock *ReplayClock
+
+	// timelineCache memoizes the (immutable) per-path replay event timeline so
+	// LIST and WATCH don't rebuild it per request — important for poll-only
+	// captures, whose timeline requires diffing every snapshot.
+	timelineMu    sync.Mutex
+	timelineCache map[string][]replayEvent
 }
 
 func newHandler(store *CaptureStore, at time.Time, verbose bool) *handler {
 	return &handler{store: store, at: at, verbose: verbose}
+}
+
+// timelineFor returns the memoized replay timeline for a watch path.
+func (h *handler) timelineFor(watchPath string) []replayEvent {
+	h.timelineMu.Lock()
+	defer h.timelineMu.Unlock()
+	if h.timelineCache == nil {
+		h.timelineCache = map[string][]replayEvent{}
+	}
+	if tl, ok := h.timelineCache[watchPath]; ok {
+		return tl
+	}
+	tl := h.store.buildReplayTimeline(watchPath)
+	h.timelineCache[watchPath] = tl
+	return tl
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -498,6 +520,13 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 		if tb, err2 := buildTable(body); err2 == nil {
 			body = tb
 		}
+	}
+
+	// In replay mode, override a list's resourceVersion with the coherent RV
+	// as-of the clock, so a following WATCH(resourceVersion=RV) aligns with the
+	// event stream's monotonic RVs.
+	if h.clock != nil {
+		body = rewriteListResourceVersion(body, rvAsOf(h.timelineFor(path), at))
 	}
 
 	w.Header().Set("Content-Type", "application/json")
