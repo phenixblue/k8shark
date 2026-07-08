@@ -1,0 +1,8 @@
+{
+  "_comment": "Accepted mock<->upstream divergences (issue #136). Each key is 'category::name' from conformance_diff.py. Entries here are reported but do NOT fail the run; the gate fires only on NEW divergences. See docs/conformance.md for the rationale behind each. Regenerate with WRITE_BASELINE=1.",
+  "accepted": [
+    "errors::404 for unknown group/version",
+    "errors::404 not-found Status object",
+    "version::/version keys"
+  ]
+}

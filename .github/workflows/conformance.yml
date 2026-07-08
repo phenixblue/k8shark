@@ -1,0 +1,60 @@
+name: conformance
+
+# Measures how faithfully the k8shark mock API server (internal/server,
+# started by `kshrk open`) reproduces a real Kubernetes apiserver, by diffing
+# the mock's responses against a live KinD apiserver for the read/discovery
+# surface it serves (issue #136). Fails only on NEW divergences relative to
+# scripts/conformance-baseline.json.
+
+on:
+  pull_request:
+    paths:
+      - 'internal/server/**'
+      - 'internal/capture/**'
+      - 'scripts/conformance*.sh'
+      - 'scripts/conformance_diff.py'
+      - 'scripts/conformance-baseline.json'
+      - '.github/workflows/conformance.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'internal/server/**'
+      - 'internal/capture/**'
+      - 'scripts/conformance*'
+      - '.github/workflows/conformance.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Build kshrk
+        run: make build
+
+      - name: Run mock-server conformance diff
+        run: |
+          set -o pipefail
+          ./scripts/conformance.sh 2>&1 | tee /tmp/conformance.out
+
+      - name: Publish summary
+        if: always()
+        run: |
+          {
+            echo '## Mock ↔ upstream conformance'
+            echo '```'
+            # Strip ANSI, keep the report from the differential section onward.
+            sed 's/\x1b\[[0-9;]*m//g' /tmp/conformance.out \
+              | sed -n '/== A. Discovery/,$p'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
