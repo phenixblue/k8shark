@@ -70,7 +70,20 @@ func (c *ReplayClock) sample() (pos time.Time, epoch int, ended bool) {
 	if span <= 0 {
 		return c.to, c.baseEpoch, !c.loop
 	}
-	elapsed := time.Duration(float64(c.now().Sub(c.wallAnchor)) * c.speed)
+	// Clamp the scaled elapsed time to the representable Duration range before
+	// converting: wallDelta × speed can exceed int64 nanoseconds over a long run
+	// at a high speed, and an overflowing conversion would produce a negative
+	// elapsed (making the clock jump backward or spin).
+	scaled := float64(c.now().Sub(c.wallAnchor)) * c.speed
+	var elapsed time.Duration
+	switch {
+	case scaled <= 0:
+		elapsed = 0
+	case scaled >= float64(math.MaxInt64):
+		elapsed = time.Duration(math.MaxInt64)
+	default:
+		elapsed = time.Duration(scaled)
+	}
 	raw := c.captureAnchor.Add(elapsed)
 	if raw.Before(c.to) {
 		return raw, c.baseEpoch, false
