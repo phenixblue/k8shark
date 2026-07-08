@@ -726,7 +726,9 @@ func (h *handler) handleWatch(w http.ResponseWriter, r *http.Request, path strin
 	// RV "0", but watch clients expect a non-zero BOOKMARK resourceVersion.
 	rv := list.ResourceVersion
 	if rv == "" || rv == "0" {
-		rv = bookmarkResourceVersion(h.store.Metadata.CapturedAt, h.store.Metadata.CapturedUntil, at)
+		// Lead with the list-as-of time so the BOOKMARK RV aligns with --at / UI
+		// time travel; fall back to the capture bounds when `at` is unset.
+		rv = bookmarkResourceVersion(at, h.store.Metadata.CapturedAt, h.store.Metadata.CapturedUntil)
 	}
 
 	// BOOKMARK signals end of initial list; kubectl -w then waits for new events.
@@ -882,7 +884,16 @@ func watchTimeout(secs string) (<-chan time.Time, func()) {
 		return nil, func() {}
 	}
 	t := time.NewTimer(time.Duration(n) * time.Second)
-	return t.C, func() { t.Stop() }
+	return t.C, func() {
+		// Drain if the timer already fired, so no value stays buffered on the
+		// channel keeping the timer reachable.
+		if !t.Stop() {
+			select {
+			case <-t.C:
+			default:
+			}
+		}
+	}
 }
 
 // bookmarkResourceVersion returns a non-zero, non-negative resourceVersion for a
