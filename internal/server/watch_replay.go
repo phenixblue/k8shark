@@ -164,21 +164,24 @@ func (h *handler) streamReplayWatch(w http.ResponseWriter, r *http.Request, path
 	timeline := h.timelineFor(watchPath)
 	windowStart, _ := clock.Window()
 
-	// Resume vs list+stream, plus stale-RV → 410.
+	// Resume vs list+stream, plus stale-RV → 410. Parse the RV first so any zero
+	// value ("0", "00", …) is treated as unset (list+stream), not resume.
 	resume := false
 	var minRV int64
-	if rvParam := r.URL.Query().Get("resourceVersion"); rvParam != "" && rvParam != "0" {
+	if rvParam := r.URL.Query().Get("resourceVersion"); rvParam != "" {
 		v, err := strconv.ParseInt(rvParam, 10, 64)
 		if err != nil || v < 0 {
 			h.writeGone(w, fmt.Sprintf("resourceVersion %q is not valid; relist", rvParam))
 			return
 		}
-		if v < rvAsOf(timeline, windowStart) {
-			h.writeGone(w, fmt.Sprintf("resourceVersion %d is before the replay window; relist", v))
-			return
+		if v > 0 {
+			if v < rvAsOf(timeline, windowStart) {
+				h.writeGone(w, fmt.Sprintf("resourceVersion %d is before the replay window; relist", v))
+				return
+			}
+			resume = true
+			minRV = v
 		}
-		resume = true
-		minRV = v
 	}
 
 	startAt, startEpoch, _ := clock.Sample()

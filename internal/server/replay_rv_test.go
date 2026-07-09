@@ -183,6 +183,25 @@ func TestReplayWatch_StaleRVReturns410(t *testing.T) {
 	}
 }
 
+// TestReplayWatch_ZeroRVListsNotGone verifies any zero-valued resourceVersion
+// ("0", "00", …) is treated as unset (list+stream), not resume/410.
+func TestReplayWatch_ZeroRVListsNotGone(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	h, _, _ := buildPodWatchStore(t, from, 20, false)
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	for _, rv := range []string{"0", "00"} {
+		next, _, cancel := openWatchStream(t, srv.URL+"/api/v1/namespaces/default/pods?watch=1&resourceVersion="+rv)
+		// Initial list is empty → first frame is the BOOKMARK (a 410 would have
+		// failed openWatchStream on the non-200 status).
+		if e := next(); e.Type != "BOOKMARK" {
+			t.Errorf("rv=%q: first frame = %q, want BOOKMARK", rv, e.Type)
+		}
+		cancel()
+	}
+}
+
 // TestReplayWatch_PollOnly verifies replay works for a capture with no watch
 // index by inferring events from snapshot diffs.
 func TestReplayWatch_PollOnly(t *testing.T) {
