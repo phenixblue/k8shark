@@ -34,17 +34,30 @@ func newHandler(store *CaptureStore, at time.Time, verbose bool) *handler {
 // timelineFor returns the memoized replay timeline for a watch path. The key is
 // normalized (trailing "/" trimmed) so a LIST on ".../pods/" and a WATCH on
 // ".../pods" share one timeline — keeping their RVs coherent and the cache warm.
+//
+// The (potentially expensive, for poll-only) build runs without the lock held so
+// it doesn't block concurrent requests for other paths; at worst two goroutines
+// build the same timeline once, and the first stored result wins.
 func (h *handler) timelineFor(watchPath string) []replayEvent {
 	watchPath = strings.TrimSuffix(watchPath, "/")
+
 	h.timelineMu.Lock()
-	defer h.timelineMu.Unlock()
 	if h.timelineCache == nil {
 		h.timelineCache = map[string][]replayEvent{}
 	}
 	if tl, ok := h.timelineCache[watchPath]; ok {
+		h.timelineMu.Unlock()
 		return tl
 	}
+	h.timelineMu.Unlock()
+
 	tl := h.store.buildReplayTimeline(watchPath)
+
+	h.timelineMu.Lock()
+	defer h.timelineMu.Unlock()
+	if existing, ok := h.timelineCache[watchPath]; ok {
+		return existing // another goroutine won the race; use its result
+	}
 	h.timelineCache[watchPath] = tl
 	return tl
 }

@@ -275,16 +275,20 @@ func (h *handler) streamReplayWatch(w http.ResponseWriter, r *http.Request, path
 			return rv
 		}
 		for _, item := range l.Items {
-			emit("ADDED", item)
+			// Stamp burst items with the list's coherent rv so a client that
+			// resumes from an observed object RV aligns with the event stream.
+			emit("ADDED", withResourceVersion(item, rv))
 		}
 		emitBookmark(l, rv)
 		return rv
 	}
 
 	// Initial list burst + bookmark, unless resuming from a client-supplied RV.
+	// Burst items carry the list's coherent rv (minRV = rvAsOf(startAt)) so a
+	// client resuming from an observed object RV aligns with the event stream.
 	if !resume {
 		for _, item := range list.Items {
-			emit("ADDED", item)
+			emit("ADDED", withResourceVersion(item, minRV))
 		}
 		emitBookmark(list, minRV)
 	}

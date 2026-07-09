@@ -183,6 +183,35 @@ func TestReplayWatch_StaleRVReturns410(t *testing.T) {
 	}
 }
 
+// TestReplayWatch_ListBurstCarriesCoherentRV verifies the initial ADDED burst
+// stamps items with the coherent rvAsOf value, not the captured object RV, so a
+// client resuming from an observed object RV aligns with the event stream.
+func TestReplayWatch_ListBurstCarriesCoherentRV(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	path := "/api/v1/namespaces/default/pods"
+	store := buildTestStoreWithWatch(t,
+		map[string]watchTestRecord{path: {id: "s", at: from, body: podList("pod-x")}},
+		[]watchTestEvent{
+			{id: "e1", apiPath: path, at: from.Add(2 * time.Second), eventType: "ADDED", objectBody: podBody("pod-y")},
+		})
+	clock, _ := newTestClock(t, from, from.Add(20*time.Second), 1, false, false)
+	h := newHandler(store, time.Time{}, false)
+	h.clock = clock
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	next, _, cancel := openWatchStream(t, srv.URL+path+"?watch=1")
+	defer cancel()
+
+	e := next()
+	if e.Type != "ADDED" || e.Object.Metadata.Name != "pod-x" {
+		t.Fatalf("first frame = (%s %s), want ADDED pod-x", e.Type, e.Object.Metadata.Name)
+	}
+	if e.Object.Metadata.ResourceVersion != "1" {
+		t.Errorf("burst item rv = %q, want \"1\" (rvAsOf(start), not captured RV)", e.Object.Metadata.ResourceVersion)
+	}
+}
+
 // TestReplayWatch_ZeroRVListsNotGone verifies any zero-valued resourceVersion
 // ("0", "00", …) is treated as unset (list+stream), not resume/410.
 func TestReplayWatch_ZeroRVListsNotGone(t *testing.T) {
