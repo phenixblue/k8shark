@@ -8,10 +8,6 @@
 
 > **Customer cluster is broken. You can't get access. You can't reproduce it. k8shark fixes that.**
 
-> **Important:** `k8shark` is under active development. Performance and architecture work is landing quickly, and some updates can be backward-incompatible until the API and archive format stabilize.
->
-> For production usage, prefer the latest release candidate (`v0.2.0-rc.N`) so you get compatibility fixes and the current capture/replay behavior.
-
 **k8shark** captures a Kubernetes cluster's state over time and packages it into a single portable archive. A built-in mock API server lets support engineers replay that archive exactly like a live cluster — no direct connectivity required.
 
 A customer hands over one file. A support engineer queries the environment interactively, without live cluster access or back-and-forth command output.
