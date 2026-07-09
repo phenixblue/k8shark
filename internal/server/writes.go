@@ -80,13 +80,8 @@ func (h *handler) replayFloorRV(group, version, resource, namespace string) int6
 }
 
 func (h *handler) overlayCreate(w http.ResponseWriter, r *http.Request, group, version, resource, namespace string) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxWriteBytes))
-	if err != nil {
-		h.writeStatus(w, http.StatusBadRequest, "reading body: "+err.Error())
-		return
-	}
-	if !isJSONObject(body) {
-		h.writeStatus(w, http.StatusBadRequest, "request body must be a JSON object")
+	body, ok := h.readObjectBody(w, r)
+	if !ok {
 		return
 	}
 	name := metaString(body, "name")
@@ -139,13 +134,8 @@ func (h *handler) overlayReplace(w http.ResponseWriter, r *http.Request, group, 
 		h.writeStatus(w, http.StatusMethodNotAllowed, "unsupported subresource: "+sub)
 		return
 	}
-	body, err := io.ReadAll(io.LimitReader(r.Body, maxWriteBytes))
-	if err != nil {
-		h.writeStatus(w, http.StatusBadRequest, "reading body: "+err.Error())
-		return
-	}
-	if !isJSONObject(body) {
-		h.writeStatus(w, http.StatusBadRequest, "request body must be a JSON object")
+	body, ok := h.readObjectBody(w, r)
+	if !ok {
 		return
 	}
 	if h.identityMismatch(w, body, name, namespace) {
