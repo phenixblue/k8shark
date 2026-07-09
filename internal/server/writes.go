@@ -121,7 +121,34 @@ func (h *handler) overlayCreate(w http.ResponseWriter, r *http.Request, group, v
 		"generation":        1,
 	})
 	h.overlay.store(group, version, resource, namespace, name, obj, rv)
+	// A real cluster's ServiceAccount controller auto-creates a `default`
+	// ServiceAccount in every new namespace. The overlay has no controllers, so
+	// synthesize it — otherwise clients (and the e2e framework) that wait for it
+	// hang. `name` is the new namespace's name (namespaces are cluster-scoped).
+	if group == "" && resource == "namespaces" {
+		h.ensureDefaultServiceAccount(name)
+	}
 	writeJSON(w, http.StatusCreated, json.RawMessage(obj))
+}
+
+// ensureDefaultServiceAccount synthesizes the `default` ServiceAccount that a
+// real cluster's controller creates in each new namespace, so overlay clients
+// that wait for it can proceed. Modern Kubernetes (1.24+) provisions no token
+// Secret for it, so a bare SA object is sufficient. No-op if one already exists.
+func (h *handler) ensureDefaultServiceAccount(namespace string) {
+	const saResource, saName = "serviceaccounts", "default"
+	if h.currentObject("", "v1", saResource, namespace, saName) != nil {
+		return
+	}
+	rv := h.overlay.nextRV(h.replayFloorRV("", "v1", saResource, namespace))
+	sa := mergeMeta(json.RawMessage(`{"apiVersion":"v1","kind":"ServiceAccount"}`), map[string]any{
+		"name":              saName,
+		"namespace":         namespace,
+		"uid":               uuid.New().String(),
+		"resourceVersion":   strconv.FormatInt(rv, 10),
+		"creationTimestamp": h.nowRFC3339(),
+	})
+	h.overlay.store("", "v1", saResource, namespace, saName, sa, rv)
 }
 
 func (h *handler) overlayReplace(w http.ResponseWriter, r *http.Request, group, version, resource, namespace, name, sub string) {

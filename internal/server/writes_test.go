@@ -508,3 +508,31 @@ func TestOverlay_ReadOnlyRejectsWrites(t *testing.T) {
 		t.Errorf("read-only POST: status %d, want 405", code)
 	}
 }
+
+func TestOverlay_DefaultServiceAccountOnNamespaceCreate(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	// Creating a namespace synthesizes its `default` ServiceAccount (a real
+	// cluster's controller would); the overlay has none.
+	nsBody := `{"apiVersion":"v1","kind":"Namespace","metadata":{"name":"ns-x"}}`
+	if code, _ := doReq(t, http.MethodPost, srv.URL+"/api/v1/namespaces", "application/json", nsBody); code != http.StatusCreated {
+		t.Fatalf("create namespace: status %d, want 201", code)
+	}
+
+	saPath := "/api/v1/namespaces/ns-x/serviceaccounts"
+	code, got := doReq(t, http.MethodGet, srv.URL+saPath+"/default", "", "")
+	if code != http.StatusOK {
+		t.Fatalf("GET default SA: status %d, want 200\n%s", code, got)
+	}
+	if n := metaString(got, "name"); n != "default" {
+		t.Errorf("SA name = %q, want default", n)
+	}
+	if rv := bodyRV(t, got); rv == "" || rv == "0" {
+		t.Errorf("SA resourceVersion = %q, want non-zero", rv)
+	}
+	if _, list := doReq(t, http.MethodGet, srv.URL+saPath, "", ""); !contains(listNames(t, list), "default") {
+		t.Errorf("SA list missing default: %v", listNames(t, list))
+	}
+}
