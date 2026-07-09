@@ -28,7 +28,7 @@ func (h *handler) handleWrite(w http.ResponseWriter, r *http.Request, path strin
 	switch r.Method {
 	case http.MethodPost:
 		if name != "" { // create is a collection operation
-			w.Header().Set("Allow", "GET, HEAD, PUT, PATCH, DELETE")
+			w.Header().Set("Allow", allowedMethods(name, sub))
 			h.writeStatus(w, http.StatusMethodNotAllowed, "POST creates at a collection path, not an item path")
 			return
 		}
@@ -51,7 +51,7 @@ func (h *handler) handleWrite(w http.ResponseWriter, r *http.Request, path strin
 			return
 		}
 		if sub != "" {
-			w.Header().Set("Allow", "GET, HEAD, PUT, PATCH")
+			w.Header().Set("Allow", allowedMethods(name, sub))
 			h.writeStatus(w, http.StatusMethodNotAllowed, "cannot DELETE a subresource")
 			return
 		}
@@ -134,7 +134,7 @@ func (h *handler) overlayReplace(w http.ResponseWriter, r *http.Request, group, 
 		return
 	}
 	if sub != "" && sub != "status" {
-		w.Header().Set("Allow", "GET, HEAD")
+		w.Header().Set("Allow", allowedMethods(name, sub))
 		h.writeStatus(w, http.StatusMethodNotAllowed, "unsupported subresource: "+sub)
 		return
 	}
@@ -175,7 +175,7 @@ func (h *handler) overlayPatch(w http.ResponseWriter, r *http.Request, group, ve
 		return
 	}
 	if sub != "" && sub != "status" {
-		w.Header().Set("Allow", "GET, HEAD")
+		w.Header().Set("Allow", allowedMethods(name, sub))
 		h.writeStatus(w, http.StatusMethodNotAllowed, "unsupported subresource: "+sub)
 		return
 	}
@@ -321,6 +321,23 @@ func applyPatch(current, patch []byte, contentType string) ([]byte, error) {
 		return p.Apply(current)
 	default: // merge-patch, strategic-merge (fallback), apply-patch (fallback)
 		return jsonpatch.MergePatch(current, patch)
+	}
+}
+
+// allowedMethods returns the Allow-header value for a write path shape, used on
+// 405 responses (RFC 7231 §6.5.5): collection paths allow create; item paths
+// allow the full CRUD set; the status subresource is read + update (no delete);
+// any other subresource is read-only.
+func allowedMethods(name, sub string) string {
+	switch {
+	case name == "":
+		return "GET, HEAD, POST"
+	case sub == "":
+		return "GET, HEAD, PUT, PATCH, DELETE"
+	case sub == "status":
+		return "GET, HEAD, PUT, PATCH"
+	default:
+		return "GET, HEAD"
 	}
 }
 
