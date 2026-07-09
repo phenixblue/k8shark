@@ -309,13 +309,14 @@ func (h *handler) nowRFC3339() string {
 // maxWriteBytes caps request bodies accepted by the overlay.
 const maxWriteBytes = 8 << 20 // 8 MiB
 
-// patchMediaType strips any parameters from a PATCH Content-Type.
+// patchMediaType strips any parameters from a PATCH Content-Type and lower-cases
+// it (media types are case-insensitive per RFC 7231).
 func patchMediaType(contentType string) string {
 	ct := contentType
 	if i := strings.IndexByte(ct, ';'); i >= 0 {
 		ct = ct[:i]
 	}
-	return strings.TrimSpace(ct)
+	return strings.ToLower(strings.TrimSpace(ct))
 }
 
 // supportedPatchType reports whether the PATCH Content-Type is one we handle;

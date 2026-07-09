@@ -351,6 +351,10 @@ func TestOverlay_NullBodyNoPanic(t *testing.T) {
 	if code, _ := doReq(t, http.MethodPatch, srv.URL+podsPath+"/pod-n", "text/plain", `{"x":1}`); code != http.StatusUnsupportedMediaType {
 		t.Errorf("unknown patch content-type: status %d, want 415", code)
 	}
+	// Media types are case-insensitive.
+	if code, _ := doReq(t, http.MethodPatch, srv.URL+podsPath+"/pod-n", "Application/Merge-Patch+JSON", `{"metadata":{"labels":{"c":"d"}}}`); code != 200 {
+		t.Errorf("mixed-case patch content-type: status %d, want 200", code)
+	}
 	if code, _ := doReq(t, http.MethodPatch, srv.URL+podsPath+"/pod-n", "", `{"x":1}`); code != http.StatusUnsupportedMediaType {
 		t.Errorf("empty patch content-type: status %d, want 415", code)
 	}
