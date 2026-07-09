@@ -20,12 +20,19 @@ import (
 //	POST /v2/api/replay/seek?to=     → seek to an RFC3339 time
 //	                          ?offset=→   or a duration from the window start
 func (h *Handler) serveReplay(w http.ResponseWriter, r *http.Request) {
+	action := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v2/api/replay"), "/")
+
 	if h.Clock == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
+		// GET status reports "not in replay mode"; any control action is a 404 so
+		// a non-UI client doesn't see a mutating call succeed as a silent no-op.
+		if action == "" && r.Method == http.MethodGet {
+			writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
+			return
+		}
+		writeJSON(w, http.StatusNotFound, map[string]any{"enabled": false, "error": "replay mode is not active"})
 		return
 	}
 	clock := h.Clock
-	action := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v2/api/replay"), "/")
 
 	switch action {
 	case "":

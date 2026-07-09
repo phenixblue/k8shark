@@ -24,6 +24,13 @@ func TestServeReplay_DisabledWithoutClock(t *testing.T) {
 	if m["enabled"] != false {
 		t.Errorf("enabled = %v, want false", m["enabled"])
 	}
+
+	// A control action when replay is off is a 404, not a silent 200 no-op.
+	rec = httptest.NewRecorder()
+	h.serveReplay(rec, httptest.NewRequest(http.MethodPost, "/v2/api/replay/pause", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("POST pause without clock: status = %d, want 404", rec.Code)
+	}
 }
 
 func TestServeReplay_Control(t *testing.T) {

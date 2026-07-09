@@ -252,7 +252,8 @@
       const url = new URL('/v2/api/replay/' + action, location.href);
       for (const k in (params || {})) url.searchParams.set(k, params[k]);
       const res = await fetch(url.toString(), { method: 'POST' });
-      const data = await res.json();
+      let data = null;
+      try { data = await res.json(); } catch (_) { /* non-JSON error body */ }
       if (!res.ok) throw new Error((data && data.error) || `${res.status} ${res.statusText}`);
       applyReplayStatus(data, true);
     } catch (e) {
