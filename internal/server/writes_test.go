@@ -447,6 +447,24 @@ func TestOverlay_TableReflectsWrite(t *testing.T) {
 	}
 }
 
+// TestOverlay_CrossScopeRVIsolation verifies a write to one resource does not
+// inflate another resource's list resourceVersion (RVs are per path).
+func TestOverlay_CrossScopeRVIsolation(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	// A write to configmaps bumps the global overlay counter.
+	doReq(t, http.MethodPost, srv.URL+"/api/v1/namespaces/default/configmaps", "application/json",
+		`{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"cm","namespace":"default"}}`)
+
+	// The pods LIST RV must be unaffected by the configmap write.
+	_, list := doReq(t, http.MethodGet, srv.URL+podsPath, "", "")
+	if rv := metaString(list, "resourceVersion"); rv != "1" {
+		t.Errorf("pods list RV = %q, want \"1\" (not inflated by the configmap write)", rv)
+	}
+}
+
 func TestOverlay_ReadOnlyRejectsWrites(t *testing.T) {
 	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
 	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)

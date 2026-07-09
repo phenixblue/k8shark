@@ -81,11 +81,23 @@ func (o *overlay) reset() {
 	o.mu.Unlock()
 }
 
-// currentRV returns the highest RV the overlay has assigned so far.
-func (o *overlay) currentRV() int64 {
+// scopeRV returns the highest overlay RV among entries in a list scope
+// (group/version/resource, and namespace — empty matches all namespaces). Replay
+// RVs are per watch/list path, so list/watch RV coherence must use the scoped
+// overlay RV, not the global counter (which mixes writes across resources).
+func (o *overlay) scopeRV(group, version, resource, namespace string) int64 {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
-	return o.counter
+	var maxRV int64
+	for _, e := range o.items {
+		if e.group == group && e.version == version && e.resource == resource &&
+			(namespace == "" || e.namespace == namespace) {
+			if e.rv > maxRV {
+				maxRV = e.rv
+			}
+		}
+	}
+	return maxRV
 }
 
 // bumpRV advances the monotonic counter to at least floorRV+1 and returns it.

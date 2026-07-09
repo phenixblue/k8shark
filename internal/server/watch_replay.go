@@ -191,7 +191,8 @@ func (h *handler) streamReplayWatch(w http.ResponseWriter, r *http.Request, path
 		// (otherwise a LIST→WATCH informer would loop on 410).
 		maxRV := replayRVBase + int64(len(timeline))
 		if h.overlay != nil {
-			if orv := h.overlay.currentRV(); orv > maxRV {
+			g, v, resource, namespace := parseAPIPath(watchPath)
+			if orv := h.overlay.scopeRV(g, v, resource, namespace); orv > maxRV {
 				maxRV = orv
 			}
 		}

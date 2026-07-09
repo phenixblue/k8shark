@@ -587,7 +587,8 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 		body = rewriteListResourceVersion(body, func() int64 {
 			rv := rvAsOf(h.timelineFor(path), at)
 			if h.overlay != nil {
-				if orv := h.overlay.currentRV(); orv > rv {
+				g, v, resource, namespace := parseAPIPath(strings.TrimSuffix(path, "/"))
+				if orv := h.overlay.scopeRV(g, v, resource, namespace); orv > rv {
 					rv = orv
 				}
 			}
