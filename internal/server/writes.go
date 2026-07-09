@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	jsonpatch "gopkg.in/evanphx/json-patch.v4"
+	"sigs.k8s.io/yaml"
 )
 
 // handleWrite services a create/update/patch/delete against the in-memory overlay
@@ -340,7 +341,15 @@ func applyPatch(current, patch []byte, contentType string) ([]byte, error) {
 			return nil, err
 		}
 		return p.Apply(current)
-	default: // merge-patch, strategic-merge (fallback), apply-patch (fallback)
+	case "application/apply-patch+yaml":
+		// Server-side apply bodies are YAML; convert to JSON, then merge as an
+		// interim (real SSA field management lands in a later PR).
+		j, err := yaml.YAMLToJSON(patch)
+		if err != nil {
+			return nil, err
+		}
+		return jsonpatch.MergePatch(current, j)
+	default: // merge-patch, strategic-merge (fallback)
 		return jsonpatch.MergePatch(current, patch)
 	}
 }

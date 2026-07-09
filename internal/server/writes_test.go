@@ -472,6 +472,24 @@ func TestOverlay_CrossScopeRVIsolation(t *testing.T) {
 	}
 }
 
+// TestOverlay_ApplyPatchYAML verifies apply-patch+yaml bodies (YAML) are parsed
+// and merged (interim SSA behavior).
+func TestOverlay_ApplyPatchYAML(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	doReq(t, http.MethodPost, srv.URL+podsPath, "application/json", podBody("pod-a"))
+	yamlBody := "apiVersion: v1\nkind: Pod\nmetadata:\n  name: pod-a\n  namespace: default\n  labels:\n    applied: \"yes\"\n"
+	code, got := doReq(t, http.MethodPatch, srv.URL+podsPath+"/pod-a", "application/apply-patch+yaml", yamlBody)
+	if code != 200 {
+		t.Fatalf("apply-patch yaml: status %d: %s", code, got)
+	}
+	if !strings.Contains(string(got), `"applied":"yes"`) {
+		t.Errorf("apply-patch did not merge YAML body: %s", got)
+	}
+}
+
 func TestOverlay_ReadOnlyRejectsWrites(t *testing.T) {
 	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
 	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
