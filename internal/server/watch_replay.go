@@ -161,27 +161,32 @@ func (h *handler) streamReplayWatch(w http.ResponseWriter, r *http.Request, path
 	labelSel := r.URL.Query().Get("labelSelector")
 	fieldSel := r.URL.Query().Get("fieldSelector")
 
-	timeline := h.timelineFor(watchPath)
-	windowStart, _ := clock.Window()
-
-	// Resume vs list+stream, plus stale-RV → 410. Parse the RV first so any zero
-	// value ("0", "00", …) is treated as unset (list+stream), not resume.
-	resume := false
-	var minRV int64
+	// Validate resourceVersion first — a malformed/negative value returns 410
+	// before we build the (possibly expensive, poll-only) timeline. Any value
+	// that parses to 0 ("0", "00", …) is unset → list+stream.
+	reqRV, hasReqRV := int64(0), false
 	if rvParam := r.URL.Query().Get("resourceVersion"); rvParam != "" {
 		v, err := strconv.ParseInt(rvParam, 10, 64)
 		if err != nil || v < 0 {
 			h.writeGone(w, fmt.Sprintf("resourceVersion %q is not valid; relist", rvParam))
 			return
 		}
-		if v > 0 {
-			if v < rvAsOf(timeline, windowStart) {
-				h.writeGone(w, fmt.Sprintf("resourceVersion %d is before the replay window; relist", v))
-				return
-			}
-			resume = true
-			minRV = v
+		reqRV, hasReqRV = v, v > 0
+	}
+
+	timeline := h.timelineFor(watchPath)
+	windowStart, _ := clock.Window()
+
+	// Resume vs list+stream, plus stale-RV → 410 (window check needs the timeline).
+	resume := false
+	var minRV int64
+	if hasReqRV {
+		if reqRV < rvAsOf(timeline, windowStart) {
+			h.writeGone(w, fmt.Sprintf("resourceVersion %d is before the replay window; relist", reqRV))
+			return
 		}
+		resume = true
+		minRV = reqRV
 	}
 
 	startAt, startEpoch, _ := clock.Sample()

@@ -69,7 +69,9 @@ func (s *CaptureStore) snapshotPaths(watchPath string) []string {
 	}
 	var out []string
 	for p := range s.Index {
-		if strings.Contains(p, "?") {
+		// Skip the Table-format sentinel; a bare list snapshot is what we diff.
+		// Other query keys (e.g. log ?container=) never match the resource suffix.
+		if strings.HasSuffix(p, tableIndexKeySuffix) {
 			continue
 		}
 		if strings.HasPrefix(p, prefix) && strings.HasSuffix(p, suffix) {
@@ -79,6 +81,9 @@ func (s *CaptureStore) snapshotPaths(watchPath string) []string {
 	sort.Strings(out)
 	return out
 }
+
+// tableIndexKeySuffix marks captured Table-format list responses in the index.
+const tableIndexKeySuffix = "?as=Table"
 
 // clusterWideChildPrefix returns the "/namespaces/" prefix and "/<resource>"
 // suffix used to find the per-namespace children of a cluster-wide watch path.

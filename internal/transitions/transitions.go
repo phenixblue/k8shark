@@ -102,7 +102,13 @@ func LoadTransitions(archivePath string, opts FilterOpts) ([]Transition, error) 
 // captures taken without watch: true. The returned transitions are sorted by
 // time.
 func InferPollTransitions(ar *archive.Archive, apiPath string, entry *capture.IndexEntry) ([]Transition, error) {
-	g, v, r, ns := parseAPIPath(apiPath)
+	// Strip any query (e.g. pagination) before parsing so the resource metadata
+	// stays correct even if the record is keyed with query params.
+	base := apiPath
+	if i := strings.IndexByte(base, '?'); i >= 0 {
+		base = base[:i]
+	}
+	g, v, r, ns := parseAPIPath(base)
 	return pollTransitions(ar, apiPath, entry, g, v, r, ns, FilterOpts{})
 }
 
