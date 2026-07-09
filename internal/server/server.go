@@ -35,6 +35,7 @@ type ReplayOptions struct {
 	To            string // window end: RFC3339 or relative like -1m (empty = capture end)
 	Loop          bool
 	StartPaused   bool
+	Writable      bool // accept client writes into an in-memory overlay
 	Verbose       bool
 }
 
@@ -46,6 +47,7 @@ type Server struct {
 	httpServer     *http.Server
 	done           chan struct{}
 	clock          *ReplayClock // non-nil in replay mode
+	writable       bool         // overlay enabled
 	hasWatch       bool         // capture contains watch events
 }
 
@@ -66,7 +68,7 @@ func Open(opts OpenOptions) (*Server, error) {
 		_ = ar.Close()
 		return nil, err
 	}
-	return serve(ar, store, at, nil, opts.Port, opts.KubeconfigOut, opts.Verbose)
+	return serve(ar, store, at, nil, false, opts.Port, opts.KubeconfigOut, opts.Verbose)
 }
 
 // Replay opens a capture and starts the mock HTTPS server in replay mode: a
@@ -93,12 +95,13 @@ func Replay(opts ReplayOptions) (*Server, error) {
 		return nil, err
 	}
 	clock := NewReplayClock(from, to, speed, opts.Loop, opts.StartPaused)
-	return serve(ar, store, time.Time{}, clock, opts.Port, opts.KubeconfigOut, opts.Verbose)
+	return serve(ar, store, time.Time{}, clock, opts.Writable, opts.Port, opts.KubeconfigOut, opts.Verbose)
 }
 
 // serve brings up the shared TLS listener, kubeconfig, and HTTP server. When
-// clock is non-nil the handler runs in replay mode.
-func serve(ar *archive.Archive, store *CaptureStore, at time.Time, clock *ReplayClock, port, kubeconfigOut string, verbose bool) (*Server, error) {
+// clock is non-nil the handler runs in replay mode; when writable is set (replay
+// only) client writes land in an in-memory overlay.
+func serve(ar *archive.Archive, store *CaptureStore, at time.Time, clock *ReplayClock, writable bool, port, kubeconfigOut string, verbose bool) (*Server, error) {
 	certPEM, keyPEM, err := generateSelfSignedCert()
 	if err != nil {
 		_ = ar.Close()
@@ -139,6 +142,9 @@ func serve(ar *archive.Archive, store *CaptureStore, at time.Time, clock *Replay
 
 	h := newHandler(store, at, verbose)
 	h.clock = clock
+	if writable && clock != nil { // writable is a replay-only feature
+		h.overlay = newOverlay()
+	}
 	httpSrv := &http.Server{Handler: h}
 	done := make(chan struct{})
 	go func() {
@@ -153,9 +159,13 @@ func serve(ar *archive.Archive, store *CaptureStore, at time.Time, clock *Replay
 		httpServer:     httpSrv,
 		done:           done,
 		clock:          clock,
+		writable:       h.overlay != nil,
 		hasWatch:       len(store.WatchIndex) > 0,
 	}, nil
 }
+
+// Writable reports whether the server accepts client writes into the overlay.
+func (s *Server) Writable() bool { return s.writable }
 
 // Address returns the HTTPS listen address (e.g. "https://127.0.0.1:54321").
 func (s *Server) Address() string { return s.address }

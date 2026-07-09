@@ -405,6 +405,7 @@ The primary use case is **local development and testing of controllers/operators
 | `--start-paused` | false | Start paused (press Enter to begin, or use the dashboard when `--ui` is set) |
 | `--ui` | false | Also start the web dashboard as a replay transport (VCR), sharing the clock |
 | `--ui-port` | random | Port for the dashboard when `--ui` is set |
+| `--writable` | false | Accept client writes into an in-memory overlay (closed-loop controller dev) |
 | `--port` | random | Port for the mock API server |
 | `--kubeconfig-out` | `~/.kube/k8shark-<id>.yaml` | Where to write the generated kubeconfig |
 | `--verbose` / `-v` | false | Log every request the server receives |

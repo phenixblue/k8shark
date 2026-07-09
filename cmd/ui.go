@@ -47,6 +47,7 @@ func init() {
 	uiCmd.Flags().String("to", "", "replay window end: RFC3339 or relative duration like -1m")
 	uiCmd.Flags().Bool("loop", false, "replay mode: restart from the window start when the end is reached")
 	uiCmd.Flags().Bool("start-paused", false, "replay mode: start paused")
+	uiCmd.Flags().Bool("writable", false, "replay mode: accept client writes into an in-memory overlay")
 }
 
 func runUI(cmd *cobra.Command, args []string) error {
@@ -75,13 +76,14 @@ func runUI(cmd *cobra.Command, args []string) error {
 	to, _ := cmd.Flags().GetString("to")
 	loop, _ := cmd.Flags().GetBool("loop")
 	startPaused, _ := cmd.Flags().GetBool("start-paused")
+	writable, _ := cmd.Flags().GetBool("writable")
 	replayMode := cmd.Flags().Changed("speed") || cmd.Flags().Changed("from") ||
-		cmd.Flags().Changed("to") || loop || startPaused
+		cmd.Flags().Changed("to") || loop || startPaused || writable
 
 	// --at pins a single instant, which is meaningless once the replay clock is
 	// driving time — reject the combination rather than silently ignoring --at.
 	if replayMode && cmd.Flags().Changed("at") {
-		return fmt.Errorf("--at cannot be combined with replay flags (--speed/--from/--to/--loop/--start-paused); use --from/--to to set the replay window")
+		return fmt.Errorf("--at cannot be combined with replay flags (--speed/--from/--to/--loop/--start-paused/--writable); use --from/--to to set the replay window")
 	}
 
 	var mockSrv *server.Server
@@ -89,7 +91,7 @@ func runUI(cmd *cobra.Command, args []string) error {
 	if replayMode {
 		mockSrv, err = server.Replay(server.ReplayOptions{
 			ArchivePath: archivePath, Port: apiPort, KubeconfigOut: kubeconfigOut,
-			Speed: speed, From: from, To: to, Loop: loop, StartPaused: startPaused, Verbose: verbose,
+			Speed: speed, From: from, To: to, Loop: loop, StartPaused: startPaused, Writable: writable, Verbose: verbose,
 		})
 	} else {
 		mockSrv, err = server.Open(server.OpenOptions{

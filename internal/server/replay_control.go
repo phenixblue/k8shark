@@ -24,6 +24,8 @@ const replayControlPrefix = "/_k8shark/replay"
 //	POST /_k8shark/replay/speed?value= → set speed (e.g. 2x, 0.5x)
 //	POST /_k8shark/replay/seek?to=     → seek to an RFC3339 time or duration
 //	                          ?offset= →   relative to the window end / start
+//	POST /_k8shark/replay/reset-overlay → clear the writable overlay (409 if the
+//	                                       server is read-only)
 func (h *handler) handleReplayControl(w http.ResponseWriter, r *http.Request, path string) {
 	clock := h.clock
 	action := strings.Trim(strings.TrimPrefix(path, replayControlPrefix), "/")
@@ -63,6 +65,16 @@ func (h *handler) handleReplayControl(w http.ResponseWriter, r *http.Request, pa
 			return
 		}
 		clock.Seek(target)
+	case "reset-overlay":
+		// Clear the writable overlay (manual reset, in addition to reset-on-loop).
+		if !h.requireMethod(w, r, http.MethodPost) {
+			return
+		}
+		if h.overlay == nil {
+			h.writeStatus(w, http.StatusConflict, "replay is not writable; nothing to reset")
+			return
+		}
+		h.overlay.reset()
 	default:
 		h.writeStatus(w, http.StatusNotFound, fmt.Sprintf("unknown replay control %q", action))
 		return
