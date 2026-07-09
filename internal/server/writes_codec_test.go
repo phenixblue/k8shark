@@ -41,7 +41,10 @@ func doReqBytes(t *testing.T, method, url, ctype string, body []byte) (int, []by
 		t.Fatalf("%s %s: %v", method, url, err)
 	}
 	defer resp.Body.Close()
-	b, _ := io.ReadAll(resp.Body)
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("reading response body: %v", err)
+	}
 	return resp.StatusCode, b
 }
 
