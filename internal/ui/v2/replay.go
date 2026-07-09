@@ -29,12 +29,24 @@ func (h *Handler) serveReplay(w http.ResponseWriter, r *http.Request) {
 
 	switch action {
 	case "":
-		// status (GET)
+		// status — read-only, GET only.
+		if !replayRequireMethod(w, r, http.MethodGet) {
+			return
+		}
 	case "pause":
+		if !replayRequireMethod(w, r, http.MethodPost) {
+			return
+		}
 		clock.Pause()
 	case "play", "resume":
+		if !replayRequireMethod(w, r, http.MethodPost) {
+			return
+		}
 		clock.Resume()
 	case "speed":
+		if !replayRequireMethod(w, r, http.MethodPost) {
+			return
+		}
 		s, err := server.ParseSpeed(r.URL.Query().Get("value"))
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
@@ -42,6 +54,9 @@ func (h *Handler) serveReplay(w http.ResponseWriter, r *http.Request) {
 		}
 		clock.SetSpeed(s)
 	case "seek":
+		if !replayRequireMethod(w, r, http.MethodPost) {
+			return
+		}
 		target, err := replaySeekTarget(clock, r.URL.Query())
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
@@ -54,6 +69,17 @@ func (h *Handler) serveReplay(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, replayStatus(clock))
+}
+
+// replayRequireMethod enforces the HTTP method for a control action so that
+// state-changing actions can't be triggered by a GET / link navigation.
+func replayRequireMethod(w http.ResponseWriter, r *http.Request, method string) bool {
+	if r.Method == method {
+		return true
+	}
+	w.Header().Set("Allow", method)
+	writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": method + " required"})
+	return false
 }
 
 // replaySeekTarget resolves a seek target from the query: ?to= is an RFC3339

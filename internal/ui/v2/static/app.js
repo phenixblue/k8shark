@@ -288,14 +288,19 @@
     const crossed = idx !== rp.lastRenderedIdx;
     if (force || (!rp.paused && crossed)) {
       rp.lastRenderedIdx = idx;
-      try {
-        render();
-      } catch (e) {
-        // Pause-on-error: stop advancing and surface the failure.
-        replayControl('pause');
-        toast('error', 'Replay paused — view failed to load: ' + e.message);
-      }
+      // render() usually returns a Promise (view renderers are async), so guard
+      // both sync throws and async rejections and pause on failure.
+      Promise.resolve().then(render).catch((e) => replayPauseOnError(e && e.message));
     }
+  }
+
+  // replayPauseOnError stops playback and surfaces the failure. Idempotent while
+  // already paused so a burst of failed loads doesn't spam toasts.
+  function replayPauseOnError(msg) {
+    if (!state.replay.enabled || state.replay.paused) return;
+    state.replay.paused = true; // optimistic; server status confirms on next poll
+    toast('error', 'Replay paused — load failed: ' + (msg || 'unknown error'));
+    replayControl('pause');
   }
 
   async function pollReplay() {
@@ -333,6 +338,9 @@
     try { data = await res.json(); } catch (_) { /* not JSON */ }
     if (!res.ok) {
       const msg = (data && data.error) || `${res.status} ${res.statusText}`;
+      // A data load failing while replay is advancing pauses playback (view
+      // catch blocks otherwise swallow the error into an error panel).
+      if (state.replay.enabled && !state.replay.paused) replayPauseOnError(msg);
       throw new Error(msg);
     }
     return data;

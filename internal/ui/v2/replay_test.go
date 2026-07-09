@@ -96,8 +96,9 @@ func TestServeReplay_Errors(t *testing.T) {
 // replay mode when no explicit ?at= is given.
 func TestResolveAt_FollowsClock(t *testing.T) {
 	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	fixedAt := from.Add(5 * time.Minute)
 	clock := server.NewReplayClock(from, from.Add(time.Hour), 1, false, true) // paused at from
-	h := &Handler{Clock: clock}
+	h := &Handler{Clock: clock, At: fixedAt}
 
 	got := h.resolveAt(httptest.NewRequest(http.MethodGet, "/v2/api/overview", nil))
 	if !got.Equal(from) {
@@ -108,5 +109,10 @@ func TestResolveAt_FollowsClock(t *testing.T) {
 	got = h.resolveAt(httptest.NewRequest(http.MethodGet, "/v2/api/overview?at="+at, nil))
 	if got.Format(time.RFC3339) != at {
 		t.Errorf("resolveAt (?at=%s) = %s, want the explicit value", at, got.Format(time.RFC3339))
+	}
+	// A present-but-invalid ?at= falls back to h.At, not the clock.
+	got = h.resolveAt(httptest.NewRequest(http.MethodGet, "/v2/api/overview?at=not-a-time", nil))
+	if !got.Equal(fixedAt) {
+		t.Errorf("resolveAt (invalid ?at) = %s, want h.At %s (not the clock)", got, fixedAt)
 	}
 }

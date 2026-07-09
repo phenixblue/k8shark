@@ -48,15 +48,17 @@ func (h *Handler) serveOverview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ov)
 }
 
-// resolveAt reads ?at= from the request. An explicit, parseable ?at= always
-// wins (manual scrub / paused inspection). Otherwise, in replay mode the current
-// clock position is used so views follow the advancing clock; failing that,
-// h.At (the fixed --at).
+// resolveAt reads ?at= from the request. When ?at= is present it wins (manual
+// scrub / paused inspection); a present-but-unparseable value falls back to h.At
+// rather than the clock, so a typo'd pinned URL doesn't unexpectedly start
+// following live replay. When ?at= is absent, replay mode follows the clock;
+// otherwise h.At (the fixed --at).
 func (h *Handler) resolveAt(r *http.Request) time.Time {
 	if q := r.URL.Query().Get("at"); q != "" {
 		if t, err := time.Parse(time.RFC3339, q); err == nil {
 			return t.UTC()
 		}
+		return h.At
 	}
 	if h.Clock != nil {
 		return h.Clock.Now()
