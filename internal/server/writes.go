@@ -28,6 +28,7 @@ func (h *handler) handleWrite(w http.ResponseWriter, r *http.Request, path strin
 	switch r.Method {
 	case http.MethodPost:
 		if name != "" { // create is a collection operation
+			w.Header().Set("Allow", "GET, HEAD, PUT, PATCH, DELETE")
 			h.writeStatus(w, http.StatusMethodNotAllowed, "POST creates at a collection path, not an item path")
 			return
 		}
@@ -50,6 +51,7 @@ func (h *handler) handleWrite(w http.ResponseWriter, r *http.Request, path strin
 			return
 		}
 		if sub != "" {
+			w.Header().Set("Allow", "GET, HEAD, PUT, PATCH")
 			h.writeStatus(w, http.StatusMethodNotAllowed, "cannot DELETE a subresource")
 			return
 		}
@@ -132,6 +134,7 @@ func (h *handler) overlayReplace(w http.ResponseWriter, r *http.Request, group, 
 		return
 	}
 	if sub != "" && sub != "status" {
+		w.Header().Set("Allow", "GET, HEAD")
 		h.writeStatus(w, http.StatusMethodNotAllowed, "unsupported subresource: "+sub)
 		return
 	}
@@ -172,6 +175,7 @@ func (h *handler) overlayPatch(w http.ResponseWriter, r *http.Request, group, ve
 		return
 	}
 	if sub != "" && sub != "status" {
+		w.Header().Set("Allow", "GET, HEAD")
 		h.writeStatus(w, http.StatusMethodNotAllowed, "unsupported subresource: "+sub)
 		return
 	}
