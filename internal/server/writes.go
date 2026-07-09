@@ -57,7 +57,7 @@ func (h *handler) handleWrite(w http.ResponseWriter, r *http.Request, path strin
 		}
 		h.overlayDelete(w, group, version, resource, namespace, name)
 	default:
-		w.Header().Set("Allow", "GET, HEAD, POST, PUT, PATCH, DELETE")
+		w.Header().Set("Allow", allowedMethods(name, sub))
 		h.writeStatus(w, http.StatusMethodNotAllowed, "unsupported method "+r.Method)
 	}
 }
