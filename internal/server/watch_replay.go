@@ -161,6 +161,12 @@ func (h *handler) streamReplayWatch(w http.ResponseWriter, r *http.Request, path
 	labelSel := r.URL.Query().Get("labelSelector")
 	fieldSel := r.URL.Query().Get("fieldSelector")
 
+	// Apply reset-on-loop before consulting the overlay (below, for the resume
+	// upper bound), so a loop wrap resets it even under watch-only traffic.
+	if h.overlay != nil {
+		h.overlay.syncEpoch(clock)
+	}
+
 	// Validate resourceVersion first — a malformed/negative value returns 410
 	// before we build the (possibly expensive, poll-only) timeline. Any value
 	// that parses to 0 ("0", "00", …) is unset → list+stream.
