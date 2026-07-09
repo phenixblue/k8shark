@@ -161,7 +161,7 @@
     const maxIdx = Math.max(0, state.snapshots.length - 1);
     // In replay mode the thumb tracks the live clock position; otherwise it
     // tracks the manually-selected snapshot.
-    const idxNow = replay ? nearestSnapshotIndex(state.replay.position) : currentSnapshotIndex();
+    const idxNow = replay ? replaySnapshotIndex(state.replay.position) : currentSnapshotIndex();
     const prev = el('button', { class: 'btn', onclick: () => (replay ? seekSnapshot(-1) : stepSnapshot(-1)), title: 'Step back' }, '◀');
     const next = el('button', { class: 'btn', onclick: () => (replay ? seekSnapshot(+1) : stepSnapshot(+1)), title: 'Step forward' }, '▶');
     const range = el('input', { type: 'range', min: '0', max: String(maxIdx), value: String(idxNow) });
@@ -192,15 +192,19 @@
   // ── Replay transport ───────────────────────────────────────────────────────
   const REPLAY_SPEEDS = [0.5, 1, 2, 3];
 
-  function nearestSnapshotIndex(rfc3339) {
+  // replaySnapshotIndex returns the index of the latest snapshot at or before
+  // the given time (floor). Using the floor (not the nearest) means the view
+  // re-renders exactly when the clock crosses a snapshot, rather than at the
+  // midpoint between two snapshots.
+  function replaySnapshotIndex(rfc3339) {
     if (!rfc3339 || state.snapshots.length === 0) return Math.max(0, state.snapshots.length - 1);
     const t = Date.parse(rfc3339);
-    let best = 0, bestDelta = Infinity;
+    let idx = 0;
     for (let i = 0; i < state.snapshots.length; i++) {
-      const d = Math.abs(Date.parse(state.snapshots[i]) - t);
-      if (d < bestDelta) { bestDelta = d; best = i; }
+      if (Date.parse(state.snapshots[i]) <= t) idx = i;
+      else break;
     }
-    return best;
+    return idx;
   }
 
   // renderTransport builds the play/pause + speed controls in the header. It is
@@ -226,7 +230,14 @@
       class: 'transport-speed', title: 'Playback speed',
       onchange: (e) => replayControl('speed', { value: e.target.value + 'x' }),
     });
-    for (const sp of REPLAY_SPEEDS) {
+    // Include the current speed even if it's not one of the presets (e.g. a
+    // server started with --speed 5x), so the control reflects real state.
+    const speeds = REPLAY_SPEEDS.slice();
+    if (!speeds.some((s) => Math.abs(s - rp.speed) < 1e-9)) {
+      speeds.push(rp.speed);
+      speeds.sort((a, b) => a - b);
+    }
+    for (const sp of speeds) {
       const o = el('option', { value: String(sp) }, sp + '×');
       if (Math.abs(sp - rp.speed) < 1e-9) o.selected = true;
       speedSel.appendChild(o);
@@ -241,7 +252,7 @@
 
   // seekSnapshot seeks the clock to the neighbouring snapshot (step buttons).
   function seekSnapshot(delta) {
-    const idx = Math.max(0, Math.min(state.snapshots.length - 1, nearestSnapshotIndex(state.replay.position) + delta));
+    const idx = Math.max(0, Math.min(state.snapshots.length - 1, replaySnapshotIndex(state.replay.position) + delta));
     const to = state.snapshots[idx];
     if (to) replayControl('seek', { to });
   }
@@ -279,7 +290,7 @@
     // Live-update the scrubber thumb + label without a full re-render.
     const s = $('scrubber');
     const range = s && s.querySelector('input[type=range]');
-    const idx = nearestSnapshotIndex(rp.position);
+    const idx = replaySnapshotIndex(rp.position);
     if (range) range.value = String(idx);
     const tsEl = s && s.querySelector('.ts');
     if (tsEl) tsEl.textContent = formatTS(rp.position);
