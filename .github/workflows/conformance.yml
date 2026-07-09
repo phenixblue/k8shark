@@ -81,11 +81,11 @@ jobs:
           [ -f /tmp/conformance.md ] || { echo "no report to post"; exit 0; }
           marker='<!-- conformance-report -->'
           # Find an existing report comment (by marker) and update it, else create.
-          # --slurp collects every page into one array first (add flattens the
-          # page arrays) so the jq runs once over all comments and yields a
-          # single id, rather than per-page (which could emit multiple lines).
-          cid=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --slurp \
-                  --jq "add | map(select(.body | contains(\"$marker\"))) | .[0].id // empty")
+          # gh forbids --slurp together with --jq, so let --paginate+--jq emit the
+          # id of every matching comment across all pages (one per line) and take
+          # the first with head -n1 — a single, deterministic value (or empty).
+          cid=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+                  --jq ".[] | select(.body | contains(\"$marker\")) | .id" | head -n1)
           if [ -n "$cid" ]; then
             gh api -X PATCH "repos/$REPO/issues/comments/$cid" -F body=@/tmp/conformance.md >/dev/null
             echo "updated comment $cid"
