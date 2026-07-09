@@ -330,6 +330,25 @@ func TestOverlay_ListThenWatchNoRelistLoop(t *testing.T) {
 	}
 }
 
+// TestOverlay_NullBodyNoPanic ensures client-supplied "null"/non-object write
+// bodies are rejected with 400 rather than crashing the server (nil-map panic).
+func TestOverlay_NullBodyNoPanic(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	for _, body := range []string{"null", `["a"]`, `"scalar"`, `{"metadata":null,"kind":"Pod"}`} {
+		if code, _ := doReq(t, http.MethodPost, srv.URL+podsPath, "application/json", body); code != http.StatusBadRequest {
+			t.Errorf("POST body %q: status %d, want 400", body, code)
+		}
+	}
+	// A merge patch of "null" on an existing object must not panic (422, not 500).
+	doReq(t, http.MethodPost, srv.URL+podsPath, "application/json", podBody("pod-n"))
+	if code, _ := doReq(t, http.MethodPatch, srv.URL+podsPath+"/pod-n", "application/merge-patch+json", "null"); code != http.StatusUnprocessableEntity {
+		t.Errorf("merge-patch null: status %d, want 422", code)
+	}
+}
+
 func TestOverlay_ReadOnlyRejectsWrites(t *testing.T) {
 	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
 	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)

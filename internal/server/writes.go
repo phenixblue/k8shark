@@ -81,8 +81,8 @@ func (h *handler) overlayCreate(w http.ResponseWriter, r *http.Request, group, v
 		h.writeStatus(w, http.StatusBadRequest, "reading body: "+err.Error())
 		return
 	}
-	if !json.Valid(body) {
-		h.writeStatus(w, http.StatusBadRequest, "request body is not valid JSON")
+	if !isJSONObject(body) {
+		h.writeStatus(w, http.StatusBadRequest, "request body must be a JSON object")
 		return
 	}
 	name := metaString(body, "name")
@@ -136,8 +136,8 @@ func (h *handler) overlayReplace(w http.ResponseWriter, r *http.Request, group, 
 		h.writeStatus(w, http.StatusBadRequest, "reading body: "+err.Error())
 		return
 	}
-	if !json.Valid(body) {
-		h.writeStatus(w, http.StatusBadRequest, "request body is not valid JSON")
+	if !isJSONObject(body) {
+		h.writeStatus(w, http.StatusBadRequest, "request body must be a JSON object")
 		return
 	}
 	// PUT is update, not upsert: the object must already exist (in the overlay or
@@ -180,6 +180,10 @@ func (h *handler) overlayPatch(w http.ResponseWriter, r *http.Request, group, ve
 	next, perr := applyPatch(current, patch, r.Header.Get("Content-Type"))
 	if perr != nil {
 		h.writeStatus(w, http.StatusUnprocessableEntity, "applying patch: "+perr.Error())
+		return
+	}
+	if !isJSONObject(next) {
+		h.writeStatus(w, http.StatusUnprocessableEntity, "patch did not produce a JSON object")
 		return
 	}
 	next = h.stampUpdate(next, current, group, version, resource, namespace, name)
@@ -362,15 +366,28 @@ func metaInt(obj json.RawMessage, field string) int64 {
 	return n
 }
 
-// mergeMeta returns obj with the given metadata fields set/overwritten.
+// isJSONObject reports whether b is a JSON object ("{...}"), rejecting null,
+// arrays, and scalars — so client write bodies can't be e.g. "null".
+func isJSONObject(b []byte) bool {
+	var m map[string]json.RawMessage
+	return json.Unmarshal(b, &m) == nil && m != nil
+}
+
+// mergeMeta returns obj with the given metadata fields set/overwritten. It is
+// nil-safe: a null object or null metadata is treated as an empty object.
 func mergeMeta(obj json.RawMessage, updates map[string]any) json.RawMessage {
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(obj, &m); err != nil {
 		return obj
 	}
+	if m == nil {
+		m = map[string]json.RawMessage{}
+	}
 	meta := map[string]json.RawMessage{}
 	if raw, ok := m["metadata"]; ok {
-		_ = json.Unmarshal(raw, &meta)
+		if err := json.Unmarshal(raw, &meta); err != nil || meta == nil {
+			meta = map[string]json.RawMessage{}
+		}
 	}
 	for k, v := range updates {
 		if s, ok := v.(string); ok && s == "" {
@@ -394,11 +411,11 @@ func mergeMeta(obj json.RawMessage, updates map[string]any) json.RawMessage {
 // from src (used for the status subresource: only status changes).
 func replaceField(base json.RawMessage, field string, src json.RawMessage) json.RawMessage {
 	var b map[string]json.RawMessage
-	if err := json.Unmarshal(base, &b); err != nil {
+	if err := json.Unmarshal(base, &b); err != nil || b == nil {
 		return base
 	}
 	var s map[string]json.RawMessage
-	if err := json.Unmarshal(src, &s); err != nil {
+	if err := json.Unmarshal(src, &s); err != nil || s == nil {
 		return base
 	}
 	if v, ok := s[field]; ok {
