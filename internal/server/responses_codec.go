@@ -22,19 +22,34 @@ import (
 
 const protobufMediaType = "application/vnd.kubernetes.protobuf"
 
-// wantsProtobuf reports whether the request's Accept header prefers Kubernetes
-// protobuf: it must be acceptable (q>0) and at least as preferred as any JSON
-// alternative. This honors q-values, so `…protobuf;q=0` or a higher-q JSON
-// (e.g. kubectl's Table requests) correctly yields JSON.
+// wantsProtobuf reports whether the client's Accept header selects Kubernetes
+// protobuf over JSON. It mirrors apiserver negotiation: among acceptable (q>0)
+// media types, the highest q wins, and header order breaks ties. So
+// `protobuf,json` (both q=1) picks protobuf, `json,protobuf` picks JSON, a
+// higher-q entry always wins, and `…protobuf;q=0` / Table requests yield JSON.
 func wantsProtobuf(r *http.Request) bool {
 	accept := r.Header.Get("Accept")
 	if accept == "" {
 		return false
 	}
-	qProto, qJSON := -1.0, -1.0
+	// Walk clauses in header order, keeping the first with the maximum q among
+	// the types we can serve (protobuf, or JSON/wildcard). "First with max q"
+	// makes header order the tie-breaker for equal q-values.
+	bestQ := 0.0
+	bestIsProto := false
 	for _, part := range strings.Split(accept, ",") {
 		mt, params, err := mime.ParseMediaType(strings.TrimSpace(part))
 		if err != nil {
+			continue
+		}
+		var isProto, isJSON bool
+		switch mt {
+		case protobufMediaType:
+			isProto = true
+		case "application/json", "application/*", "*/*":
+			isJSON = true
+		}
+		if !isProto && !isJSON {
 			continue
 		}
 		q := 1.0
@@ -43,21 +58,15 @@ func wantsProtobuf(r *http.Request) bool {
 				q = v
 			}
 		}
-		switch mt {
-		case protobufMediaType:
-			if q > qProto {
-				qProto = q
-			}
-		case "application/json", "application/*", "*/*":
-			if q > qJSON {
-				qJSON = q
-			}
+		if q <= 0 {
+			continue
+		}
+		if q > bestQ { // strictly greater; equal q keeps the earlier clause
+			bestQ = q
+			bestIsProto = isProto
 		}
 	}
-	if qProto <= 0 {
-		return false // protobuf not offered, or explicitly q=0
-	}
-	return qJSON < 0 || qProto >= qJSON // at least as preferred as JSON
+	return bestIsProto
 }
 
 // jsonToProtobuf re-encodes a JSON-encoded built-in Kubernetes object as
@@ -100,6 +109,10 @@ func (p *protobufResponseWriter) flush() {
 		status = http.StatusOK
 	}
 	body := p.buf.Bytes()
+
+	// The chosen representation depends on Accept, so caches/intermediaries must
+	// not reuse it across differing Accept headers.
+	p.Header().Add("Vary", "Accept")
 
 	ct := p.Header().Get("Content-Type")
 	if strings.HasPrefix(ct, "application/json") {

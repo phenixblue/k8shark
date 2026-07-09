@@ -88,6 +88,18 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		fmt.Printf("  --> %s %s\n", r.Method, path)
 	}
 
+	// Response content negotiation: when the client prefers protobuf, buffer the
+	// (non-watch) response and re-encode JSON bodies of built-in types as
+	// protobuf on the way out. Installed before the early POST/compat shims so
+	// their Status/object responses are negotiated too; watch streams are never
+	// buffered.
+	watchParam := r.URL.Query().Get("watch")
+	if wantsProtobuf(r) && watchParam != "1" && watchParam != "true" {
+		pw := newProtobufResponseWriter(w)
+		defer pw.flush()
+		w = pw
+	}
+
 	// Replay transport controls live under a reserved prefix that can't collide
 	// with the Kubernetes API (which is served under /api, /apis, …). They accept
 	// POST, so intercept before the read-only method check below. Match the exact
@@ -160,17 +172,6 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
-	}
-
-	// Response content negotiation: when the client prefers protobuf, buffer the
-	// (non-watch) response and re-encode JSON bodies of built-in types as
-	// protobuf on the way out. Watch streams must never be buffered.
-	watchParam := r.URL.Query().Get("watch")
-	isWatch := watchParam == "1" || watchParam == "true"
-	if wantsProtobuf(r) && !isWatch {
-		pw := newProtobufResponseWriter(w)
-		defer pw.flush()
-		w = pw
 	}
 
 	// Writes: accepted into the overlay in writable replay; otherwise 405.

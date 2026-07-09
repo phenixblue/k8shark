@@ -19,6 +19,9 @@ func TestWantsProtobuf(t *testing.T) {
 		"application/json;q=0.9,application/vnd.kubernetes.protobuf;q=1":    true,  // protobuf preferred
 		"application/json,application/vnd.kubernetes.protobuf;q=0.8":        false, // json preferred (q=1 > 0.8)
 		"application/vnd.kubernetes.protobuf;stream=watch,application/json": true,  // params ignored for the base type
+		"application/json,application/vnd.kubernetes.protobuf":              false, // equal q → header order wins (json first)
+		"application/vnd.kubernetes.protobuf,application/json;q=0.9":        true,  // protobuf first and higher q
+		"application/json;as=Table;v=v1;g=meta.k8s.io,application/json":     false, // Table-first, no protobuf offered
 	}
 	for accept, want := range cases {
 		r, _ := http.NewRequest(http.MethodGet, "/api/v1/pods", nil)
