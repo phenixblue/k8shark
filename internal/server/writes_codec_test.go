@@ -99,3 +99,29 @@ func TestOverlay_ProtobufCreate(t *testing.T) {
 		t.Errorf("garbage protobuf: status %d, want 400", code)
 	}
 }
+
+// readObjectBody also serves replace (PUT); cover the protobuf overlayReplace
+// path, not just create. (issue #148)
+func TestOverlay_ProtobufReplace(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	// "pod-base" exists in the replayed state; replace it via a protobuf PUT.
+	pb := protobufPod(t, "pod-base")
+	code, got := doReqBytes(t, http.MethodPut, srv.URL+podsPath+"/pod-base",
+		"application/vnd.kubernetes.protobuf", pb)
+	if code != http.StatusOK {
+		t.Fatalf("protobuf replace: status %d, want 200\n%s", code, got)
+	}
+	if n := metaString(got, "name"); n != "pod-base" {
+		t.Errorf("replaced name = %q, want pod-base\n%s", n, got)
+	}
+
+	// A malformed protobuf replace body is a clean 400.
+	code, _ = doReqBytes(t, http.MethodPut, srv.URL+podsPath+"/pod-base",
+		"application/vnd.kubernetes.protobuf", []byte("not-protobuf"))
+	if code != http.StatusBadRequest {
+		t.Errorf("garbage protobuf replace: status %d, want 400", code)
+	}
+}
