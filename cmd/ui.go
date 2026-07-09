@@ -40,6 +40,13 @@ func init() {
 	uiCmd.Flags().String("api-port", "0", "port for the mock API server (0 = random available port)")
 	uiCmd.Flags().String("kubeconfig-out", "", "where to write the generated kubeconfig (default: ~/.kube/k8shark-<id>)")
 	uiCmd.Flags().String("at", "", "pin UI data to a specific timestamp (RFC3339 or relative duration like -5m)")
+	// Replay mode: when any of these is set, the dashboard becomes a VCR driven
+	// by a shared replay clock (kubectl follows the same clock).
+	uiCmd.Flags().String("speed", "", "replay mode: playback speed factor, e.g. 2x, 3x, 0.5x (enables replay)")
+	uiCmd.Flags().String("from", "", "replay window start: RFC3339 or relative duration like -10m")
+	uiCmd.Flags().String("to", "", "replay window end: RFC3339 or relative duration like -1m")
+	uiCmd.Flags().Bool("loop", false, "replay mode: restart from the window start when the end is reached")
+	uiCmd.Flags().Bool("start-paused", false, "replay mode: start paused")
 }
 
 func runUI(cmd *cobra.Command, args []string) error {
@@ -61,13 +68,34 @@ func runUI(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	mockSrv, err := server.Open(server.OpenOptions{
-		ArchivePath:   archivePath,
-		Port:          apiPort,
-		KubeconfigOut: kubeconfigOut,
-		At:            at,
-		Verbose:       verbose,
-	})
+	// Replay mode is enabled when any replay flag is set; the mock server and the
+	// dashboard then share one clock (kubectl and the UI stay coherent).
+	speed, _ := cmd.Flags().GetString("speed")
+	from, _ := cmd.Flags().GetString("from")
+	to, _ := cmd.Flags().GetString("to")
+	loop, _ := cmd.Flags().GetBool("loop")
+	startPaused, _ := cmd.Flags().GetBool("start-paused")
+	replayMode := cmd.Flags().Changed("speed") || cmd.Flags().Changed("from") ||
+		cmd.Flags().Changed("to") || loop || startPaused
+
+	// --at pins a single instant, which is meaningless once the replay clock is
+	// driving time — reject the combination rather than silently ignoring --at.
+	if replayMode && cmd.Flags().Changed("at") {
+		return fmt.Errorf("--at cannot be combined with replay flags (--speed/--from/--to/--loop/--start-paused); use --from/--to to set the replay window")
+	}
+
+	var mockSrv *server.Server
+	var err error
+	if replayMode {
+		mockSrv, err = server.Replay(server.ReplayOptions{
+			ArchivePath: archivePath, Port: apiPort, KubeconfigOut: kubeconfigOut,
+			Speed: speed, From: from, To: to, Loop: loop, StartPaused: startPaused, Verbose: verbose,
+		})
+	} else {
+		mockSrv, err = server.Open(server.OpenOptions{
+			ArchivePath: archivePath, Port: apiPort, KubeconfigOut: kubeconfigOut, At: at, Verbose: verbose,
+		})
+	}
 	if err != nil {
 		return fmt.Errorf("opening mock API: %w", err)
 	}
@@ -77,6 +105,7 @@ func runUI(cmd *cobra.Command, args []string) error {
 		Port:        uiPort,
 		At:          at,
 		Verbose:     verbose,
+		Clock:       mockSrv.Clock(), // nil unless replay mode → shared clock
 	})
 	if err != nil {
 		mockSrv.Shutdown()
@@ -86,12 +115,20 @@ func runUI(cmd *cobra.Command, args []string) error {
 	fmt.Printf("k8shark mock server running\n")
 	fmt.Printf("  Address:    %s\n", mockSrv.Address())
 	fmt.Printf("  Kubeconfig: %s\n", mockSrv.KubeconfigPath())
+	if c := mockSrv.Clock(); c != nil {
+		wf, wt := c.Window()
+		fmt.Printf("  Replay:     %s → %s · %s\n", wf.Format("15:04:05Z07:00"), wt.Format("15:04:05Z07:00"), formatSpeed(c.Speed()))
+	}
 	fmt.Printf("\nRun: export KUBECONFIG=%s\n", mockSrv.KubeconfigPath())
 	fmt.Printf("Then use kubectl normally against the capture.\n\n")
 
 	fmt.Printf("k8shark UI running\n")
 	fmt.Printf("  Address: %s\n", uiSrv.Address())
-	fmt.Printf("\nOpen this URL in your browser. Press Ctrl+C to stop.\n")
+	if replayMode {
+		fmt.Printf("\nOpen this URL to drive replay (play/pause/seek/speed). Press Ctrl+C to stop.\n")
+	} else {
+		fmt.Printf("\nOpen this URL in your browser. Press Ctrl+C to stop.\n")
+	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)

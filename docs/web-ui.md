@@ -153,6 +153,43 @@ The header scrubber pins the entire UI to any point in the capture window — dr
 with the arrows, and every view re-renders as the cluster looked at that moment. Click **latest** to
 jump back to the most recent records. This is the in-browser equivalent of the `--at` flag.
 
+## Replay (VCR)
+
+The dashboard doubles as a **transport for time-based replay**: instead of manually scrubbing, a
+replay clock advances through the capture and every view follows it live. Start it either way — both
+share one clock, so `kubectl` against the mock server and the dashboard stay in lockstep:
+
+```sh
+# dashboard-first
+kshrk ui capture.kshrk --speed 2x
+
+# replay-first (also serves the dashboard)
+kshrk replay capture.kshrk --speed 2x --ui
+```
+
+A **transport bar** appears in the header with **play/pause**, **step** (◀ ▶ on the scrubber),
+a **speed selector** (0.25× / 0.5× / 1× / 2×; the current speed is added if it isn't a preset), and a
+live **events** counter. Drag the scrubber to seek
+the clock; the views auto-refresh as the clock crosses each snapshot. If a view fails to load
+mid-playback, replay **pauses** and surfaces the error rather than pressing on.
+
+Replay flags mirror the [`replay` command](usage.md#replay): `--speed`, `--from`, `--to`, `--loop`,
+`--start-paused`. See [docs/usage.md](usage.md#replay) for the full model (resourceVersion coherence,
+poll-only inference, etc.).
+
+The transport is backed by a small same-origin control API the dashboard calls (also useful for
+scripting the UI clock):
+
+| Request | Effect |
+|---------|--------|
+| `GET /v2/api/replay` | Current status (`{enabled:false}` when not in replay mode) |
+| `POST /v2/api/replay/play` · `/pause` | Resume / pause the clock |
+| `POST /v2/api/replay/speed?value=2x` | Change speed |
+| `POST /v2/api/replay/seek?to=<RFC3339>` | Seek to a time (or `?offset=<duration>` from the window start) |
+
+(The headless `kshrk replay` server exposes the equivalent under `/_k8shark/replay` on the mock API —
+see [docs/usage.md](usage.md#controlling-playback).)
+
 ## Light and dark themes
 
 Use the toggle at the far right of the header to switch between dark (default) and light themes; the

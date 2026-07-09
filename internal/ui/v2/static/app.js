@@ -74,8 +74,19 @@
   const state = {
     captureMeta: null,
     snapshots: [],   // RFC3339 strings
-    at: '',          // selected snapshot timestamp ('' = latest)
+    at: '',          // selected snapshot timestamp ('' = latest / follow clock in replay)
     route: { name: 'overview' },
+    // Replay transport (populated from /v2/api/replay when replay mode is on).
+    replay: {
+      enabled: false,
+      position: '',  // live clock position (RFC3339)
+      paused: true,
+      speed: 1,
+      loop: false,
+      ended: false,
+      events: 0,
+      lastRenderedIdx: -1, // scrubber index last re-rendered, to throttle auto-follow
+    },
   };
 
   // ── Router ───────────────────────────────────────────────────────────────
@@ -146,24 +157,197 @@
   function renderScrubber() {
     const s = $('scrubber');
     s.innerHTML = '';
-    const prev = el('button', { class: 'btn', onclick: stepSnapshot.bind(null, -1) }, '◀');
-    const next = el('button', { class: 'btn', onclick: stepSnapshot.bind(null, +1) }, '▶');
-    const range = el('input', { type: 'range', min: '0', max: String(Math.max(0, state.snapshots.length - 1)), value: String(currentSnapshotIndex()) });
-    range.addEventListener('input', () => {
-      const idx = Number(range.value);
-      state.at = state.snapshots[idx] || '';
-      ts.textContent = formatTS(state.at);
-    });
-    range.addEventListener('change', () => {
-      const idx = Number(range.value);
-      state.at = state.snapshots[idx] || '';
-      render();
-    });
-    const ts = el('span', { class: 'ts' }, formatTS(state.at));
+    const replay = state.replay.enabled;
+    const maxIdx = Math.max(0, state.snapshots.length - 1);
+    // In replay mode the thumb tracks the live clock position; otherwise it
+    // tracks the manually-selected snapshot.
+    const idxNow = replay ? replaySnapshotIndex(state.replay.position) : currentSnapshotIndex();
+    const prev = el('button', { class: 'btn', onclick: () => (replay ? seekSnapshot(-1) : stepSnapshot(-1)), title: 'Step back' }, '◀');
+    const next = el('button', { class: 'btn', onclick: () => (replay ? seekSnapshot(+1) : stepSnapshot(+1)), title: 'Step forward' }, '▶');
+    const range = el('input', { type: 'range', min: '0', max: String(maxIdx), value: String(idxNow) });
+    const ts = el('span', { class: 'ts' }, formatTS(replay ? state.replay.position : state.at));
+    if (replay) {
+      // Drag = seek the clock; update label live, commit the seek on release.
+      range.addEventListener('input', () => { ts.textContent = formatTS(state.snapshots[Number(range.value)] || ''); });
+      range.addEventListener('change', () => {
+        const to = state.snapshots[Number(range.value)];
+        if (to) replayControl('seek', { to });
+      });
+    } else {
+      range.addEventListener('input', () => {
+        state.at = state.snapshots[Number(range.value)] || '';
+        ts.textContent = formatTS(state.at);
+      });
+      range.addEventListener('change', () => {
+        state.at = state.snapshots[Number(range.value)] || '';
+        render();
+      });
+    }
     s.appendChild(prev);
     s.appendChild(range);
     s.appendChild(next);
     s.appendChild(ts);
+  }
+
+  // ── Replay transport ───────────────────────────────────────────────────────
+  const REPLAY_SPEEDS = [0.25, 0.5, 1, 2];
+
+  // replaySnapshotIndex returns the index of the latest snapshot at or before
+  // the given time (floor). Using the floor (not the nearest) means the view
+  // re-renders exactly when the clock crosses a snapshot, rather than at the
+  // midpoint between two snapshots.
+  function replaySnapshotIndex(rfc3339) {
+    if (!rfc3339 || state.snapshots.length === 0) return Math.max(0, state.snapshots.length - 1);
+    const t = Date.parse(rfc3339);
+    let idx = 0;
+    for (let i = 0; i < state.snapshots.length; i++) {
+      if (Date.parse(state.snapshots[i]) <= t) idx = i;
+      else break;
+    }
+    return idx;
+  }
+
+  // transportEls caches the header transport elements. They are built once and
+  // then updated in place — crucially, the poll loop must NOT recreate the
+  // <select> every tick or it would close the native dropdown mid-interaction.
+  let transportEls = null;
+
+  // renderTransport shows the play/pause + speed controls in the header (replay
+  // mode only) and updates their state in place.
+  function renderTransport() {
+    if (!state.replay.enabled) return;
+    const rp = state.replay;
+
+    if (!transportEls) {
+      const box = el('div', { class: 'transport', id: 'transport' });
+      const bar = $('topbar');
+      const scrub = $('scrubber');
+      if (bar && scrub) bar.insertBefore(box, scrub);
+      else if (bar) bar.appendChild(box);
+      const playBtn = el('button', {
+        class: 'btn transport-play',
+        onclick: () => replayControl(state.replay.paused ? 'play' : 'pause'),
+      });
+      const speedSel = el('select', {
+        class: 'transport-speed', title: 'Playback speed',
+        onchange: (e) => replayControl('speed', { value: e.target.value + 'x' }),
+      });
+      const evts = el('span', { class: 'transport-events', title: 'Watch events emitted' });
+      const ended = el('span', { class: 'transport-ended' }, 'ended');
+      box.appendChild(playBtn);
+      box.appendChild(speedSel);
+      box.appendChild(evts);
+      transportEls = { box, playBtn, speedSel, evts, ended, speedKey: '' };
+    }
+    const t = transportEls;
+
+    // Play / pause.
+    t.playBtn.textContent = rp.paused ? '▶ Play' : '❚❚ Pause';
+    t.playBtn.title = rp.paused ? 'Play' : 'Pause';
+    t.playBtn.classList.toggle('playing', !rp.paused);
+
+    // Speed options — include the current speed even if it isn't a preset (e.g. a
+    // server started with --speed 5x). Rebuild the <option>s only when the set
+    // changes, so polling never recreates the select and closes the dropdown.
+    const speeds = REPLAY_SPEEDS.slice();
+    if (!speeds.some((s) => Math.abs(s - rp.speed) < 1e-9)) {
+      speeds.push(rp.speed);
+      speeds.sort((a, b) => a - b);
+    }
+    const key = speeds.join(',');
+    if (t.speedKey !== key) {
+      t.speedSel.innerHTML = '';
+      for (const sp of speeds) t.speedSel.appendChild(el('option', { value: String(sp) }, sp + '×'));
+      t.speedKey = key;
+    }
+    // Reflect the current speed unless the user is interacting with the select.
+    if (document.activeElement !== t.speedSel) t.speedSel.value = String(rp.speed);
+
+    // Events counter and ended badge.
+    t.evts.textContent = rp.events + ' event' + (rp.events === 1 ? '' : 's');
+    if (rp.ended && !rp.loop) {
+      if (!t.ended.parentNode) t.box.appendChild(t.ended);
+    } else if (t.ended.parentNode) {
+      t.ended.remove();
+    }
+  }
+
+  // seekSnapshot seeks the clock to the neighbouring snapshot (step buttons).
+  function seekSnapshot(delta) {
+    const idx = Math.max(0, Math.min(state.snapshots.length - 1, replaySnapshotIndex(state.replay.position) + delta));
+    const to = state.snapshots[idx];
+    if (to) replayControl('seek', { to });
+  }
+
+  // replayControl POSTs a transport action and applies the returned status.
+  async function replayControl(action, params) {
+    try {
+      const url = new URL('/v2/api/replay/' + action, location.href);
+      for (const k in (params || {})) url.searchParams.set(k, params[k]);
+      const res = await fetch(url.toString(), { method: 'POST' });
+      let data = null;
+      try { data = await res.json(); } catch (_) { /* non-JSON error body */ }
+      if (!res.ok) throw new Error((data && data.error) || `${res.status} ${res.statusText}`);
+      applyReplayStatus(data, true);
+    } catch (e) {
+      toast('error', 'Replay control failed: ' + e.message);
+    }
+  }
+
+  // applyReplayStatus updates replay state from a status payload. When force is
+  // true (an explicit control action) it always re-renders; during polling it
+  // only re-renders the heavy view when the scrubber crosses a new snapshot.
+  function applyReplayStatus(st, force) {
+    if (!st || !st.enabled) return;
+    const rp = state.replay;
+    rp.enabled = true;
+    rp.position = st.position || '';
+    rp.paused = !!st.paused;
+    rp.speed = st.speed || 1;
+    rp.loop = !!st.loop;
+    rp.ended = !!st.ended;
+    rp.events = st.events_emitted || 0;
+
+    renderTransport();
+    // Live-update the scrubber thumb + label without a full re-render.
+    const s = $('scrubber');
+    const range = s && s.querySelector('input[type=range]');
+    const idx = replaySnapshotIndex(rp.position);
+    if (range) range.value = String(idx);
+    const tsEl = s && s.querySelector('.ts');
+    if (tsEl) tsEl.textContent = formatTS(rp.position);
+
+    // Auto-follow: re-render the current view when the clock crosses into a new
+    // snapshot (throttles the expensive view rebuild to snapshot granularity).
+    const crossed = idx !== rp.lastRenderedIdx;
+    if (force || (!rp.paused && crossed)) {
+      rp.lastRenderedIdx = idx;
+      // render() usually returns a Promise (view renderers are async), so guard
+      // both sync throws and async rejections and pause on failure.
+      Promise.resolve().then(render).catch((e) => replayPauseOnError(e && e.message));
+    }
+  }
+
+  // replayPauseOnError stops playback and surfaces the failure. Idempotent while
+  // already paused so a burst of failed loads doesn't spam toasts.
+  function replayPauseOnError(msg) {
+    if (!state.replay.enabled || state.replay.paused) return;
+    state.replay.paused = true; // optimistic; server status confirms on next poll
+    toast('error', 'Replay paused — load failed: ' + (msg || 'unknown error'));
+    replayControl('pause');
+  }
+
+  let replayPollInFlight = false;
+  async function pollReplay() {
+    if (!state.replay.enabled || replayPollInFlight) return; // avoid overlapping polls
+    replayPollInFlight = true;
+    try {
+      const res = await fetch(new URL('/v2/api/replay', location.href).toString());
+      const data = await res.json();
+      applyReplayStatus(data, false);
+    } catch (_) { /* transient; next tick retries */ } finally {
+      replayPollInFlight = false;
+    }
   }
 
   function currentSnapshotIndex() {
@@ -192,6 +376,9 @@
     try { data = await res.json(); } catch (_) { /* not JSON */ }
     if (!res.ok) {
       const msg = (data && data.error) || `${res.status} ${res.statusText}`;
+      // A data load failing while replay is advancing pauses playback (view
+      // catch blocks otherwise swallow the error into an error panel).
+      if (state.replay.enabled && !state.replay.paused) replayPauseOnError(msg);
       throw new Error(msg);
     }
     return data;
@@ -2104,6 +2291,7 @@
   function render() {
     renderNav();
     renderScrubber();
+    renderTransport();
     const r = state.route;
     if (r.name === 'overview') return renderOverview();
     if (r.name === 'namespaces') return renderNamespacesIndex();
@@ -2167,6 +2355,14 @@
       // Timestamps endpoint not implemented yet — keep going with empty snapshots.
       $('capture-meta').textContent = 'capture loaded';
     }
+    // Detect replay mode and, if on, start the transport poll loop.
+    try {
+      const rp = await getJSON('/v2/api/replay');
+      if (rp && rp.enabled) {
+        applyReplayStatus(rp, false);
+        setInterval(pollReplay, 700);
+      }
+    } catch (_) { /* replay endpoint absent → static explorer */ }
     render();
   }
   document.addEventListener('DOMContentLoaded', init);

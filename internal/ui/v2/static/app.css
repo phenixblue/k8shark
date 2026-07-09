@@ -96,6 +96,22 @@ a { color: inherit; }
 .btn:hover { border-color: var(--accent); }
 .btn.primary { background: var(--accent); color: #0b0f17; border-color: var(--accent); font-weight: 600; }
 
+/* Replay transport (header, replay mode only) */
+.transport {
+  display: flex; align-items: center; gap: 8px; padding: 4px 10px; margin-right: 8px;
+  background: var(--bg-row); border: 1px solid var(--border); border-radius: 6px;
+}
+.transport-play { min-width: 78px; text-align: center; }
+.transport-play.playing { border-color: var(--accent); color: var(--accent); }
+.transport-speed {
+  background: var(--bg-row); color: var(--fg); border: 1px solid var(--border-strong);
+  padding: 3px 6px; border-radius: 5px; font-size: 12px; cursor: pointer;
+}
+.transport-events { font: 11px var(--mono); color: var(--fg-dim); min-width: 70px; }
+.transport-ended {
+  font: 11px var(--mono); color: var(--warn, #d08770); text-transform: uppercase; letter-spacing: .5px;
+}
+
 #content { flex: 1; overflow: auto; padding: 18px 20px 28px; }
 
 .section-title {

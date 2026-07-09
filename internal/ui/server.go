@@ -26,6 +26,11 @@ type OpenOptions struct {
 	Port        string
 	At          string
 	Verbose     bool
+	// Clock, when non-nil, puts the dashboard in replay mode: views follow the
+	// shared replay clock and the header exposes transport controls. The same
+	// clock instance also drives the mock API server so kubectl and the UI stay
+	// coherent.
+	Clock *server.ReplayClock
 }
 
 // Server is a running UI HTTP server.
@@ -78,6 +83,7 @@ func Open(opts OpenOptions) (*Server, error) {
 		At:          at,
 		ArchivePath: opts.ArchivePath,
 		Verbose:     opts.Verbose,
+		Clock:       opts.Clock,
 	}
 	v2h.Mount(mux)
 

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/phenixblue/k8shark/internal/server"
+	"github.com/phenixblue/k8shark/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -45,6 +46,8 @@ func init() {
 	replayCmd.Flags().String("to", "", "replay window end: RFC3339 or relative duration like -1m (default: capture end)")
 	replayCmd.Flags().Bool("loop", false, "restart the replay from the window start when it reaches the end")
 	replayCmd.Flags().Bool("start-paused", false, "start paused; press Enter to begin playback")
+	replayCmd.Flags().Bool("ui", false, "also start the web dashboard as a replay transport (VCR)")
+	replayCmd.Flags().String("ui-port", "0", "port for the dashboard when --ui is set (0 = random)")
 }
 
 func runReplay(cmd *cobra.Command, args []string) error {
@@ -75,6 +78,18 @@ func runReplay(cmd *cobra.Command, args []string) error {
 	clock := srv.Clock()
 	winStart, winEnd := clock.Window()
 
+	// Optionally start the dashboard as a replay transport, sharing the clock.
+	uiEnabled, _ := cmd.Flags().GetBool("ui")
+	uiPort, _ := cmd.Flags().GetString("ui-port")
+	var uiSrv *ui.Server
+	if uiEnabled {
+		uiSrv, err = ui.Open(ui.OpenOptions{ArchivePath: args[0], Port: uiPort, Verbose: verbose, Clock: clock})
+		if err != nil {
+			srv.Shutdown()
+			return fmt.Errorf("starting dashboard: %w", err)
+		}
+	}
+
 	fmt.Printf("k8shark replay server running\n")
 	fmt.Printf("  Address:    %s\n", srv.Address())
 	fmt.Printf("  Kubeconfig: %s\n", srv.KubeconfigPath())
@@ -84,6 +99,9 @@ func runReplay(cmd *cobra.Command, args []string) error {
 		fmt.Printf("  Loop:       on\n")
 	}
 	fmt.Printf("  Control:    %s/_k8shark/replay\n", srv.Address())
+	if uiSrv != nil {
+		fmt.Printf("  Dashboard:  %s\n", uiSrv.Address())
+	}
 	fmt.Printf("\nRun: export KUBECONFIG=%s\n", srv.KubeconfigPath())
 	fmt.Printf("Then watch it change, e.g.: kubectl get pods -A --watch\n")
 	fmt.Printf("Drive playback, e.g.: curl -sk -X POST %s/_k8shark/replay/pause\n", srv.Address())
@@ -94,11 +112,14 @@ func runReplay(cmd *cobra.Command, args []string) error {
 		fmt.Printf("      higher-resolution ADDED/MODIFIED/DELETED events.\n")
 	}
 
-	if startPaused {
+	switch {
+	case startPaused && uiEnabled:
+		fmt.Printf("\nStarting paused — use the dashboard to begin playback (Ctrl+C to stop).\n")
+	case startPaused:
 		fmt.Printf("\nPaused. Press Enter to begin playback (Ctrl+C to stop).\n")
 		_, _ = bufio.NewReader(os.Stdin).ReadString('\n')
 		clock.Resume()
-	} else {
+	default:
 		fmt.Printf("\nPress Ctrl+C to stop.\n")
 	}
 
@@ -107,6 +128,9 @@ func runReplay(cmd *cobra.Command, args []string) error {
 	go replayStatusLoop(srv, stop)
 	err = srv.Wait()
 	close(stop)
+	if uiSrv != nil {
+		uiSrv.Shutdown()
+	}
 	fmt.Println()
 	return err
 }
