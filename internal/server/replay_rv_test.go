@@ -170,7 +170,8 @@ func TestReplayWatch_StaleRVReturns410(t *testing.T) {
 	srv := httptest.NewServer(h)
 	defer srv.Close()
 
-	for _, rv := range []string{"not-a-number", "1"} {
+	// not-a-number → invalid; 1 → below window; 999999999 → newer than any event.
+	for _, rv := range []string{"not-a-number", "1", "999999999"} {
 		resp, err := http.Get(srv.URL + "/api/v1/namespaces/default/pods?watch=1&resourceVersion=" + rv)
 		if err != nil {
 			t.Fatalf("watch rv=%s: %v", rv, err)

@@ -177,12 +177,18 @@ func (h *handler) streamReplayWatch(w http.ResponseWriter, r *http.Request, path
 	timeline := h.timelineFor(watchPath)
 	windowStart, _ := clock.Window()
 
-	// Resume vs list+stream, plus stale-RV → 410 (window check needs the timeline).
+	// Resume vs list+stream, plus stale/unknown-RV → 410 (needs the timeline).
 	resume := false
 	var minRV int64
 	if hasReqRV {
 		if reqRV < rvAsOf(timeline, windowStart) {
 			h.writeGone(w, fmt.Sprintf("resourceVersion %d is before the replay window; relist", reqRV))
+			return
+		}
+		// Too large / unknown (e.g. a raw etcd RV from the original capture):
+		// relist rather than silently streaming nothing.
+		if maxRV := replayRVBase + int64(len(timeline)); reqRV > maxRV {
+			h.writeGone(w, fmt.Sprintf("resourceVersion %d is newer than any replay event (max %d); relist", reqRV, maxRV))
 			return
 		}
 		resume = true
