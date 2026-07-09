@@ -162,6 +162,17 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Response content negotiation: when the client prefers protobuf, buffer the
+	// (non-watch) response and re-encode JSON bodies of built-in types as
+	// protobuf on the way out. Watch streams must never be buffered.
+	watchParam := r.URL.Query().Get("watch")
+	isWatch := watchParam == "1" || watchParam == "true"
+	if wantsProtobuf(r) && !isWatch {
+		pw := newProtobufResponseWriter(w)
+		defer pw.flush()
+		w = pw
+	}
+
 	// Writes: accepted into the overlay in writable replay; otherwise 405.
 	// RFC 7231 §6.5.5 requires an Allow header with a 405 response.
 	switch r.Method {
