@@ -98,11 +98,8 @@ func (h *handler) overlayCreate(w http.ResponseWriter, r *http.Request, group, v
 	}
 	// The effective namespace comes from the request path; a body namespace must
 	// match it (a namespaced resource is created via its namespaced collection
-	// path). This rejects both mismatches and "selecting" a namespace via the body
-	// on a cluster-scoped path.
-	if bodyNS := metaString(body, "namespace"); bodyNS != "" && bodyNS != namespace {
-		h.writeStatus(w, http.StatusBadRequest,
-			fmt.Sprintf("metadata.namespace %q does not match the request path namespace %q", bodyNS, namespace))
+	// path), rejecting "selecting" a namespace via the body on a cluster path.
+	if h.identityMismatch(w, body, name, namespace) {
 		return
 	}
 
@@ -145,6 +142,9 @@ func (h *handler) overlayReplace(w http.ResponseWriter, r *http.Request, group, 
 	}
 	if !isJSONObject(body) {
 		h.writeStatus(w, http.StatusBadRequest, "request body must be a JSON object")
+		return
+	}
+	if h.identityMismatch(w, body, name, namespace) {
 		return
 	}
 	// PUT is update, not upsert: the object must already exist (in the overlay or
@@ -194,6 +194,9 @@ func (h *handler) overlayPatch(w http.ResponseWriter, r *http.Request, group, ve
 		h.writeStatus(w, http.StatusUnprocessableEntity, "patch did not produce a JSON object")
 		return
 	}
+	if h.identityMismatch(w, next, name, namespace) {
+		return
+	}
 	// A status-subresource patch may only change status; keep the rest of the
 	// current object, and don't bump generation.
 	if sub == "status" {
@@ -216,8 +219,25 @@ func (h *handler) overlayDelete(w http.ResponseWriter, group, version, resource,
 	h.overlay.del(group, version, resource, namespace, name, last, h.replayFloorRV(group, version, resource, namespace))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"apiVersion": "v1", "kind": "Status", "status": "Success",
-		"details": map[string]any{"name": name, "kind": resource},
+		"details": map[string]any{"name": name, "kind": resourceToKind(resource)},
 	})
+}
+
+// identityMismatch writes a 400 and returns true when an object body's
+// metadata.name/metadata.namespace (when set) disagrees with the request path,
+// matching the kube-apiserver's rejection of mismatched identities.
+func (h *handler) identityMismatch(w http.ResponseWriter, obj json.RawMessage, name, namespace string) bool {
+	if bn := metaString(obj, "name"); bn != "" && bn != name {
+		h.writeStatus(w, http.StatusBadRequest,
+			fmt.Sprintf("metadata.name %q does not match the request path name %q", bn, name))
+		return true
+	}
+	if bns := metaString(obj, "namespace"); bns != "" && bns != namespace {
+		h.writeStatus(w, http.StatusBadRequest,
+			fmt.Sprintf("metadata.namespace %q does not match the request path namespace %q", bns, namespace))
+		return true
+	}
+	return false
 }
 
 // stampUpdate assigns a fresh RV (and preserves uid/creationTimestamp from the

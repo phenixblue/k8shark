@@ -390,7 +390,13 @@ func TestOverlay_CreateNamespaceMismatch(t *testing.T) {
 
 	body := `{"apiVersion":"v1","kind":"Pod","metadata":{"name":"pod-m","namespace":"other"}}`
 	if code, _ := doReq(t, http.MethodPost, srv.URL+podsPath, "application/json", body); code != http.StatusBadRequest {
-		t.Errorf("namespace mismatch: status %d, want 400", code)
+		t.Errorf("create namespace mismatch: status %d, want 400", code)
+	}
+	// PUT with a body name that disagrees with the URL is rejected.
+	doReq(t, http.MethodPost, srv.URL+podsPath, "application/json", podBody("pod-ok"))
+	wrong := `{"apiVersion":"v1","kind":"Pod","metadata":{"name":"different","namespace":"default"}}`
+	if code, _ := doReq(t, http.MethodPut, srv.URL+podsPath+"/pod-ok", "application/json", wrong); code != http.StatusBadRequest {
+		t.Errorf("PUT name mismatch: status %d, want 400", code)
 	}
 }
 
