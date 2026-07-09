@@ -211,13 +211,16 @@ func TestWatchTimeline_AggregatesAcrossNamespaces(t *testing.T) {
 		},
 	)
 
-	timeline := store.watchTimeline("/api/v1/pods")
+	timeline := store.buildReplayTimeline("/api/v1/pods")
 	if len(timeline) != 3 {
 		t.Fatalf("timeline length = %d, want 3", len(timeline))
 	}
 	for i := 1; i < len(timeline); i++ {
 		if timeline[i].t.Before(timeline[i-1].t) {
 			t.Errorf("timeline not sorted at %d: %s before %s", i, timeline[i].t, timeline[i-1].t)
+		}
+		if timeline[i].rv <= timeline[i-1].rv {
+			t.Errorf("rv not monotonic at %d: %d <= %d", i, timeline[i].rv, timeline[i-1].rv)
 		}
 	}
 	if timeline[0].apiPath != ns1 || timeline[1].apiPath != ns2 {

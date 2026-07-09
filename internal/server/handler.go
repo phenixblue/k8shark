@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -18,10 +19,49 @@ type handler struct {
 	// state as-of the clock's advancing position and watches stream captured
 	// events over time (see streamReplayWatch). nil for plain `open`/`ui`.
 	clock *ReplayClock
+
+	// timelineCache memoizes the (immutable) per-path replay event timeline so
+	// LIST and WATCH don't rebuild it per request — important for poll-only
+	// captures, whose timeline requires diffing every snapshot.
+	timelineMu    sync.Mutex
+	timelineCache map[string][]replayEvent
 }
 
 func newHandler(store *CaptureStore, at time.Time, verbose bool) *handler {
 	return &handler{store: store, at: at, verbose: verbose}
+}
+
+// timelineFor returns the memoized replay timeline for a watch path. The key is
+// normalized (trailing "/" trimmed) so a LIST on ".../pods/" and a WATCH on
+// ".../pods" share one timeline — keeping their RVs coherent and the cache warm.
+//
+// The (potentially expensive, for poll-only) build runs without the lock held so
+// it doesn't block concurrent requests for other paths. On a cold cache, several
+// concurrent callers for the same path may each build it; the first stored result
+// wins and the rest are discarded. (A singleflight-style guard could dedupe the
+// redundant builds if that ever matters — in practice the cold window is brief.)
+func (h *handler) timelineFor(watchPath string) []replayEvent {
+	watchPath = strings.TrimSuffix(watchPath, "/")
+
+	h.timelineMu.Lock()
+	if h.timelineCache == nil {
+		h.timelineCache = map[string][]replayEvent{}
+	}
+	if tl, ok := h.timelineCache[watchPath]; ok {
+		h.timelineMu.Unlock()
+		return tl
+	}
+	h.timelineMu.Unlock()
+
+	tl := h.store.buildReplayTimeline(watchPath)
+
+	h.timelineMu.Lock()
+	defer h.timelineMu.Unlock()
+	if existing, ok := h.timelineCache[watchPath]; ok {
+		return existing // another goroutine won the race; use its result
+	}
+	h.timelineCache[watchPath] = tl
+	return tl
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -498,6 +538,15 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 		if tb, err2 := buildTable(body); err2 == nil {
 			body = tb
 		}
+	}
+
+	// In replay mode, override a list's resourceVersion with the coherent RV
+	// as-of the clock, so a following WATCH(resourceVersion=RV) aligns with the
+	// event stream's monotonic RVs.
+	if h.clock != nil {
+		body = rewriteListResourceVersion(body, func() int64 {
+			return rvAsOf(h.timelineFor(path), at)
+		})
 	}
 
 	w.Header().Set("Content-Type", "application/json")

@@ -390,7 +390,9 @@ The primary use case is **local development and testing of controllers/operators
 
 > **Read-only.** The mock server replays a captured timeline; a controller's writes won't persist or feed back into the replay. You observe "how my controller reacts to this sequence," not a closed loop.
 >
-> **Watch events required.** Replay streams the events recorded with `watch: true` (see [docs/config.md](config.md)). A poll-only capture has no watch events, so `replay` still serves LIST/GET as-of the clock but streams nothing — `kshrk replay` prints a note when this is the case. (Inferring events for poll-only captures by diffing snapshots is a planned enhancement.)
+> **Watch events.** Replay streams the events recorded with `watch: true` (see [docs/config.md](config.md)) at full fidelity. A poll-only capture (no watch index) still replays: `kshrk replay` infers ADDED/MODIFIED/DELETED events by diffing consecutive snapshots, so you get an event stream bounded by the poll interval's resolution. Use `watch: true` when you need precise, higher-resolution events.
+>
+> **resourceVersion & informers.** Replay assigns a coherent, monotonic `resourceVersion` to every object so real controller informers work: a LIST returns `resourceVersion = rvAsOf(clock)`, a `WATCH?resourceVersion=X` resumes by streaming only events newer than `X` (each carrying its own RV), and a stale/unknown RV returns `410 Gone` so the informer relists cleanly. A reconnecting client resumes from its last RV without dropped or duplicated events.
 
 ### Replay flags
 
