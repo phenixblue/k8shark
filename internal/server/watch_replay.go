@@ -186,8 +186,16 @@ func (h *handler) streamReplayWatch(w http.ResponseWriter, r *http.Request, path
 			return
 		}
 		// Too large / unknown (e.g. a raw etcd RV from the original capture):
-		// relist rather than silently streaming nothing.
-		if maxRV := replayRVBase + int64(len(timeline)); reqRV > maxRV {
+		// relist rather than silently streaming nothing. Include the overlay's RV
+		// so a LIST RV bumped by an overlay write is still a valid resume point
+		// (otherwise a LIST→WATCH informer would loop on 410).
+		maxRV := replayRVBase + int64(len(timeline))
+		if h.overlay != nil {
+			if orv := h.overlay.currentRV(); orv > maxRV {
+				maxRV = orv
+			}
+		}
+		if reqRV > maxRV {
 			h.writeGone(w, fmt.Sprintf("resourceVersion %d is newer than any replay event (max %d); relist", reqRV, maxRV))
 			return
 		}

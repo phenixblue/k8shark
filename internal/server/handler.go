@@ -595,6 +595,7 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 // mergeOverlayList merges overlay objects into a list body for the list's scope.
 // Non-list bodies are returned unchanged.
 func (h *handler) mergeOverlayList(path string, body []byte) []byte {
+	h.overlay.syncEpoch(h.clock) // reset-on-loop before merging into a LIST
 	group, version, resource, namespace := parseAPIPath(strings.TrimSuffix(path, "/"))
 	if resource == "" {
 		return body

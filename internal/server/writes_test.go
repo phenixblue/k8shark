@@ -270,6 +270,66 @@ func TestOverlay_StatusSubresource(t *testing.T) {
 	}
 }
 
+func TestOverlay_CreateConflict(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	// Creating over a replay-base object → 409.
+	if code, _ := doReq(t, http.MethodPost, srv.URL+podsPath, "application/json", podBody("pod-base")); code != http.StatusConflict {
+		t.Errorf("create over replay object: status %d, want 409", code)
+	}
+	// Create then create again → 409.
+	doReq(t, http.MethodPost, srv.URL+podsPath, "application/json", podBody("pod-dup"))
+	if code, _ := doReq(t, http.MethodPost, srv.URL+podsPath, "application/json", podBody("pod-dup")); code != http.StatusConflict {
+		t.Errorf("duplicate create: status %d, want 409", code)
+	}
+}
+
+func TestOverlay_UnknownSubresourceRejected(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+	doReq(t, http.MethodPost, srv.URL+podsPath, "application/json", podBody("pod-x"))
+
+	if code, _ := doReq(t, http.MethodPut, srv.URL+podsPath+"/pod-x/scale", "application/json", `{"spec":{"replicas":2}}`); code != http.StatusMethodNotAllowed {
+		t.Errorf("PUT unknown subresource: status %d, want 405", code)
+	}
+	if code, _ := doReq(t, http.MethodPatch, srv.URL+podsPath+"/pod-x/scale", "application/merge-patch+json", `{"spec":{"replicas":2}}`); code != http.StatusMethodNotAllowed {
+		t.Errorf("PATCH unknown subresource: status %d, want 405", code)
+	}
+}
+
+// TestOverlay_ListThenWatchNoRelistLoop verifies a LIST RV bumped by an overlay
+// write is still a valid WATCH resume point (no 410 relist loop).
+func TestOverlay_ListThenWatchNoRelistLoop(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	doReq(t, http.MethodPost, srv.URL+podsPath, "application/json", podBody("pod-x"))
+	_, list := doReq(t, http.MethodGet, srv.URL+podsPath, "", "")
+	listRV := metaString(list, "resourceVersion")
+	if listRV == "" {
+		// list-level RV is in metadata.resourceVersion; metaString reads metadata.*
+		var l struct {
+			Metadata struct {
+				ResourceVersion string `json:"resourceVersion"`
+			} `json:"metadata"`
+		}
+		_ = json.Unmarshal(list, &l)
+		listRV = l.Metadata.ResourceVersion
+	}
+	resp, err := http.Get(srv.URL + podsPath + "?watch=1&resourceVersion=" + listRV + "&timeoutSeconds=1")
+	if err != nil {
+		t.Fatalf("watch: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Errorf("WATCH from list RV %s: status %d, want 200 (no 410 relist loop)", listRV, resp.StatusCode)
+	}
+}
+
 func TestOverlay_ReadOnlyRejectsWrites(t *testing.T) {
 	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
 	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)

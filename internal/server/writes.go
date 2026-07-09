@@ -99,6 +99,16 @@ func (h *handler) overlayCreate(w http.ResponseWriter, r *http.Request, group, v
 		namespace = bodyNS
 	}
 
+	// Create semantics: fail if the object already exists (in the overlay or the
+	// replayed state), matching the kube-apiserver's 409 AlreadyExists.
+	if h.currentObject(group, version, resource, namespace, name) != nil {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"apiVersion": "v1", "kind": "Status", "status": "Failure", "reason": "AlreadyExists",
+			"message": resource + " " + name + " already exists", "code": http.StatusConflict,
+		})
+		return
+	}
+
 	rv := h.overlay.nextRV(h.replayFloorRV(group, version, resource, namespace))
 	obj := mergeMeta(body, map[string]any{
 		"name":              name,
@@ -115,6 +125,10 @@ func (h *handler) overlayCreate(w http.ResponseWriter, r *http.Request, group, v
 func (h *handler) overlayReplace(w http.ResponseWriter, r *http.Request, group, version, resource, namespace, name, sub string) {
 	if name == "" {
 		h.writeStatus(w, http.StatusBadRequest, "object name is required")
+		return
+	}
+	if sub != "" && sub != "status" {
+		h.writeStatus(w, http.StatusMethodNotAllowed, "unsupported subresource: "+sub)
 		return
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxWriteBytes))
@@ -147,6 +161,10 @@ func (h *handler) overlayReplace(w http.ResponseWriter, r *http.Request, group, 
 func (h *handler) overlayPatch(w http.ResponseWriter, r *http.Request, group, version, resource, namespace, name, sub string) {
 	if name == "" {
 		h.writeStatus(w, http.StatusBadRequest, "object name is required")
+		return
+	}
+	if sub != "" && sub != "status" {
+		h.writeStatus(w, http.StatusMethodNotAllowed, "unsupported subresource: "+sub)
 		return
 	}
 	patch, err := io.ReadAll(io.LimitReader(r.Body, maxWriteBytes))

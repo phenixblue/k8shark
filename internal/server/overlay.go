@@ -10,11 +10,12 @@ import (
 // capture state on read, so a controller can observe its own writes (closed-loop
 // dev). It is nil for read-only replay.
 //
-// Conflict policy is "overlay wins (owned)": once an object identity is present
-// in the overlay, replay events for it are suppressed (see owns) and reads use
-// the overlay copy. Reset policy is "on loop wrap only" — syncEpoch clears the
-// overlay when the replay clock's loop epoch advances; a manual reset is also
-// exposed. The overlay persists across seeks.
+// Conflict policy is "overlay wins (owned)": on read, an object present in the
+// overlay shadows the replayed copy (LIST/GET use the overlay). Suppressing
+// replay *watch* events for owned objects lands with watch feedback in a later
+// PR. Reset policy is "on loop wrap only" — syncEpoch clears the overlay when the
+// replay clock's loop epoch advances; a manual reset is also exposed. The overlay
+// persists across seeks.
 type overlay struct {
 	mu      sync.RWMutex
 	items   map[string]*overlayEntry // key: overlayKey(g,v,resource,namespace,name)
