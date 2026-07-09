@@ -168,7 +168,8 @@ kshrk replay capture.kshrk --speed 2x --ui
 ```
 
 A **transport bar** appears in the header with **play/pause**, **step** (◀ ▶ on the scrubber),
-a **speed selector** (0.5× / 1× / 2× / 3×), and a live **events** counter. Drag the scrubber to seek
+a **speed selector** (0.25× / 0.5× / 1× / 2×; the current speed is added if it isn't a preset), and a
+live **events** counter. Drag the scrubber to seek
 the clock; the views auto-refresh as the clock crosses each snapshot. If a view fails to load
 mid-playback, replay **pauses** and surfaces the error rather than pressing on.
 

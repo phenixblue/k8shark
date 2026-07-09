@@ -190,7 +190,7 @@
   }
 
   // ── Replay transport ───────────────────────────────────────────────────────
-  const REPLAY_SPEEDS = [0.5, 1, 2, 3];
+  const REPLAY_SPEEDS = [0.25, 0.5, 1, 2];
 
   // replaySnapshotIndex returns the index of the latest snapshot at or before
   // the given time (floor). Using the floor (not the nearest) means the view
@@ -207,47 +207,69 @@
     return idx;
   }
 
-  // renderTransport builds the play/pause + speed controls in the header. It is
-  // only shown in replay mode; the container is created lazily.
+  // transportEls caches the header transport elements. They are built once and
+  // then updated in place — crucially, the poll loop must NOT recreate the
+  // <select> every tick or it would close the native dropdown mid-interaction.
+  let transportEls = null;
+
+  // renderTransport shows the play/pause + speed controls in the header (replay
+  // mode only) and updates their state in place.
   function renderTransport() {
     if (!state.replay.enabled) return;
-    let box = $('transport');
-    if (!box) {
-      box = el('div', { class: 'transport', id: 'transport' });
+    const rp = state.replay;
+
+    if (!transportEls) {
+      const box = el('div', { class: 'transport', id: 'transport' });
       const bar = $('topbar');
       const scrub = $('scrubber');
       if (bar && scrub) bar.insertBefore(box, scrub);
       else if (bar) bar.appendChild(box);
+      const playBtn = el('button', {
+        class: 'btn transport-play',
+        onclick: () => replayControl(state.replay.paused ? 'play' : 'pause'),
+      });
+      const speedSel = el('select', {
+        class: 'transport-speed', title: 'Playback speed',
+        onchange: (e) => replayControl('speed', { value: e.target.value + 'x' }),
+      });
+      const evts = el('span', { class: 'transport-events', title: 'Watch events emitted' });
+      const ended = el('span', { class: 'transport-ended' }, 'ended');
+      box.appendChild(playBtn);
+      box.appendChild(speedSel);
+      box.appendChild(evts);
+      transportEls = { box, playBtn, speedSel, evts, ended, speedKey: '' };
     }
-    box.innerHTML = '';
-    const rp = state.replay;
-    const playBtn = el('button', {
-      class: 'btn transport-play' + (rp.paused ? '' : ' playing'),
-      title: rp.paused ? 'Play' : 'Pause',
-      onclick: () => replayControl(rp.paused ? 'play' : 'pause'),
-    }, rp.paused ? '▶ Play' : '❚❚ Pause');
-    const speedSel = el('select', {
-      class: 'transport-speed', title: 'Playback speed',
-      onchange: (e) => replayControl('speed', { value: e.target.value + 'x' }),
-    });
-    // Include the current speed even if it's not one of the presets (e.g. a
-    // server started with --speed 5x), so the control reflects real state.
+    const t = transportEls;
+
+    // Play / pause.
+    t.playBtn.textContent = rp.paused ? '▶ Play' : '❚❚ Pause';
+    t.playBtn.title = rp.paused ? 'Play' : 'Pause';
+    t.playBtn.classList.toggle('playing', !rp.paused);
+
+    // Speed options — include the current speed even if it isn't a preset (e.g. a
+    // server started with --speed 5x). Rebuild the <option>s only when the set
+    // changes, so polling never recreates the select and closes the dropdown.
     const speeds = REPLAY_SPEEDS.slice();
     if (!speeds.some((s) => Math.abs(s - rp.speed) < 1e-9)) {
       speeds.push(rp.speed);
       speeds.sort((a, b) => a - b);
     }
-    for (const sp of speeds) {
-      const o = el('option', { value: String(sp) }, sp + '×');
-      if (Math.abs(sp - rp.speed) < 1e-9) o.selected = true;
-      speedSel.appendChild(o);
+    const key = speeds.join(',');
+    if (t.speedKey !== key) {
+      t.speedSel.innerHTML = '';
+      for (const sp of speeds) t.speedSel.appendChild(el('option', { value: String(sp) }, sp + '×'));
+      t.speedKey = key;
     }
-    const evts = el('span', { class: 'transport-events', title: 'Watch events emitted' },
-      rp.events + ' event' + (rp.events === 1 ? '' : 's'));
-    box.appendChild(playBtn);
-    box.appendChild(speedSel);
-    box.appendChild(evts);
-    if (rp.ended && !rp.loop) box.appendChild(el('span', { class: 'transport-ended' }, 'ended'));
+    // Reflect the current speed unless the user is interacting with the select.
+    if (document.activeElement !== t.speedSel) t.speedSel.value = String(rp.speed);
+
+    // Events counter and ended badge.
+    t.evts.textContent = rp.events + ' event' + (rp.events === 1 ? '' : 's');
+    if (rp.ended && !rp.loop) {
+      if (!t.ended.parentNode) t.box.appendChild(t.ended);
+    } else if (t.ended.parentNode) {
+      t.ended.remove();
+    }
   }
 
   // seekSnapshot seeks the clock to the neighbouring snapshot (step buttons).
