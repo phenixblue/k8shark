@@ -513,6 +513,16 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 		return
 	}
 
+	// Writable replay: merge overlay objects into the list (overlay wins) before
+	// Table negotiation, then re-apply selectors so overlay items are filtered
+	// consistently with replayed items.
+	if h.overlay != nil {
+		body = h.mergeOverlayList(path, body)
+		if filtered, ferr := applySelectors(body, labelSel, fieldSel); ferr == nil {
+			body = filtered
+		}
+	}
+
 	// tableFiltered applies label/field selectors to a stored Table-format body,
 	// removing rows whose embedded object does not match. Returns tb unchanged
 	// when selectors are empty or if filtering fails (best-effort).
@@ -530,8 +540,10 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 	// (real column defs + pre-computed cell values from the actual cluster).
 	// Fall back to buildTable only for captures predating this feature.
 	if strings.Contains(r.Header.Get("Accept"), "as=Table") {
-		// Exact-path stored Table (namespace-scoped list).
-		if tb, tbCode, _ := h.store.Latest(path+"?as=Table", at); tbCode == 200 {
+		// Exact-path stored Table (namespace-scoped list). Bypassed in writable
+		// mode so the Table reflects overlay writes (built from the merged body
+		// below) rather than the captured-only stored Table.
+		if tb, tbCode, _ := h.store.Latest(path+"?as=Table", at); tbCode == 200 && h.overlay == nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(200)
 			_, _ = w.Write(tableFiltered(tb))
@@ -552,7 +564,8 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 			}
 		}
 		// Aggregated Table across namespaces (for -A / cluster-scoped paths only).
-		if _, _, _, reqNS := parseAPIPath(path); reqNS == "" {
+		// Also bypassed in writable mode (see above).
+		if _, _, _, reqNS := parseAPIPath(path); reqNS == "" && h.overlay == nil {
 			if tb, tbCode, _ := h.store.AggregateTableAcrossNamespaces(path, at); tbCode == 200 {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(200)
@@ -565,11 +578,6 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 		if tb, err2 := buildTable(body); err2 == nil {
 			body = tb
 		}
-	}
-
-	// Writable replay: merge overlay objects into the list (overlay wins).
-	if h.overlay != nil {
-		body = h.mergeOverlayList(path, body)
 	}
 
 	// In replay mode, override a list's resourceVersion with the coherent RV

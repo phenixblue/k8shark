@@ -400,6 +400,53 @@ func TestOverlay_CreateNamespaceMismatch(t *testing.T) {
 	}
 }
 
+// TestOverlay_ListSelectorFiltersOverlay verifies label selectors filter overlay
+// items consistently with replayed items.
+func TestOverlay_ListSelectorFiltersOverlay(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	doReq(t, http.MethodPost, srv.URL+podsPath, "application/json",
+		`{"apiVersion":"v1","kind":"Pod","metadata":{"name":"pod-la","namespace":"default","labels":{"app":"x"}}}`)
+	doReq(t, http.MethodPost, srv.URL+podsPath, "application/json",
+		`{"apiVersion":"v1","kind":"Pod","metadata":{"name":"pod-lb","namespace":"default","labels":{"app":"y"}}}`)
+
+	_, list := doReq(t, http.MethodGet, srv.URL+podsPath+"?labelSelector=app%3Dx", "", "")
+	names := listNames(t, list)
+	if !contains(names, "pod-la") {
+		t.Errorf("selector app=x should include pod-la; got %v", names)
+	}
+	if contains(names, "pod-lb") || contains(names, "pod-base") {
+		t.Errorf("selector app=x leaked non-matching items: %v", names)
+	}
+}
+
+// TestOverlay_TableReflectsWrite verifies a Table LIST (kubectl's default) shows
+// overlay-created objects.
+func TestOverlay_TableReflectsWrite(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	doReq(t, http.MethodPost, srv.URL+podsPath, "application/json", podBody("pod-t"))
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+podsPath, nil)
+	req.Header.Set("Accept", "application/json;as=Table;v=v1;g=meta.k8s.io")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("table list: %v", err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(b), `"kind":"Table"`) {
+		t.Fatalf("expected a Table response, got: %s", b)
+	}
+	if !strings.Contains(string(b), "pod-t") {
+		t.Errorf("Table LIST did not reflect overlay write pod-t: %s", b)
+	}
+}
+
 func TestOverlay_ReadOnlyRejectsWrites(t *testing.T) {
 	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
 	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
