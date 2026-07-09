@@ -213,6 +213,11 @@ func (c *ReplayClock) AddEvents(n int64) { c.events.Add(n) }
 // EventsEmitted returns how many watch events have been streamed so far.
 func (c *ReplayClock) EventsEmitted() int64 { return c.events.Load() }
 
+// ParseSpeed parses a speed factor such as "2x", "0.5x", "3", or "1.5x" for
+// callers outside this package (e.g. the UI transport control endpoint). An
+// empty string means real time (1x).
+func ParseSpeed(raw string) (float64, error) { return parseSpeed(raw) }
+
 // parseSpeed parses a speed factor such as "2x", "0.5x", "3", or "1.5x".
 // An empty string means real time (1x).
 func parseSpeed(raw string) (float64, error) {

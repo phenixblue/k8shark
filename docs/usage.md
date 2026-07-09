@@ -402,10 +402,16 @@ The primary use case is **local development and testing of controllers/operators
 | `--from` | capture start | Window start: RFC3339 or relative duration like `-10m` |
 | `--to` | capture end | Window end: RFC3339 or relative duration like `-1m` |
 | `--loop` | false | Restart from the window start when the end is reached |
-| `--start-paused` | false | Start paused; press Enter to begin playback |
+| `--start-paused` | false | Start paused (press Enter to begin, or use the dashboard when `--ui` is set) |
+| `--ui` | false | Also start the web dashboard as a replay transport (VCR), sharing the clock |
+| `--ui-port` | random | Port for the dashboard when `--ui` is set |
 | `--port` | random | Port for the mock API server |
 | `--kubeconfig-out` | `~/.kube/k8shark-<id>.yaml` | Where to write the generated kubeconfig |
 | `--verbose` / `-v` | false | Log every request the server receives |
+
+> **Dashboard transport.** Pass `--ui` to drive replay from the browser (play/pause/seek/speed), or
+> start from the UI side with `kshrk ui capture.kshrk --speed 2x` — both share one clock so `kubectl`
+> and the dashboard stay in lockstep. See [the Replay (VCR) section of the Web UI guide](web-ui.md#replay-vcr).
 
 ### Controlling playback
 

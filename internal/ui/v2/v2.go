@@ -22,6 +22,9 @@ type Handler struct {
 	At          time.Time
 	ArchivePath string
 	Verbose     bool
+	// Clock, when non-nil, puts the dashboard in replay mode: resolveAt follows
+	// the clock and /v2/api/replay drives it (see replay.go).
+	Clock *server.ReplayClock
 }
 
 // Mount registers all /v2/* routes on mux. The /v2/ HTML shell is served
@@ -49,4 +52,6 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 	mux.HandleFunc("/v2/api/diff", h.serveDiff)
 	mux.HandleFunc("/v2/api/object-history", h.serveObjectHistory)
 	mux.HandleFunc("/v2/api/timestamps", h.serveTimestamps)
+	mux.HandleFunc("/v2/api/replay", h.serveReplay)
+	mux.HandleFunc("/v2/api/replay/", h.serveReplay)
 }

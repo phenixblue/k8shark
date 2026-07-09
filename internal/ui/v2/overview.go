@@ -48,17 +48,20 @@ func (h *Handler) serveOverview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, ov)
 }
 
-// resolveAt reads ?at= from the request, falling back to h.At.
+// resolveAt reads ?at= from the request. An explicit, parseable ?at= always
+// wins (manual scrub / paused inspection). Otherwise, in replay mode the current
+// clock position is used so views follow the advancing clock; failing that,
+// h.At (the fixed --at).
 func (h *Handler) resolveAt(r *http.Request) time.Time {
-	q := r.URL.Query().Get("at")
-	if q == "" {
-		return h.At
+	if q := r.URL.Query().Get("at"); q != "" {
+		if t, err := time.Parse(time.RFC3339, q); err == nil {
+			return t.UTC()
+		}
 	}
-	t, err := time.Parse(time.RFC3339, q)
-	if err != nil {
-		return h.At
+	if h.Clock != nil {
+		return h.Clock.Now()
 	}
-	return t.UTC()
+	return h.At
 }
 
 // buildOverview walks the index + reads pod bodies to compute everything the

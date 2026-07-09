@@ -74,8 +74,19 @@
   const state = {
     captureMeta: null,
     snapshots: [],   // RFC3339 strings
-    at: '',          // selected snapshot timestamp ('' = latest)
+    at: '',          // selected snapshot timestamp ('' = latest / follow clock in replay)
     route: { name: 'overview' },
+    // Replay transport (populated from /v2/api/replay when replay mode is on).
+    replay: {
+      enabled: false,
+      position: '',  // live clock position (RFC3339)
+      paused: true,
+      speed: 1,
+      loop: false,
+      ended: false,
+      events: 0,
+      lastRenderedIdx: -1, // scrubber index last re-rendered, to throttle auto-follow
+    },
   };
 
   // ── Router ───────────────────────────────────────────────────────────────
@@ -146,24 +157,154 @@
   function renderScrubber() {
     const s = $('scrubber');
     s.innerHTML = '';
-    const prev = el('button', { class: 'btn', onclick: stepSnapshot.bind(null, -1) }, '◀');
-    const next = el('button', { class: 'btn', onclick: stepSnapshot.bind(null, +1) }, '▶');
-    const range = el('input', { type: 'range', min: '0', max: String(Math.max(0, state.snapshots.length - 1)), value: String(currentSnapshotIndex()) });
-    range.addEventListener('input', () => {
-      const idx = Number(range.value);
-      state.at = state.snapshots[idx] || '';
-      ts.textContent = formatTS(state.at);
-    });
-    range.addEventListener('change', () => {
-      const idx = Number(range.value);
-      state.at = state.snapshots[idx] || '';
-      render();
-    });
-    const ts = el('span', { class: 'ts' }, formatTS(state.at));
+    const replay = state.replay.enabled;
+    const maxIdx = Math.max(0, state.snapshots.length - 1);
+    // In replay mode the thumb tracks the live clock position; otherwise it
+    // tracks the manually-selected snapshot.
+    const idxNow = replay ? nearestSnapshotIndex(state.replay.position) : currentSnapshotIndex();
+    const prev = el('button', { class: 'btn', onclick: () => (replay ? seekSnapshot(-1) : stepSnapshot(-1)), title: 'Step back' }, '◀');
+    const next = el('button', { class: 'btn', onclick: () => (replay ? seekSnapshot(+1) : stepSnapshot(+1)), title: 'Step forward' }, '▶');
+    const range = el('input', { type: 'range', min: '0', max: String(maxIdx), value: String(idxNow) });
+    const ts = el('span', { class: 'ts' }, formatTS(replay ? state.replay.position : state.at));
+    if (replay) {
+      // Drag = seek the clock; update label live, commit the seek on release.
+      range.addEventListener('input', () => { ts.textContent = formatTS(state.snapshots[Number(range.value)] || ''); });
+      range.addEventListener('change', () => {
+        const to = state.snapshots[Number(range.value)];
+        if (to) replayControl('seek', { to });
+      });
+    } else {
+      range.addEventListener('input', () => {
+        state.at = state.snapshots[Number(range.value)] || '';
+        ts.textContent = formatTS(state.at);
+      });
+      range.addEventListener('change', () => {
+        state.at = state.snapshots[Number(range.value)] || '';
+        render();
+      });
+    }
     s.appendChild(prev);
     s.appendChild(range);
     s.appendChild(next);
     s.appendChild(ts);
+  }
+
+  // ── Replay transport ───────────────────────────────────────────────────────
+  const REPLAY_SPEEDS = [0.5, 1, 2, 3];
+
+  function nearestSnapshotIndex(rfc3339) {
+    if (!rfc3339 || state.snapshots.length === 0) return Math.max(0, state.snapshots.length - 1);
+    const t = Date.parse(rfc3339);
+    let best = 0, bestDelta = Infinity;
+    for (let i = 0; i < state.snapshots.length; i++) {
+      const d = Math.abs(Date.parse(state.snapshots[i]) - t);
+      if (d < bestDelta) { bestDelta = d; best = i; }
+    }
+    return best;
+  }
+
+  // renderTransport builds the play/pause + speed controls in the header. It is
+  // only shown in replay mode; the container is created lazily.
+  function renderTransport() {
+    if (!state.replay.enabled) return;
+    let box = $('transport');
+    if (!box) {
+      box = el('div', { class: 'transport', id: 'transport' });
+      const bar = $('topbar');
+      const scrub = $('scrubber');
+      if (bar && scrub) bar.insertBefore(box, scrub);
+      else if (bar) bar.appendChild(box);
+    }
+    box.innerHTML = '';
+    const rp = state.replay;
+    const playBtn = el('button', {
+      class: 'btn transport-play' + (rp.paused ? '' : ' playing'),
+      title: rp.paused ? 'Play' : 'Pause',
+      onclick: () => replayControl(rp.paused ? 'play' : 'pause'),
+    }, rp.paused ? '▶ Play' : '❚❚ Pause');
+    const speedSel = el('select', {
+      class: 'transport-speed', title: 'Playback speed',
+      onchange: (e) => replayControl('speed', { value: e.target.value + 'x' }),
+    });
+    for (const sp of REPLAY_SPEEDS) {
+      const o = el('option', { value: String(sp) }, sp + '×');
+      if (Math.abs(sp - rp.speed) < 1e-9) o.selected = true;
+      speedSel.appendChild(o);
+    }
+    const evts = el('span', { class: 'transport-events', title: 'Watch events emitted' },
+      rp.events + ' event' + (rp.events === 1 ? '' : 's'));
+    box.appendChild(playBtn);
+    box.appendChild(speedSel);
+    box.appendChild(evts);
+    if (rp.ended && !rp.loop) box.appendChild(el('span', { class: 'transport-ended' }, 'ended'));
+  }
+
+  // seekSnapshot seeks the clock to the neighbouring snapshot (step buttons).
+  function seekSnapshot(delta) {
+    const idx = Math.max(0, Math.min(state.snapshots.length - 1, nearestSnapshotIndex(state.replay.position) + delta));
+    const to = state.snapshots[idx];
+    if (to) replayControl('seek', { to });
+  }
+
+  // replayControl POSTs a transport action and applies the returned status.
+  async function replayControl(action, params) {
+    try {
+      const url = new URL('/v2/api/replay/' + action, location.href);
+      for (const k in (params || {})) url.searchParams.set(k, params[k]);
+      const res = await fetch(url.toString(), { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error((data && data.error) || `${res.status} ${res.statusText}`);
+      applyReplayStatus(data, true);
+    } catch (e) {
+      toast('error', 'Replay control failed: ' + e.message);
+    }
+  }
+
+  // applyReplayStatus updates replay state from a status payload. When force is
+  // true (an explicit control action) it always re-renders; during polling it
+  // only re-renders the heavy view when the scrubber crosses a new snapshot.
+  function applyReplayStatus(st, force) {
+    if (!st || !st.enabled) return;
+    const rp = state.replay;
+    rp.enabled = true;
+    rp.position = st.position || '';
+    rp.paused = !!st.paused;
+    rp.speed = st.speed || 1;
+    rp.loop = !!st.loop;
+    rp.ended = !!st.ended;
+    rp.events = st.events_emitted || 0;
+
+    renderTransport();
+    // Live-update the scrubber thumb + label without a full re-render.
+    const s = $('scrubber');
+    const range = s && s.querySelector('input[type=range]');
+    const idx = nearestSnapshotIndex(rp.position);
+    if (range) range.value = String(idx);
+    const tsEl = s && s.querySelector('.ts');
+    if (tsEl) tsEl.textContent = formatTS(rp.position);
+
+    // Auto-follow: re-render the current view when the clock crosses into a new
+    // snapshot (throttles the expensive view rebuild to snapshot granularity).
+    const crossed = idx !== rp.lastRenderedIdx;
+    if (force || (!rp.paused && crossed)) {
+      rp.lastRenderedIdx = idx;
+      try {
+        render();
+      } catch (e) {
+        // Pause-on-error: stop advancing and surface the failure.
+        replayControl('pause');
+        toast('error', 'Replay paused — view failed to load: ' + e.message);
+      }
+    }
+  }
+
+  async function pollReplay() {
+    if (!state.replay.enabled) return;
+    try {
+      const res = await fetch(new URL('/v2/api/replay', location.href).toString());
+      const data = await res.json();
+      applyReplayStatus(data, false);
+    } catch (_) { /* transient; next tick retries */ }
   }
 
   function currentSnapshotIndex() {
@@ -2104,6 +2245,7 @@
   function render() {
     renderNav();
     renderScrubber();
+    renderTransport();
     const r = state.route;
     if (r.name === 'overview') return renderOverview();
     if (r.name === 'namespaces') return renderNamespacesIndex();
@@ -2167,6 +2309,14 @@
       // Timestamps endpoint not implemented yet — keep going with empty snapshots.
       $('capture-meta').textContent = 'capture loaded';
     }
+    // Detect replay mode and, if on, start the transport poll loop.
+    try {
+      const rp = await getJSON('/v2/api/replay');
+      if (rp && rp.enabled) {
+        applyReplayStatus(rp, false);
+        setInterval(pollReplay, 700);
+      }
+    } catch (_) { /* replay endpoint absent → static explorer */ }
     render();
   }
   document.addEventListener('DOMContentLoaded', init);
