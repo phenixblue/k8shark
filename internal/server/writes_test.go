@@ -508,3 +508,79 @@ func TestOverlay_ReadOnlyRejectsWrites(t *testing.T) {
 		t.Errorf("read-only POST: status %d, want 405", code)
 	}
 }
+
+func TestOverlay_DefaultServiceAccountOnNamespaceCreate(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	// Creating a namespace synthesizes its `default` ServiceAccount (a real
+	// cluster's controller would); the overlay has none.
+	nsBody := `{"apiVersion":"v1","kind":"Namespace","metadata":{"name":"ns-x"}}`
+	if code, _ := doReq(t, http.MethodPost, srv.URL+"/api/v1/namespaces", "application/json", nsBody); code != http.StatusCreated {
+		t.Fatalf("create namespace: status %d, want 201", code)
+	}
+
+	saPath := "/api/v1/namespaces/ns-x/serviceaccounts"
+	code, got := doReq(t, http.MethodGet, srv.URL+saPath+"/default", "", "")
+	if code != http.StatusOK {
+		t.Fatalf("GET default SA: status %d, want 200\n%s", code, got)
+	}
+	if n := metaString(got, "name"); n != "default" {
+		t.Errorf("SA name = %q, want default", n)
+	}
+	if rv := bodyRV(t, got); rv == "" || rv == "0" {
+		t.Errorf("SA resourceVersion = %q, want non-zero", rv)
+	}
+	if _, list := doReq(t, http.MethodGet, srv.URL+saPath, "", ""); !contains(listNames(t, list), "default") {
+		t.Errorf("SA list missing default: %v", listNames(t, list))
+	}
+
+	// The kube-root-ca.crt ConfigMap is synthesized too.
+	code, cm := doReq(t, http.MethodGet, srv.URL+"/api/v1/namespaces/ns-x/configmaps/kube-root-ca.crt", "", "")
+	if code != http.StatusOK {
+		t.Fatalf("GET kube-root-ca.crt: status %d, want 200\n%s", code, cm)
+	}
+	if n := metaString(cm, "name"); n != "kube-root-ca.crt" {
+		t.Errorf("CM name = %q, want kube-root-ca.crt", n)
+	}
+}
+
+// A WatchList informer (sendInitialEvents=true) must see overlay-created objects
+// in the initial burst and receive the k8s.io/initial-events-end BOOKMARK, or it
+// never completes its initial sync. (issues #152/#153)
+func TestOverlay_WatchListInitialEvents(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	nsBody := `{"apiVersion":"v1","kind":"Namespace","metadata":{"name":"wl"}}`
+	if code, _ := doReq(t, http.MethodPost, srv.URL+"/api/v1/namespaces", "application/json", nsBody); code != http.StatusCreated {
+		t.Fatalf("create namespace: status %d, want 201", code)
+	}
+
+	url := srv.URL + "/api/v1/namespaces/wl/serviceaccounts?watch=true&sendInitialEvents=true&timeoutSeconds=2"
+	_, tryNext, cancel := openWatchStream(t, url)
+	defer cancel()
+
+	var sawSA, sawInitialEndBookmark bool
+	for {
+		e, ok := tryNext(3 * time.Second)
+		if !ok {
+			break
+		}
+		if e.Type == "ADDED" && e.Object.Metadata.Name == "default" {
+			sawSA = true
+		}
+		if e.Type == "BOOKMARK" && e.Object.Metadata.Annotations["k8s.io/initial-events-end"] == "true" {
+			sawInitialEndBookmark = true
+			break
+		}
+	}
+	if !sawSA {
+		t.Error("WatchList initial burst did not include the overlay-synthesized default SA")
+	}
+	if !sawInitialEndBookmark {
+		t.Error("WatchList did not emit a BOOKMARK with the k8s.io/initial-events-end annotation")
+	}
+}
