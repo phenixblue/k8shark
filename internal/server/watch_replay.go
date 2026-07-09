@@ -205,18 +205,19 @@ func (h *handler) streamReplayWatch(w http.ResponseWriter, r *http.Request, path
 		defAPIVersion = g + "/" + v
 	}
 
-	var list watchList
+	// Always resolve the list — even when resuming — so a watch on a path that
+	// can't be resolved returns 404 rather than a 200 that streams nothing. The
+	// reconstruction is response-cached; resume mode just doesn't emit the burst.
+	list, ok, err := h.resolveWatchList(watchPath, startAt, labelSel, fieldSel)
+	if err != nil {
+		h.writeStatus(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if !ok {
+		h.writeStatus(w, http.StatusNotFound, fmt.Sprintf("%q not found in capture", path))
+		return
+	}
 	if !resume {
-		l, ok, err := h.resolveWatchList(watchPath, startAt, labelSel, fieldSel)
-		if err != nil {
-			h.writeStatus(w, http.StatusInternalServerError, err.Error())
-			return
-		}
-		if !ok {
-			h.writeStatus(w, http.StatusNotFound, fmt.Sprintf("%q not found in capture", path))
-			return
-		}
-		list = l
 		minRV = rvAsOf(timeline, startAt)
 	}
 
