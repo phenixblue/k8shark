@@ -67,8 +67,10 @@ jobs:
 
       - name: Comment results on PR
         # Skip on forked PRs, where GITHUB_TOKEN is read-only and the API call
-        # would 403. continue-on-error keeps a comment hiccup from failing the
-        # gate — the conformance check itself already set the job status.
+        # would 403. This step never fails the gate (the conformance check
+        # already set the job status); a failure is surfaced as a ::warning::
+        # annotation so it can't break silently. continue-on-error stays as a
+        # belt-and-suspenders safety net.
         if: >-
           always() && github.event_name == 'pull_request' &&
           github.event.pull_request.head.repo.full_name == github.repository
@@ -78,18 +80,22 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
         run: |
+          set +e   # surface comment failures as a warning; never fail the gate
           [ -f /tmp/conformance.md ] || { echo "no report to post"; exit 0; }
           marker='<!-- conformance-report -->'
+          warn() { echo "::warning title=conformance-comment::could not post results comment ($1); see step log"; exit 0; }
           # Find an existing report comment (by marker) and update it, else create.
-          # gh forbids --slurp together with --jq, so let --paginate+--jq emit the
-          # id of every matching comment across all pages (one per line) and take
-          # the first with head -n1 — a single, deterministic value (or empty).
-          cid=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
-                  --jq ".[] | select(.body | contains(\"$marker\")) | .id" | head -n1)
+          # gh forbids --slurp with --jq, so let --paginate+--jq emit the id of
+          # every matching comment across all pages; take the first (deterministic).
+          # Capture into a var (not a pipe to head) so gh's exit status is checked
+          # and a closed pipe can't SIGPIPE gh into a false failure.
+          ids=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+                  --jq ".[] | select(.body | contains(\"$marker\")) | .id") || warn lookup
+          cid=$(printf '%s\n' "$ids" | head -n1)
           if [ -n "$cid" ]; then
-            gh api -X PATCH "repos/$REPO/issues/comments/$cid" -F body=@/tmp/conformance.md >/dev/null
+            gh api -X PATCH "repos/$REPO/issues/comments/$cid" -F body=@/tmp/conformance.md >/dev/null || warn update
             echo "updated comment $cid"
           else
-            gh api "repos/$REPO/issues/$PR/comments" -F body=@/tmp/conformance.md >/dev/null
+            gh api "repos/$REPO/issues/$PR/comments" -F body=@/tmp/conformance.md >/dev/null || warn create
             echo "created new comment"
           fi
