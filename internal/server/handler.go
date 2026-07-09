@@ -36,8 +36,10 @@ func newHandler(store *CaptureStore, at time.Time, verbose bool) *handler {
 // ".../pods" share one timeline — keeping their RVs coherent and the cache warm.
 //
 // The (potentially expensive, for poll-only) build runs without the lock held so
-// it doesn't block concurrent requests for other paths; at worst two goroutines
-// build the same timeline once, and the first stored result wins.
+// it doesn't block concurrent requests for other paths. On a cold cache, several
+// concurrent callers for the same path may each build it; the first stored result
+// wins and the rest are discarded. (A singleflight-style guard could dedupe the
+// redundant builds if that ever matters — in practice the cold window is brief.)
 func (h *handler) timelineFor(watchPath string) []replayEvent {
 	watchPath = strings.TrimSuffix(watchPath, "/")
 
