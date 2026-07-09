@@ -78,6 +78,12 @@ func runUI(cmd *cobra.Command, args []string) error {
 	replayMode := cmd.Flags().Changed("speed") || cmd.Flags().Changed("from") ||
 		cmd.Flags().Changed("to") || loop || startPaused
 
+	// --at pins a single instant, which is meaningless once the replay clock is
+	// driving time — reject the combination rather than silently ignoring --at.
+	if replayMode && cmd.Flags().Changed("at") {
+		return fmt.Errorf("--at cannot be combined with replay flags (--speed/--from/--to/--loop/--start-paused); use --from/--to to set the replay window")
+	}
+
 	var mockSrv *server.Server
 	var err error
 	if replayMode {
