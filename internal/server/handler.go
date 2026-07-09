@@ -865,12 +865,18 @@ func (h *handler) handleWatch(w http.ResponseWriter, r *http.Request, path strin
 	if bookmarkAPIVersion == "" {
 		bookmarkAPIVersion = "v1"
 	}
+	// WatchList (client-go 1.32+): terminate the initial-list burst with a
+	// BOOKMARK carrying k8s.io/initial-events-end so informers complete sync.
+	meta := map[string]any{"resourceVersion": rv}
+	if r.URL.Query().Get("sendInitialEvents") == "true" {
+		meta["annotations"] = map[string]string{"k8s.io/initial-events-end": "true"}
+	}
 	bookmark := map[string]any{
 		"type": "BOOKMARK",
 		"object": map[string]any{
 			"apiVersion": bookmarkAPIVersion,
 			"kind":       bookmarkKind,
-			"metadata":   map[string]string{"resourceVersion": rv},
+			"metadata":   meta,
 		},
 	}
 	data, _ := json.Marshal(bookmark)

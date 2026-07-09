@@ -121,34 +121,42 @@ func (h *handler) overlayCreate(w http.ResponseWriter, r *http.Request, group, v
 		"generation":        1,
 	})
 	h.overlay.store(group, version, resource, namespace, name, obj, rv)
-	// A real cluster's ServiceAccount controller auto-creates a `default`
-	// ServiceAccount in every new namespace. The overlay has no controllers, so
-	// synthesize it — otherwise clients (and the e2e framework) that wait for it
-	// hang. `name` is the new namespace's name (namespaces are cluster-scoped).
+	// A real cluster's controllers auto-provision a `default` ServiceAccount and
+	// a `kube-root-ca.crt` ConfigMap in every new namespace. The overlay has no
+	// controllers, so synthesize them — otherwise clients (and the e2e framework)
+	// that wait for them hang. `name` is the new namespace (cluster-scoped).
 	if group == "" && resource == "namespaces" {
-		h.ensureDefaultServiceAccount(name)
+		h.ensureNamespaceDefaults(name)
 	}
 	writeJSON(w, http.StatusCreated, json.RawMessage(obj))
 }
 
-// ensureDefaultServiceAccount synthesizes the `default` ServiceAccount that a
-// real cluster's controller creates in each new namespace, so overlay clients
-// that wait for it can proceed. Modern Kubernetes (1.24+) provisions no token
-// Secret for it, so a bare SA object is sufficient. No-op if one already exists.
-func (h *handler) ensureDefaultServiceAccount(namespace string) {
-	const saResource, saName = "serviceaccounts", "default"
-	if h.currentObject("", "v1", saResource, namespace, saName) != nil {
+// ensureNamespaceDefaults synthesizes the per-namespace objects a real cluster's
+// controllers create: the `default` ServiceAccount (modern Kubernetes provisions
+// no token Secret for it, so a bare object suffices) and the `kube-root-ca.crt`
+// ConfigMap that the root-CA controller publishes.
+func (h *handler) ensureNamespaceDefaults(namespace string) {
+	h.synthesizeOverlayObject("serviceaccounts", namespace, "default",
+		`{"apiVersion":"v1","kind":"ServiceAccount"}`)
+	h.synthesizeOverlayObject("configmaps", namespace, "kube-root-ca.crt",
+		`{"apiVersion":"v1","kind":"ConfigMap","data":{"ca.crt":"k8shark-replay-placeholder"}}`)
+}
+
+// synthesizeOverlayObject stores a synthetic core/v1 object in the overlay with
+// stamped metadata, unless one already exists at that path.
+func (h *handler) synthesizeOverlayObject(resource, namespace, name, base string) {
+	if h.currentObject("", "v1", resource, namespace, name) != nil {
 		return
 	}
-	rv := h.overlay.nextRV(h.replayFloorRV("", "v1", saResource, namespace))
-	sa := mergeMeta(json.RawMessage(`{"apiVersion":"v1","kind":"ServiceAccount"}`), map[string]any{
-		"name":              saName,
+	rv := h.overlay.nextRV(h.replayFloorRV("", "v1", resource, namespace))
+	obj := mergeMeta(json.RawMessage(base), map[string]any{
+		"name":              name,
 		"namespace":         namespace,
 		"uid":               uuid.New().String(),
 		"resourceVersion":   strconv.FormatInt(rv, 10),
 		"creationTimestamp": h.nowRFC3339(),
 	})
-	h.overlay.store("", "v1", saResource, namespace, saName, sa, rv)
+	h.overlay.store("", "v1", resource, namespace, name, obj, rv)
 }
 
 func (h *handler) overlayReplace(w http.ResponseWriter, r *http.Request, group, version, resource, namespace, name, sub string) {

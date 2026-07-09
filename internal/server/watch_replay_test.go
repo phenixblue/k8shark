@@ -21,9 +21,11 @@ func podBody(name string) string {
 type watchEvent struct {
 	Type   string `json:"type"`
 	Object struct {
+		Kind     string `json:"kind"`
 		Metadata struct {
-			Name            string `json:"name"`
-			ResourceVersion string `json:"resourceVersion"`
+			Name            string            `json:"name"`
+			ResourceVersion string            `json:"resourceVersion"`
+			Annotations     map[string]string `json:"annotations"`
 		} `json:"metadata"`
 	} `json:"object"`
 }

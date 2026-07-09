@@ -83,6 +83,14 @@ func (h *handler) resolveWatchList(watchPath string, at time.Time, labelSelector
 		return watchList{}, false, nil
 	}
 
+	// Merge overlay writes into the watch's initial list, mirroring the LIST
+	// path — otherwise a WatchList informer (sendInitialEvents=true) or a plain
+	// no-RV watch never observes overlay-created objects (e.g. the synthesized
+	// default ServiceAccount) in its initial events.
+	if h.overlay != nil {
+		rawBody = h.mergeOverlayList(watchPath, rawBody)
+	}
+
 	body, serr := applySelectors(rawBody, labelSelector, fieldSelector)
 	if serr != nil {
 		// Best-effort: fall back to the unfiltered list rather than failing the
@@ -160,6 +168,10 @@ func (h *handler) streamReplayWatch(w http.ResponseWriter, r *http.Request, path
 	watchPath := strings.TrimSuffix(path, "/")
 	labelSel := r.URL.Query().Get("labelSelector")
 	fieldSel := r.URL.Query().Get("fieldSelector")
+	// WatchList (client-go 1.32+): the initial-list burst must be terminated by
+	// a BOOKMARK carrying the k8s.io/initial-events-end annotation, or informers
+	// never complete their initial sync.
+	sendInitialEvents := r.URL.Query().Get("sendInitialEvents") == "true"
 
 	// Apply reset-on-loop before consulting the overlay (below, for the resume
 	// upper bound), so a loop wrap resets it even under watch-only traffic.
@@ -261,8 +273,11 @@ func (h *handler) streamReplayWatch(w http.ResponseWriter, r *http.Request, path
 		return true
 	}
 	// emitBookmark writes the BOOKMARK marking the end of a (re)list, carrying rv
-	// as the resourceVersion so clients resume from a coherent point.
-	emitBookmark := func(l watchList, rv int64) {
+	// as the resourceVersion so clients resume from a coherent point. When
+	// initialEnd is set (WatchList's sendInitialEvents=true), the bookmark also
+	// carries the k8s.io/initial-events-end annotation that client-go informers
+	// require to consider their initial sync complete.
+	emitBookmark := func(l watchList, rv int64, initialEnd bool) {
 		bookmarkKind := strings.TrimSuffix(l.Kind, "List")
 		if bookmarkKind == "" {
 			bookmarkKind = defKind
@@ -277,12 +292,16 @@ func (h *handler) streamReplayWatch(w http.ResponseWriter, r *http.Request, path
 		if bookmarkAPIVersion == "" {
 			bookmarkAPIVersion = "v1"
 		}
+		meta := map[string]any{"resourceVersion": strconv.FormatInt(rv, 10)}
+		if initialEnd {
+			meta["annotations"] = map[string]string{"k8s.io/initial-events-end": "true"}
+		}
 		data, _ := json.Marshal(map[string]any{
 			"type": "BOOKMARK",
 			"object": map[string]any{
 				"apiVersion": bookmarkAPIVersion,
 				"kind":       bookmarkKind,
-				"metadata":   map[string]string{"resourceVersion": strconv.FormatInt(rv, 10)},
+				"metadata":   meta,
 			},
 		})
 		_, _ = fmt.Fprintf(w, "%s\n", data)
@@ -306,7 +325,7 @@ func (h *handler) streamReplayWatch(w http.ResponseWriter, r *http.Request, path
 			// resumes from an observed object RV aligns with the event stream.
 			emit("ADDED", withResourceVersion(item, rv))
 		}
-		emitBookmark(l, rv)
+		emitBookmark(l, rv, false)
 		return rv
 	}
 
@@ -317,7 +336,7 @@ func (h *handler) streamReplayWatch(w http.ResponseWriter, r *http.Request, path
 		for _, item := range list.Items {
 			emit("ADDED", withResourceVersion(item, minRV))
 		}
-		emitBookmark(list, minRV)
+		emitBookmark(list, minRV, sendInitialEvents)
 	}
 
 	epoch := startEpoch
