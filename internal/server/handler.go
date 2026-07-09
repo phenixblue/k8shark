@@ -410,10 +410,12 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 	// overlay owns it (created/updated → the overlay copy; deleted → 404).
 	if h.overlay != nil {
 		h.overlay.syncEpoch(h.clock)
-		if g, v, res, ns, name, sub := parseWritePath(strings.TrimSuffix(path, "/")); name != "" && sub == "" {
+		// Serve overlay-owned objects for a single-object GET (and GET .../status,
+		// so clients can observe their status updates).
+		if g, v, res, ns, name, sub := parseWritePath(strings.TrimSuffix(path, "/")); name != "" && (sub == "" || sub == "status") {
 			if e, ok := h.overlay.get(g, v, res, ns, name); ok {
 				if e.deleted {
-					h.writeStatus(w, http.StatusNotFound, fmt.Sprintf("%q not found in capture", path))
+					h.writeStatus(w, http.StatusNotFound, fmt.Sprintf("%q was deleted in the writable overlay", path))
 					return
 				}
 				writeJSON(w, http.StatusOK, json.RawMessage(e.obj))

@@ -143,9 +143,11 @@ func (o *overlay) get(group, version, resource, namespace, name string) (*overla
 // Overlay entries replace matching base items (overlay wins), tombstones remove
 // them, and overlay-created items not in the base are appended.
 func (o *overlay) applyToList(group, version, resource, namespace string, base []json.RawMessage) []json.RawMessage {
+	// Snapshot the relevant entries under the lock, then release it before walking
+	// (and JSON-unmarshalling) the base list, so a large LIST doesn't block writes.
+	// Stored entries are immutable (store/del replace the pointer), so the
+	// snapshot is safe to read after unlock.
 	o.mu.RLock()
-	defer o.mu.RUnlock()
-
 	matched := map[string]*overlayEntry{}
 	for _, e := range o.items {
 		if e.group == group && e.version == version && e.resource == resource &&
@@ -153,6 +155,8 @@ func (o *overlay) applyToList(group, version, resource, namespace string, base [
 			matched[nsName(e.namespace, e.name)] = e
 		}
 	}
+	o.mu.RUnlock()
+
 	if len(matched) == 0 {
 		return base
 	}

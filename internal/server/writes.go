@@ -26,12 +26,32 @@ func (h *handler) handleWrite(w http.ResponseWriter, r *http.Request, path strin
 
 	switch r.Method {
 	case http.MethodPost:
+		if name != "" { // create is a collection operation
+			h.writeStatus(w, http.StatusMethodNotAllowed, "POST creates at a collection path, not an item path")
+			return
+		}
 		h.overlayCreate(w, r, group, version, resource, namespace)
 	case http.MethodPut:
+		if name == "" {
+			h.writeStatus(w, http.StatusBadRequest, "PUT requires an object name")
+			return
+		}
 		h.overlayReplace(w, r, group, version, resource, namespace, name, sub)
 	case http.MethodPatch:
+		if name == "" {
+			h.writeStatus(w, http.StatusBadRequest, "PATCH requires an object name")
+			return
+		}
 		h.overlayPatch(w, r, group, version, resource, namespace, name, sub)
 	case http.MethodDelete:
+		if name == "" {
+			h.writeStatus(w, http.StatusBadRequest, "DELETE requires an object name")
+			return
+		}
+		if sub != "" {
+			h.writeStatus(w, http.StatusMethodNotAllowed, "cannot DELETE a subresource")
+			return
+		}
 		h.overlayDelete(w, group, version, resource, namespace, name)
 	default:
 		w.Header().Set("Allow", "GET, HEAD, POST, PUT, PATCH, DELETE")
@@ -59,6 +79,10 @@ func (h *handler) overlayCreate(w http.ResponseWriter, r *http.Request, group, v
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxWriteBytes))
 	if err != nil {
 		h.writeStatus(w, http.StatusBadRequest, "reading body: "+err.Error())
+		return
+	}
+	if !json.Valid(body) {
+		h.writeStatus(w, http.StatusBadRequest, "request body is not valid JSON")
 		return
 	}
 	name := metaString(body, "name")
@@ -98,9 +122,20 @@ func (h *handler) overlayReplace(w http.ResponseWriter, r *http.Request, group, 
 		h.writeStatus(w, http.StatusBadRequest, "reading body: "+err.Error())
 		return
 	}
+	if !json.Valid(body) {
+		h.writeStatus(w, http.StatusBadRequest, "request body is not valid JSON")
+		return
+	}
+	// PUT is update, not upsert: the object must already exist (in the overlay or
+	// the replay state). This also keeps status updates on missing objects a 404,
+	// matching the kube-apiserver.
 	current := h.currentObject(group, version, resource, namespace, name)
+	if current == nil {
+		h.writeStatus(w, http.StatusNotFound, "object not found: "+name)
+		return
+	}
 	var next json.RawMessage
-	if sub == "status" && current != nil {
+	if sub == "status" {
 		next = replaceField(current, "status", body) // status subresource: only status changes
 	} else {
 		next = body
@@ -153,13 +188,16 @@ func (h *handler) overlayDelete(w http.ResponseWriter, group, version, resource,
 // stampUpdate assigns a fresh RV (and preserves uid/creationTimestamp from the
 // current object), stores the object, and returns it.
 func (h *handler) stampUpdate(next, current json.RawMessage, group, version, resource, namespace, name string) json.RawMessage {
-	updates := map[string]any{"name": name, "namespace": namespace}
+	updates := map[string]any{"name": name, "namespace": namespace, "generation": int64(1)}
 	if current != nil {
 		if uid := metaString(current, "uid"); uid != "" {
 			updates["uid"] = uid
 		}
 		if ct := metaString(current, "creationTimestamp"); ct != "" {
 			updates["creationTimestamp"] = ct
+		}
+		if g := metaInt(current, "generation"); g > 0 {
+			updates["generation"] = g + 1 // bump on each replace/patch
 		}
 	}
 	newRV := h.overlay.nextRV(h.replayFloorRV(group, version, resource, namespace))
@@ -285,6 +323,25 @@ func metaString(obj json.RawMessage, field string) string {
 		return ""
 	}
 	return s
+}
+
+// metaInt reads metadata.<field> as an int64 (0 if absent/non-number).
+func metaInt(obj json.RawMessage, field string) int64 {
+	var m struct {
+		Metadata map[string]json.RawMessage `json:"metadata"`
+	}
+	if err := json.Unmarshal(obj, &m); err != nil {
+		return 0
+	}
+	raw, ok := m.Metadata[field]
+	if !ok {
+		return 0
+	}
+	var n int64
+	if err := json.Unmarshal(raw, &n); err != nil {
+		return 0
+	}
+	return n
 }
 
 // mergeMeta returns obj with the given metadata fields set/overwritten.

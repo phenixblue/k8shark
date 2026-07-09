@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -175,9 +176,10 @@ func TestOverlay_WinsOverReplayAndRVMonotonic(t *testing.T) {
 	_, b1 := doReq(t, http.MethodPut, srv.URL+podsPath+"/pod-base", "application/json",
 		`{"apiVersion":"v1","kind":"Pod","metadata":{"name":"pod-base","namespace":"default","labels":{"owned":"yes"}}}`)
 	_, b2 := doReq(t, http.MethodPost, srv.URL+podsPath, "application/json", podBody("pod-2"))
-	rv1, rv2 := bodyRV(t, b1), bodyRV(t, b2)
-	if rv1 == "" || rv2 == "" || !(rv2 > rv1) { // string compare ok for equal-width ints here
-		t.Errorf("RVs not monotonic: rv1=%q rv2=%q", rv1, rv2)
+	n1, _ := strconv.Atoi(bodyRV(t, b1))
+	n2, _ := strconv.Atoi(bodyRV(t, b2))
+	if n1 <= 0 || n2 <= n1 {
+		t.Errorf("RVs not monotonic: rv1=%d rv2=%d", n1, n2)
 	}
 
 	code, got := doReq(t, http.MethodGet, srv.URL+podsPath+"/pod-base", "", "")
@@ -218,6 +220,53 @@ func TestOverlay_ManualReset(t *testing.T) {
 	}
 	if code, _ := doReq(t, http.MethodGet, srv.URL+podsPath+"/pod-tmp", "", ""); code != 404 {
 		t.Errorf("pod-tmp should be gone after manual reset, got %d", code)
+	}
+}
+
+func TestOverlay_WriteValidationAndGeneration(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	if code, _ := doReq(t, http.MethodPost, srv.URL+podsPath, "application/json", "{not json"); code != http.StatusBadRequest {
+		t.Errorf("invalid-JSON create: status %d, want 400", code)
+	}
+	if code, _ := doReq(t, http.MethodPost, srv.URL+podsPath+"/pod-x", "application/json", podBody("pod-x")); code != http.StatusMethodNotAllowed {
+		t.Errorf("POST to item path: status %d, want 405", code)
+	}
+	if code, _ := doReq(t, http.MethodPut, srv.URL+podsPath+"/ghost", "application/json", podBody("ghost")); code != http.StatusNotFound {
+		t.Errorf("PUT missing object: status %d, want 404", code)
+	}
+
+	// generation: 1 on create, bumped on replace.
+	_, created := doReq(t, http.MethodPost, srv.URL+podsPath, "application/json", podBody("pod-g"))
+	if g := metaInt(created, "generation"); g != 1 {
+		t.Errorf("created generation = %d, want 1", g)
+	}
+	_, updated := doReq(t, http.MethodPut, srv.URL+podsPath+"/pod-g", "application/json",
+		`{"apiVersion":"v1","kind":"Pod","metadata":{"name":"pod-g","namespace":"default","labels":{"x":"y"}}}`)
+	if g := metaInt(updated, "generation"); g != 2 {
+		t.Errorf("replaced generation = %d, want 2", g)
+	}
+
+	if code, _ := doReq(t, http.MethodDelete, srv.URL+podsPath+"/pod-g/status", "", ""); code != http.StatusMethodNotAllowed {
+		t.Errorf("DELETE subresource: status %d, want 405", code)
+	}
+}
+
+func TestOverlay_StatusSubresource(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	doReq(t, http.MethodPost, srv.URL+podsPath, "application/json", podBody("pod-s"))
+	if code, _ := doReq(t, http.MethodPut, srv.URL+podsPath+"/pod-s/status", "application/json",
+		`{"status":{"phase":"Running"}}`); code != 200 {
+		t.Fatalf("PUT status: %d", code)
+	}
+	code, got := doReq(t, http.MethodGet, srv.URL+podsPath+"/pod-s/status", "", "")
+	if code != 200 || !strings.Contains(string(got), `"phase":"Running"`) {
+		t.Errorf("GET status: %d body=%s, want status.phase Running", code, got)
 	}
 }
 
