@@ -20,6 +20,11 @@ type handler struct {
 	// events over time (see streamReplayWatch). nil for plain `open`/`ui`.
 	clock *ReplayClock
 
+	// overlay, when non-nil, enables writable replay: client writes land in an
+	// in-memory layer merged over the replayed state (see overlay.go, writes.go).
+	// nil for read-only replay (writes return 405).
+	overlay *overlay
+
 	// timelineCache memoizes the (immutable) per-path replay event timeline so
 	// LIST and WATCH don't rebuild it per request — important for poll-only
 	// captures, whose timeline requires diffing every snapshot.
@@ -157,12 +162,16 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Reject all write operations — k8shark replay is read-only.
+	// Writes: accepted into the overlay in writable replay; otherwise 405.
 	// RFC 7231 §6.5.5 requires an Allow header with a 405 response.
 	switch r.Method {
 	case http.MethodGet, http.MethodHead:
 		// allowed
 	default:
+		if h.overlay != nil {
+			h.handleWrite(w, r, path)
+			return
+		}
 		w.Header().Set("Allow", "GET, HEAD")
 		h.writeStatus(w, http.StatusMethodNotAllowed,
 			"k8shark replay server is read-only; write operations are not supported")
@@ -397,6 +406,22 @@ func (h *handler) serveGroupResourceList(w http.ResponseWriter, path string) {
 }
 
 func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path string, at time.Time) {
+	// Writable replay: a single-object GET is served from the overlay when the
+	// overlay owns it (created/updated → the overlay copy; deleted → 404).
+	if h.overlay != nil {
+		h.overlay.syncEpoch(h.clock)
+		if g, v, res, ns, name, sub := parseWritePath(strings.TrimSuffix(path, "/")); name != "" && sub == "" {
+			if e, ok := h.overlay.get(g, v, res, ns, name); ok {
+				if e.deleted {
+					h.writeStatus(w, http.StatusNotFound, fmt.Sprintf("%q not found in capture", path))
+					return
+				}
+				writeJSON(w, http.StatusOK, json.RawMessage(e.obj))
+				return
+			}
+		}
+	}
+
 	body, code, err := h.store.ReconstructAt(path, at)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, statusObj(500, err.Error()))
@@ -540,18 +565,53 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 		}
 	}
 
+	// Writable replay: merge overlay objects into the list (overlay wins).
+	if h.overlay != nil {
+		body = h.mergeOverlayList(path, body)
+	}
+
 	// In replay mode, override a list's resourceVersion with the coherent RV
-	// as-of the clock, so a following WATCH(resourceVersion=RV) aligns with the
-	// event stream's monotonic RVs.
+	// as-of the clock (and, in writable mode, at least the overlay's RV), so a
+	// following WATCH(resourceVersion=RV) aligns with the event stream's RVs.
 	if h.clock != nil {
 		body = rewriteListResourceVersion(body, func() int64 {
-			return rvAsOf(h.timelineFor(path), at)
+			rv := rvAsOf(h.timelineFor(path), at)
+			if h.overlay != nil {
+				if orv := h.overlay.currentRV(); orv > rv {
+					rv = orv
+				}
+			}
+			return rv
 		})
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_, _ = w.Write(body)
+}
+
+// mergeOverlayList merges overlay objects into a list body for the list's scope.
+// Non-list bodies are returned unchanged.
+func (h *handler) mergeOverlayList(path string, body []byte) []byte {
+	group, version, resource, namespace := parseAPIPath(strings.TrimSuffix(path, "/"))
+	if resource == "" {
+		return body
+	}
+	var list struct {
+		APIVersion string            `json:"apiVersion"`
+		Kind       string            `json:"kind"`
+		Metadata   json.RawMessage   `json:"metadata"`
+		Items      []json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(body, &list); err != nil || list.Items == nil {
+		return body // not a list
+	}
+	list.Items = h.overlay.applyToList(group, version, resource, namespace, list.Items)
+	out, err := json.Marshal(list)
+	if err != nil {
+		return body
+	}
+	return out
 }
 
 // extractTableRow finds the row matching name in a Table response and returns

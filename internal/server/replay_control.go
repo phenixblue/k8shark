@@ -63,6 +63,15 @@ func (h *handler) handleReplayControl(w http.ResponseWriter, r *http.Request, pa
 			return
 		}
 		clock.Seek(target)
+	case "reset-overlay":
+		if !h.requireMethod(w, r, http.MethodPost) {
+			return
+		}
+		if h.overlay == nil {
+			h.writeStatus(w, http.StatusConflict, "replay is not writable; nothing to reset")
+			return
+		}
+		h.overlay.reset()
 	default:
 		h.writeStatus(w, http.StatusNotFound, fmt.Sprintf("unknown replay control %q", action))
 		return

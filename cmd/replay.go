@@ -48,6 +48,7 @@ func init() {
 	replayCmd.Flags().Bool("start-paused", false, "start paused; press Enter to begin playback")
 	replayCmd.Flags().Bool("ui", false, "also start the web dashboard as a replay transport (VCR)")
 	replayCmd.Flags().String("ui-port", "0", "port for the dashboard when --ui is set (0 = random)")
+	replayCmd.Flags().Bool("writable", false, "accept client writes into an in-memory overlay (closed-loop controller dev)")
 }
 
 func runReplay(cmd *cobra.Command, args []string) error {
@@ -58,6 +59,7 @@ func runReplay(cmd *cobra.Command, args []string) error {
 	to, _ := cmd.Flags().GetString("to")
 	loop, _ := cmd.Flags().GetBool("loop")
 	startPaused, _ := cmd.Flags().GetBool("start-paused")
+	writable, _ := cmd.Flags().GetBool("writable")
 	verbose, _ := cmd.Root().PersistentFlags().GetBool("verbose")
 
 	srv, err := server.Replay(server.ReplayOptions{
@@ -69,6 +71,7 @@ func runReplay(cmd *cobra.Command, args []string) error {
 		To:            to,
 		Loop:          loop,
 		StartPaused:   startPaused,
+		Writable:      writable,
 		Verbose:       verbose,
 	})
 	if err != nil {
@@ -97,6 +100,9 @@ func runReplay(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  Speed:      %s\n", formatSpeed(clock.Speed()))
 	if loop {
 		fmt.Printf("  Loop:       on\n")
+	}
+	if srv.Writable() {
+		fmt.Printf("  Writable:   on (client writes land in an in-memory overlay)\n")
 	}
 	fmt.Printf("  Control:    %s/_k8shark/replay\n", srv.Address())
 	if uiSrv != nil {
