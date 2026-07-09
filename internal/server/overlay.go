@@ -157,7 +157,9 @@ func (o *overlay) applyToList(group, version, resource, namespace string, base [
 		return base
 	}
 
-	out := make([]json.RawMessage, 0, len(base)+len(matched))
+	// Pre-size to the base length; append grows for any overlay-created items.
+	// (Avoids len(base)+len(matched), which CodeQL flags as a possible overflow.)
+	out := make([]json.RawMessage, 0, len(base))
 	seen := map[string]bool{}
 	for _, item := range base {
 		k := itemNSName(item)
