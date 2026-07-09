@@ -179,6 +179,11 @@ func (h *handler) overlayPatch(w http.ResponseWriter, r *http.Request, group, ve
 		h.writeStatus(w, http.StatusMethodNotAllowed, "unsupported subresource: "+sub)
 		return
 	}
+	if !supportedPatchType(r.Header.Get("Content-Type")) {
+		h.writeStatus(w, http.StatusUnsupportedMediaType,
+			"unsupported patch Content-Type "+strconv.Quote(r.Header.Get("Content-Type")))
+		return
+	}
 	patch, err := io.ReadAll(io.LimitReader(r.Body, maxWriteBytes))
 	if err != nil {
 		h.writeStatus(w, http.StatusBadRequest, "reading body: "+err.Error())
@@ -303,16 +308,32 @@ func (h *handler) nowRFC3339() string {
 // maxWriteBytes caps request bodies accepted by the overlay.
 const maxWriteBytes = 8 << 20 // 8 MiB
 
-// applyPatch applies a patch of the given content type to the current object.
-// PR-1 supports JSON merge patch and JSON patch (RFC 6902); strategic-merge and
-// server-side apply fall back to a JSON merge patch for now (schema-driven
-// strategic-merge and SSA land in later PRs).
-func applyPatch(current, patch []byte, contentType string) ([]byte, error) {
+// patchMediaType strips any parameters from a PATCH Content-Type.
+func patchMediaType(contentType string) string {
 	ct := contentType
 	if i := strings.IndexByte(ct, ';'); i >= 0 {
 		ct = ct[:i]
 	}
-	switch strings.TrimSpace(ct) {
+	return strings.TrimSpace(ct)
+}
+
+// supportedPatchType reports whether the PATCH Content-Type is one we handle;
+// an unknown or empty type is rejected with 415 rather than silently merged.
+func supportedPatchType(contentType string) bool {
+	switch patchMediaType(contentType) {
+	case "application/merge-patch+json", "application/json-patch+json",
+		"application/strategic-merge-patch+json", "application/apply-patch+yaml":
+		return true
+	}
+	return false
+}
+
+// applyPatch applies a patch of the given (already-validated) content type to the
+// current object. PR-1 supports JSON merge patch and JSON patch (RFC 6902);
+// strategic-merge and server-side apply fall back to a JSON merge patch for now
+// (schema-driven strategic-merge and SSA land in later PRs).
+func applyPatch(current, patch []byte, contentType string) ([]byte, error) {
+	switch patchMediaType(contentType) {
 	case "application/json-patch+json":
 		p, err := jsonpatch.DecodePatch(patch)
 		if err != nil {
