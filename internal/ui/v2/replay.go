@@ -2,6 +2,7 @@ package v2
 
 import (
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -41,17 +42,17 @@ func (h *Handler) serveReplay(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	case "pause":
-		if !replayRequireMethod(w, r, http.MethodPost) {
+		if !h.allowMutation(w, r) {
 			return
 		}
 		clock.Pause()
 	case "play", "resume":
-		if !replayRequireMethod(w, r, http.MethodPost) {
+		if !h.allowMutation(w, r) {
 			return
 		}
 		clock.Resume()
 	case "speed":
-		if !replayRequireMethod(w, r, http.MethodPost) {
+		if !h.allowMutation(w, r) {
 			return
 		}
 		s, err := server.ParseSpeed(r.URL.Query().Get("value"))
@@ -61,7 +62,7 @@ func (h *Handler) serveReplay(w http.ResponseWriter, r *http.Request) {
 		}
 		clock.SetSpeed(s)
 	case "seek":
-		if !replayRequireMethod(w, r, http.MethodPost) {
+		if !h.allowMutation(w, r) {
 			return
 		}
 		target, err := replaySeekTarget(clock, r.URL.Query())
@@ -87,6 +88,24 @@ func replayRequireMethod(w http.ResponseWriter, r *http.Request, method string) 
 	w.Header().Set("Allow", method)
 	writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": method + " required"})
 	return false
+}
+
+// allowMutation gates a state-changing control action: it must be a POST and,
+// when an Origin header is present (a browser), must be same-origin — so an
+// unrelated web page can't POST to the local dashboard and move the clock.
+// Non-browser clients (curl) omit Origin and are allowed.
+func (h *Handler) allowMutation(w http.ResponseWriter, r *http.Request) bool {
+	if !replayRequireMethod(w, r, http.MethodPost) {
+		return false
+	}
+	if origin := r.Header.Get("Origin"); origin != "" {
+		u, err := url.Parse(origin)
+		if err != nil || u.Host != r.Host {
+			writeJSON(w, http.StatusForbidden, map[string]any{"error": "cross-origin request rejected"})
+			return false
+		}
+	}
+	return true
 }
 
 // replaySeekTarget resolves a seek target from the query: ?to= is an RFC3339

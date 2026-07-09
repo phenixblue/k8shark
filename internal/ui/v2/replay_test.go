@@ -97,6 +97,24 @@ func TestServeReplay_Errors(t *testing.T) {
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("unknown action: status = %d, want 404", rec.Code)
 	}
+
+	// Cross-origin POST (Origin host != request host) → 403.
+	rec = httptest.NewRecorder()
+	crossReq := httptest.NewRequest(http.MethodPost, "/v2/api/replay/pause", nil) // Host = example.com
+	crossReq.Header.Set("Origin", "http://evil.example.net")
+	h.serveReplay(rec, crossReq)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("cross-origin pause: status = %d, want 403", rec.Code)
+	}
+
+	// Same-origin POST is allowed.
+	rec = httptest.NewRecorder()
+	sameReq := httptest.NewRequest(http.MethodPost, "/v2/api/replay/pause", nil)
+	sameReq.Header.Set("Origin", "http://"+sameReq.Host)
+	h.serveReplay(rec, sameReq)
+	if rec.Code != http.StatusOK {
+		t.Errorf("same-origin pause: status = %d, want 200", rec.Code)
+	}
 }
 
 // TestResolveAt_FollowsClock verifies resolveAt returns the clock position in

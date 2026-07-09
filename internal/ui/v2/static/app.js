@@ -315,13 +315,17 @@
     replayControl('pause');
   }
 
+  let replayPollInFlight = false;
   async function pollReplay() {
-    if (!state.replay.enabled) return;
+    if (!state.replay.enabled || replayPollInFlight) return; // avoid overlapping polls
+    replayPollInFlight = true;
     try {
       const res = await fetch(new URL('/v2/api/replay', location.href).toString());
       const data = await res.json();
       applyReplayStatus(data, false);
-    } catch (_) { /* transient; next tick retries */ }
+    } catch (_) { /* transient; next tick retries */ } finally {
+      replayPollInFlight = false;
+    }
   }
 
   function currentSnapshotIndex() {
