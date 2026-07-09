@@ -349,6 +349,51 @@ func TestOverlay_NullBodyNoPanic(t *testing.T) {
 	}
 }
 
+// TestOverlay_StatusPatchIsolated verifies a PATCH to .../status only changes
+// status (not spec/metadata) and does not bump generation, while a spec PATCH
+// does bump it.
+func TestOverlay_StatusPatchIsolated(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	doReq(t, http.MethodPost, srv.URL+podsPath, "application/json", podBody("pod-s")) // generation 1
+
+	// Status patch also tries to sneak in a label — the label must be ignored.
+	doReq(t, http.MethodPatch, srv.URL+podsPath+"/pod-s/status", "application/merge-patch+json",
+		`{"metadata":{"labels":{"hacked":"x"}},"status":{"phase":"Running"}}`)
+	_, got := doReq(t, http.MethodGet, srv.URL+podsPath+"/pod-s", "", "")
+	if !strings.Contains(string(got), `"phase":"Running"`) {
+		t.Errorf("status not applied: %s", got)
+	}
+	if strings.Contains(string(got), `"hacked"`) {
+		t.Errorf("status patch leaked a metadata change: %s", got)
+	}
+	if g := metaInt(got, "generation"); g != 1 {
+		t.Errorf("status patch bumped generation to %d, want 1", g)
+	}
+
+	// A spec patch bumps generation.
+	doReq(t, http.MethodPatch, srv.URL+podsPath+"/pod-s", "application/merge-patch+json", `{"spec":{"x":"y"}}`)
+	_, got2 := doReq(t, http.MethodGet, srv.URL+podsPath+"/pod-s", "", "")
+	if g := metaInt(got2, "generation"); g != 2 {
+		t.Errorf("spec patch generation = %d, want 2", g)
+	}
+}
+
+// TestOverlay_CreateNamespaceMismatch verifies a body namespace that disagrees
+// with the request-path namespace is rejected.
+func TestOverlay_CreateNamespaceMismatch(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	body := `{"apiVersion":"v1","kind":"Pod","metadata":{"name":"pod-m","namespace":"other"}}`
+	if code, _ := doReq(t, http.MethodPost, srv.URL+podsPath, "application/json", body); code != http.StatusBadRequest {
+		t.Errorf("namespace mismatch: status %d, want 400", code)
+	}
+}
+
 func TestOverlay_ReadOnlyRejectsWrites(t *testing.T) {
 	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
 	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)

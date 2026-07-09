@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -95,8 +96,14 @@ func (h *handler) overlayCreate(w http.ResponseWriter, r *http.Request, group, v
 		h.writeStatus(w, http.StatusBadRequest, "metadata.name or metadata.generateName is required")
 		return
 	}
-	if bodyNS := metaString(body, "namespace"); bodyNS != "" && namespace == "" {
-		namespace = bodyNS
+	// The effective namespace comes from the request path; a body namespace must
+	// match it (a namespaced resource is created via its namespaced collection
+	// path). This rejects both mismatches and "selecting" a namespace via the body
+	// on a cluster-scoped path.
+	if bodyNS := metaString(body, "namespace"); bodyNS != "" && bodyNS != namespace {
+		h.writeStatus(w, http.StatusBadRequest,
+			fmt.Sprintf("metadata.namespace %q does not match the request path namespace %q", bodyNS, namespace))
+		return
 	}
 
 	// Create semantics: fail if the object already exists (in the overlay or the
@@ -154,7 +161,8 @@ func (h *handler) overlayReplace(w http.ResponseWriter, r *http.Request, group, 
 	} else {
 		next = body
 	}
-	next = h.stampUpdate(next, current, group, version, resource, namespace, name)
+	// Status updates don't bump generation (which tracks spec changes).
+	next = h.stampUpdate(next, current, group, version, resource, namespace, name, sub != "status")
 	writeJSON(w, http.StatusOK, json.RawMessage(next))
 }
 
@@ -186,7 +194,12 @@ func (h *handler) overlayPatch(w http.ResponseWriter, r *http.Request, group, ve
 		h.writeStatus(w, http.StatusUnprocessableEntity, "patch did not produce a JSON object")
 		return
 	}
-	next = h.stampUpdate(next, current, group, version, resource, namespace, name)
+	// A status-subresource patch may only change status; keep the rest of the
+	// current object, and don't bump generation.
+	if sub == "status" {
+		next = replaceField(current, "status", next)
+	}
+	next = h.stampUpdate(next, current, group, version, resource, namespace, name, sub != "status")
 	writeJSON(w, http.StatusOK, json.RawMessage(next))
 }
 
@@ -208,18 +221,25 @@ func (h *handler) overlayDelete(w http.ResponseWriter, group, version, resource,
 }
 
 // stampUpdate assigns a fresh RV (and preserves uid/creationTimestamp from the
-// current object), stores the object, and returns it.
-func (h *handler) stampUpdate(next, current json.RawMessage, group, version, resource, namespace, name string) json.RawMessage {
-	updates := map[string]any{"name": name, "namespace": namespace, "generation": int64(1)}
+// current object), stores the object, and returns it. bumpGen controls whether
+// metadata.generation advances — a spec change bumps it; a status update does not.
+func (h *handler) stampUpdate(next, current json.RawMessage, group, version, resource, namespace, name string, bumpGen bool) json.RawMessage {
+	updates := map[string]any{"name": name, "namespace": namespace}
+	curGen := metaInt(current, "generation")
+	switch {
+	case bumpGen && curGen > 0:
+		updates["generation"] = curGen + 1
+	case bumpGen:
+		updates["generation"] = int64(1)
+	case curGen > 0:
+		updates["generation"] = curGen // preserve on status updates
+	}
 	if current != nil {
 		if uid := metaString(current, "uid"); uid != "" {
 			updates["uid"] = uid
 		}
 		if ct := metaString(current, "creationTimestamp"); ct != "" {
 			updates["creationTimestamp"] = ct
-		}
-		if g := metaInt(current, "generation"); g > 0 {
-			updates["generation"] = g + 1 // bump on each replace/patch
 		}
 	}
 	newRV := h.overlay.nextRV(h.replayFloorRV(group, version, resource, namespace))
