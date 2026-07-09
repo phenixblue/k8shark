@@ -14,7 +14,11 @@ func TestWantsProtobuf(t *testing.T) {
 		"application/vnd.kubernetes.protobuf":                  true,
 		"application/json":                                     false,
 		"":                                                     false,
-		"application/json;as=Table;v=v1;g=meta.k8s.io": false,
+		"application/json;as=Table;v=v1;g=meta.k8s.io":                      false,
+		"application/vnd.kubernetes.protobuf;q=0,application/json":          false, // protobuf explicitly refused
+		"application/json;q=0.9,application/vnd.kubernetes.protobuf;q=1":    true,  // protobuf preferred
+		"application/json,application/vnd.kubernetes.protobuf;q=0.8":        false, // json preferred (q=1 > 0.8)
+		"application/vnd.kubernetes.protobuf;stream=watch,application/json": true,  // params ignored for the base type
 	}
 	for accept, want := range cases {
 		r, _ := http.NewRequest(http.MethodGet, "/api/v1/pods", nil)

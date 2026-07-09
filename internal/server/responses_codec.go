@@ -2,7 +2,9 @@ package server
 
 import (
 	"bytes"
+	"mime"
 	"net/http"
+	"strconv"
 	"strings"
 )
 
@@ -21,9 +23,41 @@ import (
 const protobufMediaType = "application/vnd.kubernetes.protobuf"
 
 // wantsProtobuf reports whether the request's Accept header prefers Kubernetes
-// protobuf. Table requests (kubectl's human output) never include it.
+// protobuf: it must be acceptable (q>0) and at least as preferred as any JSON
+// alternative. This honors q-values, so `…protobuf;q=0` or a higher-q JSON
+// (e.g. kubectl's Table requests) correctly yields JSON.
 func wantsProtobuf(r *http.Request) bool {
-	return strings.Contains(r.Header.Get("Accept"), protobufMediaType)
+	accept := r.Header.Get("Accept")
+	if accept == "" {
+		return false
+	}
+	qProto, qJSON := -1.0, -1.0
+	for _, part := range strings.Split(accept, ",") {
+		mt, params, err := mime.ParseMediaType(strings.TrimSpace(part))
+		if err != nil {
+			continue
+		}
+		q := 1.0
+		if qs, ok := params["q"]; ok {
+			if v, perr := strconv.ParseFloat(qs, 64); perr == nil {
+				q = v
+			}
+		}
+		switch mt {
+		case protobufMediaType:
+			if q > qProto {
+				qProto = q
+			}
+		case "application/json", "application/*", "*/*":
+			if q > qJSON {
+				qJSON = q
+			}
+		}
+	}
+	if qProto <= 0 {
+		return false // protobuf not offered, or explicitly q=0
+	}
+	return qJSON < 0 || qProto >= qJSON // at least as preferred as JSON
 }
 
 // jsonToProtobuf re-encodes a JSON-encoded built-in Kubernetes object as
