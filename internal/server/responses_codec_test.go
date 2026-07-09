@@ -104,3 +104,20 @@ func TestProtobufResponseNegotiation(t *testing.T) {
 		t.Errorf("Content-Type = %q, want application/json", ct)
 	}
 }
+
+func TestIsNonProtobufPath(t *testing.T) {
+	cases := map[string]bool{
+		"/openapi/v2":                                  true,
+		"/openapi/v3":                                  true,
+		"/openapi/v3/apis/apps/v1":                     true,
+		"/api/v1/namespaces/default/pods/p/log":        true,
+		"/api/v1/namespaces/default/pods":              false,
+		"/api/v1/namespaces/default/pods/p":            false,
+		"/apis/apps/v1/namespaces/default/deployments": false,
+	}
+	for path, want := range cases {
+		if got := isNonProtobufPath(path); got != want {
+			t.Errorf("isNonProtobufPath(%q) = %v, want %v", path, got, want)
+		}
+	}
+}

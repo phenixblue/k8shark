@@ -22,6 +22,14 @@ import (
 
 const protobufMediaType = "application/vnd.kubernetes.protobuf"
 
+// isNonProtobufPath reports request paths that never return a Kubernetes
+// protobuf object and may be large or streamed — OpenAPI documents (multi-MB
+// JSON) and pod log subresources (text/plain). The protobuf response wrapper
+// skips these so they aren't buffered in memory only to pass through unchanged.
+func isNonProtobufPath(path string) bool {
+	return strings.HasPrefix(path, "/openapi") || strings.HasSuffix(path, "/log")
+}
+
 // wantsProtobuf reports whether the client's Accept header selects Kubernetes
 // protobuf over JSON. It mirrors apiserver negotiation: among acceptable (q>0)
 // media types, the highest q wins, and header order breaks ties. So

@@ -91,10 +91,11 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Response content negotiation: when the client prefers protobuf, buffer the
 	// (non-watch) response and re-encode JSON bodies of built-in types as
 	// protobuf on the way out. Installed before the early POST/compat shims so
-	// their Status/object responses are negotiated too; watch streams are never
-	// buffered.
+	// their Status/object responses are negotiated too. Skipped for watch streams
+	// and for endpoints that never return a protobuf object and may be large or
+	// streamed (OpenAPI docs, pod logs), to avoid buffering them pointlessly.
 	watchParam := r.URL.Query().Get("watch")
-	if wantsProtobuf(r) && watchParam != "1" && watchParam != "true" {
+	if wantsProtobuf(r) && watchParam != "1" && watchParam != "true" && !isNonProtobufPath(path) {
 		pw := newProtobufResponseWriter(w)
 		defer pw.flush()
 		w = pw
