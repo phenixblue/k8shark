@@ -415,8 +415,10 @@ func listPathFor(group, version, resource, namespace string) string {
 // is guaranteed to start with "namespaces" and have >= 2 elements.
 func namespacesIsScope(group string, rest []string) bool {
 	if group != "" {
-		// Non-core groups have no core "namespaces" resource, so it can only be
-		// the scoping keyword — and only when a resource follows.
+		// Non-core groups have no core "namespaces" resource. Treat a leading
+		// "namespaces" as the scoping keyword only when a namespaced resource
+		// follows (.../namespaces/<ns>/<resource>); a bare .../namespaces/<name>
+		// is left as an item of a (hypothetical) grouped "namespaces" resource.
 		return len(rest) >= 3
 	}
 	switch len(rest) {
