@@ -17,6 +17,11 @@ type watchList struct {
 	Kind            string
 	ResourceVersion string
 	Items           []json.RawMessage
+	// OverlaySkipRV is the highest overlay RV merged into this burst (0 if none).
+	// The overlay pump skips live events at or below it, so events already in the
+	// burst aren't re-sent while later writes still are (captured atomically with
+	// the snapshot in applyToList).
+	OverlaySkipRV int64
 }
 
 // resolveWatchList reconstructs the list for a watch path as-of at, applying the
@@ -88,8 +93,9 @@ func (h *handler) resolveWatchList(watchPath string, at time.Time, labelSelector
 	// path — otherwise a WatchList informer (sendInitialEvents=true) or a plain
 	// no-RV watch never observes overlay-created objects (e.g. the synthesized
 	// default ServiceAccount) in its initial events.
+	var overlaySkipRV int64
 	if h.overlay != nil {
-		rawBody = h.mergeOverlayList(watchPath, rawBody)
+		rawBody, overlaySkipRV = h.mergeOverlayList(watchPath, rawBody)
 	}
 
 	body, serr := applySelectors(rawBody, labelSelector, fieldSelector)
@@ -115,6 +121,7 @@ func (h *handler) resolveWatchList(watchPath string, at time.Time, labelSelector
 		Kind:            parsed.Kind,
 		ResourceVersion: parsed.Metadata.ResourceVersion,
 		Items:           parsed.Items,
+		OverlaySkipRV:   overlaySkipRV,
 	}, true, nil
 }
 
@@ -235,9 +242,10 @@ func (h *handler) streamReplayWatch(w http.ResponseWriter, r *http.Request, path
 	}
 
 	// Subscribe to overlay writes before resolving the initial list, so no live
-	// write is lost in the gap between the burst and the pump starting. overlaySkip
-	// is the overlay RV already reflected in the burst; the pump skips events at or
-	// below it (at worst re-sending a duplicate ADDED, which informers absorb).
+	// write is lost in the gap between the burst and the pump starting. The skip
+	// floor (overlaySkip) is derived from the burst itself, below — captured
+	// atomically with the snapshot so burst-included events are skipped while any
+	// write after the snapshot is still delivered (no duplicate, no gap).
 	var overlayCh <-chan overlayWatchEvent
 	var overlaySub *overlaySub
 	var overlaySkip int64
@@ -246,7 +254,6 @@ func (h *handler) streamReplayWatch(w http.ResponseWriter, r *http.Request, path
 		subID, overlaySub = h.overlay.subscribe(g, v, resource, watchNS)
 		defer h.overlay.unsubscribe(subID)
 		overlayCh = overlaySub.ch
-		overlaySkip = h.overlay.scopeRV(g, v, resource, watchNS)
 	}
 
 	// Always resolve the list — even when resuming — so a watch on a path that
@@ -263,6 +270,7 @@ func (h *handler) streamReplayWatch(w http.ResponseWriter, r *http.Request, path
 	}
 	if !resume {
 		minRV = rvAsOf(timeline, startAt)
+		overlaySkip = list.OverlaySkipRV // overlay state already reflected in the burst
 	} else {
 		overlaySkip = minRV // client already saw overlay events up to its resume RV
 	}

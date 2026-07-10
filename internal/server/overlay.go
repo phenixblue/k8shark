@@ -330,24 +330,33 @@ func (o *overlay) get(group, version, resource, namespace, name string) (*overla
 // applyToList merges the overlay over a base list's items for a given list scope
 // (group/version/resource, and namespace — empty for a cluster-wide/-A list).
 // Overlay entries replace matching base items (overlay wins), tombstones remove
-// them, and overlay-created items not in the base are appended.
-func (o *overlay) applyToList(group, version, resource, namespace string, base []json.RawMessage) []json.RawMessage {
+// them, and overlay-created items not in the base are appended. It also returns
+// the highest overlay RV merged into this scope, captured under the same lock as
+// the snapshot: a watch uses it as its overlay-event skip floor so events already
+// reflected in the burst are suppressed while any write after the snapshot (which
+// the monotonic counter guarantees has a higher RV) is still delivered — no
+// duplicate and no gap.
+func (o *overlay) applyToList(group, version, resource, namespace string, base []json.RawMessage) ([]json.RawMessage, int64) {
 	// Snapshot the relevant entries under the lock, then release it before walking
 	// (and JSON-unmarshalling) the base list, so a large LIST doesn't block writes.
 	// Stored entries are immutable (store/del replace the pointer), so the
 	// snapshot is safe to read after unlock.
 	o.mu.RLock()
 	matched := map[string]*overlayEntry{}
+	var maxRV int64
 	for _, e := range o.items {
 		if e.group == group && e.version == version && e.resource == resource &&
 			(namespace == "" || e.namespace == namespace) {
 			matched[nsName(e.namespace, e.name)] = e
+			if e.rv > maxRV {
+				maxRV = e.rv
+			}
 		}
 	}
 	o.mu.RUnlock()
 
 	if len(matched) == 0 {
-		return base
+		return base, maxRV
 	}
 
 	// Pre-size to the base length; append grows for any overlay-created items.
@@ -372,5 +381,5 @@ func (o *overlay) applyToList(group, version, resource, namespace string, base [
 		}
 		out = append(out, e.obj)
 	}
-	return out
+	return out, maxRV
 }
