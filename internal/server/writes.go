@@ -409,6 +409,27 @@ func listPathFor(group, version, resource, namespace string) string {
 	return base + "/" + resource
 }
 
+// namespacesIsScope reports whether a leading "namespaces" segment is the
+// namespace-scoping keyword (/namespaces/<ns>/<resource>/…) rather than the core
+// cluster-scoped "namespaces" resource itself (/api/v1/namespaces/<name>). rest
+// is guaranteed to start with "namespaces" and have >= 2 elements.
+func namespacesIsScope(group string, rest []string) bool {
+	if group != "" {
+		// Non-core groups have no core "namespaces" resource, so it can only be
+		// the scoping keyword — and only when a resource follows.
+		return len(rest) >= 3
+	}
+	switch len(rest) {
+	case 2: // /api/v1/namespaces/<name> → the namespace object
+		return false
+	case 3: // /api/v1/namespaces/<name>/{status,finalize} → object subresource;
+		//        /api/v1/namespaces/<ns>/<resource>       → namespaced list
+		return rest[2] != "status" && rest[2] != "finalize"
+	default: // 4+: /api/v1/namespaces/<ns>/<resource>/<name>[/<sub>]
+		return true
+	}
+}
+
 // parseWritePath parses a write target into GVR + namespace + name + subresource.
 // name is empty for list-level (create) paths.
 func parseWritePath(path string) (group, version, resource, namespace, name, subresource string) {
@@ -428,7 +449,12 @@ func parseWritePath(path string) (group, version, resource, namespace, name, sub
 	// rest is one of:
 	//   [resource] | [resource name] | [resource name sub]
 	//   [namespaces ns resource] | [... name] | [... name sub]
-	if len(rest) >= 2 && rest[0] == "namespaces" {
+	//
+	// A leading "namespaces" is the namespace-scoping keyword only when a real
+	// namespaced resource follows. In the core group "namespaces" is ALSO a
+	// cluster-scoped resource, so /api/v1/namespaces/<name>[/status|/finalize]
+	// targets a namespace object — not a namespaced path (see namespacesIsScope).
+	if len(rest) >= 2 && rest[0] == "namespaces" && namespacesIsScope(group, rest) {
 		namespace = rest[1]
 		rest = rest[2:]
 	}
