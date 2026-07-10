@@ -148,6 +148,83 @@ func TestOverlay_ReplaceAndPatch(t *testing.T) {
 	}
 }
 
+// containerNamesImages decodes spec.containers into a name→image map.
+func containerNamesImages(t *testing.T, body []byte) map[string]string {
+	t.Helper()
+	var obj struct {
+		Spec struct {
+			Containers []struct {
+				Name  string `json:"name"`
+				Image string `json:"image"`
+			} `json:"containers"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal(body, &obj); err != nil {
+		t.Fatalf("decode containers: %v\n%s", err, body)
+	}
+	m := map[string]string{}
+	for _, c := range obj.Spec.Containers {
+		m[c.Name] = c.Image
+	}
+	return m
+}
+
+// TestOverlay_StrategicMergePatch verifies that a strategic-merge patch of a
+// built-in type merges a keyed list (containers, by name) element-wise instead
+// of replacing it — the behavior a plain JSON merge patch cannot provide.
+func TestOverlay_StrategicMergePatch(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	twoContainers := `{"apiVersion":"v1","kind":"Pod","metadata":{"name":"pod-sm","namespace":"default"},` +
+		`"spec":{"containers":[{"name":"app","image":"app:v1"},{"name":"sidecar","image":"sidecar:v1"}]}}`
+	if code, body := doReq(t, http.MethodPost, srv.URL+podsPath, "application/json", twoContainers); code != http.StatusCreated {
+		t.Fatalf("create: status %d: %s", code, body)
+	}
+
+	// Strategic merge: update only the "app" container by its merge key.
+	patch := `{"spec":{"containers":[{"name":"app","image":"app:v2"}]}}`
+	code, got := doReq(t, http.MethodPatch, srv.URL+podsPath+"/pod-sm", "application/strategic-merge-patch+json", patch)
+	if code != 200 {
+		t.Fatalf("strategic patch: status %d: %s", code, got)
+	}
+	ci := containerNamesImages(t, got)
+	if ci["app"] != "app:v2" {
+		t.Errorf("app image = %q, want app:v2", ci["app"])
+	}
+	if ci["sidecar"] != "sidecar:v1" {
+		t.Errorf("sidecar container was dropped by strategic merge (got %v), want it preserved", ci)
+	}
+}
+
+// TestOverlay_MergePatchReplacesList is the contrast to strategic merge: a plain
+// JSON merge patch replaces a list wholesale rather than merging by key.
+func TestOverlay_MergePatchReplacesList(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	twoContainers := `{"apiVersion":"v1","kind":"Pod","metadata":{"name":"pod-mp","namespace":"default"},` +
+		`"spec":{"containers":[{"name":"app","image":"app:v1"},{"name":"sidecar","image":"sidecar:v1"}]}}`
+	if code, body := doReq(t, http.MethodPost, srv.URL+podsPath, "application/json", twoContainers); code != http.StatusCreated {
+		t.Fatalf("create: status %d: %s", code, body)
+	}
+
+	patch := `{"spec":{"containers":[{"name":"app","image":"app:v2"}]}}`
+	code, got := doReq(t, http.MethodPatch, srv.URL+podsPath+"/pod-mp", "application/merge-patch+json", patch)
+	if code != 200 {
+		t.Fatalf("merge patch: status %d: %s", code, got)
+	}
+	ci := containerNamesImages(t, got)
+	if _, ok := ci["sidecar"]; ok {
+		t.Errorf("merge patch should replace the containers list, but sidecar survived: %v", ci)
+	}
+	if ci["app"] != "app:v2" {
+		t.Errorf("app image = %q, want app:v2", ci["app"])
+	}
+}
+
 func TestOverlay_DeleteTombstone(t *testing.T) {
 	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
 	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
