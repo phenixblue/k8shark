@@ -165,7 +165,10 @@ func (h *handler) ensureNamespaceDefaults(namespace string) {
 }
 
 // synthesizeOverlayObject stores a synthetic core/v1 object in the overlay with
-// stamped metadata, unless one already exists at that path.
+// stamped metadata, unless one already exists at that path. The final store is
+// atomic (storeIfAbsent), so concurrent callers can't create the same identity
+// twice with different UIDs — the currentObject fast-path also skips objects that
+// already exist in the replayed state.
 func (h *handler) synthesizeOverlayObject(resource, namespace, name, base string) {
 	if h.currentObject("", "v1", resource, namespace, name) != nil {
 		return
@@ -178,7 +181,7 @@ func (h *handler) synthesizeOverlayObject(resource, namespace, name, base string
 		"resourceVersion":   strconv.FormatInt(rv, 10),
 		"creationTimestamp": h.nowRFC3339(),
 	})
-	h.overlay.store("", "v1", resource, namespace, name, obj, rv)
+	h.overlay.storeIfAbsent("", "v1", resource, namespace, name, obj, rv)
 }
 
 // defaultSyntheticNode is the node synthesized for scheduling when the capture

@@ -234,6 +234,30 @@ func (o *overlay) store(group, version, resource, namespace, name string, obj js
 	})
 }
 
+// storeIfAbsent stores obj under the identity only when no live entry exists yet,
+// returning true if it did. Concurrent callers racing to create the same identity
+// (e.g. the synthetic scheduling node, or per-namespace defaults) see exactly one
+// winner under the lock, so the object's UID stays stable — Kubernetes UIDs are
+// immutable and controllers rely on that. A tombstone counts as absent, so a
+// deleted synthetic object can be re-created.
+func (o *overlay) storeIfAbsent(group, version, resource, namespace, name string, obj json.RawMessage, rv int64) bool {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	key := overlayKey(group, version, resource, namespace, name)
+	if e, ok := o.items[key]; ok && !e.deleted {
+		return false
+	}
+	o.items[key] = &overlayEntry{
+		group: group, version: version, resource: resource,
+		namespace: namespace, name: name, obj: obj, rv: rv,
+	}
+	o.publishLocked(overlayWatchEvent{
+		typ: "ADDED", rv: rv, obj: obj,
+		group: group, version: version, resource: resource, namespace: namespace, name: name,
+	})
+	return true
+}
+
 // del marks an object deleted (tombstone) and returns its new RV. last is the
 // object body to carry on the DELETED event (may be nil).
 func (o *overlay) del(group, version, resource, namespace, name string, last json.RawMessage, floorRV int64) int64 {

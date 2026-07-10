@@ -1,9 +1,13 @@
 package server
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -116,6 +120,37 @@ func TestSchedule_RespectsExplicitNodeName(t *testing.T) {
 	_, body := doReq(t, http.MethodPost, srv.URL+podsPath, "application/json", pinned)
 	if got := podNodeName(body); got != "chosen-node" {
 		t.Errorf("explicit nodeName overwritten: got %q, want chosen-node", got)
+	}
+}
+
+// TestOverlay_StoreIfAbsent_OneWinner: concurrent creation of the same identity
+// has exactly one winner, so a synthetic object's UID stays stable (run under
+// -race). Guards the concurrent-synthesis race in synthesizeOverlayObject.
+func TestOverlay_StoreIfAbsent_OneWinner(t *testing.T) {
+	o := newOverlay()
+	var wins int64
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			obj := json.RawMessage(fmt.Sprintf(`{"metadata":{"name":"n0","uid":"uid-%d"}}`, i))
+			if o.storeIfAbsent("", "v1", "nodes", "", "n0", obj, int64(i+1)) {
+				atomic.AddInt64(&wins, 1)
+			}
+		}(i)
+	}
+	wg.Wait()
+	if wins != 1 {
+		t.Errorf("storeIfAbsent winners = %d, want exactly 1", wins)
+	}
+	if _, ok := o.get("", "v1", "nodes", "", "n0"); !ok {
+		t.Error("node was not stored")
+	}
+	// A tombstone counts as absent, so a re-create after deletion succeeds.
+	o.del("", "v1", "nodes", "", "n0", nil, 0)
+	if !o.storeIfAbsent("", "v1", "nodes", "", "n0", json.RawMessage(`{}`), 100) {
+		t.Error("storeIfAbsent should re-create over a tombstone")
 	}
 }
 
