@@ -494,6 +494,65 @@ func TestOverlay_ApplyPatchYAML(t *testing.T) {
 	}
 }
 
+// TestOverlay_ClusterScopedSingleGet covers #149: an overlay-created
+// cluster-scoped object must be returned by a single-object GET (not just LIST),
+// for core (namespaces, nodes) and grouped (clusterroles) resources.
+func TestOverlay_ClusterScopedSingleGet(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	cases := []struct{ createPath, getPath, body, name string }{
+		{"/api/v1/namespaces", "/api/v1/namespaces/ov-ns",
+			`{"apiVersion":"v1","kind":"Namespace","metadata":{"name":"ov-ns"}}`, "ov-ns"},
+		{"/api/v1/nodes", "/api/v1/nodes/ov-node",
+			`{"apiVersion":"v1","kind":"Node","metadata":{"name":"ov-node"}}`, "ov-node"},
+		{"/apis/rbac.authorization.k8s.io/v1/clusterroles", "/apis/rbac.authorization.k8s.io/v1/clusterroles/ov-cr",
+			`{"apiVersion":"rbac.authorization.k8s.io/v1","kind":"ClusterRole","metadata":{"name":"ov-cr"}}`, "ov-cr"},
+	}
+	for _, c := range cases {
+		if code, b := doReq(t, http.MethodPost, srv.URL+c.createPath, "application/json", c.body); code != http.StatusCreated {
+			t.Fatalf("create %s: status %d: %s", c.name, code, b)
+		}
+		code, got := doReq(t, http.MethodGet, srv.URL+c.getPath, "", "")
+		if code != 200 {
+			t.Errorf("GET %s: status %d, want 200", c.getPath, code)
+			continue
+		}
+		if n := metaString(got, "name"); n != c.name {
+			t.Errorf("GET %s: name %q, want %q", c.getPath, n, c.name)
+		}
+	}
+}
+
+// TestOverlay_ClusterScopedDeleteTombstone verifies deleting a captured
+// cluster-scoped object (a namespace) returns 404 on GET (not the captured copy)
+// and drops it from LIST.
+func TestOverlay_ClusterScopedDeleteTombstone(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	nsList := `{"apiVersion":"v1","kind":"NamespaceList","metadata":{"resourceVersion":"1"},"items":[` +
+		`{"apiVersion":"v1","kind":"Namespace","metadata":{"name":"default"}}]}`
+	store := buildTestStoreWithWatch(t,
+		map[string]watchTestRecord{"/api/v1/namespaces": {id: "ns", at: from, body: nsList}}, nil)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, store, clock)
+
+	// Sanity: the captured namespace is visible before deletion.
+	if code, _ := doReq(t, http.MethodGet, srv.URL+"/api/v1/namespaces/default", "", ""); code != 200 {
+		t.Fatalf("GET captured namespace before delete: status %d, want 200", code)
+	}
+	if code, _ := doReq(t, http.MethodDelete, srv.URL+"/api/v1/namespaces/default", "", ""); code != 200 {
+		t.Fatalf("delete namespace: status %d, want 200", code)
+	}
+	if code, _ := doReq(t, http.MethodGet, srv.URL+"/api/v1/namespaces/default", "", ""); code != 404 {
+		t.Errorf("GET deleted namespace: status %d, want 404 (not the captured copy)", code)
+	}
+	_, list := doReq(t, http.MethodGet, srv.URL+"/api/v1/namespaces", "", "")
+	if contains(listNames(t, list), "default") {
+		t.Errorf("LIST still contains deleted namespace: %v", listNames(t, list))
+	}
+}
+
 func TestOverlay_ReadOnlyRejectsWrites(t *testing.T) {
 	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
 	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
