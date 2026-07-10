@@ -11,6 +11,10 @@ import (
 
 	"github.com/google/uuid"
 	jsonpatch "gopkg.in/evanphx/json-patch.v4"
+	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/strategicpatch"
+	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/yaml"
 )
 
@@ -229,7 +233,7 @@ func (h *handler) overlayPatch(w http.ResponseWriter, r *http.Request, group, ve
 		h.writeStatus(w, http.StatusNotFound, "object not found: "+name)
 		return
 	}
-	next, perr := applyPatch(current, patch, r.Header.Get("Content-Type"))
+	next, perr := applyPatch(current, patch, r.Header.Get("Content-Type"), group, version, resource)
 	if perr != nil {
 		h.writeStatus(w, http.StatusUnprocessableEntity, "applying patch: "+perr.Error())
 		return
@@ -371,10 +375,11 @@ func supportedPatchType(contentType string) bool {
 }
 
 // applyPatch applies a patch of the given (already-validated) content type to the
-// current object. PR-1 supports JSON merge patch and JSON patch (RFC 6902);
-// strategic-merge and server-side apply fall back to a JSON merge patch for now
-// (schema-driven strategic-merge and SSA land in later PRs).
-func applyPatch(current, patch []byte, contentType string) ([]byte, error) {
+// current object. Supports JSON merge patch, JSON patch (RFC 6902), and
+// strategic-merge patch (for built-in types, via their registered schema).
+// Server-side apply still falls back to a JSON merge patch for now (real SSA
+// field management lands in a later PR).
+func applyPatch(current, patch []byte, contentType, group, version, resource string) ([]byte, error) {
 	switch patchMediaType(contentType) {
 	case "application/json-patch+json":
 		p, err := jsonpatch.DecodePatch(patch)
@@ -382,6 +387,8 @@ func applyPatch(current, patch []byte, contentType string) ([]byte, error) {
 			return nil, err
 		}
 		return p.Apply(current)
+	case "application/strategic-merge-patch+json":
+		return strategicMergePatch(current, patch, group, version, resource)
 	case "application/apply-patch+yaml":
 		// Server-side apply bodies are YAML; convert to JSON, then merge as an
 		// interim (real SSA field management lands in a later PR).
@@ -390,9 +397,46 @@ func applyPatch(current, patch []byte, contentType string) ([]byte, error) {
 			return nil, err
 		}
 		return jsonpatch.MergePatch(current, j)
-	default: // merge-patch, strategic-merge (fallback)
+	default: // merge-patch
 		return jsonpatch.MergePatch(current, patch)
 	}
+}
+
+// strategicMergePatch applies a strategic-merge patch using the schema of the
+// object's built-in type: lists with a patch merge key (e.g. containers by name)
+// are merged element-wise rather than wholesale-replaced, matching the
+// kube-apiserver. Strategic merge is only defined for built-in types — the real
+// apiserver has no strategy metadata for custom resources — so a GVK that isn't
+// in the scheme falls back to a plain JSON merge patch.
+//
+// The GVK is derived from the request path's group/version/resource, not the
+// stored object body: a replayed object reconstructed from a captured LIST has no
+// apiVersion/kind (the apiserver strips TypeMeta from list items), so the body is
+// not a reliable type source.
+func strategicMergePatch(current, patch []byte, group, version, resource string) ([]byte, error) {
+	if gvk, ok := kindForResource(schema.GroupVersion{Group: group, Version: version}, resource); ok {
+		if obj, err := scheme.Scheme.New(gvk); err == nil {
+			return strategicpatch.StrategicMergePatch(current, patch, obj)
+		}
+	}
+	// Unknown/custom type: no strategy metadata, so merge like the apiserver's
+	// fallback for resources without a strategic-merge strategy.
+	return jsonpatch.MergePatch(current, patch)
+}
+
+// kindForResource resolves a plural resource name to its registered built-in Kind
+// by inverting the apiserver's own kind→resource convention over the scheme's
+// known types. This is exact for every registered type (e.g. endpointslices →
+// EndpointSlice), unlike a name-capitalization heuristic. ok is false when no
+// built-in type in the group/version maps to the resource (custom resources).
+func kindForResource(gv schema.GroupVersion, resource string) (schema.GroupVersionKind, bool) {
+	for kind := range scheme.Scheme.KnownTypes(gv) {
+		gvk := gv.WithKind(kind)
+		if plural, _ := meta.UnsafeGuessKindToResource(gvk); plural.Resource == resource {
+			return gvk, true
+		}
+	}
+	return schema.GroupVersionKind{}, false
 }
 
 // allowedMethods returns the Allow-header value for a write path shape, used on

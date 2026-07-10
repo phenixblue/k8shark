@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 const podsPath = "/api/v1/namespaces/default/pods"
@@ -145,6 +147,138 @@ func TestOverlay_ReplaceAndPatch(t *testing.T) {
 	}
 	if obj.Metadata.Labels["team"] != "a" || obj.Metadata.Labels["tier"] != "web" {
 		t.Errorf("merged labels = %v, want team=a tier=web", obj.Metadata.Labels)
+	}
+}
+
+// containerNamesImages decodes spec.containers into a name→image map.
+func containerNamesImages(t *testing.T, body []byte) map[string]string {
+	t.Helper()
+	var obj struct {
+		Spec struct {
+			Containers []struct {
+				Name  string `json:"name"`
+				Image string `json:"image"`
+			} `json:"containers"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal(body, &obj); err != nil {
+		t.Fatalf("decode containers: %v\n%s", err, body)
+	}
+	m := map[string]string{}
+	for _, c := range obj.Spec.Containers {
+		m[c.Name] = c.Image
+	}
+	return m
+}
+
+// TestOverlay_StrategicMergePatch verifies that a strategic-merge patch of a
+// built-in type merges a keyed list (containers, by name) element-wise instead
+// of replacing it — the behavior a plain JSON merge patch cannot provide.
+func TestOverlay_StrategicMergePatch(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	twoContainers := `{"apiVersion":"v1","kind":"Pod","metadata":{"name":"pod-sm","namespace":"default"},` +
+		`"spec":{"containers":[{"name":"app","image":"app:v1"},{"name":"sidecar","image":"sidecar:v1"}]}}`
+	if code, body := doReq(t, http.MethodPost, srv.URL+podsPath, "application/json", twoContainers); code != http.StatusCreated {
+		t.Fatalf("create: status %d: %s", code, body)
+	}
+
+	// Strategic merge: update only the "app" container by its merge key.
+	patch := `{"spec":{"containers":[{"name":"app","image":"app:v2"}]}}`
+	code, got := doReq(t, http.MethodPatch, srv.URL+podsPath+"/pod-sm", "application/strategic-merge-patch+json", patch)
+	if code != 200 {
+		t.Fatalf("strategic patch: status %d: %s", code, got)
+	}
+	ci := containerNamesImages(t, got)
+	if ci["app"] != "app:v2" {
+		t.Errorf("app image = %q, want app:v2", ci["app"])
+	}
+	if ci["sidecar"] != "sidecar:v1" {
+		t.Errorf("sidecar container was dropped by strategic merge (got %v), want it preserved", ci)
+	}
+}
+
+// TestOverlay_MergePatchReplacesList is the contrast to strategic merge: a plain
+// JSON merge patch replaces a list wholesale rather than merging by key.
+func TestOverlay_MergePatchReplacesList(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	twoContainers := `{"apiVersion":"v1","kind":"Pod","metadata":{"name":"pod-mp","namespace":"default"},` +
+		`"spec":{"containers":[{"name":"app","image":"app:v1"},{"name":"sidecar","image":"sidecar:v1"}]}}`
+	if code, body := doReq(t, http.MethodPost, srv.URL+podsPath, "application/json", twoContainers); code != http.StatusCreated {
+		t.Fatalf("create: status %d: %s", code, body)
+	}
+
+	patch := `{"spec":{"containers":[{"name":"app","image":"app:v2"}]}}`
+	code, got := doReq(t, http.MethodPatch, srv.URL+podsPath+"/pod-mp", "application/merge-patch+json", patch)
+	if code != 200 {
+		t.Fatalf("merge patch: status %d: %s", code, got)
+	}
+	ci := containerNamesImages(t, got)
+	if _, ok := ci["sidecar"]; ok {
+		t.Errorf("merge patch should replace the containers list, but sidecar survived: %v", ci)
+	}
+	if ci["app"] != "app:v2" {
+		t.Errorf("app image = %q, want app:v2", ci["app"])
+	}
+}
+
+// TestOverlay_StrategicMergePatch_CapturedNoTypeMeta guards the case where the
+// object being patched comes from a replayed LIST and so has no apiVersion/kind
+// (the apiserver strips TypeMeta from list items). The GVK must still be resolved
+// from the request path, or strategic merge would silently degrade to a JSON
+// merge and drop the sibling container.
+func TestOverlay_StrategicMergePatch_CapturedNoTypeMeta(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	// A captured list whose item carries no apiVersion/kind, as a real apiserver
+	// returns list items.
+	listBody := `{"apiVersion":"v1","kind":"PodList","metadata":{"resourceVersion":"1"},"items":[` +
+		`{"metadata":{"name":"cap-pod","namespace":"default"},` +
+		`"spec":{"containers":[{"name":"app","image":"app:v1"},{"name":"sidecar","image":"sidecar:v1"}]}}]}`
+	store := buildTestStoreWithWatch(t,
+		map[string]watchTestRecord{podsPath: {id: "s", at: from, body: listBody}}, nil)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, store, clock)
+
+	patch := `{"spec":{"containers":[{"name":"app","image":"app:v2"}]}}`
+	code, got := doReq(t, http.MethodPatch, srv.URL+podsPath+"/cap-pod", "application/strategic-merge-patch+json", patch)
+	if code != 200 {
+		t.Fatalf("strategic patch: status %d: %s", code, got)
+	}
+	ci := containerNamesImages(t, got)
+	if ci["sidecar"] != "sidecar:v1" {
+		t.Errorf("sidecar dropped — GVK was not resolved from the path for a TypeMeta-less object: %v", ci)
+	}
+	if ci["app"] != "app:v2" {
+		t.Errorf("app image = %q, want app:v2", ci["app"])
+	}
+}
+
+// TestKindForResource checks the resource→Kind resolver against the scheme,
+// including cases a naive capitalization heuristic gets wrong (endpointslices →
+// EndpointSlice, not Endpointslice), and that custom resources resolve to ok=false.
+func TestKindForResource(t *testing.T) {
+	cases := []struct {
+		group, version, resource, wantKind string
+		wantOK                             bool
+	}{
+		{"", "v1", "pods", "Pod", true},
+		{"", "v1", "configmaps", "ConfigMap", true},
+		{"apps", "v1", "deployments", "Deployment", true},
+		{"discovery.k8s.io", "v1", "endpointslices", "EndpointSlice", true},
+		{"networking.k8s.io", "v1", "networkpolicies", "NetworkPolicy", true},
+		{"example.com", "v1", "widgets", "", false}, // custom resource: not in the scheme
+	}
+	for _, c := range cases {
+		gvk, ok := kindForResource(schema.GroupVersion{Group: c.group, Version: c.version}, c.resource)
+		if ok != c.wantOK || gvk.Kind != c.wantKind {
+			t.Errorf("kindForResource(%s/%s, %s) = (%q, %v), want (%q, %v)",
+				c.group, c.version, c.resource, gvk.Kind, ok, c.wantKind, c.wantOK)
+		}
 	}
 }
 
