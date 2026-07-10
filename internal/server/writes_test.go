@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 const podsPath = "/api/v1/namespaces/default/pods"
@@ -253,6 +255,30 @@ func TestOverlay_StrategicMergePatch_CapturedNoTypeMeta(t *testing.T) {
 	}
 	if ci["app"] != "app:v2" {
 		t.Errorf("app image = %q, want app:v2", ci["app"])
+	}
+}
+
+// TestKindForResource checks the resource→Kind resolver against the scheme,
+// including cases a naive capitalization heuristic gets wrong (endpointslices →
+// EndpointSlice, not Endpointslice), and that custom resources resolve to ok=false.
+func TestKindForResource(t *testing.T) {
+	cases := []struct {
+		group, version, resource, wantKind string
+		wantOK                             bool
+	}{
+		{"", "v1", "pods", "Pod", true},
+		{"", "v1", "configmaps", "ConfigMap", true},
+		{"apps", "v1", "deployments", "Deployment", true},
+		{"discovery.k8s.io", "v1", "endpointslices", "EndpointSlice", true},
+		{"networking.k8s.io", "v1", "networkpolicies", "NetworkPolicy", true},
+		{"example.com", "v1", "widgets", "", false}, // custom resource: not in the scheme
+	}
+	for _, c := range cases {
+		gvk, ok := kindForResource(schema.GroupVersion{Group: c.group, Version: c.version}, c.resource)
+		if ok != c.wantOK || gvk.Kind != c.wantKind {
+			t.Errorf("kindForResource(%s/%s, %s) = (%q, %v), want (%q, %v)",
+				c.group, c.version, c.resource, gvk.Kind, ok, c.wantKind, c.wantOK)
+		}
 	}
 }
 

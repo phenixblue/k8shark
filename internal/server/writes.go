@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	jsonpatch "gopkg.in/evanphx/json-patch.v4"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -413,13 +414,29 @@ func applyPatch(current, patch []byte, contentType, group, version, resource str
 // apiVersion/kind (the apiserver strips TypeMeta from list items), so the body is
 // not a reliable type source.
 func strategicMergePatch(current, patch []byte, group, version, resource string) ([]byte, error) {
-	gvk := schema.GroupVersionKind{Group: group, Version: version, Kind: resourceToKind(resource)}
-	if obj, err := scheme.Scheme.New(gvk); err == nil {
-		return strategicpatch.StrategicMergePatch(current, patch, obj)
+	if gvk, ok := kindForResource(schema.GroupVersion{Group: group, Version: version}, resource); ok {
+		if obj, err := scheme.Scheme.New(gvk); err == nil {
+			return strategicpatch.StrategicMergePatch(current, patch, obj)
+		}
 	}
 	// Unknown/custom type: no strategy metadata, so merge like the apiserver's
 	// fallback for resources without a strategic-merge strategy.
 	return jsonpatch.MergePatch(current, patch)
+}
+
+// kindForResource resolves a plural resource name to its registered built-in Kind
+// by inverting the apiserver's own kind→resource convention over the scheme's
+// known types. This is exact for every registered type (e.g. endpointslices →
+// EndpointSlice), unlike a name-capitalization heuristic. ok is false when no
+// built-in type in the group/version maps to the resource (custom resources).
+func kindForResource(gv schema.GroupVersion, resource string) (schema.GroupVersionKind, bool) {
+	for kind := range scheme.Scheme.KnownTypes(gv) {
+		gvk := gv.WithKind(kind)
+		if plural, _ := meta.UnsafeGuessKindToResource(gvk); plural.Resource == resource {
+			return gvk, true
+		}
+	}
+	return schema.GroupVersionKind{}, false
 }
 
 // allowedMethods returns the Allow-header value for a write path shape, used on
