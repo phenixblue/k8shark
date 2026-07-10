@@ -194,8 +194,10 @@ func (h *handler) schedulePod(body json.RawMessage) json.RawMessage {
 		h.synthesizeNode(defaultSyntheticNode)
 		nodes = []string{defaultSyntheticNode}
 	}
-	node := nodes[int(h.overlay.nextScheduleIndex())%len(nodes)]
-	return setSpecNodeName(body, node)
+	// Take the modulo in int64, then convert the bounded [0,len) result — casting
+	// the raw counter to int first could overflow negative on a 32-bit platform.
+	idx := h.overlay.nextScheduleIndex() % int64(len(nodes))
+	return setSpecNodeName(body, nodes[int(idx)])
 }
 
 // knownNodeNames returns the sorted names of Nodes visible in writable replay:
