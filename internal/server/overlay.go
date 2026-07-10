@@ -28,6 +28,18 @@ type overlay struct {
 	// by mu; publishLocked runs while a write already holds the lock.
 	subs   map[int64]*overlaySub
 	nextID int64
+
+	schedSeq int64 // round-robin cursor for the pod-scheduling shim
+}
+
+// nextScheduleIndex returns a monotonically increasing index (0, 1, 2, …) for
+// round-robin pod scheduling across the known nodes.
+func (o *overlay) nextScheduleIndex() int64 {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	i := o.schedSeq
+	o.schedSeq++
+	return i
 }
 
 type overlayEntry struct {

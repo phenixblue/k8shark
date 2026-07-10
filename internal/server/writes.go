@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -124,6 +125,14 @@ func (h *handler) overlayCreate(w http.ResponseWriter, r *http.Request, group, v
 		return
 	}
 
+	// Scheduling shim: a real cluster's scheduler assigns spec.nodeName, and KWOK's
+	// "Pod → Running" stage only fires once a Pod is bound to a node. Replay has no
+	// scheduler, so bind an unscheduled Pod here (round-robin over the known nodes,
+	// synthesizing one if the capture has none). See #160.
+	if h.schedulePods && group == "" && resource == "pods" && podNodeName(body) == "" {
+		body = h.schedulePod(body)
+	}
+
 	rv := h.overlay.nextRV(h.replayFloorRV(group, version, resource, namespace))
 	obj := mergeMeta(body, map[string]any{
 		"name":              name,
@@ -170,6 +179,102 @@ func (h *handler) synthesizeOverlayObject(resource, namespace, name, base string
 		"creationTimestamp": h.nowRFC3339(),
 	})
 	h.overlay.store("", "v1", resource, namespace, name, obj, rv)
+}
+
+// defaultSyntheticNode is the node synthesized for scheduling when the capture
+// contains none.
+const defaultSyntheticNode = "kwok-node-0"
+
+// schedulePod binds an unscheduled Pod to a node — the scheduler replay lacks —
+// picking round-robin over the known nodes (captured + overlay) and synthesizing
+// a KWOK-managed node if none exist. Returns the body with spec.nodeName set.
+func (h *handler) schedulePod(body json.RawMessage) json.RawMessage {
+	nodes := h.knownNodeNames()
+	if len(nodes) == 0 {
+		h.synthesizeNode(defaultSyntheticNode)
+		nodes = []string{defaultSyntheticNode}
+	}
+	node := nodes[int(h.overlay.nextScheduleIndex())%len(nodes)]
+	return setSpecNodeName(body, node)
+}
+
+// knownNodeNames returns the sorted names of Nodes visible in writable replay:
+// those reconstructed from the capture as-of the clock, merged with the overlay
+// (overlay-created nodes added, tombstoned ones removed).
+func (h *handler) knownNodeNames() []string {
+	at := h.at
+	if h.clock != nil {
+		at = h.clock.Now()
+	}
+	var items []json.RawMessage
+	if body, code, err := h.store.ReconstructAt("/api/v1/nodes", at); err == nil && code == 200 {
+		var l struct {
+			Items []json.RawMessage `json:"items"`
+		}
+		if json.Unmarshal(body, &l) == nil {
+			items = l.Items
+		}
+	}
+	items, _ = h.overlay.applyToList("", "v1", "nodes", "", items)
+	var names []string
+	for _, it := range items {
+		if n := metaString(it, "name"); n != "" {
+			names = append(names, n)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// synthesizeNode stores a synthetic Ready Node, annotated so a stock `kwok` run
+// manages it (`kwok.x-k8s.io/node: fake`). It gives the scheduling shim a target
+// when the capture has no nodes, and KWOK a node to keep Ready.
+func (h *handler) synthesizeNode(name string) {
+	h.synthesizeOverlayObject("nodes", "", name, syntheticNodeBase(name))
+}
+
+// syntheticNodeBase is the base body for a synthesized Node (metadata name/uid/rv
+// are stamped by synthesizeOverlayObject).
+func syntheticNodeBase(name string) string {
+	return `{"apiVersion":"v1","kind":"Node",` +
+		`"metadata":{"annotations":{"kwok.x-k8s.io/node":"fake"},` +
+		`"labels":{"type":"kwok","kubernetes.io/os":"linux","kubernetes.io/hostname":"` + name + `"}},` +
+		`"spec":{},` +
+		`"status":{"phase":"Running",` +
+		`"conditions":[{"type":"Ready","status":"True","reason":"KubeletReady"}],` +
+		`"allocatable":{"cpu":"32","memory":"256Gi","pods":"110"},` +
+		`"capacity":{"cpu":"32","memory":"256Gi","pods":"110"}}}`
+}
+
+// podNodeName returns a pod body's spec.nodeName ("" if unset).
+func podNodeName(body json.RawMessage) string {
+	var p struct {
+		Spec struct {
+			NodeName string `json:"nodeName"`
+		} `json:"spec"`
+	}
+	_ = json.Unmarshal(body, &p)
+	return p.Spec.NodeName
+}
+
+// setSpecNodeName returns body with spec.nodeName set to node, preserving the
+// rest of the object. On a decode/encode error the body is returned unchanged.
+func setSpecNodeName(body json.RawMessage, node string) json.RawMessage {
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil || m == nil {
+		return body
+	}
+	spec, ok := m["spec"].(map[string]any)
+	if !ok || spec == nil {
+		spec = map[string]any{}
+		m["spec"] = spec
+	}
+	spec["nodeName"] = node
+	out, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return out
 }
 
 func (h *handler) overlayReplace(w http.ResponseWriter, r *http.Request, group, version, resource, namespace, name, sub string) {

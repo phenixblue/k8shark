@@ -25,6 +25,11 @@ type handler struct {
 	// nil for read-only replay (writes return 405).
 	overlay *overlay
 
+	// schedulePods, when true (writable replay), makes the overlay bind an
+	// unscheduled Pod to a node on create — the scheduler replay lacks — so KWOK's
+	// "Pod bound to a node → Running" stage can fire. See writes.go and #160.
+	schedulePods bool
+
 	// timelineCache memoizes the (immutable) per-path replay event timeline so
 	// LIST and WATCH don't rebuild it per request — important for poll-only
 	// captures, whose timeline requires diffing every snapshot.
