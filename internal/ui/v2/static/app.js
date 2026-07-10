@@ -290,7 +290,7 @@
       if (!res.ok) throw new Error((data && data.error) || `${res.status} ${res.statusText}`);
       applyReplayStatus(data, true);
     } catch (e) {
-      toast('error', 'Replay control failed: ' + safeErrorText(e && e.message));
+      toast('error', 'Replay control failed: ' + safeErrorText(e ? e.message : null));
     }
   }
 
