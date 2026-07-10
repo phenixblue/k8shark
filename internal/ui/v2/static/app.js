@@ -330,10 +330,16 @@
 
   // replayPauseOnError stops playback and surfaces the failure. Idempotent while
   // already paused so a burst of failed loads doesn't spam toasts.
+  function safeErrorText(msg) {
+    const s = msg == null ? 'unknown error' : String(msg);
+    // Keep message as plain display text and remove control chars that can
+    // cause UI/log rendering confusion.
+    return s.replace(/[\u0000-\u001f\u007f]/g, ' ').trim() || 'unknown error';
+  }
   function replayPauseOnError(msg) {
     if (!state.replay.enabled || state.replay.paused) return;
     state.replay.paused = true; // optimistic; server status confirms on next poll
-    toast('error', 'Replay paused — load failed: ' + (msg || 'unknown error'));
+    toast('error', 'Replay paused — load failed: ' + safeErrorText(msg));
     replayControl('pause');
   }
 
