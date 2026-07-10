@@ -236,16 +236,30 @@ func (h *handler) synthesizeNode(name string) {
 }
 
 // syntheticNodeBase is the base body for a synthesized Node (metadata name/uid/rv
-// are stamped by synthesizeOverlayObject).
+// are stamped by synthesizeOverlayObject). Built via json.Marshal so the node
+// name is always correctly escaped.
 func syntheticNodeBase(name string) string {
-	return `{"apiVersion":"v1","kind":"Node",` +
-		`"metadata":{"annotations":{"kwok.x-k8s.io/node":"fake"},` +
-		`"labels":{"type":"kwok","kubernetes.io/os":"linux","kubernetes.io/hostname":"` + name + `"}},` +
-		`"spec":{},` +
-		`"status":{"phase":"Running",` +
-		`"conditions":[{"type":"Ready","status":"True","reason":"KubeletReady"}],` +
-		`"allocatable":{"cpu":"32","memory":"256Gi","pods":"110"},` +
-		`"capacity":{"cpu":"32","memory":"256Gi","pods":"110"}}}`
+	obj := map[string]any{
+		"apiVersion": "v1",
+		"kind":       "Node",
+		"metadata": map[string]any{
+			"annotations": map[string]any{"kwok.x-k8s.io/node": "fake"},
+			"labels": map[string]any{
+				"type":                   "kwok",
+				"kubernetes.io/os":       "linux",
+				"kubernetes.io/hostname": name,
+			},
+		},
+		"spec": map[string]any{},
+		"status": map[string]any{
+			"phase":       "Running",
+			"conditions":  []any{map[string]any{"type": "Ready", "status": "True", "reason": "KubeletReady"}},
+			"allocatable": map[string]any{"cpu": "32", "memory": "256Gi", "pods": "110"},
+			"capacity":    map[string]any{"cpu": "32", "memory": "256Gi", "pods": "110"},
+		},
+	}
+	b, _ := json.Marshal(obj)
+	return string(b)
 }
 
 // podNodeName returns a pod body's spec.nodeName ("" if unset).
