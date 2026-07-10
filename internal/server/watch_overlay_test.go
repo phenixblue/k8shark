@@ -142,6 +142,11 @@ func TestOverlay_WatchFeedback_Informer(t *testing.T) {
 			}
 		},
 		DeleteFunc: func(obj any) {
+			// A relist (which the overflow path can trigger) delivers deletes as a
+			// DeletedFinalStateUnknown tombstone rather than the object directly.
+			if tomb, ok := obj.(cache.DeletedFinalStateUnknown); ok {
+				obj = tomb.Obj
+			}
 			if u, ok := obj.(*unstructured.Unstructured); ok {
 				deleted <- u.GetName()
 			}
