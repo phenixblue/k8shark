@@ -3,7 +3,6 @@ package server
 import (
 	"encoding/json"
 	"sync"
-	"sync/atomic"
 )
 
 // overlay is the in-memory write layer for --writable replay. Client writes
@@ -49,12 +48,14 @@ type overlayWatchEvent struct {
 
 // overlaySub is one active watch subscription: a scope filter and a buffered
 // delivery channel. namespace == "" matches every namespace (cluster-wide or -A
-// watches). overflow is set when the channel fills — the stream then drops the
-// connection so the client relists, mirroring an apiserver watch-cache overflow.
+// watches). overflowCh is closed (once) when the channel fills, so the stream can
+// select on it and drop the connection immediately — without waiting to receive a
+// further event — mirroring an apiserver watch-cache overflow; the client relists.
 type overlaySub struct {
 	group, version, resource, namespace string
 	ch                                  chan overlayWatchEvent
-	overflow                            atomic.Bool
+	overflowCh                          chan struct{}
+	overflowed                          bool // guarded by overlay.mu (set in publishLocked)
 }
 
 func newOverlay() *overlay {
@@ -76,7 +77,8 @@ func (o *overlay) subscribe(group, version, resource, namespace string) (int64, 
 	id := o.nextID
 	s := &overlaySub{
 		group: group, version: version, resource: resource, namespace: namespace,
-		ch: make(chan overlayWatchEvent, overlaySubBuffer),
+		ch:         make(chan overlayWatchEvent, overlaySubBuffer),
+		overflowCh: make(chan struct{}),
 	}
 	o.subs[id] = s
 	return id, s
@@ -92,9 +94,9 @@ func (o *overlay) unsubscribe(id int64) {
 }
 
 // publishLocked delivers ev to every subscriber whose scope matches. The caller
-// holds o.mu. The send is non-blocking: a subscriber whose buffer is full is
-// flagged overflow (the stream drops the connection and the client relists),
-// which keeps a slow watcher from stalling writes under the lock.
+// holds o.mu. The send is non-blocking: a subscriber whose buffer is full has its
+// overflowCh closed (once) so the stream tears down and the client relists, which
+// keeps a slow watcher from stalling writes under the lock.
 func (o *overlay) publishLocked(ev overlayWatchEvent) {
 	for _, s := range o.subs {
 		if s.group != ev.group || s.version != ev.version || s.resource != ev.resource {
@@ -106,7 +108,10 @@ func (o *overlay) publishLocked(ev overlayWatchEvent) {
 		select {
 		case s.ch <- ev:
 		default:
-			s.overflow.Store(true)
+			if !s.overflowed {
+				s.overflowed = true
+				close(s.overflowCh)
+			}
 		}
 	}
 }

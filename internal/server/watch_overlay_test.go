@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"testing"
 	"time"
@@ -173,6 +174,31 @@ func TestOverlay_WatchFeedback_Informer(t *testing.T) {
 	}
 	if got := waitFor(t, deleted, 10*time.Second); got != "pod-informer" {
 		t.Fatalf("informer delete: got %q, want pod-informer", got)
+	}
+}
+
+// TestOverlay_SubscribeOverflow verifies that a subscriber whose buffer fills has
+// its overflowCh closed — so the stream tears down without needing to receive a
+// further event.
+func TestOverlay_SubscribeOverflow(t *testing.T) {
+	o := newOverlay()
+	_, sub := o.subscribe("", "v1", "pods", "default")
+
+	// Publish past the buffer capacity without ever draining sub.ch.
+	for i := 0; i < overlaySubBuffer+2; i++ {
+		o.mu.Lock()
+		o.publishLocked(overlayWatchEvent{
+			typ: "ADDED", rv: int64(i + 1), obj: json.RawMessage(`{}`),
+			group: "", version: "v1", resource: "pods", namespace: "default",
+		})
+		o.mu.Unlock()
+	}
+
+	select {
+	case <-sub.overflowCh:
+		// closed as expected
+	default:
+		t.Fatal("overflowCh was not closed after the buffer overflowed")
 	}
 }
 

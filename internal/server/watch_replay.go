@@ -386,11 +386,10 @@ func (h *handler) streamReplayWatch(w http.ResponseWriter, r *http.Request, path
 				select {
 				case <-ctx.Done():
 					return
+				case <-overlaySub.overflowCh:
+					cancel() // buffer overflowed; force a relist and tear down
+					return
 				case ev := <-overlayCh:
-					if overlaySub.overflow.Load() {
-						cancel()
-						return
-					}
 					if ev.rv <= overlaySkip {
 						continue // already reflected in the initial burst
 					}
