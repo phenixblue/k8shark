@@ -538,7 +538,7 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 	// Table negotiation, then re-apply selectors so overlay items are filtered
 	// consistently with replayed items.
 	if h.overlay != nil {
-		body = h.mergeOverlayList(path, body)
+		body, _ = h.mergeOverlayList(path, body)
 		if filtered, ferr := applySelectors(body, labelSel, fieldSel); ferr == nil {
 			body = filtered
 		}
@@ -624,11 +624,14 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 
 // mergeOverlayList merges overlay objects into a list body for the list's scope.
 // Non-list bodies are returned unchanged.
-func (h *handler) mergeOverlayList(path string, body []byte) []byte {
+// mergeOverlayList merges overlay objects into a list body for the list's scope
+// and returns the highest overlay RV merged in (see applyToList) — the watch
+// burst uses it as its overlay-event skip floor. LIST callers ignore the RV.
+func (h *handler) mergeOverlayList(path string, body []byte) ([]byte, int64) {
 	h.overlay.syncEpoch(h.clock) // reset-on-loop before merging into a LIST
 	group, version, resource, namespace := parseAPIPath(strings.TrimSuffix(path, "/"))
 	if resource == "" {
-		return body
+		return body, 0
 	}
 	var list struct {
 		APIVersion string            `json:"apiVersion"`
@@ -637,9 +640,10 @@ func (h *handler) mergeOverlayList(path string, body []byte) []byte {
 		Items      []json.RawMessage `json:"items"`
 	}
 	if err := json.Unmarshal(body, &list); err != nil || list.Items == nil {
-		return body // not a list
+		return body, 0 // not a list
 	}
-	list.Items = h.overlay.applyToList(group, version, resource, namespace, list.Items)
+	var skipRV int64
+	list.Items, skipRV = h.overlay.applyToList(group, version, resource, namespace, list.Items)
 	// Cascade: drop items whose namespace was deleted in the overlay (covers both
 	// overlay-created and captured items, in namespaced and cluster-wide/-A lists).
 	if dns := h.overlay.deletedNamespaces(); len(dns) > 0 {
@@ -653,9 +657,9 @@ func (h *handler) mergeOverlayList(path string, body []byte) []byte {
 	}
 	out, err := json.Marshal(list)
 	if err != nil {
-		return body
+		return body, skipRV
 	}
-	return out
+	return out, skipRV
 }
 
 // extractTableRow finds the row matching name in a Table response and returns
