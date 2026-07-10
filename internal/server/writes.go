@@ -232,7 +232,7 @@ func (h *handler) overlayPatch(w http.ResponseWriter, r *http.Request, group, ve
 		h.writeStatus(w, http.StatusNotFound, "object not found: "+name)
 		return
 	}
-	next, perr := applyPatch(current, patch, r.Header.Get("Content-Type"))
+	next, perr := applyPatch(current, patch, r.Header.Get("Content-Type"), group, version, resource)
 	if perr != nil {
 		h.writeStatus(w, http.StatusUnprocessableEntity, "applying patch: "+perr.Error())
 		return
@@ -378,7 +378,7 @@ func supportedPatchType(contentType string) bool {
 // strategic-merge patch (for built-in types, via their registered schema).
 // Server-side apply still falls back to a JSON merge patch for now (real SSA
 // field management lands in a later PR).
-func applyPatch(current, patch []byte, contentType string) ([]byte, error) {
+func applyPatch(current, patch []byte, contentType, group, version, resource string) ([]byte, error) {
 	switch patchMediaType(contentType) {
 	case "application/json-patch+json":
 		p, err := jsonpatch.DecodePatch(patch)
@@ -387,7 +387,7 @@ func applyPatch(current, patch []byte, contentType string) ([]byte, error) {
 		}
 		return p.Apply(current)
 	case "application/strategic-merge-patch+json":
-		return strategicMergePatch(current, patch)
+		return strategicMergePatch(current, patch, group, version, resource)
 	case "application/apply-patch+yaml":
 		// Server-side apply bodies are YAML; convert to JSON, then merge as an
 		// interim (real SSA field management lands in a later PR).
@@ -405,17 +405,17 @@ func applyPatch(current, patch []byte, contentType string) ([]byte, error) {
 // object's built-in type: lists with a patch merge key (e.g. containers by name)
 // are merged element-wise rather than wholesale-replaced, matching the
 // kube-apiserver. Strategic merge is only defined for built-in types — the real
-// apiserver has no strategy metadata for custom resources — so an object whose
-// GVK isn't in the scheme falls back to a plain JSON merge patch.
-func strategicMergePatch(current, patch []byte) ([]byte, error) {
-	var tm struct {
-		APIVersion string `json:"apiVersion"`
-		Kind       string `json:"kind"`
-	}
-	if err := json.Unmarshal(current, &tm); err == nil && tm.Kind != "" {
-		if obj, nerr := scheme.Scheme.New(schema.FromAPIVersionAndKind(tm.APIVersion, tm.Kind)); nerr == nil {
-			return strategicpatch.StrategicMergePatch(current, patch, obj)
-		}
+// apiserver has no strategy metadata for custom resources — so a GVK that isn't
+// in the scheme falls back to a plain JSON merge patch.
+//
+// The GVK is derived from the request path's group/version/resource, not the
+// stored object body: a replayed object reconstructed from a captured LIST has no
+// apiVersion/kind (the apiserver strips TypeMeta from list items), so the body is
+// not a reliable type source.
+func strategicMergePatch(current, patch []byte, group, version, resource string) ([]byte, error) {
+	gvk := schema.GroupVersionKind{Group: group, Version: version, Kind: resourceToKind(resource)}
+	if obj, err := scheme.Scheme.New(gvk); err == nil {
+		return strategicpatch.StrategicMergePatch(current, patch, obj)
 	}
 	// Unknown/custom type: no strategy metadata, so merge like the apiserver's
 	// fallback for resources without a strategic-merge strategy.

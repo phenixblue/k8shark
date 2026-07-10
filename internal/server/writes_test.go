@@ -225,6 +225,37 @@ func TestOverlay_MergePatchReplacesList(t *testing.T) {
 	}
 }
 
+// TestOverlay_StrategicMergePatch_CapturedNoTypeMeta guards the case where the
+// object being patched comes from a replayed LIST and so has no apiVersion/kind
+// (the apiserver strips TypeMeta from list items). The GVK must still be resolved
+// from the request path, or strategic merge would silently degrade to a JSON
+// merge and drop the sibling container.
+func TestOverlay_StrategicMergePatch_CapturedNoTypeMeta(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	// A captured list whose item carries no apiVersion/kind, as a real apiserver
+	// returns list items.
+	listBody := `{"apiVersion":"v1","kind":"PodList","metadata":{"resourceVersion":"1"},"items":[` +
+		`{"metadata":{"name":"cap-pod","namespace":"default"},` +
+		`"spec":{"containers":[{"name":"app","image":"app:v1"},{"name":"sidecar","image":"sidecar:v1"}]}}]}`
+	store := buildTestStoreWithWatch(t,
+		map[string]watchTestRecord{podsPath: {id: "s", at: from, body: listBody}}, nil)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, store, clock)
+
+	patch := `{"spec":{"containers":[{"name":"app","image":"app:v2"}]}}`
+	code, got := doReq(t, http.MethodPatch, srv.URL+podsPath+"/cap-pod", "application/strategic-merge-patch+json", patch)
+	if code != 200 {
+		t.Fatalf("strategic patch: status %d: %s", code, got)
+	}
+	ci := containerNamesImages(t, got)
+	if ci["sidecar"] != "sidecar:v1" {
+		t.Errorf("sidecar dropped — GVK was not resolved from the path for a TypeMeta-less object: %v", ci)
+	}
+	if ci["app"] != "app:v2" {
+		t.Errorf("app image = %q, want app:v2", ci["app"])
+	}
+}
+
 func TestOverlay_DeleteTombstone(t *testing.T) {
 	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
 	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
