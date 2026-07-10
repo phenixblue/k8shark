@@ -599,6 +599,10 @@ func TestOverlay_NamespaceDeleteCascade(t *testing.T) {
 		`{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"cm","namespace":"joe-test"}}`); code != 404 {
 		t.Errorf("create into deleted namespace: status %d, want 404", code)
 	}
+	// So is deleting an object in it — its contents are logically gone.
+	if code, _ := doReq(t, http.MethodDelete, srv.URL+deployColl+"/web", "", ""); code != 404 {
+		t.Errorf("delete object in deleted namespace: status %d, want 404", code)
+	}
 }
 
 // TestOverlay_NamespaceDeleteCascadeCaptured verifies deleting a namespace also

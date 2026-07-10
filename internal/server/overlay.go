@@ -143,7 +143,7 @@ func (o *overlay) del(group, version, resource, namespace, name string, last jso
 	return rv
 }
 
-// coreNamespacesGVR matches the core cluster-scoped "namespaces" resource.
+// isCoreNamespace matches the core cluster-scoped "namespaces" resource.
 func isCoreNamespace(group, version, resource string) bool {
 	return group == "" && version == "v1" && resource == "namespaces"
 }
