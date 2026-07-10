@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -224,12 +225,28 @@ func (h *handler) streamReplayWatch(w http.ResponseWriter, r *http.Request, path
 
 	startAt, startEpoch, _ := clock.Sample()
 
-	// Path-derived defaults for the BOOKMARK object kind/apiVersion.
-	g, v, resource, _ := parseAPIPath(watchPath)
+	// Path-derived defaults for the BOOKMARK object kind/apiVersion, and the scope
+	// for overlay watch feedback.
+	g, v, resource, watchNS := parseAPIPath(watchPath)
 	defKind := resourceToKind(resource)
 	defAPIVersion := v
 	if g != "" {
 		defAPIVersion = g + "/" + v
+	}
+
+	// Subscribe to overlay writes before resolving the initial list, so no live
+	// write is lost in the gap between the burst and the pump starting. overlaySkip
+	// is the overlay RV already reflected in the burst; the pump skips events at or
+	// below it (at worst re-sending a duplicate ADDED, which informers absorb).
+	var overlayCh <-chan overlayWatchEvent
+	var overlaySub *overlaySub
+	var overlaySkip int64
+	if h.overlay != nil {
+		var subID int64
+		subID, overlaySub = h.overlay.subscribe(g, v, resource, watchNS)
+		defer h.overlay.unsubscribe(subID)
+		overlayCh = overlaySub.ch
+		overlaySkip = h.overlay.scopeRV(g, v, resource, watchNS)
 	}
 
 	// Always resolve the list — even when resuming — so a watch on a path that
@@ -246,6 +263,8 @@ func (h *handler) streamReplayWatch(w http.ResponseWriter, r *http.Request, path
 	}
 	if !resume {
 		minRV = rvAsOf(timeline, startAt)
+	} else {
+		overlaySkip = minRV // client already saw overlay events up to its resume RV
 	}
 
 	// Honor ?timeoutSeconds: nil channel blocks forever (no timeout).
@@ -257,6 +276,10 @@ func (h *handler) streamReplayWatch(w http.ResponseWriter, r *http.Request, path
 	w.WriteHeader(http.StatusOK)
 	flusher, canFlush := w.(http.Flusher)
 
+	// writeMu serializes frame writes: the main streaming loop and the overlay
+	// pump goroutine both call emit, and their bytes must not interleave.
+	var writeMu sync.Mutex
+
 	// emit writes a watch frame and reports whether it was actually written, so
 	// callers only count frames that reached the client.
 	emit := func(typ string, obj json.RawMessage) bool {
@@ -266,10 +289,12 @@ func (h *handler) streamReplayWatch(w http.ResponseWriter, r *http.Request, path
 		if err != nil {
 			return false
 		}
+		writeMu.Lock()
 		_, _ = fmt.Fprintf(w, "%s\n", data)
 		if canFlush {
 			flusher.Flush()
 		}
+		writeMu.Unlock()
 		return true
 	}
 	// emitBookmark writes the BOOKMARK marking the end of a (re)list, carrying rv
@@ -304,13 +329,23 @@ func (h *handler) streamReplayWatch(w http.ResponseWriter, r *http.Request, path
 				"metadata":   meta,
 			},
 		})
+		writeMu.Lock()
 		_, _ = fmt.Fprintf(w, "%s\n", data)
 		if canFlush {
 			flusher.Flush()
 		}
+		writeMu.Unlock()
 	}
 
-	ctx := r.Context()
+	// A cancelable context lets the overlay pump tear the stream down on buffer
+	// overflow. The deferred wait guarantees the pump has stopped writing frames
+	// before this handler returns (after which w is no longer valid to write).
+	ctx, cancel := context.WithCancel(r.Context())
+	pumpDone := make(chan struct{})
+	defer func() {
+		cancel()
+		<-pumpDone
+	}()
 
 	// relistAt re-emits the state as-of `at` as an ADDED burst + BOOKMARK and
 	// returns the RV that a subsequent stream should resume above.
@@ -339,10 +374,55 @@ func (h *handler) streamReplayWatch(w http.ResponseWriter, r *http.Request, path
 		emitBookmark(list, minRV, sendInitialEvents)
 	}
 
+	// Overlay pump: deliver live overlay writes (create/update/delete) as watch
+	// events for the life of the stream. It shares emit with the main loop
+	// (serialized by writeMu) and starts only after the initial burst so bursts
+	// precede live events. On buffer overflow it cancels the stream so the client
+	// relists, mirroring an apiserver watch-cache overflow.
+	if h.overlay != nil {
+		go func() {
+			defer close(pumpDone)
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case ev := <-overlayCh:
+					if overlaySub.overflow.Load() {
+						cancel()
+						return
+					}
+					if ev.rv <= overlaySkip {
+						continue // already reflected in the initial burst
+					}
+					if !matchesSelectors(ev.obj, labelSel, fieldSel) {
+						continue
+					}
+					emit(ev.typ, withResourceVersion(ev.obj, ev.rv))
+				}
+			}
+		}()
+	} else {
+		close(pumpDone)
+	}
+
+	// Suppress replay timeline events for an identity the overlay owns: the
+	// overlay copy and its live events win, so the client never sees a stale
+	// captured event after a write takes ownership. The initial and relist bursts
+	// go through mergeOverlayList already, so only the streamed events need this.
+	replayEmit := emit
+	if h.overlay != nil {
+		replayEmit = func(typ string, obj json.RawMessage) bool {
+			if h.overlay.ownsObject(g, v, resource, obj) {
+				return false
+			}
+			return emit(typ, obj)
+		}
+	}
+
 	epoch := startEpoch
 	seekGen := clock.SeekGen()
 	for {
-		res := h.replayPass(ctx, timer, clock, timeline, minRV, epoch, seekGen, labelSel, fieldSel, emit)
+		res := h.replayPass(ctx, timer, clock, timeline, minRV, epoch, seekGen, labelSel, fieldSel, replayEmit)
 		if res == passCanceled {
 			return
 		}

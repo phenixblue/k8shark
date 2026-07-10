@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"sync"
+	"sync/atomic"
 )
 
 // overlay is the in-memory write layer for --writable replay. Client writes
@@ -21,6 +22,13 @@ type overlay struct {
 	items   map[string]*overlayEntry // key: overlayKey(g,v,resource,namespace,name)
 	counter int64                    // monotonic RV source (never decreases)
 	epoch   int                      // last-seen clock loop epoch (reset-on-loop)
+
+	// subs are active watch subscriptions. A write (store/del/cascade) publishes a
+	// typed event to every subscriber whose scope matches, so an active watcher
+	// observes overlay writes live (see streamReplayWatch's overlay pump). Guarded
+	// by mu; publishLocked runs while a write already holds the lock.
+	subs   map[int64]*overlaySub
+	nextID int64
 }
 
 type overlayEntry struct {
@@ -31,8 +39,76 @@ type overlayEntry struct {
 	rv                       int64
 }
 
+// overlayWatchEvent is a single live overlay change delivered to subscribers.
+type overlayWatchEvent struct {
+	typ                                       string // ADDED | MODIFIED | DELETED
+	rv                                        int64
+	obj                                       json.RawMessage
+	group, version, resource, namespace, name string
+}
+
+// overlaySub is one active watch subscription: a scope filter and a buffered
+// delivery channel. namespace == "" matches every namespace (cluster-wide or -A
+// watches). overflow is set when the channel fills — the stream then drops the
+// connection so the client relists, mirroring an apiserver watch-cache overflow.
+type overlaySub struct {
+	group, version, resource, namespace string
+	ch                                  chan overlayWatchEvent
+	overflow                            atomic.Bool
+}
+
 func newOverlay() *overlay {
-	return &overlay{items: map[string]*overlayEntry{}}
+	return &overlay{items: map[string]*overlayEntry{}, subs: map[int64]*overlaySub{}}
+}
+
+// overlaySubBuffer is the per-subscription event backlog. Overlay write volume in
+// closed-loop dev is low and the stream pump drains continuously, so this is
+// generous headroom rather than a tight bound.
+const overlaySubBuffer = 256
+
+// subscribe registers a watch subscription for a list scope and returns its id
+// and receive channel. The channel buffers events until the stream's pump drains
+// them; unsubscribe removes it.
+func (o *overlay) subscribe(group, version, resource, namespace string) (int64, *overlaySub) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.nextID++
+	id := o.nextID
+	s := &overlaySub{
+		group: group, version: version, resource: resource, namespace: namespace,
+		ch: make(chan overlayWatchEvent, overlaySubBuffer),
+	}
+	o.subs[id] = s
+	return id, s
+}
+
+// unsubscribe removes a subscription. The channel is intentionally not closed:
+// the pump exits on the request context instead, so a concurrent publishLocked
+// can never send on a closed channel.
+func (o *overlay) unsubscribe(id int64) {
+	o.mu.Lock()
+	delete(o.subs, id)
+	o.mu.Unlock()
+}
+
+// publishLocked delivers ev to every subscriber whose scope matches. The caller
+// holds o.mu. The send is non-blocking: a subscriber whose buffer is full is
+// flagged overflow (the stream drops the connection and the client relists),
+// which keeps a slow watcher from stalling writes under the lock.
+func (o *overlay) publishLocked(ev overlayWatchEvent) {
+	for _, s := range o.subs {
+		if s.group != ev.group || s.version != ev.version || s.resource != ev.resource {
+			continue
+		}
+		if s.namespace != "" && s.namespace != ev.namespace {
+			continue
+		}
+		select {
+		case s.ch <- ev:
+		default:
+			s.overflow.Store(true)
+		}
+	}
 }
 
 // overlayKey identifies an object by GVR + namespace + name.
@@ -120,14 +196,25 @@ func (o *overlay) nextRV(floorRV int64) int64 {
 	return o.bumpRVLocked(floorRV)
 }
 
-// store upserts a finalized object under a pre-assigned RV.
+// store upserts a finalized object under a pre-assigned RV and publishes a watch
+// event: ADDED for a new (or previously deleted) identity, MODIFIED for an
+// update to a live one.
 func (o *overlay) store(group, version, resource, namespace, name string, obj json.RawMessage, rv int64) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	o.items[overlayKey(group, version, resource, namespace, name)] = &overlayEntry{
+	key := overlayKey(group, version, resource, namespace, name)
+	typ := "ADDED"
+	if prior, ok := o.items[key]; ok && !prior.deleted {
+		typ = "MODIFIED"
+	}
+	o.items[key] = &overlayEntry{
 		group: group, version: version, resource: resource,
 		namespace: namespace, name: name, obj: obj, rv: rv,
 	}
+	o.publishLocked(overlayWatchEvent{
+		typ: typ, rv: rv, obj: obj,
+		group: group, version: version, resource: resource, namespace: namespace, name: name,
+	})
 }
 
 // del marks an object deleted (tombstone) and returns its new RV. last is the
@@ -140,6 +227,10 @@ func (o *overlay) del(group, version, resource, namespace, name string, last jso
 		group: group, version: version, resource: resource,
 		namespace: namespace, name: name, obj: last, deleted: true, rv: rv,
 	}
+	o.publishLocked(overlayWatchEvent{
+		typ: "DELETED", rv: rv, obj: last,
+		group: group, version: version, resource: resource, namespace: namespace, name: name,
+	})
 	return rv
 }
 
@@ -165,6 +256,11 @@ func (o *overlay) cascadeDeleteNamespace(namespace string) {
 				group: e.group, version: e.version, resource: e.resource,
 				namespace: e.namespace, name: e.name, obj: e.obj, deleted: true, rv: rv,
 			}
+			o.publishLocked(overlayWatchEvent{
+				typ: "DELETED", rv: rv, obj: e.obj,
+				group: e.group, version: e.version, resource: e.resource,
+				namespace: e.namespace, name: e.name,
+			})
 		}
 	}
 }
@@ -196,6 +292,26 @@ func (o *overlay) deletedNamespaces() map[string]struct{} {
 		}
 	}
 	return out
+}
+
+// ownsObject reports whether the overlay holds an entry for the identity of a
+// raw object (by GVR + its metadata name/namespace), live or tombstoned. Replay
+// watch events for an owned identity are suppressed so the overlay copy wins and
+// the client never sees a stale captured event after taking ownership.
+func (o *overlay) ownsObject(group, version, resource string, raw json.RawMessage) bool {
+	var m struct {
+		Metadata struct {
+			Name      string `json:"name"`
+			Namespace string `json:"namespace"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(raw, &m); err != nil || m.Metadata.Name == "" {
+		return false
+	}
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	_, ok := o.items[overlayKey(group, version, resource, m.Metadata.Namespace, m.Metadata.Name)]
+	return ok
 }
 
 // get returns the overlay entry for an object identity, if present.
