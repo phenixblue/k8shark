@@ -423,9 +423,17 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 	// overlay owns it (created/updated → the overlay copy; deleted → 404).
 	if h.overlay != nil {
 		h.overlay.syncEpoch(h.clock)
+		g, v, res, ns, name, sub := parseWritePath(strings.TrimSuffix(path, "/"))
+		// A single-object GET in a namespace deleted in the overlay is gone
+		// (cascade), even for captured objects.
+		if name != "" && h.overlay.isNamespaceDeleted(ns) {
+			h.writeStatus(w, http.StatusNotFound,
+				fmt.Sprintf("%q not found: namespace %q was deleted in the writable overlay", path, ns))
+			return
+		}
 		// Serve overlay-owned objects for a single-object GET (and GET .../status,
 		// so clients can observe their status updates).
-		if g, v, res, ns, name, sub := parseWritePath(strings.TrimSuffix(path, "/")); name != "" && (sub == "" || sub == "status") {
+		if name != "" && (sub == "" || sub == "status") {
 			if e, ok := h.overlay.get(g, v, res, ns, name); ok {
 				if e.deleted {
 					h.writeStatus(w, http.StatusNotFound, fmt.Sprintf("%q was deleted in the writable overlay", path))
@@ -632,6 +640,17 @@ func (h *handler) mergeOverlayList(path string, body []byte) []byte {
 		return body // not a list
 	}
 	list.Items = h.overlay.applyToList(group, version, resource, namespace, list.Items)
+	// Cascade: drop items whose namespace was deleted in the overlay (covers both
+	// overlay-created and captured items, in namespaced and cluster-wide/-A lists).
+	if dns := h.overlay.deletedNamespaces(); len(dns) > 0 {
+		kept := list.Items[:0]
+		for _, it := range list.Items {
+			if _, gone := dns[metaString(it, "namespace")]; !gone {
+				kept = append(kept, it)
+			}
+		}
+		list.Items = kept
+	}
 	out, err := json.Marshal(list)
 	if err != nil {
 		return body

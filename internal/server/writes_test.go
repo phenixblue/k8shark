@@ -553,6 +553,83 @@ func TestOverlay_ClusterScopedDeleteTombstone(t *testing.T) {
 	}
 }
 
+// TestOverlay_NamespaceDeleteCascade covers the reported bug: deleting an
+// overlay-created namespace must cascade to objects created in it — they should
+// disappear from namespaced and cluster-wide (-A) lists and single GETs.
+func TestOverlay_NamespaceDeleteCascade(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	// Create a namespace and a deployment in it.
+	doReq(t, http.MethodPost, srv.URL+"/api/v1/namespaces", "application/json",
+		`{"apiVersion":"v1","kind":"Namespace","metadata":{"name":"joe-test"}}`)
+	deployColl := "/apis/apps/v1/namespaces/joe-test/deployments"
+	doReq(t, http.MethodPost, srv.URL+deployColl, "application/json",
+		`{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"web","namespace":"joe-test"}}`)
+
+	clusterDeploys := "/apis/apps/v1/deployments"
+	if _, l := doReq(t, http.MethodGet, srv.URL+clusterDeploys, "", ""); !contains(listNames(t, l), "web") {
+		t.Fatalf("deployment 'web' should be visible in -A list before delete: %v", listNames(t, l))
+	}
+
+	// Delete the namespace → cascade.
+	if code, _ := doReq(t, http.MethodDelete, srv.URL+"/api/v1/namespaces/joe-test", "", ""); code != 200 {
+		t.Fatalf("delete namespace: status %d", code)
+	}
+
+	// Deployment gone from the cluster-wide (-A) list…
+	if _, l := doReq(t, http.MethodGet, srv.URL+clusterDeploys, "", ""); contains(listNames(t, l), "web") {
+		t.Errorf("deployment 'web' still in -A list after namespace delete: %v", listNames(t, l))
+	}
+	// …the namespaced list…
+	if _, l := doReq(t, http.MethodGet, srv.URL+deployColl, "", ""); len(listNames(t, l)) != 0 {
+		t.Errorf("namespaced deployment list not empty after namespace delete: %v", listNames(t, l))
+	}
+	// …and single GET.
+	if code, _ := doReq(t, http.MethodGet, srv.URL+deployColl+"/web", "", ""); code != 404 {
+		t.Errorf("GET deployment after namespace delete: status %d, want 404", code)
+	}
+	// The namespace itself is gone.
+	if code, _ := doReq(t, http.MethodGet, srv.URL+"/api/v1/namespaces/joe-test", "", ""); code != 404 {
+		t.Errorf("GET deleted namespace: status %d, want 404", code)
+	}
+	// Creating into the deleted namespace is rejected.
+	if code, _ := doReq(t, http.MethodPost, srv.URL+"/api/v1/namespaces/joe-test/configmaps", "application/json",
+		`{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"cm","namespace":"joe-test"}}`); code != 404 {
+		t.Errorf("create into deleted namespace: status %d, want 404", code)
+	}
+}
+
+// TestOverlay_NamespaceDeleteCascadeCaptured verifies deleting a namespace also
+// hides captured objects that live in it (lazy read filter).
+func TestOverlay_NamespaceDeleteCascadeCaptured(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	nsList := `{"apiVersion":"v1","kind":"NamespaceList","metadata":{"resourceVersion":"1"},"items":[` +
+		`{"apiVersion":"v1","kind":"Namespace","metadata":{"name":"cap-ns"}}]}`
+	cmList := `{"apiVersion":"v1","kind":"ConfigMapList","metadata":{"resourceVersion":"1"},"items":[` +
+		`{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"cap-cm","namespace":"cap-ns"}}]}`
+	store := buildTestStoreWithWatch(t, map[string]watchTestRecord{
+		"/api/v1/namespaces":                   {id: "ns", at: from, body: nsList},
+		"/api/v1/namespaces/cap-ns/configmaps": {id: "cm", at: from, body: cmList},
+	}, nil)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, store, clock)
+
+	if _, l := doReq(t, http.MethodGet, srv.URL+"/api/v1/namespaces/cap-ns/configmaps", "", ""); !contains(listNames(t, l), "cap-cm") {
+		t.Fatalf("captured configmap should be visible before delete: %v", listNames(t, l))
+	}
+	if code, _ := doReq(t, http.MethodDelete, srv.URL+"/api/v1/namespaces/cap-ns", "", ""); code != 200 {
+		t.Fatalf("delete captured namespace: status %d", code)
+	}
+	if _, l := doReq(t, http.MethodGet, srv.URL+"/api/v1/namespaces/cap-ns/configmaps", "", ""); len(listNames(t, l)) != 0 {
+		t.Errorf("captured configmap list not empty after namespace delete: %v", listNames(t, l))
+	}
+	if code, _ := doReq(t, http.MethodGet, srv.URL+"/api/v1/namespaces/cap-ns/configmaps/cap-cm", "", ""); code != 404 {
+		t.Errorf("GET captured configmap after namespace delete: status %d, want 404", code)
+	}
+}
+
 func TestOverlay_ReadOnlyRejectsWrites(t *testing.T) {
 	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
 	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
