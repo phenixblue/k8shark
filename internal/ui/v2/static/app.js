@@ -290,7 +290,7 @@
       if (!res.ok) throw new Error((data && data.error) || `${res.status} ${res.statusText}`);
       applyReplayStatus(data, true);
     } catch (e) {
-      toast('error', 'Replay control failed: ' + e.message);
+      toast('error', 'Replay control failed: ' + safeErrorText(e ? e.message : null));
     }
   }
 
@@ -330,10 +330,22 @@
 
   // replayPauseOnError stops playback and surfaces the failure. Idempotent while
   // already paused so a burst of failed loads doesn't spam toasts.
+  function safeErrorText(msg) {
+    const MAX_LEN = 300;
+    let s;
+    try {
+      s = msg == null ? 'unknown error' : String(msg);
+    } catch (_) {
+      s = 'unknown error';
+    }
+    s = s.replace(/[\u0000-\u001f\u007f]/g, ' ').trim();
+    if (!s) return 'unknown error';
+    return s.length > MAX_LEN ? (s.slice(0, MAX_LEN - 1) + '…') : s;
+  }
   function replayPauseOnError(msg) {
     if (!state.replay.enabled || state.replay.paused) return;
     state.replay.paused = true; // optimistic; server status confirms on next poll
-    toast('error', 'Replay paused — load failed: ' + (msg || 'unknown error'));
+    toast('error', 'Replay paused — load failed: ' + safeErrorText(msg));
     replayControl('pause');
   }
 
