@@ -69,6 +69,21 @@ kubectl --kubeconfig="$KUBECONFIG" get pod demo -w
 Your controller observes the Pod reach `Running` — its own write, taken to a
 realistic terminal state, without a real kubelet or a live cluster.
 
+## Validating the loop
+
+An end-to-end test drives exactly this scenario — capture a KinD cluster, replay
+it `--writable`, run a real `kwok`, create a Pod, and assert the shim binds it to
+a node and KWOK takes it to `Running`:
+
+```sh
+make e2e-kwok           # requires kind, kubectl, and the kwok binary
+```
+
+It is **manually triggered** (it needs the `kwok` binary, which the base CI
+runner lacks), so it is not part of `make e2e` or the automatic e2e job. In CI it
+runs from the **e2e-kwok** GitHub Actions workflow (Actions tab → Run workflow),
+which installs `kwok` first.
+
 ## Non-goals
 
 Standalone KWOK + the overlay covers pod/node lifecycle. It intentionally does
