@@ -26,6 +26,15 @@ func (h *handler) handleWrite(w http.ResponseWriter, r *http.Request, path strin
 		return
 	}
 
+	// A namespace deleted in the overlay takes its contents with it: any write to
+	// an object in it (create, update, patch, or delete) is a 404, since the
+	// namespace and everything in it are logically gone. Deleting the namespace
+	// object itself has namespace=="" here, so it isn't caught by this check.
+	if namespace != "" && h.overlay.isNamespaceDeleted(namespace) {
+		h.writeStatus(w, http.StatusNotFound, "namespace "+namespace+" was deleted in the writable overlay")
+		return
+	}
+
 	switch r.Method {
 	case http.MethodPost:
 		if name != "" { // create is a collection operation
@@ -252,6 +261,12 @@ func (h *handler) overlayDelete(w http.ResponseWriter, group, version, resource,
 		return
 	}
 	h.overlay.del(group, version, resource, namespace, name, last, h.replayFloorRV(group, version, resource, namespace))
+	// Deleting a namespace cascades to its contents (no namespace controller runs
+	// against the overlay): tombstone the namespace's overlay objects, and its
+	// captured objects are filtered out of reads while the namespace is deleted.
+	if isCoreNamespace(group, version, resource) {
+		h.overlay.cascadeDeleteNamespace(name)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"apiVersion": "v1", "kind": "Status", "status": "Success",
 		"details": map[string]any{"name": name, "kind": resourceToKind(resource)},

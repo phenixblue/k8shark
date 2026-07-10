@@ -143,6 +143,61 @@ func (o *overlay) del(group, version, resource, namespace, name string, last jso
 	return rv
 }
 
+// isCoreNamespace matches the core cluster-scoped "namespaces" resource.
+func isCoreNamespace(group, version, resource string) bool {
+	return group == "" && version == "v1" && resource == "namespaces"
+}
+
+// cascadeDeleteNamespace tombstones every live overlay object in a namespace,
+// mimicking the namespace controller's cascade so a deleted namespace's
+// overlay-created contents don't linger. Captured objects in the namespace are
+// handled lazily on read (see isNamespaceDeleted / read filtering).
+func (o *overlay) cascadeDeleteNamespace(namespace string) {
+	if namespace == "" {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	for key, e := range o.items {
+		if e.namespace == namespace && !e.deleted {
+			rv := o.bumpRVLocked(0)
+			o.items[key] = &overlayEntry{
+				group: e.group, version: e.version, resource: e.resource,
+				namespace: e.namespace, name: e.name, obj: e.obj, deleted: true, rv: rv,
+			}
+		}
+	}
+}
+
+// isNamespaceDeleted reports whether the given namespace has been deleted in the
+// overlay (a tombstoned core namespaces object).
+func (o *overlay) isNamespaceDeleted(namespace string) bool {
+	if namespace == "" {
+		return false
+	}
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	e, ok := o.items[overlayKey("", "v1", "namespaces", "", namespace)]
+	return ok && e.deleted
+}
+
+// deletedNamespaces returns the set of namespaces deleted in the overlay, used to
+// filter their (possibly captured) contents out of read responses.
+func (o *overlay) deletedNamespaces() map[string]struct{} {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	var out map[string]struct{}
+	for _, e := range o.items {
+		if e.deleted && isCoreNamespace(e.group, e.version, e.resource) {
+			if out == nil {
+				out = map[string]struct{}{}
+			}
+			out[e.name] = struct{}{}
+		}
+	}
+	return out
+}
+
 // get returns the overlay entry for an object identity, if present.
 func (o *overlay) get(group, version, resource, namespace, name string) (*overlayEntry, bool) {
 	o.mu.RLock()
