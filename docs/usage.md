@@ -414,6 +414,10 @@ The primary use case is **local development and testing of controllers/operators
 > start from the UI side with `kshrk ui capture.kshrk --speed 2x` — both share one clock so `kubectl`
 > and the dashboard stay in lockstep. See [the Replay (VCR) section of the Web UI guide](web-ui.md#replay-vcr).
 
+> **Closed-loop controller dev.** With `--writable`, `kshrk` binds an unscheduled Pod to a node on
+> create (the scheduler replay lacks), so pairing it with [KWOK](https://kwok.sigs.k8s.io) takes Pods
+> to `Running` and keeps nodes `Ready`. See [Closed-loop controller dev with KWOK](kwok.md).
+
 ### Controlling playback
 
 The replay server exposes a small HTTP control API under `/_k8shark/replay` on the same address (a reserved prefix that never collides with the Kubernetes API). A successful request returns the current status as JSON (so a script — or a future UI scrubber — can drive playback); an invalid request returns a Kubernetes-style Status JSON body with the appropriate code (`405` wrong method, `400` bad argument, `404` unknown control):

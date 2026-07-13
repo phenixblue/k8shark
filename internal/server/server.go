@@ -144,6 +144,7 @@ func serve(ar *archive.Archive, store *CaptureStore, at time.Time, clock *Replay
 	h.clock = clock
 	if writable && clock != nil { // writable is a replay-only feature
 		h.overlay = newOverlay()
+		h.schedulePods = true // bind unscheduled pods to a node (KWOK integration, #160)
 	}
 	httpSrv := &http.Server{Handler: h}
 	done := make(chan struct{})

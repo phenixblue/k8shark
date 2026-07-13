@@ -1,4 +1,4 @@
-.PHONY: build test test-race test-cover bench fmt lint lint-ci-install lint-ci e2e kind-up kind-chaos kind-scale kind-down release-snapshot release-local clean help
+.PHONY: build test test-race test-cover bench fmt lint lint-ci-install lint-ci e2e e2e-kwok kind-up kind-chaos kind-scale kind-down release-snapshot release-local clean help
 
 BINARY  := kshrk
 VERSION ?= dev
@@ -36,6 +36,9 @@ lint-ci: ## Run golangci-lint exactly like CI (requires lint-ci-install)
 
 e2e: build ## Build binary and run end-to-end tests (requires kind + kubectl)
 	./scripts/e2e.sh
+
+e2e-kwok: build ## Build binary and run the KWOK closed-loop e2e (requires kind + kubectl + kwok)
+	./scripts/e2e-kwok.sh
 
 kind-up: ## Create a dev KinD cluster with test resources (use --reset to recreate)
 	./scripts/kind-up.sh $(ARGS)

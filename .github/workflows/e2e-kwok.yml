@@ -1,0 +1,56 @@
+name: e2e-kwok
+
+# Manually triggered: this exercises the KWOK + writable-overlay closed loop
+# (docs/kwok.md, #160) and needs the `kwok` binary, which the base runner lacks.
+# It is intentionally NOT run on every push/PR — trigger it from the Actions tab.
+on:
+  workflow_dispatch:
+    inputs:
+      kwok_version:
+        description: 'KWOK release to install (git tag)'
+        required: false
+        default: 'v0.8.0'
+      kwok_sha256:
+        description: 'Expected SHA-256 of kwok-linux-amd64 (must match kwok_version)'
+        required: false
+        default: 'f5a4385a2ae1b9dd7f8acae18e002a75c0ebba124ae9d7259aa8dadb50711f46'
+
+permissions:
+  contents: read
+
+jobs:
+  e2e-kwok:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Build kshrk
+        run: make build
+
+      - name: Install KWOK ${{ github.event.inputs.kwok_version }}
+        env:
+          KWOK_VERSION: ${{ github.event.inputs.kwok_version }}
+          KWOK_SHA256: ${{ github.event.inputs.kwok_sha256 }}
+        run: |
+          set -euo pipefail
+          url="https://github.com/kubernetes-sigs/kwok/releases/download/${KWOK_VERSION}/kwok-linux-amd64"
+          dest="${RUNNER_TEMP}/kwok-bin"
+          mkdir -p "$dest"
+          echo "Downloading $url"
+          curl -fsSL -o "$dest/kwok" "$url"
+          # Verify against the pinned digest before making it executable — never run
+          # an unverified download. Override kwok_sha256 when changing kwok_version.
+          echo "${KWOK_SHA256}  $dest/kwok" | sha256sum -c -
+          chmod +x "$dest/kwok"
+          # Install into a user-writable dir on PATH (no elevated perms needed).
+          echo "$dest" >> "$GITHUB_PATH"
+          "$dest/kwok" --version
+
+      - name: Run KWOK e2e
+        run: make e2e-kwok
