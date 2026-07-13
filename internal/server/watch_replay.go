@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 // watchList is a parsed list body ready to be streamed as watch events.
@@ -156,6 +158,40 @@ func matchesSelectors(raw json.RawMessage, labelSelector, fieldSelector string) 
 	return matchesLabels(&obj, labelReqs) && matchesFields(&obj, fieldReqs)
 }
 
+// withKind stamps apiVersion/kind onto a watch event object when they're absent,
+// preserving everything else. Objects reconstructed from a captured LIST have no
+// TypeMeta (the apiserver strips it from list items), but a typed client-go watch
+// decoder requires the kind on every event object. A no-op when kind is unknown
+// or already present.
+func withKind(obj json.RawMessage, apiVersion, kind string) json.RawMessage {
+	if kind == "" {
+		return obj
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(obj, &m); err != nil || m == nil {
+		return obj
+	}
+	changed := false
+	if _, ok := m["kind"]; !ok {
+		b, _ := json.Marshal(kind)
+		m["kind"] = b
+		changed = true
+	}
+	if _, ok := m["apiVersion"]; !ok {
+		b, _ := json.Marshal(apiVersion)
+		m["apiVersion"] = b
+		changed = true
+	}
+	if !changed {
+		return obj
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		return obj
+	}
+	return out
+}
+
 // replayPollInterval bounds how long the streamer sleeps between clock checks so
 // it stays responsive to pause, seek, speed changes, and loop wraps.
 const replayPollInterval = 200 * time.Millisecond
@@ -241,6 +277,16 @@ func (h *handler) streamReplayWatch(w http.ResponseWriter, r *http.Request, path
 		defAPIVersion = g + "/" + v
 	}
 
+	// apiVersion/kind to stamp onto watch event objects. A typed client-go watcher
+	// (e.g. a controller's or KWOK's reflector) requires every event object to
+	// carry its kind, but objects reconstructed from a captured LIST snapshot have
+	// their TypeMeta stripped. Resolve the exact built-in kind from the scheme,
+	// falling back to the path-derived guess for custom resources.
+	evKind := defKind
+	if gvk, ok := kindForResource(schema.GroupVersion{Group: g, Version: v}, resource); ok {
+		evKind = gvk.Kind
+	}
+
 	// Subscribe to overlay writes before resolving the initial list, so no live
 	// write is lost in the gap between the burst and the pump starting. The skip
 	// floor (overlaySkip) is derived from the burst itself, below — captured
@@ -291,6 +337,9 @@ func (h *handler) streamReplayWatch(w http.ResponseWriter, r *http.Request, path
 	// emit writes a watch frame and reports whether it was actually written, so
 	// callers only count frames that reached the client.
 	emit := func(typ string, obj json.RawMessage) bool {
+		// Stamp apiVersion/kind so typed client-go watchers can decode the event —
+		// objects from a captured LIST snapshot arrive without TypeMeta.
+		obj = withKind(obj, defAPIVersion, evKind)
 		// Skip malformed frames rather than writing a blank line: a captured
 		// object body could be invalid JSON, which would fail to marshal.
 		data, err := json.Marshal(map[string]any{"type": typ, "object": obj})

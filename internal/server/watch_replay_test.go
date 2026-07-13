@@ -91,6 +91,40 @@ func openWatchStream(t *testing.T, url string) (next func() watchEvent, tryNext 
 	return next, tryNext, cancel
 }
 
+// TestStreamReplayWatch_StampsKindOnEvents guards the fix for typed client-go
+// watchers (controllers, KWOK): a captured event object reconstructed from a LIST
+// snapshot has no apiVersion/kind, but the watch decoder requires kind on every
+// event object. The stream must stamp it from the watch path.
+func TestStreamReplayWatch_StampsKindOnEvents(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	to := from.Add(20 * time.Second)
+	const podsPath = "/api/v1/namespaces/default/pods"
+	// Event object with no apiVersion/kind, as a real LIST-snapshot item.
+	kindlessPod := `{"metadata":{"name":"pod-a","namespace":"default"}}`
+	store := buildTestStoreWithWatch(t,
+		map[string]watchTestRecord{podsPath: {id: "snap0", at: from, body: emptyPodList}},
+		[]watchTestEvent{
+			{id: "e1", apiPath: podsPath, at: from.Add(2 * time.Second), eventType: "ADDED", objectBody: kindlessPod},
+		})
+	clock, advance := newTestClock(t, from, to, 1, false, false)
+	h := newHandler(store, time.Time{}, false)
+	h.clock = clock
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	next, _, cancel := openWatchStream(t, srv.URL+podsPath+"?watch=1")
+	defer cancel()
+
+	advance(5 * time.Second) // let the event stream past the initial bookmark
+	e := nextNonBookmark(next)
+	if e.Object.Kind != "Pod" {
+		t.Errorf("streamed event Object.Kind = %q, want Pod (typed watchers need it to decode)", e.Object.Kind)
+	}
+	if e.Object.Metadata.Name != "pod-a" {
+		t.Errorf("event name = %q, want pod-a", e.Object.Metadata.Name)
+	}
+}
+
 // TestStreamReplayWatch_EmitsEventsInOrder is the core acceptance test: a watch
 // client receives the captured ADDED/MODIFIED/DELETED events in timestamp order
 // as the replay clock advances.
