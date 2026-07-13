@@ -194,6 +194,15 @@ func (h *handler) synthesizeOverlayObject(resource, namespace, name, base string
 // contains none.
 const defaultSyntheticNode = "kwok-node-0"
 
+// ensureSchedulableNode synthesizes a node when the capture (as-of the clock) has
+// none, so a scheduling target — and a node for KWOK to manage — exists from
+// startup rather than only appearing when the first Pod is created.
+func (h *handler) ensureSchedulableNode() {
+	if len(h.knownNodeNames()) == 0 {
+		h.synthesizeNode(defaultSyntheticNode)
+	}
+}
+
 // schedulePod binds an unscheduled Pod to a node — the scheduler replay lacks —
 // picking round-robin over the known nodes (captured + overlay) and synthesizing
 // a KWOK-managed node if none exist. Returns the body with spec.nodeName set.

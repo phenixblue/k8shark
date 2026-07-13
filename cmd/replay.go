@@ -49,6 +49,8 @@ func init() {
 	replayCmd.Flags().Bool("ui", false, "also start the web dashboard as a replay transport (VCR)")
 	replayCmd.Flags().String("ui-port", "0", "port for the dashboard when --ui is set (0 = random)")
 	replayCmd.Flags().Bool("writable", false, "accept client writes into an in-memory overlay (closed-loop controller dev)")
+	replayCmd.Flags().Bool("schedule-pods", true, "bind unscheduled pods to a node on create (the scheduler replay lacks); --writable only")
+	replayCmd.Flags().Bool("with-kwok", false, "also run a detected 'kwok' binary against the server to drive pod/node lifecycle (implies --writable)")
 }
 
 func runReplay(cmd *cobra.Command, args []string) error {
@@ -60,22 +62,44 @@ func runReplay(cmd *cobra.Command, args []string) error {
 	loop, _ := cmd.Flags().GetBool("loop")
 	startPaused, _ := cmd.Flags().GetBool("start-paused")
 	writable, _ := cmd.Flags().GetBool("writable")
+	schedulePods, _ := cmd.Flags().GetBool("schedule-pods")
+	withKwok, _ := cmd.Flags().GetBool("with-kwok")
 	verbose, _ := cmd.Root().PersistentFlags().GetBool("verbose")
 
+	// --with-kwok drives pod/node lifecycle against the overlay, so it implies
+	// --writable (and needs the scheduling shim on to bind pods to nodes).
+	if withKwok {
+		writable = true
+	}
+
 	srv, err := server.Replay(server.ReplayOptions{
-		ArchivePath:   args[0],
-		Port:          port,
-		KubeconfigOut: kubeconfigOut,
-		Speed:         speed,
-		From:          from,
-		To:            to,
-		Loop:          loop,
-		StartPaused:   startPaused,
-		Writable:      writable,
-		Verbose:       verbose,
+		ArchivePath:       args[0],
+		Port:              port,
+		KubeconfigOut:     kubeconfigOut,
+		Speed:             speed,
+		From:              from,
+		To:                to,
+		Loop:              loop,
+		StartPaused:       startPaused,
+		Writable:          writable,
+		DisableScheduling: !schedulePods,
+		Verbose:           verbose,
 	})
 	if err != nil {
 		return fmt.Errorf("starting replay: %w", err)
+	}
+
+	// Optionally launch a detected kwok against the server to drive pod/node
+	// lifecycle. Started after the server is up (it needs the kubeconfig) and torn
+	// down on shutdown.
+	var kwokCleanup func()
+	if withKwok {
+		kwokCleanup, err = startKwok(srv.KubeconfigPath())
+		if err != nil {
+			srv.Shutdown()
+			return err
+		}
+		defer kwokCleanup()
 	}
 
 	clock := srv.Clock()
@@ -103,6 +127,9 @@ func runReplay(cmd *cobra.Command, args []string) error {
 	}
 	if srv.Writable() {
 		fmt.Printf("  Writable:   on (client writes land in an in-memory overlay)\n")
+	}
+	if withKwok {
+		fmt.Printf("  KWOK:       on (driving pod/node lifecycle via bundled stages)\n")
 	}
 	fmt.Printf("  Control:    %s/_k8shark/replay\n", srv.Address())
 	if uiSrv != nil {

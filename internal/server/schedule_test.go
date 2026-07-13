@@ -175,6 +175,33 @@ func TestSchedule_CreatedPodIsPending(t *testing.T) {
 	}
 }
 
+// TestSchedule_EagerNodeSynthesis: ensureSchedulableNode synthesizes a node when
+// the capture has none, and is a no-op when it already has one.
+func TestSchedule_EagerNodeSynthesis(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+
+	// No captured nodes → synthesize.
+	h := newHandler(schedStore(t, from), time.Time{}, false)
+	h.clock = clock
+	h.overlay = newOverlay()
+	h.schedulePods = true
+	h.ensureSchedulableNode()
+	if _, ok := h.overlay.get("", "v1", "nodes", "", defaultSyntheticNode); !ok {
+		t.Error("eager synthesis did not create the synthetic node when the capture had none")
+	}
+
+	// Captured node present → no synthetic node.
+	h2 := newHandler(schedStore(t, from, "node-a"), time.Time{}, false)
+	h2.clock = clock
+	h2.overlay = newOverlay()
+	h2.schedulePods = true
+	h2.ensureSchedulableNode()
+	if _, ok := h2.overlay.get("", "v1", "nodes", "", defaultSyntheticNode); ok {
+		t.Error("synthesized a node despite the capture already having one")
+	}
+}
+
 // TestSchedule_OffByDefault: without the shim enabled, a pod keeps an empty
 // nodeName (default read-only-ish overlay semantics).
 func TestSchedule_OffByDefault(t *testing.T) {
