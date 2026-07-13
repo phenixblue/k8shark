@@ -29,8 +29,11 @@ equivalent of. So in writable replay `kshrk` binds an unscheduled Pod on create:
 - A Pod that already sets `spec.nodeName` is left alone — the shim is a
   scheduler, not an override.
 
-The shim only assigns `nodeName`. It does **not** set Pod status — that's KWOK's
-job, which is what makes the loop realistic rather than faked by `kshrk`.
+Beyond binding, the overlay stamps a freshly created Pod with
+`status.phase: Pending` — exactly what the real apiserver does on create, and
+what KWOK's `pod-ready` stage selects on. It does **not** drive the Pod to
+`Running` — that's KWOK's job, which is what makes the loop realistic rather than
+faked by `kshrk`.
 
 ## Walkthrough
 
@@ -51,12 +54,16 @@ kshrk replay capture.kshrk --writable
 export KUBECONFIG=/Users/you/.kube/k8shark-<id>.yaml
 # --manage-all-nodes also manages nodes that came from the capture; drop it to
 # manage only kshrk's synthesized `kwok.x-k8s.io/node: fake` nodes.
-kwok --kubeconfig="$KUBECONFIG" --manage-all-nodes
+# --config supplies the lifecycle Stages — standalone kwok loads none on its own
+# (it exits with "no stages found" otherwise).
+kwok --kubeconfig="$KUBECONFIG" --manage-all-nodes \
+  --config /path/to/k8shark/examples/kwok-stages.yaml
 ```
 
-KWOK uses its built-in default Stages, which take a bound Pod to `Running` and
-keep nodes `Ready`. To customize timing or conditions, pass your own
-`--config stages.yaml` (see [KWOK Stages](https://kwok.sigs.k8s.io/docs/user/stages-configuration/)).
+`examples/kwok-stages.yaml` is KWOK's own "fast" default Stages (node → `Ready`,
+Pod → `Running`, Job Pod → `Succeeded`, delete). To customize timing or
+conditions, edit it or supply your own (see
+[KWOK Stages](https://kwok.sigs.k8s.io/docs/user/stages-configuration/)).
 
 **3. Run your controller** against `$KUBECONFIG`, then create a workload:
 

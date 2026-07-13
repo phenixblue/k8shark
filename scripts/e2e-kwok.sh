@@ -111,7 +111,10 @@ pass "writable replay server ready (kubeconfig $MOCK_KUBECONFIG)"
 log "Starting kwok against the mock server"
 # --manage-all-nodes so KWOK also manages nodes that came from the capture (not
 # just its own kwok.x-k8s.io/node: fake ones), and thus the pods bound to them.
-kwok --kubeconfig "$MOCK_KUBECONFIG" --manage-all-nodes >"$KWOK_LOG" 2>&1 &
+# --config supplies the lifecycle Stages (standalone kwok loads none on its own).
+STAGES="${PROJ_ROOT}/examples/kwok-stages.yaml"
+[[ -f "$STAGES" ]] || die "KWOK stages file not found at $STAGES"
+kwok --kubeconfig "$MOCK_KUBECONFIG" --manage-all-nodes --config "$STAGES" >"$KWOK_LOG" 2>&1 &
 KWOK_PID=$!
 sleep 2
 kill -0 "$KWOK_PID" 2>/dev/null || { cat "$KWOK_LOG"; die "kwok exited early"; }

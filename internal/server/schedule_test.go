@@ -154,6 +154,27 @@ func TestOverlay_StoreIfAbsent_OneWinner(t *testing.T) {
 	}
 }
 
+// TestSchedule_CreatedPodIsPending: a created pod is stamped status.phase=Pending
+// (apiserver behavior, and what KWOK's pod-ready stage selects on).
+func TestSchedule_CreatedPodIsPending(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServerSched(t, schedStore(t, from, "node-a"), clock)
+
+	_, body := doReq(t, http.MethodPost, srv.URL+podsPath, "application/json", podBody("pod-1"))
+	var obj struct {
+		Status struct {
+			Phase string `json:"phase"`
+		} `json:"status"`
+	}
+	if err := json.Unmarshal(body, &obj); err != nil {
+		t.Fatalf("decode: %v\n%s", err, body)
+	}
+	if obj.Status.Phase != "Pending" {
+		t.Errorf("created pod status.phase = %q, want Pending", obj.Status.Phase)
+	}
+}
+
 // TestSchedule_OffByDefault: without the shim enabled, a pod keeps an empty
 // nodeName (default read-only-ish overlay semantics).
 func TestSchedule_OffByDefault(t *testing.T) {

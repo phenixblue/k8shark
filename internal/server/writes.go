@@ -125,12 +125,18 @@ func (h *handler) overlayCreate(w http.ResponseWriter, r *http.Request, group, v
 		return
 	}
 
-	// Scheduling shim: a real cluster's scheduler assigns spec.nodeName, and KWOK's
-	// "Pod → Running" stage only fires once a Pod is bound to a node. Replay has no
-	// scheduler, so bind an unscheduled Pod here (round-robin over the known nodes,
-	// synthesizing one if the capture has none). See #160.
-	if h.schedulePods && group == "" && resource == "pods" && podNodeName(body) == "" {
-		body = h.schedulePod(body)
+	if group == "" && resource == "pods" {
+		// The apiserver stamps a freshly created Pod with status.phase=Pending; the
+		// overlay has no registry doing that. Replicate it — both for fidelity and
+		// because KWOK's pod-ready stage selects on phase=Pending. See #160.
+		body = ensurePodStatusPending(body)
+		// Scheduling shim: a real cluster's scheduler assigns spec.nodeName, and
+		// KWOK's "Pod → Running" stage only fires once a Pod is bound to a node.
+		// Replay has no scheduler, so bind an unscheduled Pod here (round-robin over
+		// the known nodes, synthesizing one if the capture has none).
+		if h.schedulePods && podNodeName(body) == "" {
+			body = h.schedulePod(body)
+		}
 	}
 
 	rv := h.overlay.nextRV(h.replayFloorRV(group, version, resource, namespace))
@@ -263,6 +269,30 @@ func syntheticNodeBase(name string) string {
 	}
 	b, _ := json.Marshal(obj)
 	return string(b)
+}
+
+// ensurePodStatusPending sets status.phase=Pending on a pod body when it has no
+// phase, mirroring the apiserver's create-time default. Returns body unchanged on
+// a decode/encode error or if a phase is already set.
+func ensurePodStatusPending(body json.RawMessage) json.RawMessage {
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil || m == nil {
+		return body
+	}
+	status, ok := m["status"].(map[string]any)
+	if !ok || status == nil {
+		status = map[string]any{}
+		m["status"] = status
+	}
+	if p, _ := status["phase"].(string); p != "" {
+		return body // already has a phase; leave it
+	}
+	status["phase"] = "Pending"
+	out, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return out
 }
 
 // podNodeName returns a pod body's spec.nodeName ("" if unset).
