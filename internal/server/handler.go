@@ -619,8 +619,8 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 		// Compute a Table for objects not covered by a captured Table (writable
 		// overlay, or kinds/captures without a stored Table): built-in per-kind
 		// printers, else CRD additionalPrinterColumns, else captured
-		// columnDefinitions, else the generic buildTable. body is the merged,
-		// selector-filtered list (or a single object).
+		// columnDefinitions, else a computed generic NAME/(NAMESPACE)/AGE table.
+		// body is the merged, selector-filtered list (or a single object).
 		if tb, ok := h.renderResourceTable(path, body, at); ok {
 			body = tb
 		}

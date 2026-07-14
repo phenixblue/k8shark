@@ -40,8 +40,13 @@ func decodeTable(t *testing.T, b []byte) tblResp {
 // single resulting row, a name→cell-value map and a name→priority map.
 func renderOne(t *testing.T, path, body string) (map[string]any, map[string]int) {
 	t.Helper()
+	return renderOneAt(t, path, body, time.Time{})
+}
+
+func renderOneAt(t *testing.T, path, body string, at time.Time) (map[string]any, map[string]int) {
+	t.Helper()
 	h := &handler{}
-	tb, ok := h.renderResourceTable(path, []byte(body), time.Time{})
+	tb, ok := h.renderResourceTable(path, []byte(body), at)
 	if !ok {
 		t.Fatalf("renderResourceTable(%s) returned ok=false", path)
 	}
@@ -145,6 +150,19 @@ func TestAgeColumn(t *testing.T) {
 	}
 	if ageVal != "90m" {
 		t.Errorf("Age cell = %q, want 90m", ageVal)
+	}
+}
+
+// TestAgeColumn_FractionalSeconds guards that a creationTimestamp with
+// fractional seconds (RFC3339Nano) still renders a relative age — Go's
+// time.Parse(time.RFC3339, …) accepts a fractional-second field on input.
+func TestAgeColumn_FractionalSeconds(t *testing.T) {
+	obj := `{"metadata":{"name":"n","creationTimestamp":"2026-04-09T10:00:00.123456Z"},
+      "status":{"conditions":[{"type":"Ready","status":"True"}]}}`
+	now := time.Date(2026, 4, 9, 10, 30, 1, 0, time.UTC)
+	vals, _ := renderOneAt(t, "/api/v1/nodes", obj, now)
+	if got := fmt.Sprint(vals["Age"]); got != "30m" {
+		t.Errorf("Age with fractional-second timestamp = %q, want 30m (not <unknown>)", got)
 	}
 }
 
