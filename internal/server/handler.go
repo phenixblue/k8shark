@@ -581,7 +581,7 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 
 	// If kubectl requests Table format, try the captured Table response first
 	// (real column defs + pre-computed cell values from the actual cluster).
-	// Fall back to buildTable only for captures predating this feature.
+	// Otherwise fall back to a computed Table (see renderResourceTable).
 	if strings.Contains(r.Header.Get("Accept"), "as=Table") {
 		// Exact-path stored Table (namespace-scoped list). Bypassed in writable
 		// mode so the Table reflects overlay writes (built from the merged body

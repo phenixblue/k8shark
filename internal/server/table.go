@@ -23,7 +23,7 @@ import (
 //	1. a built-in per-kind printer (core/native kinds), else
 //	2. a CRD printer from the captured CRD's additionalPrinterColumns (JSONPath), else
 //	3. the captured columnDefinitions for the kind + metadata-only cells, else
-//	4. the generic buildTable (NAME/(NAMESPACE)/AGE).
+//	4. a computed generic table (NAME/(NAMESPACE)/AGE).
 //
 // `-o wide` needs no special handling: every column carries a `priority`
 // (0 = default, 1 = wide) and kubectl hides priority>0 unless `-o wide`.
@@ -699,7 +699,7 @@ func genericColumns(objs []map[string]any) []tableCol {
 
 // renderResourceTable renders a Table for the given list/single-object JSON body
 // using (in order) a built-in printer, the captured CRD's additionalPrinterColumns,
-// captured columnDefinitions, or the generic buildTable. Returns ok=false when the
+// captured columnDefinitions, or a computed generic table. Returns ok=false when the
 // body isn't decodable (caller falls back).
 func (h *handler) renderResourceTable(path string, body []byte, at time.Time) ([]byte, bool) {
 	trimmed := strings.TrimSuffix(path, "/")
