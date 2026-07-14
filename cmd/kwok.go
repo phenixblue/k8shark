@@ -33,7 +33,12 @@ func startKwok(kubeconfigPath string) (cleanup func(), err error) {
 		_ = os.Remove(tmp.Name())
 		return nil, fmt.Errorf("--with-kwok: writing stages: %w", err)
 	}
-	_ = tmp.Close()
+	// Check Close: it flushes the write, so a failure here means the stages file
+	// may be incomplete — which would surface later as a confusing kwok parse error.
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmp.Name())
+		return nil, fmt.Errorf("--with-kwok: writing stages: %w", err)
+	}
 
 	kc := exec.Command(kwokBin, "--kubeconfig", kubeconfigPath, "--manage-all-nodes", "--config", tmp.Name())
 	kc.Stdout = os.Stdout
