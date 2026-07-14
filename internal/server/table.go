@@ -394,7 +394,13 @@ func podReady(o map[string]any) any {
 			ready++
 		}
 	}
-	return fmt.Sprintf("%d/%d", ready, len(cs))
+	// Denominator is the spec container count (like kubectl), so a just-created
+	// Pending pod with no containerStatuses reads "0/1" rather than "0/0".
+	total := len(marr(o, "spec", "containers"))
+	if total == 0 {
+		total = len(cs)
+	}
+	return fmt.Sprintf("%d/%d", ready, total)
 }
 
 func podRestarts(o map[string]any) any {

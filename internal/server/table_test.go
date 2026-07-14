@@ -190,6 +190,14 @@ func TestPodPrinter(t *testing.T) {
 	}
 }
 
+func TestPodReady_PendingUsesSpecContainers(t *testing.T) {
+	// A Pending pod with no containerStatuses: denominator comes from spec.containers.
+	body := `{"metadata":{"name":"p"},"spec":{"containers":[{"name":"a"},{"name":"b"}]},
+      "status":{"phase":"Pending"}}`
+	vals, _ := renderOne(t, "/api/v1/namespaces/default/pods", body)
+	wantCell(t, vals, "Ready", "0/2")
+}
+
 func TestPodStatus_WaitingReasonWins(t *testing.T) {
 	body := `{"metadata":{"name":"p"},"status":{"phase":"Running",
       "containerStatuses":[{"ready":false,"state":{"waiting":{"reason":"CrashLoopBackOff"}}}]}}`
