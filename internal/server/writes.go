@@ -208,12 +208,22 @@ func (h *handler) syncEpoch() {
 	}
 }
 
-// ensureSchedulableNode synthesizes a node when the capture (as-of the clock) has
-// none, so a scheduling target — and a node for KWOK to manage — exists from
-// startup rather than only appearing when the first Pod is created. Idempotent:
-// storeIfAbsent is a no-op when the node already exists.
+// ensureSchedulableNode synthesizes a node when the capture has none, so a
+// scheduling target — and a node for KWOK to manage — exists from startup rather
+// than only appearing when the first Pod is created. Idempotent: synthesizeNode
+// is a no-op when the node already exists.
+//
+// Node presence is evaluated at the window END, not the current clock instant.
+// A capture's first /api/v1/nodes snapshot commonly lands a few seconds after
+// the window start (from ≈ metadata.CapturedAt, an approximation), so checking
+// at `from` would wrongly see "no nodes" at startup and synthesize kwok-node-0
+// for a capture that actually contains nodes (#172).
 func (h *handler) ensureSchedulableNode() {
-	if len(h.knownNodeNames()) == 0 {
+	at := h.at
+	if h.clock != nil {
+		_, at = h.clock.Window()
+	}
+	if len(h.knownNodeNamesAt(at)) == 0 {
 		h.synthesizeNode(defaultSyntheticNode)
 	}
 }
@@ -241,6 +251,12 @@ func (h *handler) knownNodeNames() []string {
 	if h.clock != nil {
 		at = h.clock.Now()
 	}
+	return h.knownNodeNamesAt(at)
+}
+
+// knownNodeNamesAt returns the sorted node names visible as-of the given instant
+// (captured nodes reconstructed at `at`, merged with overlay writes).
+func (h *handler) knownNodeNamesAt(at time.Time) []string {
 	var items []json.RawMessage
 	if body, code, err := h.store.ReconstructAt("/api/v1/nodes", at); err == nil && code == 200 {
 		var l struct {
