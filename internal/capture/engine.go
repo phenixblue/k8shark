@@ -1262,19 +1262,27 @@ func (e *Engine) captureCoreTableSchemas(ctx context.Context) {
 }
 
 // nativeListableKinds enumerates list-capable, non-subresource GVRs in the
-// native API groups from the discovery documents cached by fetchDiscovery,
-// excluding any GVR already covered by an explicit/auto-discovered config entry
-// (those get a full ?as=Table capture). Reads discoveryCache under the lock;
-// callers run after fetchDiscovery has populated it.
+// native API groups from the discovery documents cached by fetchDiscovery.
+// Reads discoveryCache under the lock; callers run after fetchDiscovery has
+// populated it.
+//
+// A GVR is skipped only when the capture already polls its cluster-scoped list
+// path (a config entry with no explicit namespaces) — that yields a cluster-path
+// ?as=Table already. GVRs captured only in specific namespaces (or via wildcard
+// demux, which stores per-namespace Tables) have no cluster-path Table, so we
+// still record a columns-only schema there — otherwise overlay-created objects
+// in an uncaptured namespace, for a native kind without a built-in printer,
+// would fall back to generic columns.
 func (e *Engine) nativeListableKinds() []nativeSchemaKind {
-	// GVRs already targeted get a full Table capture — skip them here.
 	type gvr struct{ group, version, resource string }
-	configured := make(map[gvr]bool, len(e.cfg.Resources))
+	clusterCaptured := make(map[gvr]bool, len(e.cfg.Resources))
 	for _, r := range e.cfg.Resources {
 		if r.All {
 			continue
 		}
-		configured[gvr{r.Group, r.Version, r.Resource}] = true
+		if len(r.Namespaces) == 0 {
+			clusterCaptured[gvr{r.Group, r.Version, r.Resource}] = true
+		}
 	}
 
 	e.mu.Lock()
@@ -1286,7 +1294,7 @@ func (e *Engine) nativeListableKinds() []nativeSchemaKind {
 	add := func(group, version string, body []byte) {
 		for _, r := range listableResources(body) {
 			key := gvr{group, version, r}
-			if configured[key] {
+			if clusterCaptured[key] {
 				continue
 			}
 			out = append(out, nativeSchemaKind{group, version, r})

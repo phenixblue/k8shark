@@ -2407,7 +2407,7 @@ func tableSchemaServer(t *testing.T) *httptest.Server {
 			fmt.Fprint(w, coreList)
 		case "/apis":
 			fmt.Fprint(w, `{"kind":"APIGroupList","apiVersion":"v1","groups":[]}`)
-		case "/api/v1/configmaps":
+		case "/api/v1/configmaps", "/api/v1/pods":
 			if isTable {
 				fmt.Fprint(w, table("Data"))
 				return
@@ -2450,8 +2450,13 @@ func TestCaptureCoreTableSchemas(t *testing.T) {
 		Duration:    500 * time.Millisecond,
 		Output:      filepath.Join(t.TempDir(), "capture.kshrk"),
 		Resources: []config.Resource{
-			// Only pods is targeted; the sweep should cover the other native kinds.
+			// Namespaced targeting: pods is captured only in "default", so it has
+			// no cluster-path Table — the sweep should still record its schema.
 			{Version: "v1", Resource: "pods", Namespaces: []string{"default"},
+				IntervalRaw: "200ms", Interval: 200 * time.Millisecond},
+			// Cluster-wide targeting (no namespaces): componentstatuses already
+			// has a cluster-path ?as=Table — the sweep must skip it.
+			{Version: "v1", Resource: "componentstatuses",
 				IntervalRaw: "200ms", Interval: 200 * time.Millisecond},
 		},
 	}
@@ -2462,7 +2467,7 @@ func TestCaptureCoreTableSchemas(t *testing.T) {
 		t.Fatalf("engine.Run() error: %v", err)
 	}
 
-	// configmaps: schema captured, rows stripped, columnDefinitions kept.
+	// configmaps: untargeted → schema captured, rows stripped, columns kept.
 	cm := findRecord(ss, "/api/v1/configmaps?as=TableSchema")
 	if cm == nil {
 		t.Fatal("expected a ?as=TableSchema record for configmaps")
@@ -2486,17 +2491,18 @@ func TestCaptureCoreTableSchemas(t *testing.T) {
 		t.Errorf("schema record leaked row data: %s", cm.ResponseBody)
 	}
 
-	// componentstatuses (cluster-scoped, listable) also captured.
-	if findRecord(ss, "/api/v1/componentstatuses?as=TableSchema") == nil {
-		t.Error("expected a ?as=TableSchema record for componentstatuses")
+	// pods: namespace-scoped targeting → no cluster-path Table, so a cluster-path
+	// schema IS recorded (covers overlay objects in other namespaces).
+	if findRecord(ss, "/api/v1/pods?as=TableSchema") == nil {
+		t.Error("namespace-targeted pods should get a cluster-path schema record")
+	}
+	// componentstatuses: cluster-wide targeted → already has ?as=Table → skipped.
+	if findRecord(ss, "/api/v1/componentstatuses?as=TableSchema") != nil {
+		t.Error("cluster-wide targeted componentstatuses must not get a redundant schema record")
 	}
 	// secrets: RBAC-denied → skipped, not failed.
 	if findRecord(ss, "/api/v1/secrets?as=TableSchema") != nil {
 		t.Error("RBAC-denied secrets must not produce a schema record")
-	}
-	// pods: already targeted → no schema record (it has a full ?as=Table).
-	if findRecord(ss, "/api/v1/pods?as=TableSchema") != nil {
-		t.Error("targeted pods must not get a redundant schema record")
 	}
 	// bindings: not list-capable → skipped.
 	if findRecord(ss, "/api/v1/bindings?as=TableSchema") != nil {
