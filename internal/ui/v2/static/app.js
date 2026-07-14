@@ -8,7 +8,21 @@
   const $ = (id) => document.getElementById(id);
   const FORBIDDEN_CHILD_TAGS = ['script', 'iframe', 'object', 'embed', 'link', 'meta', 'style'];
   const FORBIDDEN_CHILD_TAGS_SET = new Set(FORBIDDEN_CHILD_TAGS.map((t) => t.toUpperCase()));
-  const FORBIDDEN_CHILD_SELECTOR = FORBIDDEN_CHILD_TAGS.join(',');
+  const URL_ATTRS = new Set(['href', 'src', 'xlink:href', 'formaction', 'action', 'poster', 'cite', 'background', 'longdesc', 'usemap', 'archive', 'codebase', 'classid', 'data']);
+  const UNSAFE_URL_RE = /^\s*(?:javascript|vbscript|data):/i;
+  const hasUnsafeAttributes = (node) => {
+    if (!node || node.nodeType !== Node.ELEMENT_NODE || !node.attributes) return false;
+    for (const attr of node.attributes) {
+      const name = (attr.name || '').toLowerCase();
+      if (name.startsWith('on')) return true;
+      if (URL_ATTRS.has(name)) {
+        const value = String(attr.value || '');
+        const normalized = value.replace(/[\u0000-\u0020\u007f]+/g, '');
+        if (UNSAFE_URL_RE.test(normalized)) return true;
+      }
+    }
+    return false;
+  };
   const isSafeChildNode = (node) => {
     let ok = node instanceof Node;
 
@@ -26,20 +40,18 @@
       if (node.nodeType === Node.ELEMENT_NODE) {
         const tn = (node.tagName || '').toUpperCase();
         if (FORBIDDEN_CHILD_TAGS_SET.has(tn)) ok = false;
+        if (ok && hasUnsafeAttributes(node)) ok = false;
       }
       if (ok) {
         try {
-          if (typeof node.querySelector === 'function') {
-            if (node.querySelector(FORBIDDEN_CHILD_SELECTOR)) ok = false;
-          } else {
-            const walker = document.createTreeWalker(node, NodeFilter.SHOW_ELEMENT);
-            // For elements, include the element itself; for fragments, start at the first element child.
-            let cur = node.nodeType === Node.ELEMENT_NODE ? node : walker.nextNode();
-            while (cur) {
-              const tn = (cur.tagName || '').toUpperCase();
-              if (FORBIDDEN_CHILD_TAGS_SET.has(tn)) { ok = false; break; }
-              cur = walker.nextNode();
-            }
+          const walker = document.createTreeWalker(node, NodeFilter.SHOW_ELEMENT);
+          // Start at the first descendant element; root ELEMENT_NODE was already validated above.
+          let cur = walker.nextNode();
+          while (cur) {
+            const tn = (cur.tagName || '').toUpperCase();
+            if (FORBIDDEN_CHILD_TAGS_SET.has(tn)) { ok = false; break; }
+            if (hasUnsafeAttributes(cur)) { ok = false; break; }
+            cur = walker.nextNode();
           }
         } catch (_) {
           ok = false; // fail closed
