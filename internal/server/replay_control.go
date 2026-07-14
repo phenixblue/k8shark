@@ -75,6 +75,11 @@ func (h *handler) handleReplayControl(w http.ResponseWriter, r *http.Request, pa
 			return
 		}
 		h.overlay.reset()
+		if h.schedulePods {
+			// A manual reset drops the synthetic node too; re-synthesize it so a
+			// nodeless capture keeps a scheduling target after reset.
+			h.ensureSchedulableNode()
+		}
 	default:
 		h.writeStatus(w, http.StatusNotFound, fmt.Sprintf("unknown replay control %q", action))
 		return

@@ -20,12 +20,14 @@ KWOK's "Pod → Running" behavior only fires once a Pod is **bound to a node**
 (`spec.nodeName`) — assigning that is the scheduler's job, which replay has no
 equivalent of. So in writable replay `kshrk` binds an unscheduled Pod on create:
 
-- **On by default** under `--writable`. A Pod that never schedules is more
+- **On by default** under `--writable` (turn it off with `--schedule-pods=false`
+  if you're testing your own scheduler). A Pod that never schedules is more
   surprising than one that does.
 - Binds round-robin over the **known nodes** — those in the capture plus any
   created in the overlay.
 - If the capture has **no nodes**, it synthesizes one (`kwok-node-0`) annotated
-  `kwok.x-k8s.io/node: fake` so a stock `kwok` run manages it.
+  `kwok.x-k8s.io/node: fake` so a stock `kwok` run manages it. This happens at
+  startup, so `kubectl get nodes` shows it before any Pod exists.
 - A Pod that already sets `spec.nodeName` is left alone — the shim is a
   scheduler, not an override.
 
@@ -34,6 +36,21 @@ Beyond binding, the overlay stamps a freshly created Pod with
 what KWOK's `pod-ready` stage selects on. It does **not** drive the Pod to
 `Running` — that's KWOK's job, which is what makes the loop realistic rather than
 faked by `kshrk`.
+
+## Quickstart: `--with-kwok`
+
+If a [`kwok` binary](https://kwok.sigs.k8s.io/docs/user/install/) is on your
+`PATH`, `kshrk` can start and manage it for you — it implies `--writable`, runs
+`kwok --manage-all-nodes` with the bundled stages, and stops it on exit:
+
+```sh
+kshrk replay capture.kshrk --with-kwok
+export KUBECONFIG=/Users/you/.kube/k8shark-<id>.yaml   # path is printed
+kubectl run demo --image=nginx && kubectl get pod demo -w   # Pending → Running
+```
+
+That's the whole loop in one process. The manual walkthrough below is equivalent
+and useful when you want to run (or customize) `kwok` yourself.
 
 ## Walkthrough
 

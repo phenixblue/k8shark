@@ -152,19 +152,22 @@ func itemNSName(raw json.RawMessage) string {
 }
 
 // syncEpoch clears the overlay when the clock's loop epoch has advanced since the
-// last call, implementing reset-on-loop. The RV counter stays monotonic so RVs
-// are never reused. Safe to call on every read/write.
-func (o *overlay) syncEpoch(clock *ReplayClock) {
+// last call, implementing reset-on-loop, and reports whether it reset. The RV
+// counter stays monotonic so RVs are never reused. Safe to call on every
+// read/write.
+func (o *overlay) syncEpoch(clock *ReplayClock) (didReset bool) {
 	if o == nil || clock == nil {
-		return
+		return false
 	}
 	_, epoch, _ := clock.Sample()
 	o.mu.Lock()
 	if epoch != o.epoch {
 		o.items = map[string]*overlayEntry{}
 		o.epoch = epoch
+		didReset = true
 	}
 	o.mu.Unlock()
+	return didReset
 }
 
 // reset clears all overlay entries (manual reset). The RV counter is preserved.

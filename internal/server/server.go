@@ -36,7 +36,11 @@ type ReplayOptions struct {
 	Loop          bool
 	StartPaused   bool
 	Writable      bool // accept client writes into an in-memory overlay
-	Verbose       bool
+	// DisableScheduling turns off the pod-scheduling shim (which otherwise binds
+	// an unscheduled Pod to a node on create). Zero value keeps the shim on under
+	// --writable; set it to opt out (--schedule-pods=false).
+	DisableScheduling bool
+	Verbose           bool
 }
 
 // Server represents a running mock API server.
@@ -68,7 +72,7 @@ func Open(opts OpenOptions) (*Server, error) {
 		_ = ar.Close()
 		return nil, err
 	}
-	return serve(ar, store, at, nil, false, opts.Port, opts.KubeconfigOut, opts.Verbose)
+	return serve(ar, store, at, nil, false, false, opts.Port, opts.KubeconfigOut, opts.Verbose)
 }
 
 // Replay opens a capture and starts the mock HTTPS server in replay mode: a
@@ -95,13 +99,13 @@ func Replay(opts ReplayOptions) (*Server, error) {
 		return nil, err
 	}
 	clock := NewReplayClock(from, to, speed, opts.Loop, opts.StartPaused)
-	return serve(ar, store, time.Time{}, clock, opts.Writable, opts.Port, opts.KubeconfigOut, opts.Verbose)
+	return serve(ar, store, time.Time{}, clock, opts.Writable, !opts.DisableScheduling, opts.Port, opts.KubeconfigOut, opts.Verbose)
 }
 
 // serve brings up the shared TLS listener, kubeconfig, and HTTP server. When
 // clock is non-nil the handler runs in replay mode; when writable is set (replay
 // only) client writes land in an in-memory overlay.
-func serve(ar *archive.Archive, store *CaptureStore, at time.Time, clock *ReplayClock, writable bool, port, kubeconfigOut string, verbose bool) (*Server, error) {
+func serve(ar *archive.Archive, store *CaptureStore, at time.Time, clock *ReplayClock, writable, schedulePods bool, port, kubeconfigOut string, verbose bool) (*Server, error) {
 	certPEM, keyPEM, err := generateSelfSignedCert()
 	if err != nil {
 		_ = ar.Close()
@@ -144,7 +148,12 @@ func serve(ar *archive.Archive, store *CaptureStore, at time.Time, clock *Replay
 	h.clock = clock
 	if writable && clock != nil { // writable is a replay-only feature
 		h.overlay = newOverlay()
-		h.schedulePods = true // bind unscheduled pods to a node (KWOK integration, #160)
+		h.schedulePods = schedulePods // bind unscheduled pods to a node (KWOK integration, #160)
+		if h.schedulePods {
+			// Eager node synthesis: give KWOK (and `kubectl get nodes`) a node to
+			// manage before any Pod is created, when the capture has none.
+			h.ensureSchedulableNode()
+		}
 	}
 	httpSrv := &http.Server{Handler: h}
 	done := make(chan struct{})
