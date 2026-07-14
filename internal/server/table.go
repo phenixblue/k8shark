@@ -324,7 +324,25 @@ func init() {
 	}
 	registerPrinter("", "events", eventCols...)
 	registerPrinter("events.k8s.io", "events", eventCols...)
+
+	// Index built-in cell computers by "group/resource" → lower(columnName), so
+	// captured cluster columnDefinitions can be paired with real cell logic where
+	// kshrk has a printer for that kind (see capturedColumns).
+	for key, cols := range builtinPrinters {
+		m := make(map[string]func(map[string]any) any, len(cols))
+		for _, c := range cols {
+			if c.cell != nil {
+				m[strings.ToLower(c.name)] = c.cell
+			}
+		}
+		builtinCellByName[key] = m
+	}
 }
+
+// builtinCellByName maps "group/resource" → lower(columnName) → cell computer,
+// derived from builtinPrinters in init(). Lets captured cluster columns reuse
+// kshrk's per-kind cell logic.
+var builtinCellByName = map[string]map[string]func(map[string]any) any{}
 
 // ── cell helpers ────────────────────────────────────────────────────────────
 
@@ -703,10 +721,11 @@ func genericColumns(objs []map[string]any) []tableCol {
 	return append(cols, ageColumn())
 }
 
-// renderResourceTable renders a Table for the given list/single-object JSON body
-// using (in order) a built-in printer, the captured CRD's additionalPrinterColumns,
-// captured columnDefinitions, or a computed generic table. Returns ok=false when the
-// body isn't decodable (caller falls back).
+// renderResourceTable renders a Table for the given list/single-object JSON body,
+// choosing columns (in order) from: the captured CRD's additionalPrinterColumns,
+// the captured cluster columnDefinitions (full Table or columns-only schema), the
+// built-in per-kind printer, or a computed generic table. Returns ok=false when
+// the body isn't decodable (caller falls back).
 func (h *handler) renderResourceTable(path string, body []byte, at time.Time) ([]byte, bool) {
 	trimmed := strings.TrimSuffix(path, "/")
 	listPath := trimmed
@@ -757,17 +776,22 @@ func (h *handler) renderResourceTable(path string, body []byte, at time.Time) ([
 		now = h.store.Metadata.CapturedUntil
 	}
 
-	// 1. Built-in printer.
-	if cols, ok := builtinPrinters[printerKey(group, resource)]; ok {
-		return renderTableFromColumns(cols, objs, now), true
-	}
-	// 2. CRD additionalPrinterColumns (JSONPath).
+	// 1. CRD additionalPrinterColumns (JSONPath) — custom resources compute their
+	// cells from the CRD spec, so this wins for CRD kinds over captured columns
+	// (which can't recompute non-metadata cells).
 	if cols := h.crdPrinterColumns(group, version, resource, at); cols != nil {
 		return renderTableFromColumns(cols, objs, now), true
 	}
-	// 3. Captured columnDefinitions for the kind + metadata-only cells. Use the
-	// list path so a single-object GET reuses the list's stored columns.
-	if cols := h.capturedColumns(listPath, at); cols != nil {
+	// 2. Captured cluster columnDefinitions (a full ?as=Table for a targeted kind,
+	// or a columns-only ?as=TableSchema recorded for untargeted native kinds).
+	// These are authoritative for the source cluster's k8s version; cells are
+	// computed by the built-in printer where one exists, else metadata/null.
+	if cols := h.capturedColumns(group, version, resource, listPath, at); cols != nil {
+		return renderTableFromColumns(cols, objs, now), true
+	}
+	// 3. Built-in printer — kshrk's per-kind columns+cells, when no captured
+	// columns are available (RBAC-denied schema, pre-feature captures, no store).
+	if cols, ok := builtinPrinters[printerKey(group, resource)]; ok {
 		return renderTableFromColumns(cols, objs, now), true
 	}
 	// 4. Generic NAME / (NAMESPACE) / AGE — computed like the other tiers so AGE
@@ -775,13 +799,30 @@ func (h *handler) renderResourceTable(path string, body []byte, at time.Time) ([
 	return renderTableFromColumns(genericColumns(objs), objs, now), true
 }
 
-// capturedColumns reuses the columnDefinitions from a captured Table for the
-// kind, filling only metadata cells (Name/Namespace/Age) — blanks otherwise.
-func (h *handler) capturedColumns(path string, at time.Time) []tableCol {
-	tb, code, _ := h.store.Latest(strings.TrimSuffix(path, "/")+tableIndexKeySuffix, at)
-	if code != 200 {
+// capturedColumns builds columns from a captured Table's columnDefinitions,
+// looked up (in order) as: the request path's full Table, its columns-only
+// schema, then the cluster-scoped list path's Table / schema (schemas are
+// recorded once at the cluster path). Metadata cells (Name/Namespace/Age) are
+// computed directly; other cells use the built-in printer's cell logic for the
+// kind when available, else JSON null (recomputing arbitrary columns for a new
+// object isn't possible). Returns nil when no captured columns exist.
+func (h *handler) capturedColumns(group, version, resource, listPath string, at time.Time) []tableCol {
+	if h.store == nil {
 		return nil
 	}
+	listPath = strings.TrimSuffix(listPath, "/")
+	clusterPath := clusterListPath(group, version, resource)
+	candidates := []string{
+		listPath + tableIndexKeySuffix,
+		listPath + tableSchemaIndexKeySuffix,
+	}
+	if clusterPath != listPath {
+		candidates = append(candidates,
+			clusterPath+tableIndexKeySuffix,
+			clusterPath+tableSchemaIndexKeySuffix,
+		)
+	}
+
 	var t struct {
 		ColumnDefinitions []struct {
 			Name     string `json:"name"`
@@ -790,9 +831,22 @@ func (h *handler) capturedColumns(path string, at time.Time) []tableCol {
 			Desc     string `json:"description"`
 		} `json:"columnDefinitions"`
 	}
-	if err := json.Unmarshal(tb, &t); err != nil || len(t.ColumnDefinitions) == 0 {
+	found := false
+	for _, key := range candidates {
+		tb, code, _ := h.store.Latest(key, at)
+		if code != 200 {
+			continue
+		}
+		if err := json.Unmarshal(tb, &t); err == nil && len(t.ColumnDefinitions) > 0 {
+			found = true
+			break
+		}
+	}
+	if !found {
 		return nil
 	}
+
+	cellFor := builtinCellByName[printerKey(group, resource)]
 	cols := make([]tableCol, 0, len(t.ColumnDefinitions))
 	for _, cd := range t.ColumnDefinitions {
 		c := tableCol{name: cd.Name, typ: cd.Type, priority: cd.Priority, desc: cd.Desc}
@@ -807,22 +861,35 @@ func (h *handler) capturedColumns(path string, at time.Time) []tableCol {
 			// declared type must be string even if the captured column said "date".
 			c.typ = "string"
 		default:
-			// We can't recompute arbitrary captured columns for a new object, so
-			// return JSON null rather than "" — null is valid for any declared
-			// column type (integer/date/etc.), an empty string is not.
-			c.cell = func(map[string]any) any { return nil }
+			if cellFor != nil {
+				c.cell = cellFor[strings.ToLower(cd.Name)]
+			}
+			if c.cell == nil {
+				// Can't recompute this column for a new object → JSON null, which
+				// is valid for any declared column type (an empty string is not).
+				c.cell = func(map[string]any) any { return nil }
+			}
 		}
 		cols = append(cols, c)
 	}
 	return cols
 }
 
+// clusterListPath is the cluster-scoped list path for a GVR (mirrors the capture
+// engine's buildAPIPath with an empty namespace).
+func clusterListPath(group, version, resource string) string {
+	if group == "" {
+		return "/api/" + version + "/" + resource
+	}
+	return "/apis/" + group + "/" + version + "/" + resource
+}
+
 // crdPrinterColumns returns the CRD-derived columns for a kind, memoizing the
 // result (see handler.crdColsCache) so the CRD list isn't reconstructed+parsed
 // on every render.
 func (h *handler) crdPrinterColumns(group, version, resource string, at time.Time) []tableCol {
-	if group == "" {
-		return nil // core kinds are never CRDs
+	if group == "" || h.store == nil {
+		return nil // core kinds are never CRDs; nil store has nothing to reconstruct
 	}
 	key := group + "/" + version + "/" + resource
 	if v, ok := h.crdColsCache.Load(key); ok {

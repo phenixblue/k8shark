@@ -140,6 +140,8 @@ Maps canonical API paths to the ordered sequence numbers captured for each path.
 
 For each resource path, k8shark also captures the Kubernetes Table-format response (the data `kubectl get -o wide` uses). These are stored under the same path with a `?as=Table` suffix. This suffix is a convention internal to k8shark — it does not appear in real API URLs.
 
+In addition, every capture records a **columns-only** Table schema for each list-capable native (built-in) kind whose cluster-scoped list path isn't already captured as a full `?as=Table` (i.e. kinds that are untargeted, or targeted only in specific namespaces). It is stored at the kind's cluster-scoped list path with a `?as=TableSchema` suffix. These records contain the server's `columnDefinitions` with the `rows` array stripped — no object data — so the replay server can render kubectl-accurate columns (and `-o wide`) for objects it has no full Table for (e.g. writable-overlay creations or untargeted kinds) without persisting data for kinds the user didn't capture. Custom resources are excluded (their columns come from the CRD's `additionalPrinterColumns`). Both `?as=Table` and `?as=TableSchema` are k8shark-internal conventions and never appear in real API URLs.
+
 ## records/\<pathDir\>/\<seq\>.json.zst
 
 One Zstd-compressed file per polled API response, named by its sequence number.
