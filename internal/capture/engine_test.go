@@ -2503,3 +2503,31 @@ func TestCaptureCoreTableSchemas(t *testing.T) {
 		t.Error("non-listable bindings must not get a schema record")
 	}
 }
+
+func TestStripTableRows(t *testing.T) {
+	// A real Table: rows stripped, columnDefinitions kept.
+	tbl := `{"kind":"Table","apiVersion":"meta.k8s.io/v1",
+		"columnDefinitions":[{"name":"Name","type":"string"}],
+		"rows":[{"cells":["x"]}]}`
+	out, ok := stripTableRows([]byte(tbl))
+	if !ok {
+		t.Fatal("expected a valid Table to strip")
+	}
+	if strings.Contains(string(out), `"x"`) || !strings.Contains(string(out), "columnDefinitions") {
+		t.Errorf("stripped body wrong: %s", out)
+	}
+
+	// A non-Table payload that merely has a columnDefinitions field is rejected.
+	notTable := `{"kind":"List","apiVersion":"v1","columnDefinitions":[{"name":"Name"}],"items":[]}`
+	if _, ok := stripTableRows([]byte(notTable)); ok {
+		t.Error("non-Table payload with columnDefinitions must be rejected")
+	}
+
+	// Garbage and Tables without columns are rejected.
+	if _, ok := stripTableRows([]byte(`{"kind":"Table"}`)); ok {
+		t.Error("Table without columnDefinitions must be rejected")
+	}
+	if _, ok := stripTableRows([]byte(`not json`)); ok {
+		t.Error("invalid JSON must be rejected")
+	}
+}

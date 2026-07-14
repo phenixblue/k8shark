@@ -680,8 +680,8 @@ choosing columns in this order:
 1. a **CRD printer** built from the captured CRD's `additionalPrinterColumns`
    (JSONPath), for custom resources;
 2. the **captured cluster `columnDefinitions`** — a full `?as=Table` for a
-   targeted kind, or the columns-only `?as=TableSchema` recorded for every
-   list-capable native kind on each capture (see
+   targeted kind, or the columns-only `?as=TableSchema` recorded on each capture
+   for list-capable native kinds that aren't otherwise targeted (see
    [archive format](archive-format.md#table-response-keys)). These are the source
    cluster's exact columns/order (and `-o wide` priorities) for its Kubernetes
    version; per-object cells are computed by the built-in printer for the kind
@@ -695,8 +695,9 @@ choosing columns in this order:
    columns mirror upstream kubectl, including `-o wide` columns;
 4. the generic **NAME / (NAMESPACE) / AGE** table.
 
-Because every capture records column schemas for native kinds, `kubectl get` on
-overlay-created or untargeted core objects reflects the source cluster's columns.
+Because every capture records column schemas for native kinds that aren't
+otherwise targeted, `kubectl get` on overlay-created or untargeted core objects
+reflects the source cluster's columns.
 The built-in printers remain a best-effort fallback: they're a curated set and a
 few computed cells are simplified (e.g. Pod `STATUS` approximates kubectl's
 phase/container-reason logic). Read-only replay of a captured object always uses

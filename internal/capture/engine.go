@@ -1394,7 +1394,9 @@ func stripTableRows(body []byte) ([]byte, bool) {
 		Kind              string          `json:"kind"`
 		ColumnDefinitions json.RawMessage `json:"columnDefinitions"`
 	}
-	if err := json.Unmarshal(body, &t); err != nil || len(t.ColumnDefinitions) == 0 {
+	// Require an actual Table (not just any payload that happens to carry a
+	// columnDefinitions field), so we never persist a bogus schema record.
+	if err := json.Unmarshal(body, &t); err != nil || t.Kind != "Table" || len(t.ColumnDefinitions) == 0 {
 		return nil, false
 	}
 	out, err := json.Marshal(map[string]any{
