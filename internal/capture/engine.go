@@ -1300,6 +1300,7 @@ func (e *Engine) nativeListableKinds() []nativeSchemaKind {
 
 	// Native API groups.
 	var groupList struct {
+		Kind   string `json:"kind"`
 		Groups []struct {
 			Name     string `json:"name"`
 			Versions []struct {
@@ -1308,7 +1309,14 @@ func (e *Engine) nativeListableKinds() []nativeSchemaKind {
 			} `json:"versions"`
 		} `json:"groups"`
 	}
-	if err := json.Unmarshal(apisBody, &groupList); err == nil {
+	// Guard against a non-APIGroupList /apis cache (e.g. a Status object from a
+	// transient discovery error), which would parse to zero groups and silently
+	// skip schema capture for every non-core native group.
+	if err := json.Unmarshal(apisBody, &groupList); err != nil || (groupList.Kind != "" && groupList.Kind != "APIGroupList") {
+		if e.verbose {
+			fmt.Fprintln(os.Stderr, "  [schema] /apis discovery unavailable or invalid; capturing core-group schemas only")
+		}
+	} else {
 		for _, g := range groupList.Groups {
 			if !nativeAPIGroups[g.Name] {
 				continue
