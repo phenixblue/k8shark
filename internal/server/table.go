@@ -637,8 +637,8 @@ func eventObject(o map[string]any) any {
 // ── rendering ───────────────────────────────────────────────────────────────
 
 // renderTableFromColumns builds a meta.k8s.io/v1 Table from columns + decoded
-// objects (with their raw bytes for the row.object PartialObjectMetadata). now
-// (the replay clock) is used to compute relative AGE cells.
+// objects; each row's object is a PartialObjectMetadata built from the decoded
+// object's metadata. now (the replay clock) is used to compute relative AGE cells.
 func renderTableFromColumns(cols []tableCol, objs []map[string]any, now time.Time) []byte {
 	colDefs := make([]map[string]any, len(cols))
 	for i, c := range cols {
