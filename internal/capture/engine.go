@@ -251,6 +251,16 @@ func (e *Engine) Run() (*CaptureSummary, error) {
 	}
 
 	var wg sync.WaitGroup
+
+	// Always record columns-only Table schemas for native kinds not otherwise
+	// targeted, so the replay server renders kubectl-accurate columns for
+	// overlay-created and untargeted objects. Runs concurrently with polling.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		e.captureCoreTableSchemas(ctx)
+	}()
+
 	for _, res := range e.cfg.Resources {
 		if res.All {
 			continue
@@ -646,6 +656,15 @@ func extractStatusMessage(body []byte) string {
 // alongside regular list responses. The sentinel "?as=Table" cannot appear in
 // real API paths captured by the engine.
 const tableIndexKeySuffix = "?as=Table"
+
+// tableSchemaIndexKeySuffix marks a columns-only Table record: a captured
+// meta.k8s.io/v1 Table with its rows stripped, keeping only columnDefinitions.
+// It is written by captureCoreTableSchemas for native kinds that aren't
+// otherwise targeted, so the replay server can render kubectl-accurate columns
+// for objects (overlay-created or untargeted) that have no full captured Table —
+// without ever persisting those kinds' object data. The sentinel cannot appear
+// in real API paths.
+const tableSchemaIndexKeySuffix = "?as=TableSchema"
 
 // fetchResource issues one GET for res and stores the record. It also fetches
 // the Table-format response so the mock server can replay rich column definitions.
@@ -1173,6 +1192,222 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// nativeAPIGroups are the built-in Kubernetes API groups whose Table column
+// schemas captureCoreTableSchemas always records. CRD-backed groups are
+// deliberately excluded: custom resources derive their columns from the CRD's
+// additionalPrinterColumns at replay time, so a schema sweep would add cost
+// without benefit (and could touch far more, unrelated groups). The empty
+// string is the core group (/api/v1).
+var nativeAPIGroups = map[string]bool{
+	"":                             true,
+	"apps":                         true,
+	"batch":                        true,
+	"autoscaling":                  true,
+	"networking.k8s.io":            true,
+	"policy":                       true,
+	"rbac.authorization.k8s.io":    true,
+	"storage.k8s.io":               true,
+	"scheduling.k8s.io":            true,
+	"node.k8s.io":                  true,
+	"coordination.k8s.io":          true,
+	"certificates.k8s.io":          true,
+	"discovery.k8s.io":             true,
+	"events.k8s.io":                true,
+	"admissionregistration.k8s.io": true,
+	"apiextensions.k8s.io":         true,
+	"apiregistration.k8s.io":       true,
+	"authentication.k8s.io":        true,
+	"authorization.k8s.io":         true,
+	"flowcontrol.apiserver.k8s.io": true,
+}
+
+// nativeSchemaKind is a list-capable native GVR discovered from the API server.
+type nativeSchemaKind struct {
+	group, version, resource string
+}
+
+// captureCoreTableSchemas records the Table columnDefinitions (rows stripped)
+// for every list-capable native kind that isn't already being captured, so the
+// replay server can render kubectl-accurate columns/`-o wide` for objects it
+// has no full captured Table for (writable-overlay creations, or kinds/captures
+// the user didn't target). It fetches one row (?limit=1) purely to obtain the
+// server-side columnDefinitions, then discards the rows — so it never persists
+// object data for kinds (e.g. Secrets) the user didn't ask to capture.
+//
+// Runs once; safe to run concurrently with polling (storeRecord is mutex-guarded).
+func (e *Engine) captureCoreTableSchemas(ctx context.Context) {
+	kinds := e.nativeListableKinds()
+	if len(kinds) == 0 {
+		return
+	}
+
+	const schemaWorkers = 8
+	sem := make(chan struct{}, schemaWorkers)
+	var wg sync.WaitGroup
+	for _, k := range kinds {
+		if ctx.Err() != nil {
+			break
+		}
+		wg.Add(1)
+		go func(k nativeSchemaKind) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			e.fetchTableSchema(ctx, k)
+		}(k)
+	}
+	wg.Wait()
+}
+
+// nativeListableKinds enumerates list-capable, non-subresource GVRs in the
+// native API groups from the discovery documents cached by fetchDiscovery,
+// excluding any GVR already covered by an explicit/auto-discovered config entry
+// (those get a full ?as=Table capture). Reads discoveryCache under the lock;
+// callers run after fetchDiscovery has populated it.
+func (e *Engine) nativeListableKinds() []nativeSchemaKind {
+	// GVRs already targeted get a full Table capture — skip them here.
+	type gvr struct{ group, version, resource string }
+	configured := make(map[gvr]bool, len(e.cfg.Resources))
+	for _, r := range e.cfg.Resources {
+		if r.All {
+			continue
+		}
+		configured[gvr{r.Group, r.Version, r.Resource}] = true
+	}
+
+	e.mu.Lock()
+	coreBody := e.discoveryCache["/api/v1"]
+	apisBody := e.discoveryCache["/apis"]
+	e.mu.Unlock()
+
+	var out []nativeSchemaKind
+	add := func(group, version string, body []byte) {
+		for _, r := range listableResources(body) {
+			key := gvr{group, version, r}
+			if configured[key] {
+				continue
+			}
+			out = append(out, nativeSchemaKind{group, version, r})
+		}
+	}
+
+	// Core group.
+	if nativeAPIGroups[""] {
+		add("", "v1", coreBody)
+	}
+
+	// Native API groups.
+	var groupList struct {
+		Groups []struct {
+			Name     string `json:"name"`
+			Versions []struct {
+				GroupVersion string `json:"groupVersion"`
+				Version      string `json:"version"`
+			} `json:"versions"`
+		} `json:"groups"`
+	}
+	if err := json.Unmarshal(apisBody, &groupList); err == nil {
+		for _, g := range groupList.Groups {
+			if !nativeAPIGroups[g.Name] {
+				continue
+			}
+			for _, gv := range g.Versions {
+				e.mu.Lock()
+				gvBody := e.discoveryCache["/apis/"+gv.GroupVersion]
+				e.mu.Unlock()
+				version := gv.Version
+				if version == "" {
+					if parts := strings.SplitN(gv.GroupVersion, "/", 2); len(parts) == 2 {
+						version = parts[1]
+					}
+				}
+				add(g.Name, version, gvBody)
+			}
+		}
+	}
+	return out
+}
+
+// listableResources parses an APIResourceList body and returns the names of
+// resources that support `list` and are not sub-resources (no "/").
+func listableResources(body []byte) []string {
+	if len(body) == 0 {
+		return nil
+	}
+	var rl struct {
+		Kind      string `json:"kind"`
+		Resources []struct {
+			Name  string   `json:"name"`
+			Verbs []string `json:"verbs"`
+		} `json:"resources"`
+	}
+	if err := json.Unmarshal(body, &rl); err != nil || (rl.Kind != "" && rl.Kind != "APIResourceList") {
+		return nil
+	}
+	var out []string
+	for _, r := range rl.Resources {
+		if strings.Contains(r.Name, "/") {
+			continue
+		}
+		listable := false
+		for _, v := range r.Verbs {
+			if v == "list" {
+				listable = true
+				break
+			}
+		}
+		if listable {
+			out = append(out, r.Name)
+		}
+	}
+	return out
+}
+
+// fetchTableSchema fetches a single-row Table for a kind and stores a
+// columns-only record (rows stripped) under the schema index key. RBAC denials
+// and non-Table responses are skipped silently.
+func (e *Engine) fetchTableSchema(ctx context.Context, k nativeSchemaKind) {
+	clusterPath := buildAPIPath(k.group, k.version, k.resource, "")
+	// ?limit=1 minimizes data transfer; we only want the columnDefinitions.
+	body, code := e.rawFetch(ctx, clusterPath+"?limit=1", tableIndexKeySuffix)
+	if body == nil || code != http.StatusOK {
+		return
+	}
+	schema, ok := stripTableRows(body)
+	if !ok {
+		return // not a Table (kind doesn't support server-side printing)
+	}
+	e.storeRecord(clusterPath+tableSchemaIndexKeySuffix, schema, code, false)
+	if e.verbose {
+		fmt.Fprintf(os.Stdout, "  [schema] %s%s\n", clusterPath, tableSchemaIndexKeySuffix)
+	}
+}
+
+// stripTableRows returns a meta.k8s.io/v1 Table body carrying only the
+// columnDefinitions from the input Table (rows removed). ok is false when the
+// input isn't a Table with column definitions.
+func stripTableRows(body []byte) ([]byte, bool) {
+	var t struct {
+		APIVersion        string          `json:"apiVersion"`
+		Kind              string          `json:"kind"`
+		ColumnDefinitions json.RawMessage `json:"columnDefinitions"`
+	}
+	if err := json.Unmarshal(body, &t); err != nil || len(t.ColumnDefinitions) == 0 {
+		return nil, false
+	}
+	out, err := json.Marshal(map[string]any{
+		"apiVersion":        firstNonEmpty(t.APIVersion, "meta.k8s.io/v1"),
+		"kind":              firstNonEmpty(t.Kind, "Table"),
+		"metadata":          map[string]any{"resourceVersion": "0"},
+		"columnDefinitions": t.ColumnDefinitions,
+		"rows":              []any{},
+	})
+	if err != nil {
+		return nil, false
+	}
+	return out, true
 }
 
 func hasAllDirective(resources []config.Resource) bool {

@@ -2377,3 +2377,129 @@ func TestFetchResource_ExplicitNamespaceWarnDedup(t *testing.T) {
 		t.Errorf("expected exactly 1 [warn] for duplicate resource, got %d:\n%s", count, buf.String())
 	}
 }
+
+// tableSchemaServer serves core discovery plus Table responses used by the
+// column-schema sweep. configmaps/componentstatuses return a Table; secrets
+// return 403 (RBAC); bindings is not list-capable.
+func tableSchemaServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	coreList := `{"kind":"APIResourceList","groupVersion":"v1","resources":[
+		{"name":"pods","namespaced":true,"kind":"Pod","verbs":["get","list","watch"]},
+		{"name":"configmaps","namespaced":true,"kind":"ConfigMap","verbs":["get","list","watch"]},
+		{"name":"secrets","namespaced":true,"kind":"Secret","verbs":["get","list","watch"]},
+		{"name":"bindings","namespaced":true,"kind":"Binding","verbs":["create"]},
+		{"name":"componentstatuses","namespaced":false,"kind":"ComponentStatus","verbs":["get","list"]}
+	]}`
+	table := func(dataCol string) string {
+		return `{"kind":"Table","apiVersion":"meta.k8s.io/v1","columnDefinitions":[
+			{"name":"Name","type":"string"},{"name":"` + dataCol + `","type":"string"},{"name":"Age","type":"string"}],
+			"rows":[{"cells":["sensitive-name","SECRET-VALUE","5m"],
+			"object":{"kind":"PartialObjectMetadata","apiVersion":"meta.k8s.io/v1","metadata":{"name":"sensitive-name","namespace":"default"}}}]}`
+	}
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		isTable := strings.Contains(r.Header.Get("Accept"), "as=Table")
+		switch r.URL.Path {
+		case "/version":
+			fmt.Fprint(w, `{"gitVersion":"v1.29.0"}`)
+		case "/api/v1":
+			fmt.Fprint(w, coreList)
+		case "/apis":
+			fmt.Fprint(w, `{"kind":"APIGroupList","apiVersion":"v1","groups":[]}`)
+		case "/api/v1/configmaps":
+			if isTable {
+				fmt.Fprint(w, table("Data"))
+				return
+			}
+			fmt.Fprint(w, `{"kind":"List","apiVersion":"v1","items":[]}`)
+		case "/api/v1/componentstatuses":
+			if isTable {
+				fmt.Fprint(w, table("Status"))
+				return
+			}
+			fmt.Fprint(w, `{"kind":"List","apiVersion":"v1","items":[]}`)
+		case "/api/v1/secrets":
+			// RBAC-denied — the sweep must skip this kind, not fail.
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprint(w, `{"kind":"Status","apiVersion":"v1","status":"Failure","code":403}`)
+		default:
+			fmt.Fprint(w, `{"kind":"List","apiVersion":"v1","items":[]}`)
+		}
+	}))
+	return srv
+}
+
+func findRecord(ss *sliceSink, apiPath string) *Record {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	for _, r := range ss.records {
+		if r.APIPath == apiPath {
+			return r
+		}
+	}
+	return nil
+}
+
+func TestCaptureCoreTableSchemas(t *testing.T) {
+	srv := tableSchemaServer(t)
+	defer srv.Close()
+
+	cfg := &config.Config{
+		DurationRaw: "500ms",
+		Duration:    500 * time.Millisecond,
+		Output:      filepath.Join(t.TempDir(), "capture.kshrk"),
+		Resources: []config.Resource{
+			// Only pods is targeted; the sweep should cover the other native kinds.
+			{Version: "v1", Resource: "pods", Namespaces: []string{"default"},
+				IntervalRaw: "200ms", Interval: 200 * time.Millisecond},
+		},
+	}
+	eng := newEngineWith(cfg, srv.Client(), srv.URL, false)
+	ss := &sliceSink{}
+	eng.sink = ss
+	if _, err := eng.Run(); err != nil {
+		t.Fatalf("engine.Run() error: %v", err)
+	}
+
+	// configmaps: schema captured, rows stripped, columnDefinitions kept.
+	cm := findRecord(ss, "/api/v1/configmaps?as=TableSchema")
+	if cm == nil {
+		t.Fatal("expected a ?as=TableSchema record for configmaps")
+	}
+	var tbl struct {
+		Kind              string            `json:"kind"`
+		ColumnDefinitions []json.RawMessage `json:"columnDefinitions"`
+		Rows              []json.RawMessage `json:"rows"`
+	}
+	if err := json.Unmarshal(cm.ResponseBody, &tbl); err != nil {
+		t.Fatalf("schema body parse: %v", err)
+	}
+	if tbl.Kind != "Table" || len(tbl.ColumnDefinitions) != 3 {
+		t.Errorf("schema = kind %q, %d columns; want Table with 3 columns", tbl.Kind, len(tbl.ColumnDefinitions))
+	}
+	if len(tbl.Rows) != 0 {
+		t.Errorf("schema must have rows stripped, got %d rows", len(tbl.Rows))
+	}
+	// Privacy: no object/cell data may survive in a schema record.
+	if bytes.Contains(cm.ResponseBody, []byte("sensitive-name")) || bytes.Contains(cm.ResponseBody, []byte("SECRET-VALUE")) {
+		t.Errorf("schema record leaked row data: %s", cm.ResponseBody)
+	}
+
+	// componentstatuses (cluster-scoped, listable) also captured.
+	if findRecord(ss, "/api/v1/componentstatuses?as=TableSchema") == nil {
+		t.Error("expected a ?as=TableSchema record for componentstatuses")
+	}
+	// secrets: RBAC-denied → skipped, not failed.
+	if findRecord(ss, "/api/v1/secrets?as=TableSchema") != nil {
+		t.Error("RBAC-denied secrets must not produce a schema record")
+	}
+	// pods: already targeted → no schema record (it has a full ?as=Table).
+	if findRecord(ss, "/api/v1/pods?as=TableSchema") != nil {
+		t.Error("targeted pods must not get a redundant schema record")
+	}
+	// bindings: not list-capable → skipped.
+	if findRecord(ss, "/api/v1/bindings?as=TableSchema") != nil {
+		t.Error("non-listable bindings must not get a schema record")
+	}
+}

@@ -510,6 +510,84 @@ func TestRenderTable_ZeroAtUsesCaptureEnd(t *testing.T) {
 	}
 }
 
+// TestCapturedSchema_UntargetedKindUsesClusterColumns verifies that a native
+// kind with no built-in printer, captured only as a columns-only ?as=TableSchema
+// at the cluster path, renders those cluster columns for a namespaced request
+// (exercising the cluster-path fallback), with non-metadata cells null.
+func TestCapturedSchema_UntargetedKindUsesClusterColumns(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	schema := `{"kind":"Table","apiVersion":"meta.k8s.io/v1","columnDefinitions":[
+      {"name":"Name","type":"string"},{"name":"Min Available","type":"string"},
+      {"name":"Allowed Disruptions","type":"integer"},{"name":"Age","type":"date"}],"rows":[]}`
+	// Schema is recorded once at the cluster path.
+	store := buildTestStoreWithWatch(t, map[string]watchTestRecord{
+		"/apis/policy/v1/poddisruptionbudgets?as=TableSchema": {id: "pdb", at: from, body: schema},
+	}, nil)
+	h := newHandler(store, time.Time{}, false)
+
+	// Namespaced request → must fall back to the cluster-path schema.
+	body := `{"items":[{"metadata":{"name":"web","namespace":"default","creationTimestamp":"2026-04-09T09:00:00Z"}}]}`
+	now := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	tb, ok := h.renderResourceTable("/apis/policy/v1/namespaces/default/poddisruptionbudgets", []byte(body), now)
+	if !ok {
+		t.Fatal("render ok=false")
+	}
+	r := decodeTable(t, tb)
+	var names []string
+	vals := map[string]any{}
+	types := map[string]string{}
+	for i, c := range r.ColumnDefinitions {
+		names = append(names, c.Name)
+		types[c.Name] = c.Type
+		vals[c.Name] = r.Rows[0].Cells[i]
+	}
+	want := []string{"Name", "Min Available", "Allowed Disruptions", "Age"}
+	if fmt.Sprint(names) != fmt.Sprint(want) {
+		t.Errorf("columns = %v, want %v (cluster schema)", names, want)
+	}
+	wantCell(t, vals, "Name", "web")
+	if vals["Min Available"] != nil {
+		t.Errorf("non-metadata cell should be null, got %v", vals["Min Available"])
+	}
+	if types["Age"] != "string" || fmt.Sprint(vals["Age"]) != "60m" {
+		t.Errorf("Age = (%q,%v), want (string,60m)", types["Age"], vals["Age"])
+	}
+}
+
+// TestCapturedSchema_BindsBuiltinCells verifies captured cluster columns take
+// precedence over the built-in printer's columns, while still using the built-in
+// cell logic for a kind kshrk knows (here: Deployment READY = ready/desired).
+func TestCapturedSchema_BindsBuiltinCells(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	schema := `{"kind":"Table","apiVersion":"meta.k8s.io/v1","columnDefinitions":[
+      {"name":"Name","type":"string"},{"name":"Ready","type":"string"},{"name":"Age","type":"date"}],"rows":[]}`
+	store := buildTestStoreWithWatch(t, map[string]watchTestRecord{
+		"/apis/apps/v1/deployments?as=TableSchema": {id: "dep", at: from, body: schema},
+	}, nil)
+	h := newHandler(store, time.Time{}, false)
+
+	body := `{"metadata":{"name":"web","namespace":"default","creationTimestamp":"2026-04-09T09:00:00Z"},
+      "spec":{"replicas":3},"status":{"readyReplicas":2}}`
+	now := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	tb, ok := h.renderResourceTable("/apis/apps/v1/namespaces/default/deployments/web", []byte(body), now)
+	if !ok {
+		t.Fatal("render ok=false")
+	}
+	r := decodeTable(t, tb)
+	var names []string
+	vals := map[string]any{}
+	for i, c := range r.ColumnDefinitions {
+		names = append(names, c.Name)
+		vals[c.Name] = r.Rows[0].Cells[i]
+	}
+	// Cluster schema had only Name/Ready/Age (not the built-in's Up-To-Date etc.).
+	if fmt.Sprint(names) != fmt.Sprint([]string{"Name", "Ready", "Age"}) {
+		t.Errorf("columns = %v, want cluster schema [Name Ready Age]", names)
+	}
+	// Ready cell computed by the built-in Deployment printer.
+	wantCell(t, vals, "Ready", "2/3")
+}
+
 // getTable issues a kubectl-style Table request and returns the decoded Table.
 func getTable(t *testing.T, url string) tblResp {
 	t.Helper()

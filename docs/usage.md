@@ -675,22 +675,32 @@ verbatim when it fully covers a request — the most faithful output, using the
 real cluster's exact cells. When a request isn't covered by a captured Table —
 objects created in a writable overlay, or kinds and captures without a stored
 Table — k8shark **computes** a Table so the output still matches a live cluster,
-in this order:
+choosing columns in this order:
 
-1. a **built-in printer** for core/native kinds (Node, Pod, Deployment,
+1. a **CRD printer** built from the captured CRD's `additionalPrinterColumns`
+   (JSONPath), for custom resources;
+2. the **captured cluster `columnDefinitions`** — a full `?as=Table` for a
+   targeted kind, or the columns-only `?as=TableSchema` recorded for every
+   list-capable native kind on each capture (see
+   [archive format](archive-format.md#table-response-keys)). These are the source
+   cluster's exact columns/order (and `-o wide` priorities) for its Kubernetes
+   version; per-object cells are computed by the built-in printer for the kind
+   where one exists, otherwise metadata columns (Name/Namespace/Age) are filled
+   and the rest are `null`;
+3. a **built-in printer** for core/native kinds (Node, Pod, Deployment,
    ReplicaSet, StatefulSet, DaemonSet, ReplicationController, Job, CronJob,
    Service, Endpoints, Ingress, ConfigMap, Secret, PersistentVolumeClaim,
-   PersistentVolume, Namespace, ServiceAccount, Event) — columns mirror upstream
-   kubectl, including `-o wide` columns;
-2. a **CRD printer** built from the captured CRD's
-   `additionalPrinterColumns` (JSONPath), for custom resources;
-3. the **captured `columnDefinitions`** for the kind, with metadata-only cells;
+   PersistentVolume, Namespace, ServiceAccount, Event) — a fallback used when no
+   captured columns are available (e.g. RBAC-denied schema, older captures);
+   columns mirror upstream kubectl, including `-o wide` columns;
 4. the generic **NAME / (NAMESPACE) / AGE** table.
 
-Reimplementing kubectl's printers is inherently partial: a curated core set is
-covered exactly, and a few computed cells are simplified (e.g. Pod `STATUS`
-approximates kubectl's phase/container-reason logic). Read-only replay of a
-captured object always uses the verbatim captured Table.
+Because every capture records column schemas for native kinds, `kubectl get` on
+overlay-created or untargeted core objects reflects the source cluster's columns.
+The built-in printers remain a best-effort fallback: they're a curated set and a
+few computed cells are simplified (e.g. Pod `STATUS` approximates kubectl's
+phase/container-reason logic). Read-only replay of a captured object always uses
+the verbatim captured Table.
 
 ---
 
