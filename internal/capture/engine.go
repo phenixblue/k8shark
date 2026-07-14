@@ -660,9 +660,10 @@ const tableIndexKeySuffix = "?as=Table"
 
 // tableSchemaIndexKeySuffix marks a columns-only Table record: a captured
 // meta.k8s.io/v1 Table with its rows stripped, keeping only columnDefinitions.
-// It is written by captureCoreTableSchemas for native kinds that aren't
-// otherwise targeted, so the replay server can render kubectl-accurate columns
-// for objects (overlay-created or untargeted) that have no full captured Table —
+// captureCoreTableSchemas writes it for native kinds whose cluster-scoped list
+// path isn't already captured as a full ?as=Table (untargeted kinds, and kinds
+// targeted only in specific namespaces), so the replay server can render
+// kubectl-accurate columns for objects that have no full captured Table —
 // without ever persisting those kinds' object data. The sentinel cannot appear
 // in real API paths.
 const tableSchemaIndexKeySuffix = "?as=TableSchema"
