@@ -416,7 +416,7 @@
     return el('div', { class: 'state' }, msg || 'Loading…');
   }
   function errorState(msg) {
-    return el('div', { class: 'state' }, 'Error: ' + msg);
+    return el('div', { class: 'state' }, 'Error: ' + safeErrorText(msg));
   }
 
   // ── Shared bits ──────────────────────────────────────────────────────────
