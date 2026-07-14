@@ -45,8 +45,8 @@
       if (ok) {
         try {
           const walker = document.createTreeWalker(node, NodeFilter.SHOW_ELEMENT);
-          // For elements, include the element itself; for fragments, start at the first element child.
-          let cur = node.nodeType === Node.ELEMENT_NODE ? node : walker.nextNode();
+          // Start at the first descendant element; root ELEMENT_NODE was already validated above.
+          let cur = walker.nextNode();
           while (cur) {
             const tn = (cur.tagName || '').toUpperCase();
             if (FORBIDDEN_CHILD_TAGS_SET.has(tn)) { ok = false; break; }
