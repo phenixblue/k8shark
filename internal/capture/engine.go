@@ -252,9 +252,10 @@ func (e *Engine) Run() (*CaptureSummary, error) {
 
 	var wg sync.WaitGroup
 
-	// Always record columns-only Table schemas for native kinds not otherwise
-	// targeted, so the replay server renders kubectl-accurate columns for
-	// overlay-created and untargeted objects. Runs concurrently with polling.
+	// Record columns-only Table schemas for native kinds whose cluster-scoped
+	// list path isn't already captured as a full ?as=Table, so the replay server
+	// renders kubectl-accurate columns for overlay-created and untargeted
+	// objects. Runs concurrently with polling.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -1253,7 +1254,13 @@ func (e *Engine) captureCoreTableSchemas(ctx context.Context) {
 		wg.Add(1)
 		go func(k nativeSchemaKind) {
 			defer wg.Done()
-			sem <- struct{}{}
+			// Respect cancellation while waiting for a worker slot, so SIGINT/
+			// SIGTERM isn't delayed by blocked goroutines (this runs in Run's wg).
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				return
+			}
 			defer func() { <-sem }()
 			e.fetchTableSchema(ctx, k)
 		}(k)
