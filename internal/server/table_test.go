@@ -203,6 +203,29 @@ func TestDeploymentPrinter(t *testing.T) {
 	}
 }
 
+func TestCronJobPrinter_ContainersFromJobTemplate(t *testing.T) {
+	body := `{"metadata":{"name":"cj","namespace":"default"},
+      "spec":{"schedule":"*/5 * * * *",
+        "jobTemplate":{"spec":{"template":{"spec":{"containers":[
+          {"name":"worker","image":"busybox:1.36"}]}}}}}}`
+	vals, _ := renderOne(t, "/apis/batch/v1/namespaces/default/cronjobs", body)
+	wantCell(t, vals, "Schedule", "*/5 * * * *")
+	// -o wide columns must resolve through the nested jobTemplate.
+	wantCell(t, vals, "Containers", "worker")
+	wantCell(t, vals, "Images", "busybox:1.36")
+}
+
+func TestReplicationControllerPrinter_PlainSelector(t *testing.T) {
+	// ReplicationController uses a plain map selector (no matchLabels).
+	body := `{"metadata":{"name":"rc","namespace":"default"},
+      "spec":{"replicas":2,"selector":{"app":"legacy"},
+        "template":{"spec":{"containers":[{"name":"c","image":"nginx"}]}}},
+      "status":{"replicas":2,"readyReplicas":2}}`
+	vals, _ := renderOne(t, "/api/v1/namespaces/default/replicationcontrollers", body)
+	wantCell(t, vals, "Desired", "2")
+	wantCell(t, vals, "Selector", "app=legacy")
+}
+
 func TestServicePrinter_Ports(t *testing.T) {
 	body := `{"metadata":{"name":"svc","namespace":"default"},
       "spec":{"type":"NodePort","clusterIP":"10.96.0.1",

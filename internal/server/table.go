@@ -448,9 +448,19 @@ func jobStatus(o map[string]any) any {
 	return "Running"
 }
 
+// podContainers returns the pod template's containers, handling both the direct
+// template (Deployment/RS/StatefulSet/DaemonSet/Job) and the nested jobTemplate
+// (CronJob).
+func podContainers(o map[string]any) []any {
+	if c := marr(o, "spec", "template", "spec", "containers"); len(c) > 0 {
+		return c
+	}
+	return marr(o, "spec", "jobTemplate", "spec", "template", "spec", "containers")
+}
+
 func containersCol(o map[string]any) any {
 	var names []string
-	for _, c := range marr(o, "spec", "template", "spec", "containers") {
+	for _, c := range podContainers(o) {
 		names = append(names, mstr(asMap(c), "name"))
 	}
 	return strings.Join(names, ",")
@@ -458,14 +468,19 @@ func containersCol(o map[string]any) any {
 
 func imagesCol(o map[string]any) any {
 	var imgs []string
-	for _, c := range marr(o, "spec", "template", "spec", "containers") {
+	for _, c := range podContainers(o) {
 		imgs = append(imgs, mstr(asMap(c), "image"))
 	}
 	return strings.Join(imgs, ",")
 }
 
+// selectorCol handles both apps/v1 label selectors (spec.selector.matchLabels)
+// and the plain map selector used by ReplicationController/Service (spec.selector).
 func selectorCol(o map[string]any) any {
-	return orNone(mapString(mget(o, "spec", "selector", "matchLabels")))
+	if s := mapString(mget(o, "spec", "selector", "matchLabels")); s != "" {
+		return s
+	}
+	return orNone(mapString(mget(o, "spec", "selector")))
 }
 
 // mapString formats a string map as "k=v,k2=v2" (sorted). Non-map / empty → "".
@@ -668,12 +683,14 @@ func renderTableFromColumns(cols []tableCol, objs []map[string]any, now time.Tim
 // body isn't decodable (caller falls back).
 func (h *handler) renderResourceTable(path string, body []byte, at time.Time) ([]byte, bool) {
 	trimmed := strings.TrimSuffix(path, "/")
+	listPath := trimmed
 	group, version, resource, _ := parseAPIPath(trimmed)
 	if resource == "" {
 		// parseAPIPath only resolves list paths; a single-object GET
 		// (.../<resource>/<name>) resolves after dropping the trailing name.
 		if i := strings.LastIndex(trimmed, "/"); i > 0 {
-			group, version, resource, _ = parseAPIPath(trimmed[:i])
+			listPath = trimmed[:i]
+			group, version, resource, _ = parseAPIPath(listPath)
 		}
 	}
 	if resource == "" {
@@ -685,8 +702,9 @@ func (h *handler) renderResourceTable(path string, body []byte, at time.Time) ([
 		Items []json.RawMessage `json:"items"`
 	}
 	_ = json.Unmarshal(body, &env)
+	singleObject := env.Items == nil
 	raws := env.Items
-	if raws == nil {
+	if singleObject {
 		raws = []json.RawMessage{json.RawMessage(body)}
 	}
 	objs := make([]map[string]any, 0, len(raws))
@@ -697,6 +715,11 @@ func (h *handler) renderResourceTable(path string, body []byte, at time.Time) ([
 		}
 		objs = append(objs, m)
 	}
+	// A single-object request whose body didn't decode isn't renderable — let the
+	// caller fall back rather than emit an empty (rows: []) Table.
+	if singleObject && len(objs) == 0 {
+		return nil, false
+	}
 
 	// 1. Built-in printer.
 	if cols, ok := builtinPrinters[printerKey(group, resource)]; ok {
@@ -706,8 +729,9 @@ func (h *handler) renderResourceTable(path string, body []byte, at time.Time) ([
 	if cols := h.crdPrinterColumns(group, version, resource, at); cols != nil {
 		return renderTableFromColumns(cols, objs, at), true
 	}
-	// 3. Captured columnDefinitions for the kind + metadata-only cells.
-	if cols := h.capturedColumns(path, at); cols != nil {
+	// 3. Captured columnDefinitions for the kind + metadata-only cells. Use the
+	// list path so a single-object GET reuses the list's stored columns.
+	if cols := h.capturedColumns(listPath, at); cols != nil {
 		return renderTableFromColumns(cols, objs, at), true
 	}
 	// 4. Generic.
