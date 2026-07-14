@@ -10,6 +10,18 @@ import (
 // It is written to a temp file and passed to `kwok --config` by --with-kwok.
 var KwokStages []byte
 
+// validateKwokFlags rejects flag combinations that would make --with-kwok fail
+// silently. KWOK only advances pods that are bound to a node, so the scheduling
+// shim must be on; --schedule-pods=false with --with-kwok would leave pods
+// unscheduled and the Pending→Running loop would never fire.
+func validateKwokFlags(withKwok, schedulePods bool) error {
+	if withKwok && !schedulePods {
+		return fmt.Errorf("--with-kwok requires the pod-scheduling shim; remove --schedule-pods=false " +
+			"(KWOK only runs pods that are bound to a node)")
+	}
+	return nil
+}
+
 // startKwok launches a detected `kwok` binary against the mock server's
 // kubeconfig, managing all nodes and using the bundled Stages. It returns a
 // cleanup func that stops kwok and removes the temp stages file. An error is

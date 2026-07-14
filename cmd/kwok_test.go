@@ -22,3 +22,23 @@ func TestStartKwok_NotInstalled(t *testing.T) {
 		t.Errorf("error = %q, want an install hint mentioning PATH", err.Error())
 	}
 }
+
+// TestValidateKwokFlags: --with-kwok with the scheduling shim disabled is
+// rejected (it would leave pods unscheduled and never reach Running).
+func TestValidateKwokFlags(t *testing.T) {
+	cases := []struct {
+		withKwok, schedulePods, wantErr bool
+	}{
+		{false, true, false},  // no kwok, shim on
+		{false, false, false}, // no kwok, shim off — fine
+		{true, true, false},   // kwok + shim on — the supported combo
+		{true, false, true},   // kwok + shim off — contradictory, rejected
+	}
+	for _, c := range cases {
+		err := validateKwokFlags(c.withKwok, c.schedulePods)
+		if (err != nil) != c.wantErr {
+			t.Errorf("validateKwokFlags(withKwok=%v, schedulePods=%v) err=%v, wantErr=%v",
+				c.withKwok, c.schedulePods, err, c.wantErr)
+		}
+	}
+}

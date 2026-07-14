@@ -66,6 +66,9 @@ func runReplay(cmd *cobra.Command, args []string) error {
 	withKwok, _ := cmd.Flags().GetBool("with-kwok")
 	verbose, _ := cmd.Root().PersistentFlags().GetBool("verbose")
 
+	if err := validateKwokFlags(withKwok, schedulePods); err != nil {
+		return err
+	}
 	// --with-kwok drives pod/node lifecycle against the overlay, so it implies
 	// --writable (and needs the scheduling shim on to bind pods to nodes).
 	if withKwok {
