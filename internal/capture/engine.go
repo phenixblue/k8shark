@@ -1225,8 +1225,12 @@ var nativeAPIGroups = map[string]bool{
 }
 
 // nativeSchemaKind is a list-capable native GVR discovered from the API server.
+// namespaces holds concrete namespaces the capture targets for this kind (empty
+// for untargeted or wildcard kinds); they serve as RBAC-allowed fallbacks when
+// the cluster-wide list is forbidden.
 type nativeSchemaKind struct {
 	group, version, resource string
+	namespaces               []string
 }
 
 // captureCoreTableSchemas records the Table columnDefinitions (rows stripped)
@@ -1283,12 +1287,22 @@ func (e *Engine) captureCoreTableSchemas(ctx context.Context) {
 func (e *Engine) nativeListableKinds() []nativeSchemaKind {
 	type gvr struct{ group, version, resource string }
 	clusterCaptured := make(map[gvr]bool, len(e.cfg.Resources))
+	nsByGVR := make(map[gvr][]string)
 	for _, r := range e.cfg.Resources {
 		if r.All {
 			continue
 		}
+		key := gvr{r.Group, r.Version, r.Resource}
 		if len(r.Namespaces) == 0 {
-			clusterCaptured[gvr{r.Group, r.Version, r.Resource}] = true
+			clusterCaptured[key] = true
+			continue
+		}
+		// Concrete namespaces are RBAC-allowed fallbacks for the schema fetch
+		// (skip the "*" wildcard — that path polls cluster-wide already).
+		for _, ns := range r.Namespaces {
+			if ns != "" && ns != "*" {
+				nsByGVR[key] = append(nsByGVR[key], ns)
+			}
 		}
 	}
 
@@ -1304,7 +1318,7 @@ func (e *Engine) nativeListableKinds() []nativeSchemaKind {
 			if clusterCaptured[key] {
 				continue
 			}
-			out = append(out, nativeSchemaKind{group, version, r})
+			out = append(out, nativeSchemaKind{group, version, r, nsByGVR[key]})
 		}
 	}
 
@@ -1389,22 +1403,38 @@ func listableResources(body []byte) []string {
 }
 
 // fetchTableSchema fetches a single-row Table for a kind and stores a
-// columns-only record (rows stripped) under the schema index key. RBAC denials
-// and non-Table responses are skipped silently.
+// columns-only record (rows stripped) at the kind's cluster-path schema key.
+// It tries the cluster-wide list first; if that fails (e.g. cluster-wide list is
+// RBAC-forbidden while specific namespaces are allowed), it falls back to the
+// kind's targeted namespaces — columnDefinitions are namespace-independent, so
+// the schema is still stored under the cluster path. RBAC denials and non-Table
+// responses are skipped silently.
 func (e *Engine) fetchTableSchema(ctx context.Context, k nativeSchemaKind) {
 	clusterPath := buildAPIPath(k.group, k.version, k.resource, "")
-	// ?limit=1 minimizes data transfer; we only want the columnDefinitions.
-	body, code := e.rawFetch(ctx, clusterPath+"?limit=1", tableIndexKeySuffix)
-	if body == nil || code != http.StatusOK {
+
+	// Candidate list paths: cluster-wide (one fetch covers all namespaces), then
+	// any targeted namespace as an RBAC-allowed fallback.
+	paths := []string{clusterPath}
+	for _, ns := range k.namespaces {
+		paths = append(paths, buildAPIPath(k.group, k.version, k.resource, ns))
+	}
+
+	for _, p := range paths {
+		// ?limit=1 minimizes data transfer; we only want the columnDefinitions.
+		body, code := e.rawFetch(ctx, p+"?limit=1", tableIndexKeySuffix)
+		if body == nil || code != http.StatusOK {
+			continue
+		}
+		schema, ok := stripTableRows(body)
+		if !ok {
+			continue // not a Table (kind doesn't support server-side printing)
+		}
+		// Store at the cluster path so the replay server finds it for any namespace.
+		e.storeRecord(clusterPath+tableSchemaIndexKeySuffix, schema, code, false)
+		if e.verbose {
+			fmt.Fprintf(os.Stdout, "  [schema] %s%s\n", clusterPath, tableSchemaIndexKeySuffix)
+		}
 		return
-	}
-	schema, ok := stripTableRows(body)
-	if !ok {
-		return // not a Table (kind doesn't support server-side printing)
-	}
-	e.storeRecord(clusterPath+tableSchemaIndexKeySuffix, schema, code, false)
-	if e.verbose {
-		fmt.Fprintf(os.Stdout, "  [schema] %s%s\n", clusterPath, tableSchemaIndexKeySuffix)
 	}
 }
 

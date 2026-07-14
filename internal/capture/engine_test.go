@@ -2407,7 +2407,18 @@ func tableSchemaServer(t *testing.T) *httptest.Server {
 			fmt.Fprint(w, coreList)
 		case "/apis":
 			fmt.Fprint(w, `{"kind":"APIGroupList","apiVersion":"v1","groups":[]}`)
-		case "/api/v1/configmaps", "/api/v1/pods":
+		case "/api/v1/configmaps":
+			if isTable {
+				fmt.Fprint(w, table("Data"))
+				return
+			}
+			fmt.Fprint(w, `{"kind":"List","apiVersion":"v1","items":[]}`)
+		case "/api/v1/pods":
+			// Cluster-wide list is RBAC-forbidden for pods; the namespaced path
+			// below is allowed — the sweep must fall back to it.
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprint(w, `{"kind":"Status","apiVersion":"v1","status":"Failure","code":403}`)
+		case "/api/v1/namespaces/default/pods":
 			if isTable {
 				fmt.Fprint(w, table("Data"))
 				return
@@ -2491,10 +2502,11 @@ func TestCaptureCoreTableSchemas(t *testing.T) {
 		t.Errorf("schema record leaked row data: %s", cm.ResponseBody)
 	}
 
-	// pods: namespace-scoped targeting → no cluster-path Table, so a cluster-path
-	// schema IS recorded (covers overlay objects in other namespaces).
+	// pods: namespace-scoped targeting with cluster-wide list RBAC-forbidden →
+	// the sweep falls back to the targeted namespace and still records the
+	// cluster-path schema (columns are namespace-independent).
 	if findRecord(ss, "/api/v1/pods?as=TableSchema") == nil {
-		t.Error("namespace-targeted pods should get a cluster-path schema record")
+		t.Error("namespace-targeted pods should get a cluster-path schema via namespace fallback")
 	}
 	// componentstatuses: cluster-wide targeted → already has ?as=Table → skipped.
 	if findRecord(ss, "/api/v1/componentstatuses?as=TableSchema") != nil {
