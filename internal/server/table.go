@@ -741,22 +741,32 @@ func (h *handler) renderResourceTable(path string, body []byte, at time.Time) ([
 		return nil, false
 	}
 
+	// Resolve the instant AGE is relative to. In replay/`--at` mode `at` is that
+	// instant. In plain `open` (at == zero, which the store reads as "latest"),
+	// fall back to the capture's end time so AGE reflects the captured cluster's
+	// clock rather than collapsing to "0s". (`at` is still used for the store
+	// lookups below, where zero correctly means "latest".)
+	now := at
+	if now.IsZero() && h.store != nil {
+		now = h.store.Metadata.CapturedUntil
+	}
+
 	// 1. Built-in printer.
 	if cols, ok := builtinPrinters[printerKey(group, resource)]; ok {
-		return renderTableFromColumns(cols, objs, at), true
+		return renderTableFromColumns(cols, objs, now), true
 	}
 	// 2. CRD additionalPrinterColumns (JSONPath).
 	if cols := h.crdPrinterColumns(group, version, resource, at); cols != nil {
-		return renderTableFromColumns(cols, objs, at), true
+		return renderTableFromColumns(cols, objs, now), true
 	}
 	// 3. Captured columnDefinitions for the kind + metadata-only cells. Use the
 	// list path so a single-object GET reuses the list's stored columns.
 	if cols := h.capturedColumns(listPath, at); cols != nil {
-		return renderTableFromColumns(cols, objs, at), true
+		return renderTableFromColumns(cols, objs, now), true
 	}
 	// 4. Generic NAME / (NAMESPACE) / AGE — computed like the other tiers so AGE
 	// is a relative string (not a raw timestamp) and stays consistent.
-	return renderTableFromColumns(genericColumns(objs), objs, at), true
+	return renderTableFromColumns(genericColumns(objs), objs, now), true
 }
 
 // capturedColumns reuses the columnDefinitions from a captured Table for the

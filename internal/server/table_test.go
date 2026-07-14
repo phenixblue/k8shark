@@ -467,6 +467,35 @@ func TestGenericFallback_RelativeAge(t *testing.T) {
 	}
 }
 
+// TestRenderTable_ZeroAtUsesCaptureEnd verifies that in plain `open` mode (at ==
+// zero, meaning "latest"), computed-table AGE is relative to the capture's end
+// time rather than collapsing to "0s".
+func TestRenderTable_ZeroAtUsesCaptureEnd(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	store := buildTestStoreWithWatch(t, map[string]watchTestRecord{
+		podsPath: {id: "s", at: from, body: podList("p")},
+	}, nil)
+	store.Metadata.CapturedUntil = time.Date(2026, 4, 9, 11, 0, 0, 0, time.UTC)
+	h := newHandler(store, time.Time{}, false) // open mode, no --at → zero at
+
+	body := `{"items":[{"metadata":{"name":"n1","creationTimestamp":"2026-04-09T10:00:00Z"},
+      "status":{"conditions":[{"type":"Ready","status":"True"}]}}]}`
+	tb, ok := h.renderResourceTable("/api/v1/nodes", []byte(body), h.at)
+	if !ok {
+		t.Fatal("render ok=false")
+	}
+	r := decodeTable(t, tb)
+	var ageVal string
+	for i, c := range r.ColumnDefinitions {
+		if c.Name == "Age" {
+			ageVal = fmt.Sprint(r.Rows[0].Cells[i])
+		}
+	}
+	if ageVal != "60m" {
+		t.Errorf("open-mode zero-at Age = %q, want 60m (relative to CapturedUntil, not 0s)", ageVal)
+	}
+}
+
 // getTable issues a kubectl-style Table request and returns the decoded Table.
 func getTable(t *testing.T, url string) tblResp {
 	t.Helper()
