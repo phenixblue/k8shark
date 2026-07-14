@@ -653,7 +653,7 @@ The mock server is designed to be a drop-in replacement for `kubectl`'s real ser
 | `kubectl get <resource> -A` | ✅ aggregates across captured namespaces |
 | `kubectl get <resource> <name>` | ✅ extracted from parent list |
 | `kubectl get -o yaml / -o json` | ✅ |
-| `kubectl get -o wide` | ✅ uses captured Table column definitions |
+| `kubectl get -o wide` | ✅ captured Table columns when present, otherwise computed to match a live cluster (see below) |
 | `kubectl describe` | ✅ |
 | `kubectl explain` | ✅ uses captured OpenAPI spec |
 | Short names (`po`, `svc`, `deploy`, `pvc`, `pv`, …) | ✅ |
@@ -664,6 +664,31 @@ The mock server is designed to be a drop-in replacement for `kubectl`'s real ser
 | `kubectl exec` / `kubectl cp` / `kubectl port-forward` / `kubectl attach` | ⛔ returns `405 Method Not Allowed` with a clear error referencing k8shark capture replay |
 | `kubectl logs` | ✅ if captured via `logs: N` in capture config; helpful stub returned when not captured |
 | `kubectl top` | ❌ metrics API not captured |
+
+### How `kubectl get` tables are rendered
+
+`kubectl get` and `-o wide` are driven by server-side **Table** responses
+(`columnDefinitions` + per-object `cells`). k8shark serves the captured Table
+verbatim when it fully covers a request — the most faithful output, using the
+real cluster's exact cells. When a request isn't covered by a captured Table —
+objects created in a writable overlay, or kinds and captures without a stored
+Table — k8shark **computes** a Table so the output still matches a live cluster,
+in this order:
+
+1. a **built-in printer** for core/native kinds (Node, Pod, Deployment,
+   ReplicaSet, StatefulSet, DaemonSet, ReplicationController, Job, CronJob,
+   Service, Endpoints, Ingress, ConfigMap, Secret, PersistentVolumeClaim,
+   PersistentVolume, Namespace, ServiceAccount, Event) — columns mirror upstream
+   kubectl, including `-o wide` columns;
+2. a **CRD printer** built from the captured CRD's
+   `additionalPrinterColumns` (JSONPath), for custom resources;
+3. the **captured `columnDefinitions`** for the kind, with metadata-only cells;
+4. the generic **NAME / (NAMESPACE) / AGE** table.
+
+Reimplementing kubectl's printers is inherently partial: a curated core set is
+covered exactly, and a few computed cells are simplified (e.g. Pod `STATUS`
+approximates kubectl's phase/container-reason logic). Read-only replay of a
+captured object always uses the verbatim captured Table.
 
 ---
 

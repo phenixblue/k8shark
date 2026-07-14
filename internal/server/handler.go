@@ -444,6 +444,15 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 					h.writeStatus(w, http.StatusNotFound, fmt.Sprintf("%q was deleted in the writable overlay", path))
 					return
 				}
+				// Honor Table format (kubectl get <name>) for overlay objects.
+				if strings.Contains(r.Header.Get("Accept"), "as=Table") {
+					if tb, rok := h.renderResourceTable(path, e.obj, at); rok {
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(http.StatusOK)
+						_, _ = w.Write(tb)
+						return
+					}
+				}
 				writeJSON(w, http.StatusOK, json.RawMessage(e.obj))
 				return
 			}
@@ -599,9 +608,12 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 				return
 			}
 		}
-		// Last resort: synthesize a minimal Table from the list body (old captures).
-		// body is already selector-filtered above, so buildTable sees filtered items.
-		if tb, err2 := buildTable(body); err2 == nil {
+		// Compute a Table for objects not covered by a captured Table (writable
+		// overlay, or kinds/captures without a stored Table): built-in per-kind
+		// printers, else CRD additionalPrinterColumns, else captured
+		// columnDefinitions, else the generic buildTable. body is the merged,
+		// selector-filtered list (or a single object).
+		if tb, ok := h.renderResourceTable(path, body, at); ok {
 			body = tb
 		}
 	}
