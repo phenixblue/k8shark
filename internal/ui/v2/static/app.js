@@ -61,11 +61,13 @@
       if (c === null || c === undefined) continue;
       if (typeof c === 'string' || typeof c === 'number' || typeof c === 'bigint') {
         n.appendChild(document.createTextNode(String(c)));
-      } else if (isSafeChildNode(c)) {
-        n.appendChild(c);
-      } else {
-        n.appendChild(document.createTextNode(String(c)));
+        continue;
       }
+      if (isSafeChildNode(c)) {
+        n.appendChild(c);
+        continue;
+      }
+      n.appendChild(document.createTextNode(String(c)));
     }
     return n;
   };
