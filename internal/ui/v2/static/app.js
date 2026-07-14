@@ -8,8 +8,8 @@
   const $ = (id) => document.getElementById(id);
   const FORBIDDEN_CHILD_TAGS = ['script', 'iframe', 'object', 'embed', 'link', 'meta', 'style'];
   const FORBIDDEN_CHILD_TAGS_SET = new Set(FORBIDDEN_CHILD_TAGS.map((t) => t.toUpperCase()));
-  const URL_ATTRS = new Set(['href', 'src', 'xlink:href', 'formaction', 'action']);
-  const UNSAFE_URL_RE = /^\s*(?:javascript|vbscript|data)\s*:/i;
+  const URL_ATTRS = new Set(['href', 'src', 'xlink:href', 'formaction', 'action', 'poster', 'cite', 'background', 'longdesc']);
+  const UNSAFE_URL_RE = /^\s*(?:javascript|vbscript|data):/i;
   const hasUnsafeAttributes = (node) => {
     if (!node || node.nodeType !== Node.ELEMENT_NODE || !node.attributes) return false;
     for (const attr of node.attributes) {
