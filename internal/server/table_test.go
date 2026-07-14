@@ -415,6 +415,40 @@ func TestCapturedColumns_AgeTypeIsString(t *testing.T) {
 	}
 }
 
+// TestGenericFallback_RelativeAge verifies the last-resort generic table (no
+// built-in/CRD/captured columns) still emits AGE as a relative string of type
+// string, consistent with the computed tiers — not a raw timestamp.
+func TestGenericFallback_RelativeAge(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	store := buildTestStoreWithWatch(t, map[string]watchTestRecord{
+		podsPath: {id: "s", at: from, body: podList("p")},
+	}, nil)
+	h := newHandler(store, time.Time{}, false)
+
+	// limitranges has no built-in printer, no CRD, and no captured Table here.
+	body := `{"items":[{"metadata":{"name":"lr","namespace":"default","creationTimestamp":"2026-04-09T09:30:00Z"}}]}`
+	now := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	tb, ok := h.renderResourceTable("/api/v1/namespaces/default/limitranges", []byte(body), now)
+	if !ok {
+		t.Fatal("render ok=false")
+	}
+	r := decodeTable(t, tb)
+	var names []string
+	var ageType, ageVal string
+	for i, c := range r.ColumnDefinitions {
+		names = append(names, c.Name)
+		if c.Name == "Age" {
+			ageType, ageVal = c.Type, fmt.Sprint(r.Rows[0].Cells[i])
+		}
+	}
+	if fmt.Sprint(names) != fmt.Sprint([]string{"Name", "Namespace", "Age"}) {
+		t.Errorf("generic columns = %v, want [Name Namespace Age]", names)
+	}
+	if ageType != "string" || ageVal != "30m" {
+		t.Errorf("generic Age = (%q,%q), want (string,30m)", ageType, ageVal)
+	}
+}
+
 // getTable issues a kubectl-style Table request and returns the decoded Table.
 func getTable(t *testing.T, url string) tblResp {
 	t.Helper()

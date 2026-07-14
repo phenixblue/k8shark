@@ -679,6 +679,24 @@ func renderTableFromColumns(cols []tableCol, objs []map[string]any, now time.Tim
 	return out
 }
 
+// genericColumns is the last-resort column set (NAME, NAMESPACE if any object is
+// namespaced, AGE) for kinds with no built-in/CRD/captured columns.
+func genericColumns(objs []map[string]any) []tableCol {
+	namespaced := false
+	for _, o := range objs {
+		if mstr(o, "metadata", "namespace") != "" {
+			namespaced = true
+			break
+		}
+	}
+	cols := []tableCol{nameColumn()}
+	if namespaced {
+		cols = append(cols, col("Namespace", "string", "Namespace",
+			func(o map[string]any) any { return mstr(o, "metadata", "namespace") }))
+	}
+	return append(cols, ageColumn())
+}
+
 // renderResourceTable renders a Table for the given list/single-object JSON body
 // using (in order) a built-in printer, the captured CRD's additionalPrinterColumns,
 // captured columnDefinitions, or the generic buildTable. Returns ok=false when the
@@ -736,11 +754,9 @@ func (h *handler) renderResourceTable(path string, body []byte, at time.Time) ([
 	if cols := h.capturedColumns(listPath, at); cols != nil {
 		return renderTableFromColumns(cols, objs, at), true
 	}
-	// 4. Generic.
-	if tb, err := buildTable(body); err == nil {
-		return tb, true
-	}
-	return nil, false
+	// 4. Generic NAME / (NAMESPACE) / AGE — computed like the other tiers so AGE
+	// is a relative string (not a raw timestamp) and stays consistent.
+	return renderTableFromColumns(genericColumns(objs), objs, at), true
 }
 
 // capturedColumns reuses the columnDefinitions from a captured Table for the
@@ -782,13 +798,27 @@ func (h *handler) capturedColumns(path string, at time.Time) []tableCol {
 	return cols
 }
 
-// crdPrinterColumns builds columns from the captured CRD's
-// spec.versions[version].additionalPrinterColumns (JSONPath cells). Returns nil
-// when the CRD isn't captured or has no additional columns.
+// crdPrinterColumns returns the CRD-derived columns for a kind, memoizing the
+// result (see handler.crdColsCache) so the CRD list isn't reconstructed+parsed
+// on every render.
 func (h *handler) crdPrinterColumns(group, version, resource string, at time.Time) []tableCol {
 	if group == "" {
 		return nil // core kinds are never CRDs
 	}
+	key := group + "/" + version + "/" + resource
+	if v, ok := h.crdColsCache.Load(key); ok {
+		cols, _ := v.([]tableCol)
+		return cols
+	}
+	cols := h.computeCRDPrinterColumns(group, version, resource, at)
+	h.crdColsCache.Store(key, cols)
+	return cols
+}
+
+// computeCRDPrinterColumns builds columns from the captured CRD's
+// spec.versions[version].additionalPrinterColumns (JSONPath cells). Returns nil
+// when the CRD isn't captured or has no additional columns.
+func (h *handler) computeCRDPrinterColumns(group, version, resource string, at time.Time) []tableCol {
 	crd := h.findCRD(group, resource, at)
 	if crd == nil {
 		return nil

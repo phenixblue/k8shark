@@ -35,6 +35,14 @@ type handler struct {
 	// captures, whose timeline requires diffing every snapshot.
 	timelineMu    sync.Mutex
 	timelineCache map[string][]replayEvent
+
+	// crdColsCache memoizes CRD-derived Table columns per "group/version/resource".
+	// A CRD's additionalPrinterColumns are effectively static, so resolving them
+	// once avoids reconstructing+parsing the whole CRD list on every Table render
+	// (ReconstructAt caches by exact clock time, so an advancing replay clock would
+	// otherwise defeat that cache). Negative results are cached too. Trade-off: a
+	// CRD created/changed mid-replay isn't reflected — acceptable for a mock.
+	crdColsCache sync.Map // map["group/version/resource"] -> []tableCol (may be nil)
 }
 
 func newHandler(store *CaptureStore, at time.Time, verbose bool) *handler {
@@ -716,78 +724,6 @@ func extractTableRow(tableBody []byte, name string) ([]byte, error) {
 		}
 	}
 	return nil, fmt.Errorf("row %q not found in table", name)
-}
-
-// buildTable synthesizes a minimal meta.k8s.io/v1 Table from raw list or
-// single-object JSON. This is a last-resort fallback only reached for captures
-// made before Table responses were stored during capture. New captures always
-// serve the real Table response captured from the live cluster, so no
-// resource-specific logic is needed here.
-func buildTable(body []byte) ([]byte, error) {
-	var envelope struct {
-		Items []json.RawMessage `json:"items"`
-	}
-	_ = json.Unmarshal(body, &envelope)
-	rawItems := envelope.Items
-	if rawItems == nil {
-		rawItems = []json.RawMessage{body}
-	}
-
-	type colDef struct {
-		Name        string `json:"name"`
-		Type        string `json:"type"`
-		Format      string `json:"format,omitempty"`
-		Description string `json:"description"`
-	}
-
-	hasNS := false
-	type objMeta struct {
-		Metadata struct {
-			Name              string `json:"name"`
-			Namespace         string `json:"namespace"`
-			CreationTimestamp string `json:"creationTimestamp"`
-		} `json:"metadata"`
-	}
-	metas := make([]objMeta, len(rawItems))
-	for i, raw := range rawItems {
-		_ = json.Unmarshal(raw, &metas[i])
-		if metas[i].Metadata.Namespace != "" {
-			hasNS = true
-		}
-	}
-
-	cols := []colDef{{Name: "Name", Type: "string", Format: "name", Description: "Name"}}
-	if hasNS {
-		cols = append(cols, colDef{Name: "Namespace", Type: "string", Description: "Namespace"})
-	}
-	cols = append(cols, colDef{Name: "Age", Type: "date", Description: "CreationTimestamp"})
-
-	rows := make([]map[string]any, 0, len(metas))
-	for _, m := range metas {
-		cells := []any{m.Metadata.Name}
-		if hasNS {
-			cells = append(cells, m.Metadata.Namespace)
-		}
-		cells = append(cells, m.Metadata.CreationTimestamp)
-		rows = append(rows, map[string]any{
-			"cells": cells,
-			"object": map[string]any{
-				"kind": "PartialObjectMetadata", "apiVersion": "meta.k8s.io/v1",
-				"metadata": map[string]any{
-					"name": m.Metadata.Name, "namespace": m.Metadata.Namespace,
-					"creationTimestamp": m.Metadata.CreationTimestamp,
-				},
-			},
-		})
-	}
-
-	return json.Marshal(map[string]any{
-		"apiVersion":        "meta.k8s.io/v1",
-		"kind":              "Table",
-		"metadata":          map[string]string{"resourceVersion": "0"},
-		"columnDefinitions": cols,
-		"rows":              rows,
-	})
 }
 
 // trySingleItemGet handles GET .../resource/{name} by finding the parent list
