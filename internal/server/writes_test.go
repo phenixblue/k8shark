@@ -858,3 +858,58 @@ func TestOverlay_WatchListInitialEvents(t *testing.T) {
 		t.Error("WatchList did not emit a BOOKMARK with the k8s.io/initial-events-end annotation")
 	}
 }
+
+// TestEnsureSchedulableNode_NodeSnapshotAfterWindowStart reproduces the bug where
+// a capture that contains a node still got a synthetic kwok-node-0 because the
+// node's first snapshot lands after the window start, so a check at `from` sees
+// "no nodes". Eager synthesis must evaluate node presence across the window.
+func TestEnsureSchedulableNode_NodeSnapshotAfterWindowStart(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	nodeAt := from.Add(30 * time.Second) // first /api/v1/nodes snapshot after `from`
+	to := from.Add(60 * time.Second)
+	store := buildTestStoreWithWatch(t, map[string]watchTestRecord{
+		"/api/v1/nodes": {id: "n", at: nodeAt,
+			body: `{"apiVersion":"v1","kind":"NodeList","items":[{"metadata":{"name":"node-real"}}]}`},
+	}, nil)
+	clock, _ := newTestClock(t, from, to, 1, false, true) // paused at from
+	h := newHandler(store, time.Time{}, false)
+	h.clock = clock
+	h.overlay = newOverlay()
+	h.schedulePods = true
+
+	// Precondition: at the window start the node snapshot isn't visible yet.
+	if got := h.knownNodeNamesAt(from); len(got) != 0 {
+		t.Fatalf("precondition: expected no nodes at window start, got %v", got)
+	}
+
+	h.ensureSchedulableNode()
+
+	names := h.knownNodeNamesAt(to)
+	if contains(names, defaultSyntheticNode) {
+		t.Errorf("synthesized %s for a capture that already has a node: %v", defaultSyntheticNode, names)
+	}
+	if !contains(names, "node-real") {
+		t.Errorf("expected captured node-real at window end, got %v", names)
+	}
+}
+
+// TestEnsureSchedulableNode_NodelessCaptureSynthesizes verifies the intended KWOK
+// behavior is preserved: a capture with no nodes still gets kwok-node-0.
+func TestEnsureSchedulableNode_NodelessCaptureSynthesizes(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	to := from.Add(60 * time.Second)
+	store := buildTestStoreWithWatch(t, map[string]watchTestRecord{
+		podsPath: {id: "p", at: from, body: podList("p")},
+	}, nil)
+	clock, _ := newTestClock(t, from, to, 1, false, true)
+	h := newHandler(store, time.Time{}, false)
+	h.clock = clock
+	h.overlay = newOverlay()
+	h.schedulePods = true
+
+	h.ensureSchedulableNode()
+
+	if !contains(h.knownNodeNamesAt(to), defaultSyntheticNode) {
+		t.Errorf("nodeless capture should synthesize %s", defaultSyntheticNode)
+	}
+}
