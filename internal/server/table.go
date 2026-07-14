@@ -801,7 +801,10 @@ func (h *handler) capturedColumns(path string, at time.Time) []tableCol {
 			// declared type must be string even if the captured column said "date".
 			c.typ = "string"
 		default:
-			c.cell = func(map[string]any) any { return "" }
+			// We can't recompute arbitrary captured columns for a new object, so
+			// return JSON null rather than "" — null is valid for any declared
+			// column type (integer/date/etc.), an empty string is not.
+			c.cell = func(map[string]any) any { return nil }
 		}
 		cols = append(cols, c)
 	}

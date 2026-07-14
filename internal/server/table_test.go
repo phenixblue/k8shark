@@ -420,9 +420,15 @@ func TestCapturedColumns_AgeTypeIsString(t *testing.T) {
 	r := decodeTable(t, tb)
 	var ageType, ageVal string
 	for i, c := range r.ColumnDefinitions {
-		if c.Name == "Age" {
+		switch c.Name {
+		case "Age":
 			ageType = c.Type
 			ageVal = fmt.Sprint(r.Rows[0].Cells[i])
+		case "Min Available":
+			// A non-metadata captured column can't be recomputed → JSON null.
+			if r.Rows[0].Cells[i] != nil {
+				t.Errorf("Min Available cell = %v, want null", r.Rows[0].Cells[i])
+			}
 		}
 	}
 	if ageType != "string" {
