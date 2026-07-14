@@ -427,7 +427,7 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 	// Writable replay: a single-object GET is served from the overlay when the
 	// overlay owns it (created/updated → the overlay copy; deleted → 404).
 	if h.overlay != nil {
-		h.overlay.syncEpoch(h.clock)
+		h.syncEpoch()
 		g, v, res, ns, name, sub := parseWritePath(strings.TrimSuffix(path, "/"))
 		// A single-object GET in a namespace deleted in the overlay is gone
 		// (cascade), even for captured objects.
@@ -633,7 +633,7 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 // and returns the highest overlay RV merged in (see applyToList) — the watch
 // burst uses it as its overlay-event skip floor. LIST callers ignore the RV.
 func (h *handler) mergeOverlayList(path string, body []byte) ([]byte, int64) {
-	h.overlay.syncEpoch(h.clock) // reset-on-loop before merging into a LIST
+	h.syncEpoch() // reset-on-loop before merging into a LIST
 	group, version, resource, namespace := parseAPIPath(strings.TrimSuffix(path, "/"))
 	if resource == "" {
 		return body, 0

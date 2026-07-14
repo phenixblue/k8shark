@@ -202,6 +202,34 @@ func TestSchedule_EagerNodeSynthesis(t *testing.T) {
 	}
 }
 
+// TestSchedule_ReensuresNodeAfterLoopReset: a loop-wrap reset clears the overlay
+// (dropping the synthetic node); syncEpoch must re-synthesize it so a nodeless
+// capture keeps a scheduling target across loops.
+func TestSchedule_ReensuresNodeAfterLoopReset(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, advance := newTestClock(t, from, from.Add(5*time.Second), 1, true, false) // loop
+	h := newHandler(schedStore(t, from), time.Time{}, false)                         // no captured nodes
+	h.clock = clock
+	h.overlay = newOverlay()
+	h.schedulePods = true
+	h.syncEpoch()             // record the starting epoch (no reset on first call)
+	h.ensureSchedulableNode() // synthetic node present
+
+	// A user object, to confirm the loop reset actually cleared overlay state.
+	h.overlay.store("", "v1", "configmaps", "default", "cm",
+		json.RawMessage(`{"metadata":{"name":"cm","namespace":"default"}}`), h.overlay.nextRV(0))
+
+	advance(6 * time.Second) // cross the window end → loop wrap (epoch advances)
+	h.syncEpoch()            // resets the overlay, then re-synthesizes the node
+
+	if _, ok := h.overlay.get("", "v1", "nodes", "", defaultSyntheticNode); !ok {
+		t.Error("synthetic node was not re-ensured after the loop reset")
+	}
+	if _, ok := h.overlay.get("", "v1", "configmaps", "default", "cm"); ok {
+		t.Error("loop reset did not clear the user overlay object")
+	}
+}
+
 // TestSchedule_OffByDefault: without the shim enabled, a pod keeps an empty
 // nodeName (default read-only-ish overlay semantics).
 func TestSchedule_OffByDefault(t *testing.T) {

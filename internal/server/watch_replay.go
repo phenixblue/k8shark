@@ -220,7 +220,7 @@ func (h *handler) streamReplayWatch(w http.ResponseWriter, r *http.Request, path
 	// Apply reset-on-loop before consulting the overlay (below, for the resume
 	// upper bound), so a loop wrap resets it even under watch-only traffic.
 	if h.overlay != nil {
-		h.overlay.syncEpoch(clock)
+		h.syncEpoch()
 	}
 
 	// Validate resourceVersion first — a malformed/negative value returns 410

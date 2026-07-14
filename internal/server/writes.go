@@ -23,7 +23,7 @@ import (
 // (writable replay). It is only reached when h.overlay != nil; read-only replay
 // keeps returning 405 for writes.
 func (h *handler) handleWrite(w http.ResponseWriter, r *http.Request, path string) {
-	h.overlay.syncEpoch(h.clock) // reset-on-loop before touching state
+	h.syncEpoch() // reset-on-loop (re-synthesizes the scheduling node if needed)
 
 	group, version, resource, namespace, name, sub := parseWritePath(strings.TrimSuffix(path, "/"))
 	if resource == "" {
@@ -194,9 +194,24 @@ func (h *handler) synthesizeOverlayObject(resource, namespace, name, base string
 // contains none.
 const defaultSyntheticNode = "kwok-node-0"
 
+// syncEpoch applies the overlay's reset-on-loop and, when a reset occurred,
+// re-synthesizes the scheduling node if needed. The synthetic node lives in the
+// overlay, so a loop wrap would otherwise drop it — leaving a nodeless capture
+// with no node for KWOK to manage until the next write. Call this instead of
+// h.overlay.syncEpoch directly on read/write entry points.
+func (h *handler) syncEpoch() {
+	if h.overlay == nil {
+		return
+	}
+	if h.overlay.syncEpoch(h.clock) && h.schedulePods {
+		h.ensureSchedulableNode()
+	}
+}
+
 // ensureSchedulableNode synthesizes a node when the capture (as-of the clock) has
 // none, so a scheduling target — and a node for KWOK to manage — exists from
-// startup rather than only appearing when the first Pod is created.
+// startup rather than only appearing when the first Pod is created. Idempotent:
+// storeIfAbsent is a no-op when the node already exists.
 func (h *handler) ensureSchedulableNode() {
 	if len(h.knownNodeNames()) == 0 {
 		h.synthesizeNode(defaultSyntheticNode)
