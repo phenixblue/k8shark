@@ -203,6 +203,21 @@ func TestDeploymentPrinter(t *testing.T) {
 	}
 }
 
+func TestJobPrinter_Status(t *testing.T) {
+	cases := []struct{ name, body, want string }{
+		{"complete", `{"metadata":{"name":"j"},"status":{"conditions":[{"type":"Complete","status":"True"}]}}`, "Complete"},
+		{"failed", `{"metadata":{"name":"j"},"status":{"conditions":[{"type":"Failed","status":"True"}]}}`, "Failed"},
+		{"suspended", `{"metadata":{"name":"j"},"spec":{"suspend":true}}`, "Suspended"},
+		{"running", `{"metadata":{"name":"j"},"status":{"active":1}}`, "Running"},
+	}
+	for _, c := range cases {
+		vals, _ := renderOne(t, "/apis/batch/v1/namespaces/default/jobs", c.body)
+		if got := fmt.Sprint(vals["Status"]); got != c.want {
+			t.Errorf("%s: Status = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
 func TestCronJobPrinter_ContainersFromJobTemplate(t *testing.T) {
 	body := `{"metadata":{"name":"cj","namespace":"default"},
       "spec":{"schedule":"*/5 * * * *",
@@ -361,6 +376,43 @@ func TestCRDPrinterColumns(t *testing.T) {
 	}
 	wantCell(t, vals, "Replicas", "3")
 	wantCell(t, vals, "Phase", "Ready")
+}
+
+// TestCapturedColumns_AgeTypeIsString verifies the captured-columns fallback
+// emits the Age column as type string (its cell is a relative-age string), even
+// when the captured columnDefinitions declared it as "date".
+func TestCapturedColumns_AgeTypeIsString(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	// A kind with no built-in printer and no CRD → falls to captured columns.
+	listPath := "/apis/policy/v1/namespaces/default/poddisruptionbudgets"
+	capturedTable := `{"kind":"Table","apiVersion":"meta.k8s.io/v1","columnDefinitions":[
+      {"name":"Name","type":"string"},{"name":"Min Available","type":"string"},
+      {"name":"Age","type":"date"}],"rows":[]}`
+	store := buildTestStoreWithWatch(t, map[string]watchTestRecord{
+		listPath + "?as=Table": {id: "pdb", at: from, body: capturedTable},
+	}, nil)
+	h := newHandler(store, time.Time{}, false)
+
+	pdbs := `{"items":[{"metadata":{"name":"pdb1","creationTimestamp":"2026-04-09T09:00:00Z"}}]}`
+	now := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	tb, ok := h.renderResourceTable(listPath, []byte(pdbs), now)
+	if !ok {
+		t.Fatal("render ok=false")
+	}
+	r := decodeTable(t, tb)
+	var ageType, ageVal string
+	for i, c := range r.ColumnDefinitions {
+		if c.Name == "Age" {
+			ageType = c.Type
+			ageVal = fmt.Sprint(r.Rows[0].Cells[i])
+		}
+	}
+	if ageType != "string" {
+		t.Errorf("captured Age column type = %q, want string", ageType)
+	}
+	if ageVal != "60m" {
+		t.Errorf("captured Age cell = %q, want 60m (relative)", ageVal)
+	}
 }
 
 // getTable issues a kubectl-style Table request and returns the decoded Table.

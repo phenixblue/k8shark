@@ -430,6 +430,8 @@ func podStatus(o map[string]any) any {
 	return reason
 }
 
+// jobStatus mirrors kubectl's Job STATUS column: a Complete/Failed condition
+// wins, then a suspended job reads Suspended, otherwise Running.
 func jobStatus(o map[string]any) any {
 	for _, c := range marr(o, "status", "conditions") {
 		cm := asMap(c)
@@ -442,8 +444,8 @@ func jobStatus(o map[string]any) any {
 			}
 		}
 	}
-	if mint(o, "status", "active") > 0 || len(marr(o, "status", "active")) > 0 {
-		return "Running"
+	if b, _ := mget(o, "spec", "suspend").(bool); b {
+		return "Suspended"
 	}
 	return "Running"
 }
@@ -769,6 +771,9 @@ func (h *handler) capturedColumns(path string, at time.Time) []tableCol {
 			c.cell = func(o map[string]any) any { return mstr(o, "metadata", "namespace") }
 		case "age":
 			c.age = true
+			// age cells are emitted as a relative string ("5m", "2d"), so the
+			// declared type must be string even if the captured column said "date".
+			c.typ = "string"
 		default:
 			c.cell = func(map[string]any) any { return "" }
 		}
