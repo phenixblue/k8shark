@@ -294,6 +294,23 @@ func (s *CaptureStore) isKnownResource(group, version, resource string) bool {
 	return ok
 }
 
+// resourceKind returns the authoritative Kind for a known group/version/
+// resource (from captured discovery, or resourceToKind's heuristic if only
+// seen in the index — see buildResourceInfo/mergeResourceInfo), or "" if the
+// resource isn't known at all. Prefer this over calling resourceToKind
+// directly when a resource might be known: the heuristic guesses wrong for
+// built-in types whose Kind doesn't follow simple depluralization (e.g.
+// "endpointslices" -> "Endpointslice", not the real "EndpointSlice") and for
+// most CRDs.
+func (s *CaptureStore) resourceKind(group, version, resource string) string {
+	s.resourceInfoMu.RLock()
+	defer s.resourceInfoMu.RUnlock()
+	if ri, ok := s.resourceInfo[group+"/"+version+"/"+resource]; ok {
+		return ri.Kind
+	}
+	return ""
+}
+
 // Latest returns the ResponseBody of the most recent record for apiPath.
 // If at is non-zero, it returns the latest record whose timestamp is <= at.
 func (s *CaptureStore) Latest(apiPath string, at time.Time) ([]byte, int, error) {

@@ -309,6 +309,37 @@ func TestHandler_NotFound_ListPath_KnownResourceNoWarning(t *testing.T) {
 	}
 }
 
+// TestHandler_NotFound_ListPath_KnownResourceUsesDiscoveryKind verifies the
+// empty-list fallback uses the authoritative Kind from discovery metadata,
+// not the resourceToKind heuristic — which guesses "Endpointslice" (wrong)
+// rather than the real "EndpointSlice" for "endpointslices", since it doesn't
+// follow simple depluralization. A client deserializing by GVK would break on
+// the heuristic's guess.
+func TestHandler_NotFound_ListPath_KnownResourceUsesDiscoveryKind(t *testing.T) {
+	discoveryBody := `{"kind":"APIResourceList","apiVersion":"v1","groupVersion":"discovery.k8s.io/v1","resources":[` +
+		`{"name":"endpointslices","singularName":"endpointslice","namespaced":true,"kind":"EndpointSlice"}]}`
+	store := buildTestStore(t, map[string][]byte{
+		"/apis/discovery.k8s.io/v1": []byte(discoveryBody),
+	})
+	store.discoveryEnrichmentDone.Wait()
+	h := newHandler(store, time.Time{}, false)
+
+	req := httptest.NewRequest(http.MethodGet, "/apis/discovery.k8s.io/v1/namespaces/default/endpointslices", nil)
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rw.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rw.Body.Bytes(), &body); err != nil {
+		t.Fatalf("expected JSON body: %v", err)
+	}
+	if body["kind"] != "EndpointSliceList" {
+		t.Errorf("expected kind EndpointSliceList, got %v", body["kind"])
+	}
+}
+
 func TestHandler_SingleItemGet(t *testing.T) {
 	podList := `{"apiVersion":"v1","kind":"PodList","items":[{"metadata":{"name":"nginx","namespace":"default"}},{"metadata":{"name":"redis","namespace":"default"}}]}`
 	store := buildTestStore(t, map[string][]byte{

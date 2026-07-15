@@ -533,9 +533,17 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 			if g != "" {
 				av = g + "/" + v
 			}
+			// Prefer the authoritative Kind from discovery/index metadata over the
+			// resourceToKind heuristic, which guesses wrong for resources whose
+			// Kind doesn't follow simple depluralization (e.g. endpointslices)
+			// and for most CRDs — a client deserializing by GVK would break.
+			kind := h.store.resourceKind(g, v, resource)
+			if kind == "" {
+				kind = resourceToKind(resource)
+			}
 			emptyList, _ := json.Marshal(map[string]any{
 				"apiVersion": av,
-				"kind":       resourceToKind(resource) + "List",
+				"kind":       kind + "List",
 				"metadata":   map[string]string{"resourceVersion": "0"},
 				"items":      []any{},
 			})
