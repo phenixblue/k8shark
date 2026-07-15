@@ -366,7 +366,7 @@ a { color: inherit; }
 .event .kind.bad { color: var(--bad); }
 .event .kind.warn { color: var(--warn); }
 .event .body b { color: var(--fg); }
-.event .body .small { color: var(--fg-dim); font-size: 11px; }
+.event .body .small { color: var(--fg-dim); font-size: 11px; margin-left: 6px; }
 .event .age { font: 11px var(--mono); color: var(--fg-faint); text-align: right; }
 
 /* Timeline rows (history sidebar) */

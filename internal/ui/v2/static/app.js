@@ -782,7 +782,7 @@
     }
 
     const recentCard = el('div', { class: 'card' },
-      cardHeader('Recent transitions', 'last events'));
+      cardHeader('Recent Transitions', 'last events'));
     const recent = (data.recent || []).filter((t) => resourceEnabled(t.resource));
     if (recent.length === 0) {
       recentCard.appendChild(el('div', { class: 'state', style: 'padding:18px;' },
