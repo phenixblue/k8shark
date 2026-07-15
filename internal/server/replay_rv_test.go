@@ -275,3 +275,64 @@ func TestReplayWatch_PollOnly(t *testing.T) {
 		t.Fatalf("frame = %s, want pod-b", e.Object.Metadata.Name)
 	}
 }
+
+// TestRewriteListResourceVersion_NilMetadata verifies rewriteListResourceVersion
+// doesn't panic when the captured list body's "metadata" field unmarshals to a
+// nil map — e.g. an explicit "metadata":null, or a non-object metadata value
+// (both of which leave the reused map variable nil rather than the empty map
+// literal it started as; see withResourceVersion for the identical pattern).
+func TestRewriteListResourceVersion_NilMetadata(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"no metadata field", `{"apiVersion":"v1","kind":"PodList","items":[]}`},
+		{"metadata is null", `{"apiVersion":"v1","kind":"PodList","items":[],"metadata":null}`},
+		{"metadata is wrong type", `{"apiVersion":"v1","kind":"PodList","items":[],"metadata":[]}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			out := rewriteListResourceVersion([]byte(tc.body), func() int64 { return 42 })
+			var got struct {
+				Metadata struct {
+					ResourceVersion string `json:"resourceVersion"`
+				} `json:"metadata"`
+			}
+			if err := json.Unmarshal(out, &got); err != nil {
+				t.Fatalf("Unmarshal(out): %v (out=%s)", err, out)
+			}
+			if got.Metadata.ResourceVersion != "42" {
+				t.Errorf("resourceVersion = %q, want %q", got.Metadata.ResourceVersion, "42")
+			}
+		})
+	}
+}
+
+// TestWithResourceVersion_NilMetadata verifies withResourceVersion (used for
+// every watch event body) doesn't panic on the same nil-map cases.
+func TestWithResourceVersion_NilMetadata(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"no metadata field", `{"apiVersion":"v1","kind":"Pod"}`},
+		{"metadata is null", `{"apiVersion":"v1","kind":"Pod","metadata":null}`},
+		{"metadata is wrong type", `{"apiVersion":"v1","kind":"Pod","metadata":[]}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			out := withResourceVersion(json.RawMessage(tc.body), 7)
+			var got struct {
+				Metadata struct {
+					ResourceVersion string `json:"resourceVersion"`
+				} `json:"metadata"`
+			}
+			if err := json.Unmarshal(out, &got); err != nil {
+				t.Fatalf("Unmarshal(out): %v (out=%s)", err, out)
+			}
+			if got.Metadata.ResourceVersion != "7" {
+				t.Errorf("resourceVersion = %q, want %q", got.Metadata.ResourceVersion, "7")
+			}
+		})
+	}
+}

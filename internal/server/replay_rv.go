@@ -181,7 +181,7 @@ func withResourceVersion(obj json.RawMessage, rv int64) json.RawMessage {
 	}
 	meta := map[string]json.RawMessage{}
 	if raw, ok := m["metadata"]; ok {
-		if err := json.Unmarshal(raw, &meta); err != nil {
+		if err := json.Unmarshal(raw, &meta); err != nil || meta == nil {
 			meta = map[string]json.RawMessage{}
 		}
 	}
@@ -210,7 +210,7 @@ func rewriteListResourceVersion(body []byte, rvFn func() int64) []byte {
 	rv := rvFn()
 	meta := map[string]json.RawMessage{}
 	if raw, ok := m["metadata"]; ok {
-		if err := json.Unmarshal(raw, &meta); err != nil {
+		if err := json.Unmarshal(raw, &meta); err != nil || meta == nil {
 			meta = map[string]json.RawMessage{}
 		}
 	}
