@@ -189,13 +189,13 @@ type fieldSelectorReq struct {
 // matches none of those forms.
 func parseFieldSelectorSegment(seg string) (fieldSelectorReq, bool) {
 	if i := strings.Index(seg, "!="); i >= 0 {
-		return fieldSelectorReq{strings.TrimSpace(seg[:i]), "!=", seg[i+2:]}, true
+		return fieldSelectorReq{strings.TrimSpace(seg[:i]), "!=", strings.TrimSpace(seg[i+2:])}, true
 	}
 	if i := strings.Index(seg, "=="); i >= 0 {
-		return fieldSelectorReq{strings.TrimSpace(seg[:i]), "=", seg[i+2:]}, true
+		return fieldSelectorReq{strings.TrimSpace(seg[:i]), "=", strings.TrimSpace(seg[i+2:])}, true
 	}
 	if i := strings.Index(seg, "="); i >= 0 {
-		return fieldSelectorReq{strings.TrimSpace(seg[:i]), "=", seg[i+1:]}, true
+		return fieldSelectorReq{strings.TrimSpace(seg[:i]), "=", strings.TrimSpace(seg[i+1:])}, true
 	}
 	return fieldSelectorReq{}, false
 }
@@ -427,10 +427,6 @@ func filterItems(items []json.RawMessage, labelSelector, fieldSelector string) [
 // both selectors are empty or if the body is not a list.
 func applySelectors(body []byte, labelSelector, fieldSelector string) ([]byte, error) {
 	if labelSelector == "" && fieldSelector == "" {
-		return body, nil
-	}
-	if _, err := parseRequirements(labelSelector); err != nil {
-		// Malformed selector — return body unfiltered (best-effort).
 		return body, nil
 	}
 

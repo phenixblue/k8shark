@@ -116,6 +116,10 @@ func TestApplySelectors_FieldFilter(t *testing.T) {
 		{"metadata.name!=nginx", []string{"redis"}},
 		{"metadata.namespace=kube-system", []string{"redis"}},
 		{"metadata.namespace!=kube-system", []string{"nginx"}},
+		// Whitespace around the operator must be trimmed from both sides, not
+		// just the key — "= nginx" (with a leading space in the value) should
+		// still match "nginx".
+		{"metadata.name = nginx", []string{"nginx"}},
 	}
 
 	for _, tc := range cases {
