@@ -177,6 +177,10 @@ Replay flags mirror the [`replay` command](usage.md#replay): `--speed`, `--from`
 `--start-paused`. See [docs/usage.md](usage.md#replay) for the full model (resourceVersion coherence,
 poll-only inference, etc.).
 
+Unlike the headless `kshrk replay` command (which auto-plays by default), `kshrk ui` starts replay
+**paused** by default — the dashboard renders the window-start state and waits for you to press
+**Play**. Pass `--start-paused=false` to have it auto-play from launch instead.
+
 The transport is backed by a small same-origin control API the dashboard calls (also useful for
 scripting the UI clock):
 
