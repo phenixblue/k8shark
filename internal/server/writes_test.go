@@ -916,6 +916,57 @@ func TestOverlay_DeleteCollection_NamespaceCascade(t *testing.T) {
 	}
 }
 
+// TestOverlay_DeleteCollection_ClusterWideSpansNamespaces covers a
+// deletecollection issued at a cluster-wide path (no namespace segment)
+// against a namespaced resource — items span multiple actual namespaces, so
+// each must be deleted (and its RV floor computed) using its own
+// metadata.namespace rather than the request's empty namespace.
+func TestOverlay_DeleteCollection_ClusterWideSpansNamespaces(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	podsAcrossNS := `{"apiVersion":"v1","kind":"PodList","metadata":{"resourceVersion":"1"},"items":[` +
+		`{"apiVersion":"v1","kind":"Pod","metadata":{"name":"pod-a","namespace":"ns-a"}},` +
+		`{"apiVersion":"v1","kind":"Pod","metadata":{"name":"pod-b","namespace":"ns-b"}}]}`
+	store := buildTestStoreWithWatch(t,
+		map[string]watchTestRecord{"/api/v1/pods": {id: "p", at: from, body: podsAcrossNS}}, nil)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, store, clock)
+
+	if code, _ := doReq(t, http.MethodDelete, srv.URL+"/api/v1/pods", "", ""); code != 200 {
+		t.Fatalf("cluster-wide deletecollection: status %d", code)
+	}
+	if code, _ := doReq(t, http.MethodGet, srv.URL+"/api/v1/namespaces/ns-a/pods/pod-a", "", ""); code != 404 {
+		t.Errorf("GET pod-a after cluster-wide deletecollection: status %d, want 404", code)
+	}
+	if code, _ := doReq(t, http.MethodGet, srv.URL+"/api/v1/namespaces/ns-b/pods/pod-b", "", ""); code != 404 {
+		t.Errorf("GET pod-b after cluster-wide deletecollection: status %d, want 404", code)
+	}
+}
+
+// TestOverlay_DeleteCollection_ClusterPathFallback verifies a namespaced
+// deletecollection still finds and deletes captured items when only the
+// cluster-scoped list path was captured (no per-namespace list snapshot),
+// mirroring the same fallback GET/LIST already has (handler.go's
+// serveResource cluster-scoped fallback).
+func TestOverlay_DeleteCollection_ClusterPathFallback(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	store := buildTestStoreWithWatch(t,
+		map[string]watchTestRecord{"/api/v1/pods": {id: "p", at: from, body: podList("pod-x")}}, nil)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, store, clock)
+
+	// Sanity: the namespaced list only sees pod-x via the cluster-path fallback.
+	if _, l := doReq(t, http.MethodGet, srv.URL+podsPath, "", ""); !contains(listNames(t, l), "pod-x") {
+		t.Fatalf("sanity: pod-x should be visible via the namespaced list's cluster-path fallback")
+	}
+
+	if code, _ := doReq(t, http.MethodDelete, srv.URL+podsPath, "", ""); code != 200 {
+		t.Fatalf("namespaced deletecollection via cluster-path fallback: status %d", code)
+	}
+	if code, _ := doReq(t, http.MethodGet, srv.URL+podsPath+"/pod-x", "", ""); code != 404 {
+		t.Errorf("GET pod-x after deletecollection: status %d, want 404", code)
+	}
+}
+
 func TestOverlay_ReadOnlyRejectsWrites(t *testing.T) {
 	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
 	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)

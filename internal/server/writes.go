@@ -499,16 +499,30 @@ func (h *handler) overlayDeleteCollection(w http.ResponseWriter, r *http.Request
 	}
 	items = filterItems(items, r.URL.Query().Get("labelSelector"), r.URL.Query().Get("fieldSelector"))
 
-	floor := h.replayFloorRV(group, version, resource, namespace)
+	// floors caches replayFloorRV per namespace: almost always one namespace (the
+	// request's), but a cluster-wide request against a namespaced resource (see
+	// the fallback below `namespace == ""`) can span several — each needs its own
+	// floor so a delete's RV exceeds that specific namespace's watchers, not just
+	// the request scope's.
+	floors := map[string]int64{}
 	for _, it := range items {
 		name := metaString(it, "name")
 		if name == "" {
 			continue // malformed/nameless item — nothing to key a delete on
 		}
+		ns := namespace
+		if ns == "" {
+			ns = metaString(it, "namespace") // cluster-scoped resource, or a cluster-wide request spanning namespaces
+		}
+		floor, ok := floors[ns]
+		if !ok {
+			floor = h.replayFloorRV(group, version, resource, ns)
+			floors[ns] = floor
+		}
 		// deleteOneObject's return is deliberately ignored: an item already gone
 		// (e.g. concurrently deleted) is a silent no-op, matching deletecollection's
 		// best-effort-over-a-listed-set semantics rather than a transaction.
-		h.deleteOneObject(group, version, resource, metaString(it, "namespace"), name, floor)
+		h.deleteOneObject(group, version, resource, ns, name, floor)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"apiVersion": "v1", "kind": "Status", "status": "Success",
@@ -528,23 +542,50 @@ func (h *handler) currentListItems(group, version, resource, namespace string) (
 	if h.clock != nil {
 		at = h.clock.Now()
 	}
-	body, code, err := h.store.ReconstructAt(listPathFor(group, version, resource, namespace), at)
+	items, err := h.reconstructListItems(listPathFor(group, version, resource, namespace), at)
 	if err != nil {
 		return nil, err
 	}
-	var items []json.RawMessage
-	if code == 200 {
-		var list struct {
-			Items []json.RawMessage `json:"items"`
+	if items == nil && namespace != "" {
+		// The namespaced list was never captured on its own path (e.g. only the
+		// cluster-scoped path was captured) — fall back to it and filter by
+		// namespace, mirroring serveResource's read-path fallback (handler.go) so
+		// deletecollection sees the same items a GET/LIST would, rather than
+		// silently no-oping on captured data it can't see.
+		clusterItems, cerr := h.reconstructListItems(listPathFor(group, version, resource, ""), at)
+		if cerr != nil {
+			return nil, cerr
 		}
-		if err := json.Unmarshal(body, &list); err != nil {
-			return nil, err
+		for _, it := range clusterItems {
+			if metaString(it, "namespace") == namespace {
+				items = append(items, it)
+			}
 		}
-		items = list.Items
-	} // code == 404 (or anything else not-200): zero captured items, not an error
+	}
 
 	items, _ = h.overlay.applyToList(group, version, resource, namespace, items)
 	return dropDeletedNamespaceItems(items, h.overlay.deletedNamespaces()), nil
+}
+
+// reconstructListItems reconstructs a captured list at `at` and returns its
+// items. Returns nil (not an error) when nothing was captured at that exact
+// path (a non-200 reconstruction) — distinct from a captured-but-empty list,
+// which unmarshals to a non-nil empty slice and is trusted as-is.
+func (h *handler) reconstructListItems(path string, at time.Time) ([]json.RawMessage, error) {
+	body, code, err := h.store.ReconstructAt(path, at)
+	if err != nil {
+		return nil, err
+	}
+	if code != 200 {
+		return nil, nil
+	}
+	var list struct {
+		Items []json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(body, &list); err != nil {
+		return nil, err
+	}
+	return list.Items, nil
 }
 
 // identityMismatch writes a 400 and returns true when an object body's
