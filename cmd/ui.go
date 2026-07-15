@@ -46,7 +46,7 @@ func init() {
 	uiCmd.Flags().String("from", "", "replay window start: RFC3339 or relative duration like -10m")
 	uiCmd.Flags().String("to", "", "replay window end: RFC3339 or relative duration like -1m")
 	uiCmd.Flags().Bool("loop", false, "replay mode: restart from the window start when the end is reached")
-	uiCmd.Flags().Bool("start-paused", false, "replay mode: start paused (default; pass --start-paused=false to auto-play)")
+	uiCmd.Flags().Bool("start-paused", false, "replay mode: start paused (the UI defaults to this; pass --start-paused=false to auto-play)")
 	uiCmd.Flags().Bool("writable", false, "replay mode: accept client writes into an in-memory overlay")
 }
 
