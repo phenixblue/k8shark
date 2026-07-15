@@ -1102,6 +1102,41 @@ func TestOverlay_DeleteCollection_NonListCaptureBodyIsBestEffort(t *testing.T) {
 	}
 }
 
+// TestOverlay_DeleteCollection_NonListClusterBodyDoesNotAggregate is the
+// cluster-wide counterpart: a cluster-wide deletecollection (no namespace
+// segment) whose own list path was captured as a non-list (e.g. Table) 200
+// response must not fall back to aggregating per-namespace captures — a
+// GET/LIST on the same cluster-wide path wouldn't (serveResource only
+// aggregates on an actual 404), so pods captured only under per-namespace
+// paths must survive.
+func TestOverlay_DeleteCollection_NonListClusterBodyDoesNotAggregate(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	tableBody := `{"kind":"Table","apiVersion":"meta.k8s.io/v1","columnDefinitions":[],"rows":[]}`
+	store := buildTestStoreWithWatch(t, map[string]watchTestRecord{
+		"/api/v1/pods": {id: "t", at: from, body: tableBody},
+		"/api/v1/namespaces/ns-a/pods": {id: "a", at: from, body: `{"apiVersion":"v1","kind":"PodList","metadata":{"resourceVersion":"1"},"items":[` +
+			`{"apiVersion":"v1","kind":"Pod","metadata":{"name":"pod-a","namespace":"ns-a"}}]}`},
+	}, nil)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, store, clock)
+
+	// Sanity: pod-a is independently visible via its own namespaced path.
+	if code, _ := doReq(t, http.MethodGet, srv.URL+"/api/v1/namespaces/ns-a/pods/pod-a", "", ""); code != 200 {
+		t.Fatalf("sanity: pod-a should exist before delete, status %d", code)
+	}
+
+	if code, _ := doReq(t, http.MethodDelete, srv.URL+"/api/v1/pods", "", ""); code != 200 {
+		t.Fatalf("cluster-wide deletecollection over a non-list captured body: status %d", code)
+	}
+	// pod-a lives only under its own namespaced capture, invisible to a plain
+	// GET on the cluster-wide path (which just returns the Table body as-is).
+	// The cluster-wide deletecollection must see the same (empty) item set, not
+	// aggregate across every namespace and delete it too.
+	if code, _ := doReq(t, http.MethodGet, srv.URL+"/api/v1/namespaces/ns-a/pods/pod-a", "", ""); code != 200 {
+		t.Errorf("pod-a should survive the cluster-wide deletecollection, status %d", code)
+	}
+}
+
 func TestOverlay_ReadOnlyRejectsWrites(t *testing.T) {
 	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
 	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)

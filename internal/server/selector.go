@@ -204,9 +204,10 @@ func parseFieldSelectorSegment(seg string) (fieldSelectorReq, bool) {
 // Supported fields: metadata.name, metadata.namespace. An unparseable segment
 // is silently skipped — best-effort, matching matchesFields' generous
 // handling of unsupported keys — safe for a read, where "matches more than
-// intended" only affects display fidelity. deletecollection uses the stricter
-// validateSelectorsStrict instead (see below), where the same leniency would
-// risk deleting more than the caller asked for.
+// intended" only affects display fidelity. deletecollection uses
+// filterItemsStrict instead (see below), which parses with apimachinery's
+// real selector grammar rather than this lenient one, since the same
+// leniency there would risk deleting more than the caller asked for.
 func parseFieldSelector(selector string) []fieldSelectorReq {
 	if selector == "" {
 		return nil
@@ -392,11 +393,13 @@ func filterTableRows(tableBody []byte, labelSelector, fieldSelector string) ([]b
 }
 
 // filterItems returns the subset of items matching both labelSelector and
-// fieldSelector. Best-effort, matching applySelectors: a malformed
-// labelSelector returns items unfiltered rather than erroring, and an item
-// that fails to unmarshal is kept (never silently hidden). Shared by
-// applySelectors (list-body reads) and the writable overlay's deletecollection
-// (which deletes matching items directly — there's no list body to build).
+// fieldSelector. Best-effort, matching applySelectors (the only caller): a
+// malformed labelSelector returns items unfiltered rather than erroring, and
+// an item that fails to unmarshal is kept (never silently hidden) — safe for
+// a read, where "matches more than intended" only affects display fidelity.
+// The writable overlay's deletecollection uses the stricter filterItemsStrict
+// instead (below), where the same leniency would risk deleting more than the
+// caller asked for.
 func filterItems(items []json.RawMessage, labelSelector, fieldSelector string) []json.RawMessage {
 	if labelSelector == "" && fieldSelector == "" {
 		return items

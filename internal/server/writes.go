@@ -611,13 +611,19 @@ func (h *handler) reconstructListItems(path string, at time.Time) ([]json.RawMes
 		return nil, err
 	}
 	if code != 200 {
-		return nil, nil
+		return nil, nil // genuinely not captured at this path — callers fall back
 	}
 	var list struct {
 		Items []json.RawMessage `json:"items"`
 	}
-	if json.Unmarshal(body, &list) != nil {
-		return nil, nil
+	if json.Unmarshal(body, &list) != nil || list.Items == nil {
+		// A 200 response that isn't list-shaped (e.g. a captured Table snapshot)
+		// or has no "items" field is a captured empty list, not "not captured" —
+		// a non-nil empty slice, so currentListItems' nil-triggered
+		// cluster/aggregation fallback doesn't kick in here. A GET/LIST on the
+		// same path wouldn't fall back either (serveResource only falls back on
+		// an actual 404), so deletecollection must operate on the same item set.
+		return []json.RawMessage{}, nil
 	}
 	return list.Items, nil
 }
