@@ -46,7 +46,7 @@ func init() {
 	uiCmd.Flags().String("from", "", "replay window start: RFC3339 or relative duration like -10m")
 	uiCmd.Flags().String("to", "", "replay window end: RFC3339 or relative duration like -1m")
 	uiCmd.Flags().Bool("loop", false, "replay mode: restart from the window start when the end is reached")
-	uiCmd.Flags().Bool("start-paused", false, "replay mode: start paused")
+	uiCmd.Flags().Bool("start-paused", false, "replay mode: start paused (the UI defaults to this; pass --start-paused=false to auto-play)")
 	uiCmd.Flags().Bool("writable", false, "replay mode: accept client writes into an in-memory overlay")
 }
 
@@ -79,6 +79,7 @@ func runUI(cmd *cobra.Command, args []string) error {
 	writable, _ := cmd.Flags().GetBool("writable")
 	replayMode := cmd.Flags().Changed("speed") || cmd.Flags().Changed("from") ||
 		cmd.Flags().Changed("to") || loop || startPaused || writable
+	startPaused = resolveUIStartPaused(replayMode, startPaused, cmd.Flags().Changed("start-paused"))
 
 	// --at pins a single instant, which is meaningless once the replay clock is
 	// driving time — reject the combination rather than silently ignoring --at.
@@ -140,4 +141,16 @@ func runUI(cmd *cobra.Command, args []string) error {
 	mockSrv.Shutdown()
 
 	return nil
+}
+
+// resolveUIStartPaused decides whether the dashboard's replay clock should
+// begin paused. The Web UI is a VCR the user drives by hand, so — unlike the
+// headless `kshrk replay` command, which defaults to auto-play — it defaults
+// to paused whenever replay mode is on. An explicit --start-paused (true or
+// false) always wins.
+func resolveUIStartPaused(replayMode, startPaused, startPausedChanged bool) bool {
+	if replayMode && !startPausedChanged {
+		return true
+	}
+	return startPaused
 }
