@@ -1007,15 +1007,30 @@ func TestOverlay_DeleteCollection_AggregateAcrossNamespacesFallback(t *testing.T
 // intended".
 func TestOverlay_DeleteCollection_InvalidSelectorRejected(t *testing.T) {
 	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
-	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
-	srv := newWritableServer(t, writableTestStore(t, from), clock) // captures pod-base
 
-	code, _ := doReq(t, http.MethodDelete, srv.URL+podsPath+"?fieldSelector=spec.nodeName%3Dnode-1", "", "")
-	if code != http.StatusBadRequest {
-		t.Errorf("deletecollection with unsupported fieldSelector key: status %d, want 400", code)
+	cases := []struct {
+		name  string
+		query string
+	}{
+		{"unsupported fieldSelector key", "?fieldSelector=spec.nodeName%3Dnode-1"},
+		// "!" parses to a doesnotexist requirement with an empty label key, which
+		// (since no real object has an empty-string label key) matches every
+		// item — exactly the "delete everything" failure mode this rejects.
+		{"empty labelSelector key", "?labelSelector=%21"},
 	}
-	if code, _ := doReq(t, http.MethodGet, srv.URL+podsPath+"/pod-base", "", ""); code != 200 {
-		t.Errorf("pod-base should survive a rejected selector: status %d", code)
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+			srv := newWritableServer(t, writableTestStore(t, from), clock) // captures pod-base
+
+			code, _ := doReq(t, http.MethodDelete, srv.URL+podsPath+c.query, "", "")
+			if code != http.StatusBadRequest {
+				t.Errorf("deletecollection with %s: status %d, want 400", c.name, code)
+			}
+			if code, _ := doReq(t, http.MethodGet, srv.URL+podsPath+"/pod-base", "", ""); code != 200 {
+				t.Errorf("pod-base should survive a rejected selector: status %d", code)
+			}
+		})
 	}
 }
 

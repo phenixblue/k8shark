@@ -234,8 +234,20 @@ var supportedFieldSelectorKeys = map[string]bool{
 // when both selectors are well-formed and reference only supported keys.
 func validateSelectorsStrict(labelSelector, fieldSelector string) string {
 	if labelSelector != "" {
-		if _, err := parseRequirements(labelSelector); err != nil {
+		reqs, err := parseRequirements(labelSelector)
+		if err != nil {
 			return "invalid labelSelector: " + err.Error()
+		}
+		for _, r := range reqs {
+			if r.key == "" {
+				// parseOneRequirement doesn't itself reject this: e.g. a bare "!" or
+				// "=foo" segment parses to a "doesnotexist"/"="-with-empty-key
+				// requirement rather than an error. An empty key never legitimately
+				// exists on a real object's labels, so "doesnotexist" (and similar)
+				// against it matches every item — exactly the "delete everything"
+				// failure mode this validation exists to catch.
+				return "invalid labelSelector: empty label key"
+			}
 		}
 	}
 	for _, seg := range strings.Split(fieldSelector, ",") {

@@ -546,8 +546,8 @@ func (h *handler) overlayDeleteCollection(w http.ResponseWriter, r *http.Request
 // error, just zero items) with the overlay applied (overlay wins; tombstones
 // removed; overlay-only creates appended), with items in an overlay-deleted
 // namespace dropped. This is overlayDeleteCollection's item source — the same
-// merge mergeOverlayList performs for LIST responses, but returning items
-// directly since there's no HTTP list body to build here.
+// merge that mergeOverlayList performs for LIST responses, but returning
+// items directly since there's no HTTP list body to build here.
 func (h *handler) currentListItems(group, version, resource, namespace string) ([]json.RawMessage, error) {
 	at := h.at
 	if h.clock != nil {
