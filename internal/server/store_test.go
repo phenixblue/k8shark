@@ -52,6 +52,39 @@ func TestResourceToKind(t *testing.T) {
 	}
 }
 
+// TestEnrichResourceInfoFromDiscovery_KnownButUncaptured verifies a resource
+// listed in a captured discovery document, but with zero captured objects of
+// its own, still gets a ResourceInfo entry — the root fix for #177 ("known
+// kind, nothing captured" must be distinguishable from "genuinely unknown
+// kind").
+func TestEnrichResourceInfoFromDiscovery_KnownButUncaptured(t *testing.T) {
+	discoveryBody := `{"kind":"APIResourceList","apiVersion":"v1","groupVersion":"networking.k8s.io/v1","resources":[` +
+		`{"name":"ingresses","singularName":"ingress","namespaced":true,"kind":"Ingress","shortNames":["ing"]}]}`
+	store := buildTestStore(t, map[string][]byte{
+		"/apis/networking.k8s.io/v1": []byte(discoveryBody),
+	})
+	store.discoveryEnrichmentDone.Wait()
+
+	if !store.isKnownResource("networking.k8s.io", "v1", "ingresses") {
+		t.Fatal("ingresses should be a known resource after discovery enrichment")
+	}
+	var found *ResourceInfo
+	for _, ri := range store.Resources() {
+		if ri.Group == "networking.k8s.io" && ri.Resource == "ingresses" {
+			found = ri
+		}
+	}
+	if found == nil {
+		t.Fatal("ingresses missing from Resources()")
+	}
+	if found.Kind != "Ingress" || found.SingularName != "ingress" || !found.Namespaced {
+		t.Errorf("ingresses ResourceInfo = %+v, want Kind=Ingress SingularName=ingress Namespaced=true", found)
+	}
+	if len(found.ShortNames) != 1 || found.ShortNames[0] != "ing" {
+		t.Errorf("ingresses ShortNames = %v, want [ing]", found.ShortNames)
+	}
+}
+
 // buildTestStore creates a CaptureStore with the given per-path response bodies.
 func buildTestStore(t *testing.T, records map[string][]byte) *CaptureStore {
 	t.Helper()
