@@ -5,7 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"k8s.io/apimachinery/pkg/util/validation"
+	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/labels"
 )
 
 // k8s object shape we inspect for filtering.
@@ -219,115 +220,104 @@ func parseFieldSelector(selector string) []fieldSelectorReq {
 	return reqs
 }
 
-// setSyntaxRest returns the text after " in " or " notin " in a label
-// requirement segment, and whether the segment is set-based at all (ok is
-// false, rest "" for a plain key/key=val/key!=val segment).
-func setSyntaxRest(seg string) (rest string, ok bool) {
-	if i := strings.Index(seg, " notin "); i >= 0 {
-		return seg[i+len(" notin "):], true
-	}
-	if i := strings.Index(seg, " in "); i >= 0 {
-		return seg[i+len(" in "):], true
-	}
-	return "", false
-}
-
-// validateSetSyntax checks an "in"/"notin" segment's value list is
-// well-formed "(v1,v2,...)" syntax with at least one non-empty value.
-// parseParenList (used by the lenient parseOneRequirement) doesn't enforce
-// this: it silently tolerates a missing "(" or ")" (e.g. "app notin (") or an
-// empty/blank value list, and for "notin" either of those vacuously matches
-// every item — the same "delete everything" failure mode the rest of
-// validateSelectorsStrict exists to close off. A segment that isn't set-based
-// is reported ok (nothing for this check to do).
-func validateSetSyntax(seg string) (ok bool, msg string) {
-	rest, isSetBased := setSyntaxRest(seg)
-	if !isSetBased {
-		return true, ""
-	}
-	rest = strings.TrimSpace(rest)
-	if len(rest) < 2 || rest[0] != '(' || rest[len(rest)-1] != ')' ||
-		strings.ContainsAny(rest[1:len(rest)-1], "()") {
-		return false, fmt.Sprintf("invalid labelSelector: malformed set syntax in %q", seg)
-	}
-	for _, v := range strings.Split(rest[1:len(rest)-1], ",") {
-		if strings.TrimSpace(v) == "" {
-			return false, fmt.Sprintf("invalid labelSelector: empty value in set syntax %q", seg)
-		}
-	}
-	return true, ""
-}
-
-// supportedFieldSelectorKeys are the metadata fields matchesFields actually
-// filters on; validateSelectorsStrict rejects any other key.
+// supportedFieldSelectorKeys are the metadata fields matchesFields (and
+// fieldsAdapter, below) actually filter on; filterItemsStrict rejects any
+// other key.
 var supportedFieldSelectorKeys = map[string]bool{
 	"metadata.name":      true,
 	"metadata.namespace": true,
 }
 
-// validateSelectorsStrict validates labelSelector/fieldSelector the way a real
-// apiserver rejects a malformed one — for callers where the best-effort
-// leniency applySelectors/filterItems/parseFieldSelector use for reads would
-// be unsafe. deletecollection is the motivating case: silently treating an
-// unparseable labelSelector or an unsupported fieldSelector key as "matches
-// everything" would delete more than the caller asked for, not just display
-// more than intended. Returns a message suitable for a 400 response, or ""
-// when both selectors are well-formed and reference only supported keys.
-func validateSelectorsStrict(labelSelector, fieldSelector string) string {
+// fieldsAdapter exposes a k8sObject's supported field-selector keys through
+// k8s.io/apimachinery/pkg/fields.Fields, so fields.Selector.Matches can
+// evaluate it directly.
+type fieldsAdapter struct{ obj *k8sObject }
+
+func (f fieldsAdapter) Has(field string) bool { return supportedFieldSelectorKeys[field] }
+
+func (f fieldsAdapter) Get(field string) string {
+	switch field {
+	case "metadata.name":
+		return f.obj.Metadata.Name
+	case "metadata.namespace":
+		return f.obj.Metadata.Namespace
+	default:
+		return ""
+	}
+}
+
+// filterItemsStrict filters items for deletecollection using
+// k8s.io/apimachinery's own label/field selector grammar and matching
+// (labels.Parse, fields.ParseSelector) instead of filterItems' best-effort,
+// hand-rolled parser. Multiple rounds of review turned up ever-more-specific
+// ways the hand-rolled parser leniently accepted a malformed selector as
+// "matches everything" (empty keys, empty segments, unbalanced set syntax,
+// invalid key characters, ...) — using the real, exhaustively-validated
+// parser closes off that entire class of gaps at once rather than patching
+// one shape of malformed input at a time. The read path (applySelectors,
+// filterTableRows) is unaffected — it keeps its existing best-effort
+// filterItems, where "matches more than intended" only affects display
+// fidelity, not what gets deleted.
+//
+// Returns an error message suitable for a 400 response (with items nil), or
+// ("", filtered) on success — filtered is items unchanged if both selectors
+// are empty.
+func filterItemsStrict(items []json.RawMessage, labelSelector, fieldSelector string) (string, []json.RawMessage) {
+	var labelSel labels.Selector
 	if labelSelector != "" {
-		for _, seg := range splitRespectingParens(labelSelector) {
-			seg = strings.TrimSpace(seg)
-			// parseRequirements silently skips an empty comma-separated segment
-			// (e.g. from "," or "a,,b") rather than erroring, so a selector of
-			// just "," parses to zero requirements — which matchesLabels treats
-			// as "matches everything" (an empty requirement list vacuously
-			// passes). Reject any empty segment explicitly before that leniency
-			// can apply.
-			if seg == "" {
-				return "invalid labelSelector: empty selector segment"
-			}
-			if ok, msg := validateSetSyntax(seg); !ok {
-				return msg
-			}
-		}
-		reqs, err := parseRequirements(labelSelector)
+		sel, err := labels.Parse(labelSelector)
 		if err != nil {
-			return "invalid labelSelector: " + err.Error()
+			return "invalid labelSelector: " + err.Error(), nil
 		}
-		for _, r := range reqs {
-			// parseOneRequirement doesn't itself validate the key: a bare "!" or
-			// "a b" or "!)" segment parses to a "doesnotexist"/"="-style
-			// requirement on a key that could never legitimately appear on a real
-			// object's labels (empty, containing spaces, unbalanced parens, …).
-			// Such a requirement (especially doesnotexist/notin) then matches
-			// every item — exactly the "delete everything" failure mode this
-			// validation exists to catch. IsQualifiedName is the same format
-			// check the real apiserver applies to label keys.
-			if errs := validation.IsQualifiedName(r.key); len(errs) > 0 {
-				return fmt.Sprintf("invalid labelSelector: invalid label key %q: %s", r.key, strings.Join(errs, "; "))
-			}
+		// A non-empty input string that parses to a selector with zero
+		// requirements (e.g. all-whitespace) restricts nothing — apimachinery's
+		// parser treats that the same as "no selector supplied" rather than
+		// erroring, which would otherwise let it slip through as "matches
+		// everything".
+		if sel.Empty() {
+			return fmt.Sprintf("invalid labelSelector %q: does not restrict the selection", labelSelector), nil
 		}
+		labelSel = sel
 	}
+	var fieldSel fields.Selector
 	if fieldSelector != "" {
-		for _, seg := range strings.Split(fieldSelector, ",") {
-			seg = strings.TrimSpace(seg)
-			// As with the labelSelector empty-segment check above: parseFieldSelector
-			// silently skips an empty segment (e.g. from "," or "a,,b") rather than
-			// erroring, so a fieldSelector of just "," parses to zero requirements —
-			// which matchesFields treats as "matches everything". Reject it instead.
-			if seg == "" {
-				return "invalid fieldSelector: empty selector segment"
-			}
-			req, ok := parseFieldSelectorSegment(seg)
-			if !ok {
-				return fmt.Sprintf("invalid fieldSelector segment %q", seg)
-			}
-			if !supportedFieldSelectorKeys[req.field] {
-				return fmt.Sprintf("unsupported fieldSelector key %q", req.field)
+		sel, err := fields.ParseSelector(fieldSelector)
+		if err != nil {
+			return "invalid fieldSelector: " + err.Error(), nil
+		}
+		// fields.ParseSelector is, unlike labels.Parse, lenient about a stray
+		// comma (e.g. "," or "a,,b" parses to zero requirements rather than
+		// erroring) — same vacuous "matches everything" risk as above.
+		if sel.Empty() {
+			return fmt.Sprintf("invalid fieldSelector %q: does not restrict the selection", fieldSelector), nil
+		}
+		for _, r := range sel.Requirements() {
+			if !supportedFieldSelectorKeys[r.Field] {
+				return fmt.Sprintf("unsupported fieldSelector key %q", r.Field), nil
 			}
 		}
+		fieldSel = sel
 	}
-	return ""
+	if labelSel == nil && fieldSel == nil {
+		return "", items
+	}
+
+	filtered := items[:0]
+	for _, raw := range items {
+		var obj k8sObject
+		if err := json.Unmarshal(raw, &obj); err != nil {
+			filtered = append(filtered, raw) // can't parse — keep, don't hide (matches filterItems' convention)
+			continue
+		}
+		if labelSel != nil && !labelSel.Matches(labels.Set(obj.Metadata.Labels)) {
+			continue
+		}
+		if fieldSel != nil && !fieldSel.Matches(fieldsAdapter{&obj}) {
+			continue
+		}
+		filtered = append(filtered, raw)
+	}
+	return "", filtered
 }
 
 // matchesFields returns true if the object satisfies all field selector requirements.

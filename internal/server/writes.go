@@ -497,18 +497,18 @@ func (h *handler) overlayDeleteCollection(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusInternalServerError, statusObj(http.StatusInternalServerError, err.Error()))
 		return
 	}
-	labelSel := r.URL.Query().Get("labelSelector")
-	fieldSel := r.URL.Query().Get("fieldSelector")
 	// Unlike a read (applySelectors/filterItems, deliberately best-effort — a
 	// malformed selector there just means "show more than intended"), a
 	// malformed or unsupported selector here would mean "delete more than
-	// intended" — validate strictly and 400 rather than silently matching
+	// intended" — filterItemsStrict parses with apimachinery's real selector
+	// grammar and 400s on anything malformed, rather than silently matching
 	// everything.
-	if msg := validateSelectorsStrict(labelSel, fieldSel); msg != "" {
+	msg, filtered := filterItemsStrict(items, r.URL.Query().Get("labelSelector"), r.URL.Query().Get("fieldSelector"))
+	if msg != "" {
 		h.writeStatus(w, http.StatusBadRequest, msg)
 		return
 	}
-	items = filterItems(items, labelSel, fieldSel)
+	items = filtered
 
 	// floors caches replayFloorRV per namespace: almost always one namespace (the
 	// request's), but a cluster-wide request against a namespaced resource (see

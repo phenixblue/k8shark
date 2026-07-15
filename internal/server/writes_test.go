@@ -841,8 +841,8 @@ func TestOverlay_DeleteCollection_LabelSelectorFilters(t *testing.T) {
 
 // TestOverlay_DeleteCollection_SetBasedSelectorFilters verifies well-formed
 // set-based ("in"/"notin") labelSelectors still work for deletecollection —
-// validateSelectorsStrict's set-syntax check must reject malformed set syntax
-// without breaking legitimate use.
+// filterItemsStrict's strict parsing must reject malformed set syntax without
+// breaking legitimate use.
 func TestOverlay_DeleteCollection_SetBasedSelectorFilters(t *testing.T) {
 	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
 	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
@@ -1029,11 +1029,12 @@ func TestOverlay_DeleteCollection_AggregateAcrossNamespacesFallback(t *testing.T
 }
 
 // TestOverlay_DeleteCollection_InvalidSelectorRejected verifies deletecollection
-// validates fieldSelector strictly (400, no items deleted) rather than the read
-// path's best-effort "silently ignore an unsupported key" (matchesFields'
-// generous default) — a silently-ignored requirement here would otherwise mean
-// "delete more than the caller asked for", not just "display more than
-// intended".
+// rejects a malformed or unsupported labelSelector/fieldSelector with 400
+// (filterItemsStrict, backed by k8s.io/apimachinery's labels.Parse and
+// fields.ParseSelector) rather than the read path's best-effort leniency
+// (filterItems/applySelectors) — which for a mutating deletecollection would
+// mean "delete more than the caller asked for," not just "display more than
+// intended."
 func TestOverlay_DeleteCollection_InvalidSelectorRejected(t *testing.T) {
 	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
 
@@ -1042,25 +1043,24 @@ func TestOverlay_DeleteCollection_InvalidSelectorRejected(t *testing.T) {
 		query string
 	}{
 		{"unsupported fieldSelector key", "?fieldSelector=spec.nodeName%3Dnode-1"},
-		// "!" parses to a doesnotexist requirement with an empty label key, which
-		// (since no real object has an empty-string label key) matches every
-		// item — exactly the "delete everything" failure mode this rejects.
-		{"empty labelSelector key", "?labelSelector=%21"},
-		// A bare "," parses to zero requirements (parseRequirements silently
-		// skips empty segments), and zero requirements vacuously matches every
-		// item — the same "delete everything" failure mode from a different angle.
+		// A bare "!" isn't a valid requirement (! must be followed by a key).
+		{"bare negation, no key", "?labelSelector=%21"},
+		// labels.Parse rejects a stray comma outright.
 		{"empty labelSelector segment", "?labelSelector=%2C"},
-		// "!)" parses to a doesnotexist requirement on the key ")" — a key no
-		// real object could ever have (invalid label-key syntax) — so it also
-		// matches every item.
+		// A key must be a valid qualified name; ")" isn't one.
 		{"invalid labelSelector key syntax", "?labelSelector=%21%29"},
-		// "app notin (" has an unclosed paren; parseParenList tolerates it and
-		// produces a single empty-string value, so "notin ('')" vacuously
-		// matches every item regardless of whether "app" is even set.
+		// An unclosed "notin (" is a syntax error in the real grammar.
 		{"unclosed notin paren", "?labelSelector=app+notin+%28"},
-		// A bare "," parses to zero fieldSelector requirements the same way it
-		// does for labelSelector — matchesFields vacuously matches every item.
+		// fields.ParseSelector is lenient about a stray comma (parses to an
+		// Empty selector rather than erroring) — caught by filterItemsStrict's
+		// explicit Empty() check instead.
 		{"empty fieldSelector segment", "?fieldSelector=%2C"},
+		// Whitespace-only selectors parse successfully to an Empty selector in
+		// both labels.Parse and fields.ParseSelector — also caught by the
+		// Empty() check, since the caller supplied a non-empty selector string
+		// that nonetheless restricts nothing.
+		{"whitespace-only labelSelector", "?labelSelector=+"},
+		{"whitespace-only fieldSelector", "?fieldSelector=+"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
