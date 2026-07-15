@@ -234,6 +234,16 @@ var supportedFieldSelectorKeys = map[string]bool{
 // when both selectors are well-formed and reference only supported keys.
 func validateSelectorsStrict(labelSelector, fieldSelector string) string {
 	if labelSelector != "" {
+		// parseRequirements silently skips an empty comma-separated segment
+		// (e.g. from "," or "a,,b") rather than erroring, so a selector of just
+		// "," parses to zero requirements — which matchesLabels treats as
+		// "matches everything" (an empty requirement list vacuously passes).
+		// Reject any empty segment explicitly before that leniency can apply.
+		for _, seg := range splitRespectingParens(labelSelector) {
+			if strings.TrimSpace(seg) == "" {
+				return "invalid labelSelector: empty selector segment"
+			}
+		}
 		reqs, err := parseRequirements(labelSelector)
 		if err != nil {
 			return "invalid labelSelector: " + err.Error()
