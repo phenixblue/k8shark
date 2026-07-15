@@ -181,24 +181,77 @@ type fieldSelectorReq struct {
 	value string
 }
 
-// parseFieldSelector parses a comma-separated fieldSelector.
-// Supported fields: metadata.name, metadata.namespace.
+// parseFieldSelectorSegment parses one fieldSelector segment ("key=val",
+// "key==val", or "key!=val") into a requirement. ok is false if the segment
+// matches none of those forms.
+func parseFieldSelectorSegment(seg string) (fieldSelectorReq, bool) {
+	if i := strings.Index(seg, "!="); i >= 0 {
+		return fieldSelectorReq{strings.TrimSpace(seg[:i]), "!=", seg[i+2:]}, true
+	}
+	if i := strings.Index(seg, "=="); i >= 0 {
+		return fieldSelectorReq{strings.TrimSpace(seg[:i]), "=", seg[i+2:]}, true
+	}
+	if i := strings.Index(seg, "="); i >= 0 {
+		return fieldSelectorReq{strings.TrimSpace(seg[:i]), "=", seg[i+1:]}, true
+	}
+	return fieldSelectorReq{}, false
+}
+
+// parseFieldSelector parses a comma-separated fieldSelector for reads.
+// Supported fields: metadata.name, metadata.namespace. An unparseable segment
+// is silently skipped — best-effort, matching matchesFields' generous
+// handling of unsupported keys — safe for a read, where "matches more than
+// intended" only affects display fidelity. deletecollection uses the stricter
+// validateSelectorsStrict instead (see below), where the same leniency would
+// risk deleting more than the caller asked for.
 func parseFieldSelector(selector string) []fieldSelectorReq {
 	if selector == "" {
 		return nil
 	}
 	var reqs []fieldSelectorReq
 	for _, seg := range strings.Split(selector, ",") {
-		seg = strings.TrimSpace(seg)
-		if i := strings.Index(seg, "!="); i >= 0 {
-			reqs = append(reqs, fieldSelectorReq{seg[:i], "!=", seg[i+2:]})
-		} else if i := strings.Index(seg, "=="); i >= 0 {
-			reqs = append(reqs, fieldSelectorReq{seg[:i], "=", seg[i+2:]})
-		} else if i := strings.Index(seg, "="); i >= 0 {
-			reqs = append(reqs, fieldSelectorReq{seg[:i], "=", seg[i+1:]})
+		if req, ok := parseFieldSelectorSegment(strings.TrimSpace(seg)); ok {
+			reqs = append(reqs, req)
 		}
 	}
 	return reqs
+}
+
+// supportedFieldSelectorKeys are the metadata fields matchesFields actually
+// filters on; validateSelectorsStrict rejects any other key.
+var supportedFieldSelectorKeys = map[string]bool{
+	"metadata.name":      true,
+	"metadata.namespace": true,
+}
+
+// validateSelectorsStrict validates labelSelector/fieldSelector the way a real
+// apiserver rejects a malformed one — for callers where the best-effort
+// leniency applySelectors/filterItems/parseFieldSelector use for reads would
+// be unsafe. deletecollection is the motivating case: silently treating an
+// unparseable labelSelector or an unsupported fieldSelector key as "matches
+// everything" would delete more than the caller asked for, not just display
+// more than intended. Returns a message suitable for a 400 response, or ""
+// when both selectors are well-formed and reference only supported keys.
+func validateSelectorsStrict(labelSelector, fieldSelector string) string {
+	if labelSelector != "" {
+		if _, err := parseRequirements(labelSelector); err != nil {
+			return "invalid labelSelector: " + err.Error()
+		}
+	}
+	for _, seg := range strings.Split(fieldSelector, ",") {
+		seg = strings.TrimSpace(seg)
+		if seg == "" {
+			continue
+		}
+		req, ok := parseFieldSelectorSegment(seg)
+		if !ok {
+			return fmt.Sprintf("invalid fieldSelector segment %q", seg)
+		}
+		if !supportedFieldSelectorKeys[req.field] {
+			return fmt.Sprintf("unsupported fieldSelector key %q", req.field)
+		}
+	}
+	return ""
 }
 
 // matchesFields returns true if the object satisfies all field selector requirements.

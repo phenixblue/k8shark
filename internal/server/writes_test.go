@@ -967,6 +967,82 @@ func TestOverlay_DeleteCollection_ClusterPathFallback(t *testing.T) {
 	}
 }
 
+// TestOverlay_DeleteCollection_AggregateAcrossNamespacesFallback verifies a
+// cluster-wide deletecollection (no namespace segment) finds items even when
+// only per-namespace list paths were captured — mirroring serveResource's
+// AggregateAcrossNamespaces read-path fallback (handler.go) — rather than
+// silently no-oping on captured objects it can't see directly.
+func TestOverlay_DeleteCollection_AggregateAcrossNamespacesFallback(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	store := buildTestStoreWithWatch(t, map[string]watchTestRecord{
+		"/api/v1/namespaces/ns-a/pods": {id: "a", at: from, body: `{"apiVersion":"v1","kind":"PodList","metadata":{"resourceVersion":"1"},"items":[` +
+			`{"apiVersion":"v1","kind":"Pod","metadata":{"name":"pod-a","namespace":"ns-a"}}]}`},
+		"/api/v1/namespaces/ns-b/pods": {id: "b", at: from, body: `{"apiVersion":"v1","kind":"PodList","metadata":{"resourceVersion":"1"},"items":[` +
+			`{"apiVersion":"v1","kind":"Pod","metadata":{"name":"pod-b","namespace":"ns-b"}}]}`},
+	}, nil)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, store, clock)
+
+	// Sanity: the cluster-wide GET only sees both pods via aggregation.
+	if _, l := doReq(t, http.MethodGet, srv.URL+"/api/v1/pods", "", ""); !contains(listNames(t, l), "pod-a") || !contains(listNames(t, l), "pod-b") {
+		t.Fatalf("sanity: both pods should be visible via cluster-wide aggregation: %v", listNames(t, l))
+	}
+
+	if code, _ := doReq(t, http.MethodDelete, srv.URL+"/api/v1/pods", "", ""); code != 200 {
+		t.Fatalf("cluster-wide deletecollection via aggregation fallback: status %d", code)
+	}
+	if code, _ := doReq(t, http.MethodGet, srv.URL+"/api/v1/namespaces/ns-a/pods/pod-a", "", ""); code != 404 {
+		t.Errorf("GET pod-a after deletecollection: status %d, want 404", code)
+	}
+	if code, _ := doReq(t, http.MethodGet, srv.URL+"/api/v1/namespaces/ns-b/pods/pod-b", "", ""); code != 404 {
+		t.Errorf("GET pod-b after deletecollection: status %d, want 404", code)
+	}
+}
+
+// TestOverlay_DeleteCollection_InvalidSelectorRejected verifies deletecollection
+// validates fieldSelector strictly (400, no items deleted) rather than the read
+// path's best-effort "silently ignore an unsupported key" (matchesFields'
+// generous default) — a silently-ignored requirement here would otherwise mean
+// "delete more than the caller asked for", not just "display more than
+// intended".
+func TestOverlay_DeleteCollection_InvalidSelectorRejected(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock) // captures pod-base
+
+	code, _ := doReq(t, http.MethodDelete, srv.URL+podsPath+"?fieldSelector=spec.nodeName%3Dnode-1", "", "")
+	if code != http.StatusBadRequest {
+		t.Errorf("deletecollection with unsupported fieldSelector key: status %d, want 400", code)
+	}
+	if code, _ := doReq(t, http.MethodGet, srv.URL+podsPath+"/pod-base", "", ""); code != 200 {
+		t.Errorf("pod-base should survive a rejected selector: status %d", code)
+	}
+}
+
+// TestOverlay_DeleteCollection_NonListCaptureBodyIsBestEffort verifies
+// deletecollection doesn't hard-fail when the captured body at the list path
+// isn't list-shaped (e.g. a Table-format snapshot) — it's treated as zero
+// captured items (best-effort, matching CaptureStore.ReconstructAt's own
+// tolerance of non-list bodies), and overlay-owned items still delete cleanly.
+func TestOverlay_DeleteCollection_NonListCaptureBodyIsBestEffort(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	tableBody := `{"kind":"Table","apiVersion":"meta.k8s.io/v1","columnDefinitions":[],"rows":[]}`
+	store := buildTestStoreWithWatch(t,
+		map[string]watchTestRecord{podsPath: {id: "t", at: from, body: tableBody}}, nil)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, store, clock)
+
+	doReq(t, http.MethodPost, srv.URL+podsPath, "application/json", podBody("pod-overlay"))
+
+	code, body := doReq(t, http.MethodDelete, srv.URL+podsPath, "", "")
+	if code != 200 {
+		t.Fatalf("deletecollection over a non-list captured body: status %d: %s", code, body)
+	}
+	if code, _ := doReq(t, http.MethodGet, srv.URL+podsPath+"/pod-overlay", "", ""); code != 404 {
+		t.Errorf("GET pod-overlay after deletecollection: status %d, want 404", code)
+	}
+}
+
 func TestOverlay_ReadOnlyRejectsWrites(t *testing.T) {
 	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
 	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)

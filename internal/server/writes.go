@@ -497,7 +497,18 @@ func (h *handler) overlayDeleteCollection(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusInternalServerError, statusObj(http.StatusInternalServerError, err.Error()))
 		return
 	}
-	items = filterItems(items, r.URL.Query().Get("labelSelector"), r.URL.Query().Get("fieldSelector"))
+	labelSel := r.URL.Query().Get("labelSelector")
+	fieldSel := r.URL.Query().Get("fieldSelector")
+	// Unlike a read (applySelectors/filterItems, deliberately best-effort — a
+	// malformed selector there just means "show more than intended"), a
+	// malformed or unsupported selector here would mean "delete more than
+	// intended" — validate strictly and 400 rather than silently matching
+	// everything.
+	if msg := validateSelectorsStrict(labelSel, fieldSel); msg != "" {
+		h.writeStatus(w, http.StatusBadRequest, msg)
+		return
+	}
+	items = filterItems(items, labelSel, fieldSel)
 
 	// floors caches replayFloorRV per namespace: almost always one namespace (the
 	// request's), but a cluster-wide request against a namespaced resource (see
@@ -546,7 +557,8 @@ func (h *handler) currentListItems(group, version, resource, namespace string) (
 	if err != nil {
 		return nil, err
 	}
-	if items == nil && namespace != "" {
+	switch {
+	case items == nil && namespace != "":
 		// The namespaced list was never captured on its own path (e.g. only the
 		// cluster-scoped path was captured) — fall back to it and filter by
 		// namespace, mirroring serveResource's read-path fallback (handler.go) so
@@ -561,6 +573,24 @@ func (h *handler) currentListItems(group, version, resource, namespace string) (
 				items = append(items, it)
 			}
 		}
+	case items == nil && namespace == "":
+		// The cluster-wide list was never captured on its own path either — fall
+		// back to aggregating it from per-namespace captures, mirroring
+		// serveResource's AggregateAcrossNamespaces fallback, so a cluster-wide
+		// deletecollection (e.g. DELETE /api/v1/pods) sees the same items a
+		// cluster-wide GET/LIST would.
+		aggBody, aggCode, aerr := h.store.AggregateAcrossNamespaces(listPathFor(group, version, resource, ""), at)
+		if aerr != nil {
+			return nil, aerr
+		}
+		if aggCode == 200 {
+			var list struct {
+				Items []json.RawMessage `json:"items"`
+			}
+			if json.Unmarshal(aggBody, &list) == nil {
+				items = list.Items
+			}
+		}
 	}
 
 	items, _ = h.overlay.applyToList(group, version, resource, namespace, items)
@@ -569,8 +599,12 @@ func (h *handler) currentListItems(group, version, resource, namespace string) (
 
 // reconstructListItems reconstructs a captured list at `at` and returns its
 // items. Returns nil (not an error) when nothing was captured at that exact
-// path (a non-200 reconstruction) — distinct from a captured-but-empty list,
-// which unmarshals to a non-nil empty slice and is trusted as-is.
+// path (a non-200 reconstruction), or when the 200 body isn't list-shaped
+// (e.g. a Table-format or other non-list snapshot — CaptureStore.ReconstructAt
+// is deliberately tolerant of those and returns them unchanged, so failing to
+// decode "items" here is best-effort, not a hard error) — either way,
+// currentListItems' overlay merge still applies on top. A genuine store error
+// (decompression failure, etc.) still propagates.
 func (h *handler) reconstructListItems(path string, at time.Time) ([]json.RawMessage, error) {
 	body, code, err := h.store.ReconstructAt(path, at)
 	if err != nil {
@@ -582,8 +616,8 @@ func (h *handler) reconstructListItems(path string, at time.Time) ([]json.RawMes
 	var list struct {
 		Items []json.RawMessage `json:"items"`
 	}
-	if err := json.Unmarshal(body, &list); err != nil {
-		return nil, err
+	if json.Unmarshal(body, &list) != nil {
+		return nil, nil
 	}
 	return list.Items, nil
 }
