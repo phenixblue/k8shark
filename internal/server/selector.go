@@ -272,6 +272,37 @@ func filterTableRows(tableBody []byte, labelSelector, fieldSelector string) ([]b
 	return json.Marshal(table)
 }
 
+// filterItems returns the subset of items matching both labelSelector and
+// fieldSelector. Best-effort, matching applySelectors: a malformed
+// labelSelector returns items unfiltered rather than erroring, and an item
+// that fails to unmarshal is kept (never silently hidden). Shared by
+// applySelectors (list-body reads) and the writable overlay's deletecollection
+// (which deletes matching items directly — there's no list body to build).
+func filterItems(items []json.RawMessage, labelSelector, fieldSelector string) []json.RawMessage {
+	if labelSelector == "" && fieldSelector == "" {
+		return items
+	}
+	labelReqs, err := parseRequirements(labelSelector)
+	if err != nil {
+		return items // malformed selector — best-effort, same as applySelectors
+	}
+	fieldReqs := parseFieldSelector(fieldSelector)
+
+	filtered := items[:0]
+	for _, raw := range items {
+		var obj k8sObject
+		if err := json.Unmarshal(raw, &obj); err != nil {
+			// Can't parse this item; include it to avoid hiding data.
+			filtered = append(filtered, raw)
+			continue
+		}
+		if matchesLabels(&obj, labelReqs) && matchesFields(&obj, fieldReqs) {
+			filtered = append(filtered, raw)
+		}
+	}
+	return filtered
+}
+
 // applySelectors filters a JSON list body keeping only items that match both
 // labelSelector and fieldSelector. Returns the original body unchanged if
 // both selectors are empty or if the body is not a list.
@@ -279,13 +310,10 @@ func applySelectors(body []byte, labelSelector, fieldSelector string) ([]byte, e
 	if labelSelector == "" && fieldSelector == "" {
 		return body, nil
 	}
-
-	labelReqs, err := parseRequirements(labelSelector)
-	if err != nil {
+	if _, err := parseRequirements(labelSelector); err != nil {
 		// Malformed selector — return body unfiltered (best-effort).
 		return body, nil
 	}
-	fieldReqs := parseFieldSelector(fieldSelector)
 
 	// Unmarshal as a generic list so we preserve all top-level fields.
 	var list struct {
@@ -299,19 +327,6 @@ func applySelectors(body []byte, labelSelector, fieldSelector string) ([]byte, e
 		return body, nil
 	}
 
-	filtered := list.Items[:0]
-	for _, raw := range list.Items {
-		var obj k8sObject
-		if err := json.Unmarshal(raw, &obj); err != nil {
-			// Can't parse this item; include it to avoid hiding data.
-			filtered = append(filtered, raw)
-			continue
-		}
-		if matchesLabels(&obj, labelReqs) && matchesFields(&obj, fieldReqs) {
-			filtered = append(filtered, raw)
-		}
-	}
-
-	list.Items = filtered
+	list.Items = filterItems(list.Items, labelSelector, fieldSelector)
 	return json.Marshal(list)
 }

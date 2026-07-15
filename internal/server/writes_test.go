@@ -768,6 +768,154 @@ func TestOverlay_NamespaceDeleteCascadeCaptured(t *testing.T) {
 	}
 }
 
+// TestOverlay_DeleteCollection_Mixed covers issue #176: a DELETE at a
+// collection path (deletecollection) must remove every matching object,
+// whether it's a captured-only, overlay-created, or overlay-over-captured
+// identity, in a single call.
+func TestOverlay_DeleteCollection_Mixed(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock) // captures pod-base
+
+	// Overlay-created pod.
+	doReq(t, http.MethodPost, srv.URL+podsPath, "application/json", podBody("pod-new"))
+	// Overlay-over-captured: overwrite pod-base.
+	doReq(t, http.MethodPut, srv.URL+podsPath+"/pod-base", "application/json", podBody("pod-base"))
+
+	_, before := doReq(t, http.MethodGet, srv.URL+podsPath, "", "")
+	names := listNames(t, before)
+	if !contains(names, "pod-base") || !contains(names, "pod-new") {
+		t.Fatalf("sanity: list before delete = %v, want both pod-base and pod-new", names)
+	}
+
+	code, body := doReq(t, http.MethodDelete, srv.URL+podsPath, "", "")
+	if code != 200 {
+		t.Fatalf("deletecollection: status %d: %s", code, body)
+	}
+	var status struct {
+		Kind   string `json:"kind"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(body, &status); err != nil || status.Kind != "Status" || status.Status != "Success" {
+		t.Errorf("deletecollection response = %s, want kind:Status status:Success", body)
+	}
+
+	if code, _ := doReq(t, http.MethodGet, srv.URL+podsPath+"/pod-base", "", ""); code != 404 {
+		t.Errorf("GET pod-base after deletecollection: status %d, want 404", code)
+	}
+	if code, _ := doReq(t, http.MethodGet, srv.URL+podsPath+"/pod-new", "", ""); code != 404 {
+		t.Errorf("GET pod-new after deletecollection: status %d, want 404", code)
+	}
+	_, after := doReq(t, http.MethodGet, srv.URL+podsPath, "", "")
+	if names := listNames(t, after); len(names) != 0 {
+		t.Errorf("list after deletecollection = %v, want empty", names)
+	}
+}
+
+// TestOverlay_DeleteCollection_LabelSelectorFilters verifies deletecollection
+// honors labelSelector: only matching items are removed.
+func TestOverlay_DeleteCollection_LabelSelectorFilters(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock) // captures pod-base
+
+	doReq(t, http.MethodPost, srv.URL+podsPath, "application/json",
+		`{"apiVersion":"v1","kind":"Pod","metadata":{"name":"pod-la","namespace":"default","labels":{"app":"x"}}}`)
+	doReq(t, http.MethodPost, srv.URL+podsPath, "application/json",
+		`{"apiVersion":"v1","kind":"Pod","metadata":{"name":"pod-lb","namespace":"default","labels":{"app":"y"}}}`)
+
+	code, _ := doReq(t, http.MethodDelete, srv.URL+podsPath+"?labelSelector=app%3Dx", "", "")
+	if code != 200 {
+		t.Fatalf("deletecollection with selector: status %d", code)
+	}
+
+	_, list := doReq(t, http.MethodGet, srv.URL+podsPath, "", "")
+	names := listNames(t, list)
+	if contains(names, "pod-la") {
+		t.Errorf("pod-la (matched selector) should have been deleted: %v", names)
+	}
+	if !contains(names, "pod-lb") || !contains(names, "pod-base") {
+		t.Errorf("non-matching items should survive: %v", names)
+	}
+}
+
+// TestOverlay_DeleteCollection_EmptyIsStillSuccess verifies a deletecollection
+// that matches nothing still returns 200 Success, not a 404 — matching the
+// real apiserver's behavior for an empty collection.
+func TestOverlay_DeleteCollection_EmptyIsStillSuccess(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	// A resource with nothing captured or overlaid at all.
+	code, body := doReq(t, http.MethodDelete, srv.URL+"/api/v1/namespaces/default/secrets", "", "")
+	if code != 200 {
+		t.Fatalf("deletecollection on empty resource: status %d: %s", code, body)
+	}
+
+	// A selector that excludes every existing item.
+	code, body = doReq(t, http.MethodDelete, srv.URL+podsPath+"?labelSelector=nope%3Dnever", "", "")
+	if code != 200 {
+		t.Fatalf("deletecollection with non-matching selector: status %d: %s", code, body)
+	}
+	if code, _ := doReq(t, http.MethodGet, srv.URL+podsPath+"/pod-base", "", ""); code != 200 {
+		t.Errorf("pod-base should survive a non-matching selector delete: status %d", code)
+	}
+}
+
+// TestOverlay_DeleteCollection_ClusterScoped mirrors
+// TestOverlay_ClusterScopedDeleteTombstone but for a collection delete: all
+// captured items at a cluster-scoped path are removed in one call.
+func TestOverlay_DeleteCollection_ClusterScoped(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	nsList := `{"apiVersion":"v1","kind":"NamespaceList","metadata":{"resourceVersion":"1"},"items":[` +
+		`{"apiVersion":"v1","kind":"Namespace","metadata":{"name":"default"}},` +
+		`{"apiVersion":"v1","kind":"Namespace","metadata":{"name":"kube-system"}}]}`
+	store := buildTestStoreWithWatch(t,
+		map[string]watchTestRecord{"/api/v1/namespaces": {id: "ns", at: from, body: nsList}}, nil)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, store, clock)
+
+	if code, _ := doReq(t, http.MethodDelete, srv.URL+"/api/v1/namespaces", "", ""); code != 200 {
+		t.Fatalf("cluster-scoped deletecollection: status %d", code)
+	}
+	if code, _ := doReq(t, http.MethodGet, srv.URL+"/api/v1/namespaces/default", "", ""); code != 404 {
+		t.Errorf("GET default namespace after deletecollection: status %d, want 404", code)
+	}
+	if code, _ := doReq(t, http.MethodGet, srv.URL+"/api/v1/namespaces/kube-system", "", ""); code != 404 {
+		t.Errorf("GET kube-system namespace after deletecollection: status %d, want 404", code)
+	}
+	_, list := doReq(t, http.MethodGet, srv.URL+"/api/v1/namespaces", "", "")
+	if names := listNames(t, list); len(names) != 0 {
+		t.Errorf("namespace list after deletecollection = %v, want empty", names)
+	}
+}
+
+// TestOverlay_DeleteCollection_NamespaceCascade verifies a namespace
+// deletecollection cascades into each deleted namespace's contents, exactly
+// like a single namespace delete does (TestOverlay_NamespaceDeleteCascade).
+func TestOverlay_DeleteCollection_NamespaceCascade(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	doReq(t, http.MethodPost, srv.URL+"/api/v1/namespaces", "application/json",
+		`{"apiVersion":"v1","kind":"Namespace","metadata":{"name":"joe-test"}}`)
+	deployColl := "/apis/apps/v1/namespaces/joe-test/deployments"
+	doReq(t, http.MethodPost, srv.URL+deployColl, "application/json",
+		`{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"web","namespace":"joe-test"}}`)
+
+	if code, _ := doReq(t, http.MethodDelete, srv.URL+"/api/v1/namespaces", "", ""); code != 200 {
+		t.Fatalf("namespace deletecollection: status %d", code)
+	}
+	if code, _ := doReq(t, http.MethodGet, srv.URL+"/api/v1/namespaces/joe-test", "", ""); code != 404 {
+		t.Errorf("GET joe-test namespace after deletecollection: status %d, want 404", code)
+	}
+	if code, _ := doReq(t, http.MethodGet, srv.URL+deployColl+"/web", "", ""); code != 404 {
+		t.Errorf("deployment in cascade-deleted namespace: status %d, want 404", code)
+	}
+}
+
 func TestOverlay_ReadOnlyRejectsWrites(t *testing.T) {
 	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
 	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)

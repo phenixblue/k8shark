@@ -671,15 +671,7 @@ func (h *handler) mergeOverlayList(path string, body []byte) ([]byte, int64) {
 	list.Items, skipRV = h.overlay.applyToList(group, version, resource, namespace, list.Items)
 	// Cascade: drop items whose namespace was deleted in the overlay (covers both
 	// overlay-created and captured items, in namespaced and cluster-wide/-A lists).
-	if dns := h.overlay.deletedNamespaces(); len(dns) > 0 {
-		kept := list.Items[:0]
-		for _, it := range list.Items {
-			if _, gone := dns[metaString(it, "namespace")]; !gone {
-				kept = append(kept, it)
-			}
-		}
-		list.Items = kept
-	}
+	list.Items = dropDeletedNamespaceItems(list.Items, h.overlay.deletedNamespaces())
 	out, err := json.Marshal(list)
 	if err != nil {
 		return body, skipRV

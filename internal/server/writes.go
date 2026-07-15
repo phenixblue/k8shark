@@ -61,8 +61,8 @@ func (h *handler) handleWrite(w http.ResponseWriter, r *http.Request, path strin
 		}
 		h.overlayPatch(w, r, group, version, resource, namespace, name, sub)
 	case http.MethodDelete:
-		if name == "" {
-			h.writeStatus(w, http.StatusBadRequest, "DELETE requires an object name")
+		if name == "" { // deletecollection: parseWritePath guarantees sub == "" here
+			h.overlayDeleteCollection(w, r, group, version, resource, namespace)
 			return
 		}
 		if sub != "" {
@@ -448,27 +448,103 @@ func (h *handler) overlayPatch(w http.ResponseWriter, r *http.Request, group, ve
 	writeJSON(w, http.StatusOK, json.RawMessage(next))
 }
 
-func (h *handler) overlayDelete(w http.ResponseWriter, group, version, resource, namespace, name string) {
-	if name == "" {
-		h.writeStatus(w, http.StatusBadRequest, "object name is required")
-		return
-	}
+// deleteOneObject tombstones a single object identity if it currently exists
+// (in the overlay or the replay state as of h.at/h.clock.Now()), cascading a
+// namespace delete if the identity is itself a core Namespace. Returns the
+// deleted object's last-known body, or nil if there was nothing to delete —
+// the identity was already gone (e.g. concurrently deleted between
+// deletecollection's item scan and this call). Re-checking liveness here
+// (rather than trusting an earlier list snapshot) keeps the DELETED watch
+// event's body fresh and makes a repeated call for the same identity a safe
+// no-op instead of a duplicate tombstone.
+func (h *handler) deleteOneObject(group, version, resource, namespace, name string, floorRV int64) json.RawMessage {
 	last := h.currentObject(group, version, resource, namespace, name)
 	if last == nil {
-		h.writeStatus(w, http.StatusNotFound, "object not found: "+name)
-		return
+		return nil
 	}
-	h.overlay.del(group, version, resource, namespace, name, last, h.replayFloorRV(group, version, resource, namespace))
+	h.overlay.del(group, version, resource, namespace, name, last, floorRV)
 	// Deleting a namespace cascades to its contents (no namespace controller runs
 	// against the overlay): tombstone the namespace's overlay objects, and its
 	// captured objects are filtered out of reads while the namespace is deleted.
 	if isCoreNamespace(group, version, resource) {
 		h.overlay.cascadeDeleteNamespace(name)
 	}
+	return last
+}
+
+func (h *handler) overlayDelete(w http.ResponseWriter, group, version, resource, namespace, name string) {
+	if h.deleteOneObject(group, version, resource, namespace, name,
+		h.replayFloorRV(group, version, resource, namespace)) == nil {
+		h.writeStatus(w, http.StatusNotFound, "object not found: "+name)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"apiVersion": "v1", "kind": "Status", "status": "Success",
 		"details": map[string]any{"name": name, "kind": resourceToKind(resource)},
 	})
+}
+
+// overlayDeleteCollection implements Kubernetes deletecollection: it deletes
+// every object currently visible for a list scope (group/version/resource,
+// and namespace — empty for a cluster-scoped resource) that matches the
+// request's labelSelector/fieldSelector. Always responds 200 with a Status
+// Success, even when zero items matched — an empty deletecollection is not an
+// error, matching the real apiserver. The request body (DeleteOptions) is
+// intentionally ignored, mirroring overlayDelete/deleteOneObject.
+func (h *handler) overlayDeleteCollection(w http.ResponseWriter, r *http.Request, group, version, resource, namespace string) {
+	items, err := h.currentListItems(group, version, resource, namespace)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, statusObj(http.StatusInternalServerError, err.Error()))
+		return
+	}
+	items = filterItems(items, r.URL.Query().Get("labelSelector"), r.URL.Query().Get("fieldSelector"))
+
+	floor := h.replayFloorRV(group, version, resource, namespace)
+	for _, it := range items {
+		name := metaString(it, "name")
+		if name == "" {
+			continue // malformed/nameless item — nothing to key a delete on
+		}
+		// deleteOneObject's return is deliberately ignored: an item already gone
+		// (e.g. concurrently deleted) is a silent no-op, matching deletecollection's
+		// best-effort-over-a-listed-set semantics rather than a transaction.
+		h.deleteOneObject(group, version, resource, metaString(it, "namespace"), name, floor)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"apiVersion": "v1", "kind": "Status", "status": "Success",
+		"details": map[string]any{"kind": resourceToKind(resource)},
+	})
+}
+
+// currentListItems returns the merged items for a list scope as of the
+// replay clock: the captured base (if any — a 404/empty capture is not an
+// error, just zero items) with the overlay applied (overlay wins; tombstones
+// removed; overlay-only creates appended), with items in an overlay-deleted
+// namespace dropped. This is overlayDeleteCollection's item source — the same
+// merge mergeOverlayList performs for LIST responses, but returning items
+// directly since there's no HTTP list body to build here.
+func (h *handler) currentListItems(group, version, resource, namespace string) ([]json.RawMessage, error) {
+	at := h.at
+	if h.clock != nil {
+		at = h.clock.Now()
+	}
+	body, code, err := h.store.ReconstructAt(listPathFor(group, version, resource, namespace), at)
+	if err != nil {
+		return nil, err
+	}
+	var items []json.RawMessage
+	if code == 200 {
+		var list struct {
+			Items []json.RawMessage `json:"items"`
+		}
+		if err := json.Unmarshal(body, &list); err != nil {
+			return nil, err
+		}
+		items = list.Items
+	} // code == 404 (or anything else not-200): zero captured items, not an error
+
+	items, _ = h.overlay.applyToList(group, version, resource, namespace, items)
+	return dropDeletedNamespaceItems(items, h.overlay.deletedNamespaces()), nil
 }
 
 // identityMismatch writes a 400 and returns true when an object body's
@@ -640,7 +716,7 @@ func kindForResource(gv schema.GroupVersion, resource string) (schema.GroupVersi
 func allowedMethods(name, sub string) string {
 	switch {
 	case name == "":
-		return "GET, HEAD, POST"
+		return "GET, HEAD, POST, DELETE"
 	case sub == "":
 		return "GET, HEAD, PUT, PATCH, DELETE"
 	case sub == "status":
@@ -762,6 +838,23 @@ func metaInt(obj json.RawMessage, field string) int64 {
 		return 0
 	}
 	return n
+}
+
+// dropDeletedNamespaceItems removes items whose metadata.namespace is in dns
+// (see overlay.deletedNamespaces) — used to cascade a namespace delete into
+// read results and into deletecollection's item set, for both captured and
+// overlay-created items.
+func dropDeletedNamespaceItems(items []json.RawMessage, dns map[string]struct{}) []json.RawMessage {
+	if len(dns) == 0 {
+		return items
+	}
+	kept := items[:0]
+	for _, it := range items {
+		if _, gone := dns[metaString(it, "namespace")]; !gone {
+			kept = append(kept, it)
+		}
+	}
+	return kept
 }
 
 // isJSONObject reports whether b is a JSON object ("{...}"), rejecting null,
