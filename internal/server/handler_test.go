@@ -162,7 +162,12 @@ func TestHandler_NotFound_ItemPath(t *testing.T) {
 // details) rather than the k8shark-specific "not found in capture" message —
 // so client-go's apierrors.IsNotFound() recognizes it (#177).
 func TestHandler_NotFound_ItemPath_StandardStatus(t *testing.T) {
-	store := buildTestStore(t, map[string][]byte{})
+	discoveryBody := `{"kind":"APIResourceList","apiVersion":"v1","groupVersion":"networking.k8s.io/v1","resources":[` +
+		`{"name":"ingresses","singularName":"ingress","namespaced":true,"kind":"Ingress"}]}`
+	store := buildTestStore(t, map[string][]byte{
+		"/apis/networking.k8s.io/v1": []byte(discoveryBody),
+	})
+	store.discoveryEnrichmentDone.Wait()
 	h := newHandler(store, time.Time{}, false)
 
 	req := httptest.NewRequest(http.MethodGet, "/apis/networking.k8s.io/v1/namespaces/default/ingresses/nope", nil)
@@ -201,7 +206,11 @@ func TestHandler_NotFound_ItemPath_StandardStatus(t *testing.T) {
 // (empty group string) omits ".group" from the message and "group" from
 // details, matching the real apiserver's GroupResource.String() format.
 func TestHandler_NotFound_ItemPath_CoreGroupStatus(t *testing.T) {
-	store := buildTestStore(t, map[string][]byte{})
+	// "pods" is known via a captured (unrelated) pod list — "nope" itself was
+	// never captured.
+	store := buildTestStore(t, map[string][]byte{
+		"/api/v1/namespaces/default/pods": []byte(`{"kind":"PodList","items":[{"metadata":{"name":"other"}}]}`),
+	})
 	h := newHandler(store, time.Time{}, false)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/namespaces/default/pods/nope", nil)
@@ -227,6 +236,38 @@ func TestHandler_NotFound_ItemPath_CoreGroupStatus(t *testing.T) {
 	}
 	if _, hasGroup := status.Details["group"]; hasGroup {
 		t.Errorf("details should omit \"group\" for the core group, got %v", status.Details)
+	}
+}
+
+// TestHandler_NotFound_ItemPath_UnknownResourceKeepsGenericMessage verifies an
+// item-level GET for a resource that's genuinely unknown (absent from both
+// discovery and the index) keeps the k8shark-specific "not found in capture"
+// message rather than the standard NotFound Status — that format would
+// otherwise misleadingly present a capture-config problem (wrong
+// group/resource entirely) as "the object is just missing" (#177).
+func TestHandler_NotFound_ItemPath_UnknownResourceKeepsGenericMessage(t *testing.T) {
+	store := buildTestStore(t, map[string][]byte{})
+	h := newHandler(store, time.Time{}, false)
+
+	req := httptest.NewRequest(http.MethodGet, "/apis/totally.fake/v1/namespaces/default/foos/nope", nil)
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rw.Code)
+	}
+	var status struct {
+		Reason  string `json:"reason"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(rw.Body.Bytes(), &status); err != nil {
+		t.Fatalf("expected JSON body: %v", err)
+	}
+	if status.Reason != "" {
+		t.Errorf("reason = %q, want empty (not the standard NotFound Status)", status.Reason)
+	}
+	if !strings.Contains(status.Message, "not found in capture") {
+		t.Errorf("message = %q, want the k8shark-specific \"not found in capture\" message", status.Message)
 	}
 }
 

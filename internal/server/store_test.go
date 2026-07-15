@@ -68,10 +68,11 @@ func TestEnrichResourceInfoFromDiscovery_KnownButUncaptured(t *testing.T) {
 	if !store.isKnownResource("networking.k8s.io", "v1", "ingresses") {
 		t.Fatal("ingresses should be a known resource after discovery enrichment")
 	}
+	resources := store.Resources()
 	var found *ResourceInfo
-	for _, ri := range store.Resources() {
-		if ri.Group == "networking.k8s.io" && ri.Resource == "ingresses" {
-			found = ri
+	for i := range resources {
+		if resources[i].Group == "networking.k8s.io" && resources[i].Resource == "ingresses" {
+			found = &resources[i]
 		}
 	}
 	if found == nil {
@@ -82,6 +83,36 @@ func TestEnrichResourceInfoFromDiscovery_KnownButUncaptured(t *testing.T) {
 	}
 	if len(found.ShortNames) != 1 || found.ShortNames[0] != "ing" {
 		t.Errorf("ingresses ShortNames = %v, want [ing]", found.ShortNames)
+	}
+}
+
+// TestEnrichResourceInfoFromDiscovery_CorrectsNamespacedFromIndex verifies
+// discovery's "namespaced" field overwrites buildResourceInfo's index-derived
+// guess on an existing entry, not just at creation — a capture with only a
+// cluster-wide list (no namespaces: in config) would otherwise report a
+// namespaced resource as cluster-scoped in the regenerated discovery
+// document.
+func TestEnrichResourceInfoFromDiscovery_CorrectsNamespacedFromIndex(t *testing.T) {
+	discoveryBody := `{"kind":"APIResourceList","apiVersion":"v1","groupVersion":"v1","resources":[` +
+		`{"name":"pods","singularName":"pod","namespaced":true,"kind":"Pod"}]}`
+	store := buildTestStore(t, map[string][]byte{
+		"/api/v1":      []byte(discoveryBody),
+		"/api/v1/pods": []byte(`{"kind":"PodList","items":[]}`), // cluster-wide only — buildResourceInfo infers Namespaced=false
+	})
+	store.discoveryEnrichmentDone.Wait()
+
+	resources := store.Resources()
+	var found *ResourceInfo
+	for i := range resources {
+		if resources[i].Group == "" && resources[i].Resource == "pods" {
+			found = &resources[i]
+		}
+	}
+	if found == nil {
+		t.Fatal("pods missing from Resources()")
+	}
+	if !found.Namespaced {
+		t.Error("discovery says pods is namespaced; enrichment should have corrected the index-derived guess")
 	}
 }
 

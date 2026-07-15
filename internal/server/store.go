@@ -165,7 +165,13 @@ func (s *CaptureStore) buildResourceInfo() {
 // mergeResourceInfo inserts or enriches the ResourceInfo for group/version/
 // resource from a captured discovery document, creating a new entry (zero
 // captured objects) if one doesn't already exist from the index. Safe for
-// concurrent use.
+// concurrent use. namespaced always overwrites: discovery is the authoritative
+// source for a resource's scope, more reliable than buildResourceInfo's
+// index-derived guess (whether any captured path happened to include a
+// namespace segment) — e.g. a capture with only a cluster-wide list
+// (/api/v1/pods, no namespaces: in config) would otherwise report a
+// namespaced resource as cluster-scoped in the regenerated discovery
+// document.
 func (s *CaptureStore) mergeResourceInfo(group, version, resource string, namespaced bool, kind, singularName string, shortNames []string) {
 	s.resourceInfoMu.Lock()
 	defer s.resourceInfoMu.Unlock()
@@ -175,6 +181,7 @@ func (s *CaptureStore) mergeResourceInfo(group, version, resource string, namesp
 		ri = &ResourceInfo{Group: group, Version: version, Resource: resource, Namespaced: namespaced}
 		s.resourceInfo[key] = ri
 	}
+	ri.Namespaced = namespaced
 	if kind != "" {
 		ri.Kind = kind
 	} else if ri.Kind == "" {
@@ -251,13 +258,19 @@ func (s *CaptureStore) enrichResourceInfoFromDiscovery() {
 	}
 }
 
-// Resources returns all distinct ResourceInfo entries.
-func (s *CaptureStore) Resources() []*ResourceInfo {
+// Resources returns a snapshot of all distinct ResourceInfo entries. Each
+// element is a value copy taken under the lock, not the pointer stored in the
+// map — mergeResourceInfo can mutate an existing entry's fields
+// (Kind/SingularName/ShortNames/Namespaced) from the background discovery
+// enrichment goroutine at any time, so returning the original pointers would
+// let a caller observe a struct being concurrently written after the lock is
+// released.
+func (s *CaptureStore) Resources() []ResourceInfo {
 	s.resourceInfoMu.RLock()
 	defer s.resourceInfoMu.RUnlock()
-	out := make([]*ResourceInfo, 0, len(s.resourceInfo))
+	out := make([]ResourceInfo, 0, len(s.resourceInfo))
 	for _, ri := range s.resourceInfo {
-		out = append(out, ri)
+		out = append(out, *ri)
 	}
 	return out
 }

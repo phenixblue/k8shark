@@ -546,10 +546,14 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 			body, code = emptyList, 200
 		} else {
 			// Item-level GET (path has more segments than parseAPIPath handles):
-			// a standard NotFound Status, matching a live cluster, so
-			// apierrors.IsNotFound() recognizes it (#177).
-			ig, _, iresource, _, iname, _ := parseWritePath(strings.TrimSuffix(path, "/"))
-			if iresource != "" && iname != "" {
+			// for a known resource, a standard NotFound Status matching a live
+			// cluster, so apierrors.IsNotFound() recognizes it (#177). An unknown
+			// resource keeps the k8shark-specific message instead — it signals a
+			// capture-config problem (wrong group/resource entirely), which
+			// "<resource> \"<name>\" not found" would misleadingly present as "the
+			// object is just missing".
+			ig, iv, iresource, _, iname, _ := parseWritePath(strings.TrimSuffix(path, "/"))
+			if iresource != "" && iname != "" && h.store.isKnownResource(ig, iv, iresource) {
 				writeJSON(w, http.StatusNotFound, notFoundStatus(ig, iresource, iname))
 				return
 			}
