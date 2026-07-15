@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"k8s.io/apimachinery/pkg/util/validation"
 )
 
 // k8s object shape we inspect for filtering.
@@ -249,14 +251,16 @@ func validateSelectorsStrict(labelSelector, fieldSelector string) string {
 			return "invalid labelSelector: " + err.Error()
 		}
 		for _, r := range reqs {
-			if r.key == "" {
-				// parseOneRequirement doesn't itself reject this: e.g. a bare "!" or
-				// "=foo" segment parses to a "doesnotexist"/"="-with-empty-key
-				// requirement rather than an error. An empty key never legitimately
-				// exists on a real object's labels, so "doesnotexist" (and similar)
-				// against it matches every item — exactly the "delete everything"
-				// failure mode this validation exists to catch.
-				return "invalid labelSelector: empty label key"
+			// parseOneRequirement doesn't itself validate the key: a bare "!" or
+			// "a b" or "!)" segment parses to a "doesnotexist"/"="-style
+			// requirement on a key that could never legitimately appear on a real
+			// object's labels (empty, containing spaces, unbalanced parens, …).
+			// Such a requirement (especially doesnotexist/notin) then matches
+			// every item — exactly the "delete everything" failure mode this
+			// validation exists to catch. IsQualifiedName is the same format
+			// check the real apiserver applies to label keys.
+			if errs := validation.IsQualifiedName(r.key); len(errs) > 0 {
+				return fmt.Sprintf("invalid labelSelector: invalid label key %q: %s", r.key, strings.Join(errs, "; "))
 			}
 		}
 	}

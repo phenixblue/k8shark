@@ -1021,6 +1021,10 @@ func TestOverlay_DeleteCollection_InvalidSelectorRejected(t *testing.T) {
 		// skips empty segments), and zero requirements vacuously matches every
 		// item — the same "delete everything" failure mode from a different angle.
 		{"empty labelSelector segment", "?labelSelector=%2C"},
+		// "!)" parses to a doesnotexist requirement on the key ")" — a key no
+		// real object could ever have (invalid label-key syntax) — so it also
+		// matches every item.
+		{"invalid labelSelector key syntax", "?labelSelector=%21%29"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
