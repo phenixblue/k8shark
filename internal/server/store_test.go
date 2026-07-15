@@ -84,6 +84,19 @@ func TestEnrichResourceInfoFromDiscovery_KnownButUncaptured(t *testing.T) {
 	if len(found.ShortNames) != 1 || found.ShortNames[0] != "ing" {
 		t.Errorf("ingresses ShortNames = %v, want [ing]", found.ShortNames)
 	}
+
+	// Mutating the returned ShortNames must not corrupt the store's internal
+	// state — Resources() should be a fully decoupled snapshot, not just a
+	// copy of the outer struct sharing the slice's backing array.
+	found.ShortNames[0] = "mutated"
+	resources2 := store.Resources()
+	for i := range resources2 {
+		if resources2[i].Group == "networking.k8s.io" && resources2[i].Resource == "ingresses" {
+			if resources2[i].ShortNames[0] != "ing" {
+				t.Errorf("mutating a returned ShortNames slice corrupted internal state: got %v", resources2[i].ShortNames)
+			}
+		}
+	}
 }
 
 // TestEnrichResourceInfoFromDiscovery_CorrectsNamespacedFromIndex verifies

@@ -258,19 +258,26 @@ func (s *CaptureStore) enrichResourceInfoFromDiscovery() {
 	}
 }
 
-// Resources returns a snapshot of all distinct ResourceInfo entries. Each
-// element is a value copy taken under the lock, not the pointer stored in the
-// map — mergeResourceInfo can mutate an existing entry's fields
-// (Kind/SingularName/ShortNames/Namespaced) from the background discovery
-// enrichment goroutine at any time, so returning the original pointers would
-// let a caller observe a struct being concurrently written after the lock is
-// released.
+// Resources returns a snapshot of all distinct ResourceInfo entries, fully
+// decoupled from internal storage. Each element is a value copy taken under
+// the lock, not the pointer stored in the map — mergeResourceInfo can mutate
+// an existing entry's fields (Kind/SingularName/ShortNames/Namespaced) from
+// the background discovery enrichment goroutine at any time, so returning the
+// original pointers would let a caller observe a struct being concurrently
+// written after the lock is released. ShortNames is copied too: a struct copy
+// alone still shares the slice's backing array with the stored entry, so a
+// caller mutating the returned ShortNames (even by accident) would corrupt
+// internal state without holding the lock.
 func (s *CaptureStore) Resources() []ResourceInfo {
 	s.resourceInfoMu.RLock()
 	defer s.resourceInfoMu.RUnlock()
 	out := make([]ResourceInfo, 0, len(s.resourceInfo))
 	for _, ri := range s.resourceInfo {
-		out = append(out, *ri)
+		cp := *ri
+		if len(ri.ShortNames) > 0 {
+			cp.ShortNames = append([]string(nil), ri.ShortNames...)
+		}
+		out = append(out, cp)
 	}
 	return out
 }
