@@ -219,6 +219,45 @@ func parseFieldSelector(selector string) []fieldSelectorReq {
 	return reqs
 }
 
+// setSyntaxRest returns the text after " in " or " notin " in a label
+// requirement segment, and whether the segment is set-based at all (ok is
+// false, rest "" for a plain key/key=val/key!=val segment).
+func setSyntaxRest(seg string) (rest string, ok bool) {
+	if i := strings.Index(seg, " notin "); i >= 0 {
+		return seg[i+len(" notin "):], true
+	}
+	if i := strings.Index(seg, " in "); i >= 0 {
+		return seg[i+len(" in "):], true
+	}
+	return "", false
+}
+
+// validateSetSyntax checks an "in"/"notin" segment's value list is
+// well-formed "(v1,v2,...)" syntax with at least one non-empty value.
+// parseParenList (used by the lenient parseOneRequirement) doesn't enforce
+// this: it silently tolerates a missing "(" or ")" (e.g. "app notin (") or an
+// empty/blank value list, and for "notin" either of those vacuously matches
+// every item — the same "delete everything" failure mode the rest of
+// validateSelectorsStrict exists to close off. A segment that isn't set-based
+// is reported ok (nothing for this check to do).
+func validateSetSyntax(seg string) (ok bool, msg string) {
+	rest, isSetBased := setSyntaxRest(seg)
+	if !isSetBased {
+		return true, ""
+	}
+	rest = strings.TrimSpace(rest)
+	if len(rest) < 2 || rest[0] != '(' || rest[len(rest)-1] != ')' ||
+		strings.ContainsAny(rest[1:len(rest)-1], "()") {
+		return false, fmt.Sprintf("invalid labelSelector: malformed set syntax in %q", seg)
+	}
+	for _, v := range strings.Split(rest[1:len(rest)-1], ",") {
+		if strings.TrimSpace(v) == "" {
+			return false, fmt.Sprintf("invalid labelSelector: empty value in set syntax %q", seg)
+		}
+	}
+	return true, ""
+}
+
 // supportedFieldSelectorKeys are the metadata fields matchesFields actually
 // filters on; validateSelectorsStrict rejects any other key.
 var supportedFieldSelectorKeys = map[string]bool{
@@ -236,14 +275,19 @@ var supportedFieldSelectorKeys = map[string]bool{
 // when both selectors are well-formed and reference only supported keys.
 func validateSelectorsStrict(labelSelector, fieldSelector string) string {
 	if labelSelector != "" {
-		// parseRequirements silently skips an empty comma-separated segment
-		// (e.g. from "," or "a,,b") rather than erroring, so a selector of just
-		// "," parses to zero requirements — which matchesLabels treats as
-		// "matches everything" (an empty requirement list vacuously passes).
-		// Reject any empty segment explicitly before that leniency can apply.
 		for _, seg := range splitRespectingParens(labelSelector) {
-			if strings.TrimSpace(seg) == "" {
+			seg = strings.TrimSpace(seg)
+			// parseRequirements silently skips an empty comma-separated segment
+			// (e.g. from "," or "a,,b") rather than erroring, so a selector of
+			// just "," parses to zero requirements — which matchesLabels treats
+			// as "matches everything" (an empty requirement list vacuously
+			// passes). Reject any empty segment explicitly before that leniency
+			// can apply.
+			if seg == "" {
 				return "invalid labelSelector: empty selector segment"
+			}
+			if ok, msg := validateSetSyntax(seg); !ok {
+				return msg
 			}
 		}
 		reqs, err := parseRequirements(labelSelector)

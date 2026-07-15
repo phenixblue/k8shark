@@ -839,6 +839,35 @@ func TestOverlay_DeleteCollection_LabelSelectorFilters(t *testing.T) {
 	}
 }
 
+// TestOverlay_DeleteCollection_SetBasedSelectorFilters verifies well-formed
+// set-based ("in"/"notin") labelSelectors still work for deletecollection —
+// validateSelectorsStrict's set-syntax check must reject malformed set syntax
+// without breaking legitimate use.
+func TestOverlay_DeleteCollection_SetBasedSelectorFilters(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock) // captures pod-base
+
+	doReq(t, http.MethodPost, srv.URL+podsPath, "application/json",
+		`{"apiVersion":"v1","kind":"Pod","metadata":{"name":"pod-la","namespace":"default","labels":{"app":"x"}}}`)
+	doReq(t, http.MethodPost, srv.URL+podsPath, "application/json",
+		`{"apiVersion":"v1","kind":"Pod","metadata":{"name":"pod-lb","namespace":"default","labels":{"app":"y"}}}`)
+
+	code, _ := doReq(t, http.MethodDelete, srv.URL+podsPath+"?labelSelector=app+in+%28x%29", "", "") // app in (x)
+	if code != 200 {
+		t.Fatalf("deletecollection with set-based selector: status %d", code)
+	}
+
+	_, list := doReq(t, http.MethodGet, srv.URL+podsPath, "", "")
+	names := listNames(t, list)
+	if contains(names, "pod-la") {
+		t.Errorf("pod-la (matched \"app in (x)\") should have been deleted: %v", names)
+	}
+	if !contains(names, "pod-lb") || !contains(names, "pod-base") {
+		t.Errorf("non-matching items should survive: %v", names)
+	}
+}
+
 // TestOverlay_DeleteCollection_EmptyIsStillSuccess verifies a deletecollection
 // that matches nothing still returns 200 Success, not a 404 — matching the
 // real apiserver's behavior for an empty collection.
@@ -1025,6 +1054,10 @@ func TestOverlay_DeleteCollection_InvalidSelectorRejected(t *testing.T) {
 		// real object could ever have (invalid label-key syntax) — so it also
 		// matches every item.
 		{"invalid labelSelector key syntax", "?labelSelector=%21%29"},
+		// "app notin (" has an unclosed paren; parseParenList tolerates it and
+		// produces a single empty-string value, so "notin ('')" vacuously
+		// matches every item regardless of whether "app" is even set.
+		{"unclosed notin paren", "?labelSelector=app+notin+%28"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
