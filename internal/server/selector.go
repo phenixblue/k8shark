@@ -308,17 +308,23 @@ func validateSelectorsStrict(labelSelector, fieldSelector string) string {
 			}
 		}
 	}
-	for _, seg := range strings.Split(fieldSelector, ",") {
-		seg = strings.TrimSpace(seg)
-		if seg == "" {
-			continue
-		}
-		req, ok := parseFieldSelectorSegment(seg)
-		if !ok {
-			return fmt.Sprintf("invalid fieldSelector segment %q", seg)
-		}
-		if !supportedFieldSelectorKeys[req.field] {
-			return fmt.Sprintf("unsupported fieldSelector key %q", req.field)
+	if fieldSelector != "" {
+		for _, seg := range strings.Split(fieldSelector, ",") {
+			seg = strings.TrimSpace(seg)
+			// As with the labelSelector empty-segment check above: parseFieldSelector
+			// silently skips an empty segment (e.g. from "," or "a,,b") rather than
+			// erroring, so a fieldSelector of just "," parses to zero requirements —
+			// which matchesFields treats as "matches everything". Reject it instead.
+			if seg == "" {
+				return "invalid fieldSelector: empty selector segment"
+			}
+			req, ok := parseFieldSelectorSegment(seg)
+			if !ok {
+				return fmt.Sprintf("invalid fieldSelector segment %q", seg)
+			}
+			if !supportedFieldSelectorKeys[req.field] {
+				return fmt.Sprintf("unsupported fieldSelector key %q", req.field)
+			}
 		}
 	}
 	return ""

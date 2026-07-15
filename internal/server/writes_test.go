@@ -1058,6 +1058,9 @@ func TestOverlay_DeleteCollection_InvalidSelectorRejected(t *testing.T) {
 		// produces a single empty-string value, so "notin ('')" vacuously
 		// matches every item regardless of whether "app" is even set.
 		{"unclosed notin paren", "?labelSelector=app+notin+%28"},
+		// A bare "," parses to zero fieldSelector requirements the same way it
+		// does for labelSelector — matchesFields vacuously matches every item.
+		{"empty fieldSelector segment", "?fieldSelector=%2C"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
