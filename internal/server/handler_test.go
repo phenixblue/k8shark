@@ -157,6 +157,189 @@ func TestHandler_NotFound_ItemPath(t *testing.T) {
 	}
 }
 
+// TestHandler_NotFound_ItemPath_StandardStatus verifies an item-level GET's
+// 404 body is a standard Kubernetes NotFound Status (reason, message,
+// details) rather than the k8shark-specific "not found in capture" message —
+// so client-go's apierrors.IsNotFound() recognizes it (#177).
+func TestHandler_NotFound_ItemPath_StandardStatus(t *testing.T) {
+	discoveryBody := `{"kind":"APIResourceList","apiVersion":"v1","groupVersion":"networking.k8s.io/v1","resources":[` +
+		`{"name":"ingresses","singularName":"ingress","namespaced":true,"kind":"Ingress"}]}`
+	store := buildTestStore(t, map[string][]byte{
+		"/apis/networking.k8s.io/v1": []byte(discoveryBody),
+	})
+	store.discoveryEnrichmentDone.Wait()
+	h := newHandler(store, time.Time{}, false)
+
+	req := httptest.NewRequest(http.MethodGet, "/apis/networking.k8s.io/v1/namespaces/default/ingresses/nope", nil)
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rw.Code)
+	}
+	var status struct {
+		Kind    string `json:"kind"`
+		Status  string `json:"status"`
+		Reason  string `json:"reason"`
+		Message string `json:"message"`
+		Details struct {
+			Name  string `json:"name"`
+			Group string `json:"group"`
+			Kind  string `json:"kind"`
+		} `json:"details"`
+	}
+	if err := json.Unmarshal(rw.Body.Bytes(), &status); err != nil {
+		t.Fatalf("expected JSON body: %v", err)
+	}
+	if status.Kind != "Status" || status.Status != "Failure" || status.Reason != "NotFound" {
+		t.Errorf("status = %+v, want kind=Status status=Failure reason=NotFound", status)
+	}
+	if status.Message != `ingresses.networking.k8s.io "nope" not found` {
+		t.Errorf("message = %q, want %q", status.Message, `ingresses.networking.k8s.io "nope" not found`)
+	}
+	if status.Details.Name != "nope" || status.Details.Group != "networking.k8s.io" || status.Details.Kind != "ingresses" {
+		t.Errorf("details = %+v, want name=nope group=networking.k8s.io kind=ingresses", status.Details)
+	}
+}
+
+// TestHandler_NotFound_ItemPath_CoreGroupStatus verifies the core group
+// (empty group string) omits ".group" from the message and "group" from
+// details, matching the real apiserver's GroupResource.String() format.
+func TestHandler_NotFound_ItemPath_CoreGroupStatus(t *testing.T) {
+	// "pods" is known via a captured (unrelated) pod list — "nope" itself was
+	// never captured.
+	store := buildTestStore(t, map[string][]byte{
+		"/api/v1/namespaces/default/pods": []byte(`{"kind":"PodList","items":[{"metadata":{"name":"other"}}]}`),
+	})
+	h := newHandler(store, time.Time{}, false)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/namespaces/default/pods/nope", nil)
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rw.Code)
+	}
+	var status struct {
+		Reason  string         `json:"reason"`
+		Message string         `json:"message"`
+		Details map[string]any `json:"details"`
+	}
+	if err := json.Unmarshal(rw.Body.Bytes(), &status); err != nil {
+		t.Fatalf("expected JSON body: %v", err)
+	}
+	if status.Reason != "NotFound" {
+		t.Errorf("reason = %q, want NotFound", status.Reason)
+	}
+	if status.Message != `pods "nope" not found` {
+		t.Errorf("message = %q, want %q", status.Message, `pods "nope" not found`)
+	}
+	if _, hasGroup := status.Details["group"]; hasGroup {
+		t.Errorf("details should omit \"group\" for the core group, got %v", status.Details)
+	}
+}
+
+// TestHandler_NotFound_ItemPath_UnknownResourceKeepsGenericMessage verifies an
+// item-level GET for a resource that's genuinely unknown (absent from both
+// discovery and the index) keeps the k8shark-specific "not found in capture"
+// message rather than the standard NotFound Status — that format would
+// otherwise misleadingly present a capture-config problem (wrong
+// group/resource entirely) as "the object is just missing" (#177).
+func TestHandler_NotFound_ItemPath_UnknownResourceKeepsGenericMessage(t *testing.T) {
+	store := buildTestStore(t, map[string][]byte{})
+	h := newHandler(store, time.Time{}, false)
+
+	req := httptest.NewRequest(http.MethodGet, "/apis/totally.fake/v1/namespaces/default/foos/nope", nil)
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rw.Code)
+	}
+	var status struct {
+		Reason  string `json:"reason"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(rw.Body.Bytes(), &status); err != nil {
+		t.Fatalf("expected JSON body: %v", err)
+	}
+	if status.Reason != "" {
+		t.Errorf("reason = %q, want empty (not the standard NotFound Status)", status.Reason)
+	}
+	if !strings.Contains(status.Message, "not found in capture") {
+		t.Errorf("message = %q, want the k8shark-specific \"not found in capture\" message", status.Message)
+	}
+}
+
+// TestHandler_NotFound_ListPath_KnownResourceNoWarning verifies a resource
+// listed in a captured discovery document, but with zero captured objects,
+// returns an empty 200 list with no Warning header — it behaves like a real
+// cluster's empty live collection, not a misconfigured/unknown capture
+// (#177). Contrast with TestHandler_NotFound_ListPath, where the resource is
+// genuinely absent from discovery too.
+func TestHandler_NotFound_ListPath_KnownResourceNoWarning(t *testing.T) {
+	discoveryBody := `{"kind":"APIResourceList","apiVersion":"v1","groupVersion":"networking.k8s.io/v1","resources":[` +
+		`{"name":"ingresses","singularName":"ingress","namespaced":true,"kind":"Ingress"}]}`
+	store := buildTestStore(t, map[string][]byte{
+		"/apis/networking.k8s.io/v1": []byte(discoveryBody),
+	})
+	store.discoveryEnrichmentDone.Wait()
+	h := newHandler(store, time.Time{}, false)
+
+	req := httptest.NewRequest(http.MethodGet, "/apis/networking.k8s.io/v1/namespaces/default/ingresses", nil)
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rw.Code)
+	}
+	if w := rw.Header().Get("Warning"); w != "" {
+		t.Errorf("expected no Warning header for a known resource, got %q", w)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rw.Body.Bytes(), &body); err != nil {
+		t.Fatalf("expected JSON body: %v", err)
+	}
+	if body["kind"] != "IngressList" {
+		t.Errorf("expected kind IngressList, got %v", body["kind"])
+	}
+	items, _ := body["items"].([]any)
+	if len(items) != 0 {
+		t.Errorf("expected empty items, got %v", items)
+	}
+}
+
+// TestHandler_NotFound_ListPath_KnownResourceUsesDiscoveryKind verifies the
+// empty-list fallback uses the authoritative Kind from discovery metadata,
+// not the resourceToKind heuristic — which guesses "Endpointslice" (wrong)
+// rather than the real "EndpointSlice" for "endpointslices", since it doesn't
+// follow simple depluralization. A client deserializing by GVK would break on
+// the heuristic's guess.
+func TestHandler_NotFound_ListPath_KnownResourceUsesDiscoveryKind(t *testing.T) {
+	discoveryBody := `{"kind":"APIResourceList","apiVersion":"v1","groupVersion":"discovery.k8s.io/v1","resources":[` +
+		`{"name":"endpointslices","singularName":"endpointslice","namespaced":true,"kind":"EndpointSlice"}]}`
+	store := buildTestStore(t, map[string][]byte{
+		"/apis/discovery.k8s.io/v1": []byte(discoveryBody),
+	})
+	store.discoveryEnrichmentDone.Wait()
+	h := newHandler(store, time.Time{}, false)
+
+	req := httptest.NewRequest(http.MethodGet, "/apis/discovery.k8s.io/v1/namespaces/default/endpointslices", nil)
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rw.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rw.Body.Bytes(), &body); err != nil {
+		t.Fatalf("expected JSON body: %v", err)
+	}
+	if body["kind"] != "EndpointSliceList" {
+		t.Errorf("expected kind EndpointSliceList, got %v", body["kind"])
+	}
+}
+
 func TestHandler_SingleItemGet(t *testing.T) {
 	podList := `{"apiVersion":"v1","kind":"PodList","items":[{"metadata":{"name":"nginx","namespace":"default"}},{"metadata":{"name":"redis","namespace":"default"}}]}`
 	store := buildTestStore(t, map[string][]byte{

@@ -52,6 +52,83 @@ func TestResourceToKind(t *testing.T) {
 	}
 }
 
+// TestEnrichResourceInfoFromDiscovery_KnownButUncaptured verifies a resource
+// listed in a captured discovery document, but with zero captured objects of
+// its own, still gets a ResourceInfo entry — the root fix for #177 ("known
+// kind, nothing captured" must be distinguishable from "genuinely unknown
+// kind").
+func TestEnrichResourceInfoFromDiscovery_KnownButUncaptured(t *testing.T) {
+	discoveryBody := `{"kind":"APIResourceList","apiVersion":"v1","groupVersion":"networking.k8s.io/v1","resources":[` +
+		`{"name":"ingresses","singularName":"ingress","namespaced":true,"kind":"Ingress","shortNames":["ing"]}]}`
+	store := buildTestStore(t, map[string][]byte{
+		"/apis/networking.k8s.io/v1": []byte(discoveryBody),
+	})
+	store.discoveryEnrichmentDone.Wait()
+
+	if !store.isKnownResource("networking.k8s.io", "v1", "ingresses") {
+		t.Fatal("ingresses should be a known resource after discovery enrichment")
+	}
+	resources := store.Resources()
+	var found *ResourceInfo
+	for i := range resources {
+		if resources[i].Group == "networking.k8s.io" && resources[i].Resource == "ingresses" {
+			found = &resources[i]
+		}
+	}
+	if found == nil {
+		t.Fatal("ingresses missing from Resources()")
+	}
+	if found.Kind != "Ingress" || found.SingularName != "ingress" || !found.Namespaced {
+		t.Errorf("ingresses ResourceInfo = %+v, want Kind=Ingress SingularName=ingress Namespaced=true", found)
+	}
+	if len(found.ShortNames) != 1 || found.ShortNames[0] != "ing" {
+		t.Errorf("ingresses ShortNames = %v, want [ing]", found.ShortNames)
+	}
+
+	// Mutating the returned ShortNames must not corrupt the store's internal
+	// state — Resources() should be a fully decoupled snapshot, not just a
+	// copy of the outer struct sharing the slice's backing array.
+	found.ShortNames[0] = "mutated"
+	resources2 := store.Resources()
+	for i := range resources2 {
+		if resources2[i].Group == "networking.k8s.io" && resources2[i].Resource == "ingresses" {
+			if resources2[i].ShortNames[0] != "ing" {
+				t.Errorf("mutating a returned ShortNames slice corrupted internal state: got %v", resources2[i].ShortNames)
+			}
+		}
+	}
+}
+
+// TestEnrichResourceInfoFromDiscovery_CorrectsNamespacedFromIndex verifies
+// discovery's "namespaced" field overwrites buildResourceInfo's index-derived
+// guess on an existing entry, not just at creation — a capture with only a
+// cluster-wide list (no namespaces: in config) would otherwise report a
+// namespaced resource as cluster-scoped in the regenerated discovery
+// document.
+func TestEnrichResourceInfoFromDiscovery_CorrectsNamespacedFromIndex(t *testing.T) {
+	discoveryBody := `{"kind":"APIResourceList","apiVersion":"v1","groupVersion":"v1","resources":[` +
+		`{"name":"pods","singularName":"pod","namespaced":true,"kind":"Pod"}]}`
+	store := buildTestStore(t, map[string][]byte{
+		"/api/v1":      []byte(discoveryBody),
+		"/api/v1/pods": []byte(`{"kind":"PodList","items":[]}`), // cluster-wide only — buildResourceInfo infers Namespaced=false
+	})
+	store.discoveryEnrichmentDone.Wait()
+
+	resources := store.Resources()
+	var found *ResourceInfo
+	for i := range resources {
+		if resources[i].Group == "" && resources[i].Resource == "pods" {
+			found = &resources[i]
+		}
+	}
+	if found == nil {
+		t.Fatal("pods missing from Resources()")
+	}
+	if !found.Namespaced {
+		t.Error("discovery says pods is namespaced; enrichment should have corrected the index-derived guess")
+	}
+}
+
 // buildTestStore creates a CaptureStore with the given per-path response bodies.
 func buildTestStore(t *testing.T, records map[string][]byte) *CaptureStore {
 	t.Helper()

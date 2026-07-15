@@ -16,11 +16,18 @@ import (
 // CaptureStore holds the in-memory index and provides record lookups against
 // a ZIP+Zstd archive opened without extraction to disk.
 type CaptureStore struct {
-	ar           *archive.Archive
-	Metadata     capture.CaptureMetadata
-	Index        capture.Index
-	WatchIndex   capture.WatchIndex
-	resourceInfo map[string]*ResourceInfo
+	ar         *archive.Archive
+	Metadata   capture.CaptureMetadata
+	Index      capture.Index
+	WatchIndex capture.WatchIndex
+
+	resourceInfoMu sync.RWMutex
+	resourceInfo   map[string]*ResourceInfo
+	// discoveryEnrichmentDone lets tests deterministically wait for
+	// enrichResourceInfoFromDiscovery's background pass (see LoadStore) instead
+	// of racing it. Production code intentionally does not wait — the store is
+	// documented as usable before this completes.
+	discoveryEnrichmentDone sync.WaitGroup
 
 	// Record LRU cache (bounded by recordCacheMaxBytes total body bytes).
 	recordCacheMu    sync.Mutex
@@ -115,7 +122,11 @@ func LoadStore(ar *archive.Archive) (*CaptureStore, error) {
 	// Derive ResourceInfo from index keys synchronously (fast — no I/O).
 	s.buildResourceInfo()
 
-	// Enrich ResourceInfo from discovery records asynchronously.
+	// Enrich ResourceInfo from discovery records asynchronously — this also
+	// creates entries for resources listed in a captured discovery document
+	// that have zero captured objects (see mergeResourceInfo), so a known kind
+	// with nothing captured is distinguishable from a genuinely unknown one.
+	s.discoveryEnrichmentDone.Add(1)
 	go s.enrichResourceInfoFromDiscovery()
 
 	return s, nil
@@ -124,6 +135,8 @@ func LoadStore(ar *archive.Archive) (*CaptureStore, error) {
 // buildResourceInfo derives ResourceInfo for each distinct resource type in
 // the index. It does not read any record data.
 func (s *CaptureStore) buildResourceInfo() {
+	s.resourceInfoMu.Lock()
+	defer s.resourceInfoMu.Unlock()
 	for path := range s.Index {
 		if strings.Contains(path, "?") {
 			continue
@@ -149,14 +162,52 @@ func (s *CaptureStore) buildResourceInfo() {
 	}
 }
 
+// mergeResourceInfo inserts or enriches the ResourceInfo for group/version/
+// resource from a captured discovery document, creating a new entry (zero
+// captured objects) if one doesn't already exist from the index. Safe for
+// concurrent use. namespaced always overwrites: discovery is the authoritative
+// source for a resource's scope, more reliable than buildResourceInfo's
+// index-derived guess (whether any captured path happened to include a
+// namespace segment) — e.g. a capture with only a cluster-wide list
+// (/api/v1/pods, no namespaces: in config) would otherwise report a
+// namespaced resource as cluster-scoped in the regenerated discovery
+// document.
+func (s *CaptureStore) mergeResourceInfo(group, version, resource string, namespaced bool, kind, singularName string, shortNames []string) {
+	s.resourceInfoMu.Lock()
+	defer s.resourceInfoMu.Unlock()
+	key := group + "/" + version + "/" + resource
+	ri, ok := s.resourceInfo[key]
+	if !ok {
+		ri = &ResourceInfo{Group: group, Version: version, Resource: resource, Namespaced: namespaced}
+		s.resourceInfo[key] = ri
+	}
+	ri.Namespaced = namespaced
+	if kind != "" {
+		ri.Kind = kind
+	} else if ri.Kind == "" {
+		ri.Kind = resourceToKind(resource)
+	}
+	if singularName != "" {
+		ri.SingularName = singularName
+	}
+	if len(shortNames) > 0 {
+		ri.ShortNames = shortNames
+	}
+}
+
 // enrichResourceInfoFromDiscovery reads captured APIResourceList bodies from
-// the archive and back-fills Kind, ShortNames, SingularName into resourceInfo.
-// Runs in a background goroutine; store is usable before this completes.
+// the archive and back-fills Kind, ShortNames, SingularName into resourceInfo
+// — creating a new entry (via mergeResourceInfo) for a resource the discovery
+// document lists but that has zero captured objects, so it's still reported
+// as a known kind rather than "not found in capture" (#177). Runs in a
+// background goroutine; store is usable before this completes.
 func (s *CaptureStore) enrichResourceInfoFromDiscovery() {
+	defer s.discoveryEnrichmentDone.Done()
 	type apiResourceEntry struct {
 		Name         string   `json:"name"`
 		SingularName string   `json:"singularName"`
 		Kind         string   `json:"kind"`
+		Namespaced   bool     `json:"namespaced"`
 		ShortNames   []string `json:"shortNames"`
 	}
 	type apiResourceList struct {
@@ -200,33 +251,64 @@ func (s *CaptureStore) enrichResourceInfoFromDiscovery() {
 		}
 		for _, res := range resList.Resources {
 			if strings.Contains(res.Name, "/") {
-				continue
+				continue // a subresource entry (e.g. "pods/status"), not a top-level resource
 			}
-			key := g + "/" + v + "/" + res.Name
-			ri, ok := s.resourceInfo[key]
-			if !ok {
-				continue
-			}
-			if res.Kind != "" {
-				ri.Kind = res.Kind
-			}
-			if res.SingularName != "" {
-				ri.SingularName = res.SingularName
-			}
-			if len(res.ShortNames) > 0 {
-				ri.ShortNames = res.ShortNames
-			}
+			s.mergeResourceInfo(g, v, res.Name, res.Namespaced, res.Kind, res.SingularName, res.ShortNames)
 		}
 	}
 }
 
-// Resources returns all distinct ResourceInfo entries.
-func (s *CaptureStore) Resources() []*ResourceInfo {
-	out := make([]*ResourceInfo, 0, len(s.resourceInfo))
+// Resources returns a snapshot of all distinct ResourceInfo entries, fully
+// decoupled from internal storage. Each element is a value copy taken under
+// the lock, not the pointer stored in the map — mergeResourceInfo can mutate
+// an existing entry's fields (Kind/SingularName/ShortNames/Namespaced) from
+// the background discovery enrichment goroutine at any time, so returning the
+// original pointers would let a caller observe a struct being concurrently
+// written after the lock is released. ShortNames is copied too: a struct copy
+// alone still shares the slice's backing array with the stored entry, so a
+// caller mutating the returned ShortNames (even by accident) would corrupt
+// internal state without holding the lock.
+func (s *CaptureStore) Resources() []ResourceInfo {
+	s.resourceInfoMu.RLock()
+	defer s.resourceInfoMu.RUnlock()
+	out := make([]ResourceInfo, 0, len(s.resourceInfo))
 	for _, ri := range s.resourceInfo {
-		out = append(out, ri)
+		cp := *ri
+		if len(ri.ShortNames) > 0 {
+			cp.ShortNames = append([]string(nil), ri.ShortNames...)
+		}
+		out = append(out, cp)
 	}
 	return out
+}
+
+// isKnownResource reports whether group/version/resource is a real API type
+// the captured cluster exposed — present in a captured discovery document or
+// the archive index — even if zero objects of it were ever captured. Used to
+// distinguish "known kind, nothing captured" (should read like an empty live
+// collection) from a genuinely unknown/misconfigured kind (#177).
+func (s *CaptureStore) isKnownResource(group, version, resource string) bool {
+	s.resourceInfoMu.RLock()
+	defer s.resourceInfoMu.RUnlock()
+	_, ok := s.resourceInfo[group+"/"+version+"/"+resource]
+	return ok
+}
+
+// resourceKind returns the authoritative Kind for a known group/version/
+// resource (from captured discovery, or resourceToKind's heuristic if only
+// seen in the index — see buildResourceInfo/mergeResourceInfo), or "" if the
+// resource isn't known at all. Prefer this over calling resourceToKind
+// directly when a resource might be known: the heuristic guesses wrong for
+// built-in types whose Kind doesn't follow simple depluralization (e.g.
+// "endpointslices" -> "Endpointslice", not the real "EndpointSlice") and for
+// most CRDs.
+func (s *CaptureStore) resourceKind(group, version, resource string) string {
+	s.resourceInfoMu.RLock()
+	defer s.resourceInfoMu.RUnlock()
+	if ri, ok := s.resourceInfo[group+"/"+version+"/"+resource]; ok {
+		return ri.Kind
+	}
+	return ""
 }
 
 // Latest returns the ResponseBody of the most recent record for apiPath.

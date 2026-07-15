@@ -522,26 +522,49 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 
 	if code == 404 {
 		// If the path parses as a list-level resource (not an item GET), return
-		// an empty list with a Warning header so kubectl shows
-		// "No resources found" rather than "Error from server: not found".
-		// Item-level GETs (path has more segments than parseAPIPath handles)
-		// still get a proper 404.
+		// an empty list — a known kind (in a captured discovery document or the
+		// index, even with zero captured objects) behaves like a real cluster's
+		// empty live collection: no warning, since a client may well create
+		// objects of it next (especially in writable mode). Reserve the warning
+		// for a genuinely unknown/misconfigured kind (#177).
 		g, v, resource, _ := parseAPIPath(path)
 		if resource != "" {
 			av := v
 			if g != "" {
 				av = g + "/" + v
 			}
+			// Prefer the authoritative Kind from discovery/index metadata over the
+			// resourceToKind heuristic, which guesses wrong for resources whose
+			// Kind doesn't follow simple depluralization (e.g. endpointslices)
+			// and for most CRDs — a client deserializing by GVK would break.
+			kind := h.store.resourceKind(g, v, resource)
+			if kind == "" {
+				kind = resourceToKind(resource)
+			}
 			emptyList, _ := json.Marshal(map[string]any{
 				"apiVersion": av,
-				"kind":       resourceToKind(resource) + "List",
+				"kind":       kind + "List",
 				"metadata":   map[string]string{"resourceVersion": "0"},
 				"items":      []any{},
 			})
-			w.Header().Set("Warning", fmt.Sprintf(`299 k8shark %q`,
-				resource+" not found in capture; was it included in the capture config?"))
+			if !h.store.isKnownResource(g, v, resource) {
+				w.Header().Set("Warning", fmt.Sprintf(`299 k8shark %q`,
+					resource+" not found in capture; was it included in the capture config?"))
+			}
 			body, code = emptyList, 200
 		} else {
+			// Item-level GET (path has more segments than parseAPIPath handles):
+			// for a known resource, a standard NotFound Status matching a live
+			// cluster, so apierrors.IsNotFound() recognizes it (#177). An unknown
+			// resource keeps the k8shark-specific message instead — it signals a
+			// capture-config problem (wrong group/resource entirely), which
+			// "<resource> \"<name>\" not found" would misleadingly present as "the
+			// object is just missing".
+			ig, iv, iresource, _, iname, _ := parseWritePath(strings.TrimSuffix(path, "/"))
+			if iresource != "" && iname != "" && h.store.isKnownResource(ig, iv, iresource) {
+				writeJSON(w, http.StatusNotFound, notFoundStatus(ig, iresource, iname))
+				return
+			}
 			h.writeStatus(w, http.StatusNotFound, fmt.Sprintf("%q not found in capture", path))
 			return
 		}
@@ -978,6 +1001,35 @@ func statusObj(code int, msg string) map[string]any {
 		"status":     "Failure",
 		"message":    msg,
 		"code":       code,
+	}
+}
+
+// notFoundStatus builds a standard Kubernetes NotFound Status object for a
+// missing item of group/resource/name — reason: "NotFound" (so client-go's
+// apierrors.IsNotFound() recognizes it) and the real apiserver's message
+// format (e.g. "ingresses.networking.k8s.io \"nope\" not found", or just
+// "pods \"nope\" not found" for the core group), matching
+// k8s.io/apimachinery/pkg/api/errors.NewNotFound (#177). details.kind is the
+// plural resource name, not the singular Kind — an apiserver quirk this
+// mirrors for parity.
+func notFoundStatus(group, resource, name string) map[string]any {
+	qualified := resource
+	if group != "" {
+		qualified = resource + "." + group
+	}
+	details := map[string]any{"name": name, "kind": resource}
+	if group != "" {
+		details["group"] = group
+	}
+	return map[string]any{
+		"apiVersion": "v1",
+		"kind":       "Status",
+		"metadata":   map[string]any{},
+		"status":     "Failure",
+		"message":    fmt.Sprintf("%s %q not found", qualified, name),
+		"reason":     "NotFound",
+		"details":    details,
+		"code":       http.StatusNotFound,
 	}
 }
 
