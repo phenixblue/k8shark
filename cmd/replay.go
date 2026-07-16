@@ -94,9 +94,12 @@ func runReplay(cmd *cobra.Command, args []string) error {
 
 	// Optionally launch a detected kwok against the server to drive pod/node
 	// lifecycle. Started after the server is up (it needs the kubeconfig) and torn
-	// down on shutdown.
+	// down on shutdown. waitForNodesReady blocks briefly first so kwok's own
+	// first LIST doesn't race the replay clock past the nodes resource's first
+	// captured snapshot (see waitForNodesReady).
 	var kwokCleanup func()
 	if withKwok {
+		waitForNodesReady(srv.Address(), srv.CertPEM(), nodesReadyTimeout)
 		kwokCleanup, err = startKwok(srv.KubeconfigPath())
 		if err != nil {
 			srv.Shutdown()

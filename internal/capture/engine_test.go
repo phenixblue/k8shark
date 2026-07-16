@@ -125,6 +125,98 @@ func TestEngine_CaptureToArchive(t *testing.T) {
 	}
 }
 
+// TestEngine_CapturedAt_ReflectsPollStart guards against a regression where
+// CapturedAt was backdated as `finish - configured duration`, ignoring any
+// wall-clock time spent on preflight/version-check/discovery before the first
+// poll actually fires. A replay session defaults its window start to
+// CapturedAt, so an underestimated CapturedAt could land before a resource's
+// first captured snapshot — a client querying immediately at replay start
+// (e.g. `replay --with-kwok`'s auto-launched kwok subprocess polling
+// /api/v1/nodes) would then see a spurious "not found in capture" for a
+// resource that genuinely was captured.
+func TestEngine_CapturedAt_ReflectsPollStart(t *testing.T) {
+	const versionDelay = 300 * time.Millisecond
+	nodeList := `{"apiVersion":"v1","kind":"NodeList","metadata":{},"items":[{"apiVersion":"v1","kind":"Node","metadata":{"name":"node1"}}]}`
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/version":
+			// Simulate slow preflight/version-check overhead ahead of polling.
+			time.Sleep(versionDelay)
+			fmt.Fprint(w, `{"gitVersion":"v1.29.0"}`)
+		case "/api/v1/nodes":
+			fmt.Fprint(w, nodeList)
+		default:
+			fmt.Fprint(w, `{"kind":"List","items":[]}`)
+		}
+	}))
+	defer srv.Close()
+
+	outDir := t.TempDir()
+	cfg := &config.Config{
+		DurationRaw: "2s",
+		Duration:    2 * time.Second,
+		Output:      filepath.Join(outDir, "capture.kshrk"),
+		Resources: []config.Resource{
+			{Version: "v1", Resource: "nodes", IntervalRaw: "200ms", Interval: 200 * time.Millisecond},
+		},
+	}
+
+	eng := newEngineWith(cfg, srv.Client(), srv.URL, false)
+	if _, err := eng.Run(); err != nil {
+		t.Fatalf("engine.Run() error: %v", err)
+	}
+
+	ar, err := archive.Open(cfg.Output)
+	if err != nil {
+		t.Fatalf("archive.Open: %v", err)
+	}
+	defer ar.Close()
+
+	var meta CaptureMetadata
+	if err := ar.ReadMetadata(&meta); err != nil {
+		t.Fatalf("ReadMetadata: %v", err)
+	}
+	var idx Index
+	if err := ar.ReadIndex(&idx); err != nil {
+		t.Fatalf("ReadIndex: %v", err)
+	}
+
+	entry, ok := idx["/api/v1/nodes"]
+	if !ok || len(entry.Times) == 0 {
+		t.Fatalf("nodes missing from index")
+	}
+	firstNodeSnapshot := entry.Times[0]
+
+	// CapturedAt necessarily precedes the first snapshot (it's recorded before
+	// the poll goroutines launch), but the gap should be small — just
+	// goroutine-scheduling and network round-trip jitter, not the ~600ms of
+	// version-check overhead injected above (preflight and fetchServerVersion
+	// each hit /version once). A wide gap here is exactly what let a replay
+	// client's query at the (too-early) window start see this resource as
+	// "not found in capture" despite it genuinely being captured.
+	gap := firstNodeSnapshot.Sub(meta.CapturedAt)
+	if gap < 0 {
+		t.Fatalf("CapturedAt %s is after the first nodes snapshot %s", meta.CapturedAt, firstNodeSnapshot)
+	}
+	const maxGap = 200 * time.Millisecond
+	if gap > maxGap {
+		t.Fatalf("CapturedAt→first-snapshot gap %s exceeds %s (CapturedAt=%s, firstSnapshot=%s): "+
+			"the ~600ms version-check delay leaked into CapturedAt instead of being absorbed before it",
+			gap, maxGap, meta.CapturedAt, firstNodeSnapshot)
+	}
+
+	// Confirms the test actually exercises the drift: the old `now - duration`
+	// estimate ignored the version-check delay above, so its gap to the first
+	// snapshot would have exceeded maxGap.
+	oldEstimate := meta.CapturedUntil.Add(-cfg.Duration)
+	if firstNodeSnapshot.Sub(oldEstimate) <= maxGap {
+		t.Fatalf("test setup didn't reproduce the drift: old estimate %s is still within %s of "+
+			"first snapshot %s", oldEstimate, maxGap, firstNodeSnapshot)
+	}
+}
+
 func TestEngine_FetchPodsLogs(t *testing.T) {
 	// Pod fixtures include spec.containers so the engine knows what to fetch
 	// logs for. The redis pod also has an init container to verify init-
