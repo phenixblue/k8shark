@@ -53,7 +53,7 @@ func init() {
 	uiCmd.Flags().Bool("start-paused", false, "replay mode: start paused (the UI defaults to this; pass --start-paused=false to auto-play)")
 	uiCmd.Flags().Bool("writable", false, "replay mode: accept client writes into an in-memory overlay")
 	uiCmd.Flags().Bool("with-kwok", false, "replay mode: also run a detected 'kwok' binary against the server to drive pod/node lifecycle (implies --writable)")
-	uiCmd.Flags().Bool("with-controller-manager", false, "replay mode: also run kube-controller-manager against the server, with a curated controller set, to reconcile Deployments/ReplicaSets/Jobs/CronJobs/Endpoints (implies --writable)")
+	uiCmd.Flags().Bool("with-controller-manager", false, controllerManagerFlagHelp)
 }
 
 func runUI(cmd *cobra.Command, args []string) error {

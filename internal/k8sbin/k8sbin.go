@@ -122,10 +122,23 @@ func binDir(version string) (string, error) {
 	return filepath.Join(base, "kshark", "kube-controller-manager", version, runtime.GOOS+"-"+runtime.GOARCH), nil
 }
 
+// isExecutableFile reports whether path is a regular file this package can
+// hand to exec.Command. The Unix execute-bit check (mode&0o111) is
+// meaningless on Windows — os.FileInfo.Mode() there reflects the read-only
+// file attribute, not anything execution-related — so a cached Windows
+// binary would never be recognized as such and EnsureControllerManager would
+// redownload/rebuild on every call. A plain non-empty regular file is
+// sufficient there: CreateProcess doesn't require an execute bit, and
+// buildFromSource/downloadPrebuilt always write to this exact path (no
+// implicit ".exe" is appended — go build's explicit -o path is honored as
+// given even when cross-compiling to GOOS=windows).
 func isExecutableFile(path string) bool {
 	info, err := os.Stat(path)
 	if err != nil || info.IsDir() {
 		return false
+	}
+	if runtime.GOOS == "windows" {
+		return info.Size() > 0
 	}
 	return info.Mode()&0o111 != 0
 }

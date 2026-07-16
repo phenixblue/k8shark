@@ -33,6 +33,15 @@ var controllerManagerControllers = []string{
 	"disruption",
 }
 
+// controllerManagerFlagHelp is the --with-controller-manager flag description
+// shared by `replay` and `ui`, derived from controllerManagerControllers
+// rather than duplicated as a hand-written list in each cmd/*.go — the two
+// drifted out of sync with the actual set (and each other) when the list was
+// last extended.
+var controllerManagerFlagHelp = "also run kube-controller-manager (downloaded/built to match the capture's " +
+	"Kubernetes version) against the server, reconciling a curated set of controllers (" +
+	strings.Join(controllerManagerControllers, ", ") + ") — see docs/kwok.md (implies --writable)"
+
 // startControllerManager locates or builds a kube-controller-manager binary
 // matching k8sVersion (see internal/k8sbin) and runs it against the mock
 // server's kubeconfig with the curated controller set, no leader election (a

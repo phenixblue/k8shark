@@ -52,7 +52,7 @@ func init() {
 	replayCmd.Flags().Bool("writable", false, "accept client writes into an in-memory overlay (closed-loop controller dev)")
 	replayCmd.Flags().Bool("schedule-pods", true, "bind unscheduled pods to a node on create (the scheduler replay lacks); --writable only")
 	replayCmd.Flags().Bool("with-kwok", false, "also run a detected 'kwok' binary against the server to drive pod/node lifecycle (implies --writable)")
-	replayCmd.Flags().Bool("with-controller-manager", false, "also run kube-controller-manager (downloaded/built to match the capture's Kubernetes version) against the server, with a curated controller set, to reconcile Deployments/ReplicaSets/DaemonSets/StatefulSets/Jobs/CronJobs/Endpoints (implies --writable)")
+	replayCmd.Flags().Bool("with-controller-manager", false, controllerManagerFlagHelp)
 }
 
 func runReplay(cmd *cobra.Command, args []string) error {
