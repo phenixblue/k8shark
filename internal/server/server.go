@@ -185,10 +185,16 @@ func (s *Server) Address() string { return s.address }
 // KubeconfigPath returns the path to the generated kubeconfig.
 func (s *Server) KubeconfigPath() string { return s.kubeconfigPath }
 
-// CertPEM returns this run's self-signed TLS certificate in PEM form, so an
-// in-process client (one that isn't going through the generated kubeconfig's
-// insecure-skip-tls-verify) can pin it instead of disabling verification.
-func (s *Server) CertPEM() []byte { return s.certPEM }
+// CertPEM returns a copy of this run's self-signed TLS certificate in PEM
+// form, so an in-process client (one that isn't going through the generated
+// kubeconfig's insecure-skip-tls-verify) can pin it instead of disabling
+// verification. A copy is returned so a caller can't mutate the server's
+// stored cert bytes.
+func (s *Server) CertPEM() []byte {
+	out := make([]byte, len(s.certPEM))
+	copy(out, s.certPEM)
+	return out
+}
 
 // Clock returns the replay clock, or nil when the server is not in replay mode.
 func (s *Server) Clock() *ReplayClock { return s.clock }
