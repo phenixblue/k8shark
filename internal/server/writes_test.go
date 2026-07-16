@@ -282,6 +282,368 @@ func TestKindForResource(t *testing.T) {
 	}
 }
 
+func TestIsIPv6Address(t *testing.T) {
+	cases := map[string]bool{
+		"":               false,
+		"None":           false, // headless Service
+		"10.0.0.1":       false,
+		"172.16.0.5":     false,
+		"fd00::1234":     true,
+		"::1":            true,
+		"2001:db8::1":    true,
+		"not-an-ip-addr": false,
+	}
+	for in, want := range cases {
+		if got := isIPv6Address(in); got != want {
+			t.Errorf("isIPv6Address(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
+// TestOverlay_APIDefaulting verifies that objects of Kinds real controllers
+// reconcile get the same defaulting a live apiserver applies on create — a
+// regression test for panics found wiring up --with-controller-manager:
+// kube-controller-manager unconditionally dereferences fields like
+// Deployment.spec.strategy.rollingUpdate.maxSurge and Job.spec.backoffLimit,
+// assuming the apiserver already defaulted them.
+func TestOverlay_APIDefaulting(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	t.Run("Deployment strategy", func(t *testing.T) {
+		body := `{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"nginx","namespace":"default"},
+			"spec":{"replicas":1,"selector":{"matchLabels":{"app":"nginx"}},
+			"template":{"metadata":{"labels":{"app":"nginx"}},"spec":{"containers":[{"name":"nginx","image":"nginx"}]}}}}`
+		code, out := doReq(t, http.MethodPost, srv.URL+"/apis/apps/v1/namespaces/default/deployments", "application/json", body)
+		if code != http.StatusCreated {
+			t.Fatalf("create: status %d: %s", code, out)
+		}
+		var d struct {
+			Spec struct {
+				Strategy struct {
+					Type          string `json:"type"`
+					RollingUpdate *struct {
+						MaxSurge       string `json:"maxSurge"`
+						MaxUnavailable string `json:"maxUnavailable"`
+					} `json:"rollingUpdate"`
+				} `json:"strategy"`
+			} `json:"spec"`
+		}
+		if err := json.Unmarshal(out, &d); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if d.Spec.Strategy.Type != "RollingUpdate" {
+			t.Errorf("strategy.type = %q, want RollingUpdate", d.Spec.Strategy.Type)
+		}
+		if d.Spec.Strategy.RollingUpdate == nil {
+			t.Fatalf("strategy.rollingUpdate is nil — kube-controller-manager panics dereferencing .maxSurge")
+		}
+		if d.Spec.Strategy.RollingUpdate.MaxSurge != "25%" || d.Spec.Strategy.RollingUpdate.MaxUnavailable != "25%" {
+			t.Errorf("rollingUpdate = %+v, want 25%%/25%%", d.Spec.Strategy.RollingUpdate)
+		}
+	})
+
+	t.Run("Job backoffLimit and friends", func(t *testing.T) {
+		body := `{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"hello","namespace":"default"},
+			"spec":{"template":{"spec":{"containers":[{"name":"hello","image":"busybox"}],"restartPolicy":"Never"}}}}`
+		code, out := doReq(t, http.MethodPost, srv.URL+"/apis/batch/v1/namespaces/default/jobs", "application/json", body)
+		if code != http.StatusCreated {
+			t.Fatalf("create: status %d: %s", code, out)
+		}
+		var j struct {
+			Spec struct {
+				Parallelism    *int32  `json:"parallelism"`
+				BackoffLimit   *int32  `json:"backoffLimit"`
+				CompletionMode *string `json:"completionMode"`
+			} `json:"spec"`
+		}
+		if err := json.Unmarshal(out, &j); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if j.Spec.BackoffLimit == nil || *j.Spec.BackoffLimit != 6 {
+			t.Errorf("backoffLimit = %v, want 6 — job controller panics dereferencing a nil backoffLimit", j.Spec.BackoffLimit)
+		}
+		if j.Spec.Parallelism == nil || *j.Spec.Parallelism != 1 {
+			t.Errorf("parallelism = %v, want 1", j.Spec.Parallelism)
+		}
+		if j.Spec.CompletionMode == nil || *j.Spec.CompletionMode != "NonIndexed" {
+			t.Errorf("completionMode = %v, want NonIndexed", j.Spec.CompletionMode)
+		}
+	})
+
+	t.Run("DaemonSet updateStrategy", func(t *testing.T) {
+		body := `{"apiVersion":"apps/v1","kind":"DaemonSet","metadata":{"name":"fluentd","namespace":"default"},
+			"spec":{"selector":{"matchLabels":{"app":"fluentd"}},
+			"template":{"metadata":{"labels":{"app":"fluentd"}},"spec":{"containers":[{"name":"fluentd","image":"fluentd"}]}}}}`
+		code, out := doReq(t, http.MethodPost, srv.URL+"/apis/apps/v1/namespaces/default/daemonsets", "application/json", body)
+		if code != http.StatusCreated {
+			t.Fatalf("create: status %d: %s", code, out)
+		}
+		var d struct {
+			Spec struct {
+				UpdateStrategy struct {
+					Type          string `json:"type"`
+					RollingUpdate *struct {
+						MaxUnavailable string `json:"maxUnavailable"`
+					} `json:"rollingUpdate"`
+				} `json:"updateStrategy"`
+			} `json:"spec"`
+		}
+		if err := json.Unmarshal(out, &d); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if d.Spec.UpdateStrategy.Type != "RollingUpdate" {
+			t.Errorf("updateStrategy.type = %q, want RollingUpdate", d.Spec.UpdateStrategy.Type)
+		}
+		if d.Spec.UpdateStrategy.RollingUpdate == nil || d.Spec.UpdateStrategy.RollingUpdate.MaxUnavailable != "25%" {
+			t.Errorf("updateStrategy.rollingUpdate = %+v, want non-nil with maxUnavailable 25%%", d.Spec.UpdateStrategy.RollingUpdate)
+		}
+	})
+
+	t.Run("StatefulSet updateStrategy and podManagementPolicy", func(t *testing.T) {
+		body := `{"apiVersion":"apps/v1","kind":"StatefulSet","metadata":{"name":"web","namespace":"default"},
+			"spec":{"serviceName":"web","selector":{"matchLabels":{"app":"web"}},
+			"template":{"metadata":{"labels":{"app":"web"}},"spec":{"containers":[{"name":"web","image":"nginx"}]}}}}`
+		code, out := doReq(t, http.MethodPost, srv.URL+"/apis/apps/v1/namespaces/default/statefulsets", "application/json", body)
+		if code != http.StatusCreated {
+			t.Fatalf("create: status %d: %s", code, out)
+		}
+		var s struct {
+			Spec struct {
+				PodManagementPolicy string `json:"podManagementPolicy"`
+				UpdateStrategy      struct {
+					Type          string `json:"type"`
+					RollingUpdate *struct {
+						Partition *int32 `json:"partition"`
+					} `json:"rollingUpdate"`
+				} `json:"updateStrategy"`
+			} `json:"spec"`
+		}
+		if err := json.Unmarshal(out, &s); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if s.Spec.PodManagementPolicy != "OrderedReady" {
+			t.Errorf("podManagementPolicy = %q, want OrderedReady", s.Spec.PodManagementPolicy)
+		}
+		if s.Spec.UpdateStrategy.Type != "RollingUpdate" {
+			t.Errorf("updateStrategy.type = %q, want RollingUpdate", s.Spec.UpdateStrategy.Type)
+		}
+		if s.Spec.UpdateStrategy.RollingUpdate == nil || s.Spec.UpdateStrategy.RollingUpdate.Partition == nil {
+			t.Fatalf("updateStrategy.rollingUpdate.partition is nil — statefulset controller panics dereferencing it")
+		}
+		if *s.Spec.UpdateStrategy.RollingUpdate.Partition != 0 {
+			t.Errorf("partition = %d, want 0", *s.Spec.UpdateStrategy.RollingUpdate.Partition)
+		}
+	})
+
+	t.Run("CronJob concurrencyPolicy and history limits", func(t *testing.T) {
+		body := `{"apiVersion":"batch/v1","kind":"CronJob","metadata":{"name":"hello-cron","namespace":"default"},
+			"spec":{"schedule":"* * * * *","jobTemplate":{"spec":{"template":{"spec":{
+			"containers":[{"name":"hello","image":"busybox"}],"restartPolicy":"OnFailure"}}}}}}`
+		code, out := doReq(t, http.MethodPost, srv.URL+"/apis/batch/v1/namespaces/default/cronjobs", "application/json", body)
+		if code != http.StatusCreated {
+			t.Fatalf("create: status %d: %s", code, out)
+		}
+		var c struct {
+			Spec struct {
+				ConcurrencyPolicy          string `json:"concurrencyPolicy"`
+				Suspend                    *bool  `json:"suspend"`
+				SuccessfulJobsHistoryLimit *int32 `json:"successfulJobsHistoryLimit"`
+				FailedJobsHistoryLimit     *int32 `json:"failedJobsHistoryLimit"`
+			} `json:"spec"`
+		}
+		if err := json.Unmarshal(out, &c); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if c.Spec.ConcurrencyPolicy != "Allow" {
+			t.Errorf("concurrencyPolicy = %q, want Allow", c.Spec.ConcurrencyPolicy)
+		}
+		if c.Spec.Suspend == nil || *c.Spec.Suspend != false {
+			t.Errorf("suspend = %v, want false", c.Spec.Suspend)
+		}
+		if c.Spec.SuccessfulJobsHistoryLimit == nil || *c.Spec.SuccessfulJobsHistoryLimit != 3 {
+			t.Errorf("successfulJobsHistoryLimit = %v, want 3", c.Spec.SuccessfulJobsHistoryLimit)
+		}
+		if c.Spec.FailedJobsHistoryLimit == nil || *c.Spec.FailedJobsHistoryLimit != 1 {
+			t.Errorf("failedJobsHistoryLimit = %v, want 1", c.Spec.FailedJobsHistoryLimit)
+		}
+	})
+
+	t.Run("Service IPFamilies", func(t *testing.T) {
+		body := `{"apiVersion":"v1","kind":"Service","metadata":{"name":"web","namespace":"default"},
+			"spec":{"selector":{"app":"nginx"},"ports":[{"port":80}]}}`
+		code, out := doReq(t, http.MethodPost, srv.URL+"/api/v1/namespaces/default/services", "application/json", body)
+		if code != http.StatusCreated {
+			t.Fatalf("create: status %d: %s", code, out)
+		}
+		var s struct {
+			Spec struct {
+				Type       string   `json:"type"`
+				IPFamilies []string `json:"ipFamilies"`
+			} `json:"spec"`
+		}
+		if err := json.Unmarshal(out, &s); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if s.Spec.Type != "ClusterIP" {
+			t.Errorf("type = %q, want ClusterIP", s.Spec.Type)
+		}
+		if len(s.Spec.IPFamilies) == 0 {
+			t.Fatalf("ipFamilies is empty — the endpoint controller panics indexing ipFamilies[0]")
+		}
+		if s.Spec.IPFamilies[0] != "IPv4" {
+			t.Errorf("ipFamilies = %v, want [IPv4] as the fallback when nothing indicates IPv6", s.Spec.IPFamilies)
+		}
+	})
+
+	t.Run("Service IPFamilies infers IPv6 from an explicit ClusterIP", func(t *testing.T) {
+		// Defaulting to IPv4 unconditionally would pair an IPv6 ClusterIP with
+		// an IPv4 family — an inconsistent Service that sends the endpoint
+		// controller looking for the wrong address family.
+		body := `{"apiVersion":"v1","kind":"Service","metadata":{"name":"web6","namespace":"default"},
+			"spec":{"clusterIP":"fd00::1234","selector":{"app":"nginx"},"ports":[{"port":80}]}}`
+		code, out := doReq(t, http.MethodPost, srv.URL+"/api/v1/namespaces/default/services", "application/json", body)
+		if code != http.StatusCreated {
+			t.Fatalf("create: status %d: %s", code, out)
+		}
+		var s struct {
+			Spec struct {
+				IPFamilies []string `json:"ipFamilies"`
+			} `json:"spec"`
+		}
+		if err := json.Unmarshal(out, &s); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(s.Spec.IPFamilies) == 0 || s.Spec.IPFamilies[0] != "IPv6" {
+			t.Errorf("ipFamilies = %v, want [IPv6] inferred from clusterIP fd00::1234", s.Spec.IPFamilies)
+		}
+	})
+
+	t.Run("dual-stack Service keeps IPv4 primary despite an IPv6 secondary in clusterIPs", func(t *testing.T) {
+		// Scanning every clusterIPs entry (instead of just the primary address)
+		// would pick IPv6 here and produce ipFamilies[0] inconsistent with the
+		// primary clusterIP, sending the endpoint controller down the wrong
+		// address family.
+		body := `{"apiVersion":"v1","kind":"Service","metadata":{"name":"web-dual","namespace":"default"},
+			"spec":{"clusterIP":"10.0.0.5","clusterIPs":["10.0.0.5","fd00::5678"],"selector":{"app":"nginx"},"ports":[{"port":80}]}}`
+		code, out := doReq(t, http.MethodPost, srv.URL+"/api/v1/namespaces/default/services", "application/json", body)
+		if code != http.StatusCreated {
+			t.Fatalf("create: status %d: %s", code, out)
+		}
+		var s struct {
+			Spec struct {
+				IPFamilies []string `json:"ipFamilies"`
+			} `json:"spec"`
+		}
+		if err := json.Unmarshal(out, &s); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(s.Spec.IPFamilies) == 0 || s.Spec.IPFamilies[0] != "IPv4" {
+			t.Errorf("ipFamilies = %v, want [IPv4] matching the primary clusterIP 10.0.0.5", s.Spec.IPFamilies)
+		}
+	})
+
+	t.Run("unknown resource passes through unchanged", func(t *testing.T) {
+		body := `{"apiVersion":"example.com/v1","kind":"Widget","metadata":{"name":"w1","namespace":"default"},"spec":{}}`
+		code, out := doReq(t, http.MethodPost, srv.URL+"/apis/example.com/v1/namespaces/default/widgets", "application/json", body)
+		if code != http.StatusCreated {
+			t.Fatalf("create: status %d: %s", code, out)
+		}
+		if metaString(out, "name") != "w1" {
+			t.Errorf("name = %q, want w1 (custom resource create should be unaffected)", metaString(out, "name"))
+		}
+	})
+
+	t.Run("defaulting preserves fields unknown to the vendored types", func(t *testing.T) {
+		// defaultObject round-trips through a typed struct to compute what
+		// defaulting changed, but must apply that as a merge patch onto the
+		// original body rather than returning the re-marshaled typed struct
+		// directly — otherwise a field the vendored k8s.io/api types don't
+		// know about (e.g. a newer API field a live cluster's capture might
+		// have, or here a made-up one standing in for that case) would be
+		// silently dropped even though the client explicitly sent it.
+		body := `{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"nginx-unknown","namespace":"default"},
+			"spec":{"replicas":1,"selector":{"matchLabels":{"app":"nginx"}},
+			"template":{"metadata":{"labels":{"app":"nginx"}},"spec":{"containers":[{"name":"nginx","image":"nginx"}]}},
+			"unknownFutureField":"should-survive"}}`
+		code, out := doReq(t, http.MethodPost, srv.URL+"/apis/apps/v1/namespaces/default/deployments", "application/json", body)
+		if code != http.StatusCreated {
+			t.Fatalf("create: status %d: %s", code, out)
+		}
+		var d struct {
+			Spec struct {
+				Strategy struct {
+					Type string `json:"type"`
+				} `json:"strategy"`
+				UnknownFutureField string `json:"unknownFutureField"`
+			} `json:"spec"`
+		}
+		if err := json.Unmarshal(out, &d); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if d.Spec.UnknownFutureField != "should-survive" {
+			t.Errorf("unknownFutureField = %q, want it preserved through defaulting", d.Spec.UnknownFutureField)
+		}
+		if d.Spec.Strategy.Type != "RollingUpdate" {
+			t.Errorf("strategy.type = %q, want defaulting to still apply alongside the unknown field", d.Spec.Strategy.Type)
+		}
+	})
+}
+
+// TestOverlay_PatchAppliesDefaulting verifies that PATCHing a captured object
+// that predates this project's defaulting (e.g. an older/incomplete capture,
+// or a hand-authored fixture) — not just POST/PUT — backfills the same
+// defaults, since the patched result is just as capable of reaching a real
+// controller as a freshly created object.
+func TestOverlay_PatchAppliesDefaulting(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+
+	listPath := "/apis/apps/v1/namespaces/default/deployments"
+	deployPath := listPath + "/nginx"
+	deployItem := `{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"nginx","namespace":"default"},
+		"spec":{"replicas":1,"selector":{"matchLabels":{"app":"nginx"}},"strategy":{},
+		"template":{"metadata":{"labels":{"app":"nginx"}},"spec":{"containers":[{"name":"nginx","image":"nginx"}]}}}}`
+	capturedList := `{"apiVersion":"apps/v1","kind":"DeploymentList","metadata":{},"items":[` + deployItem + `]}`
+	store := buildTestStoreWithWatch(t,
+		map[string]watchTestRecord{listPath: {id: "d", at: from, body: capturedList}}, nil)
+	srv := newWritableServer(t, store, clock)
+
+	// Confirm the captured object really does carry an empty strategy (i.e.
+	// this predates defaulting, not already fixed by something else).
+	code, before := doReq(t, http.MethodGet, srv.URL+deployPath, "", "")
+	if code != 200 {
+		t.Fatalf("GET before patch: status %d: %s", code, before)
+	}
+
+	patch := `{"spec":{"replicas":2}}`
+	code, after := doReq(t, http.MethodPatch, srv.URL+deployPath, "application/merge-patch+json", patch)
+	if code != 200 {
+		t.Fatalf("PATCH: status %d: %s", code, after)
+	}
+	var d struct {
+		Spec struct {
+			Replicas int `json:"replicas"`
+			Strategy struct {
+				Type          string `json:"type"`
+				RollingUpdate *struct {
+					MaxSurge string `json:"maxSurge"`
+				} `json:"rollingUpdate"`
+			} `json:"strategy"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal(after, &d); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if d.Spec.Replicas != 2 {
+		t.Errorf("replicas = %d, want 2 (the patch itself)", d.Spec.Replicas)
+	}
+	if d.Spec.Strategy.Type != "RollingUpdate" || d.Spec.Strategy.RollingUpdate == nil {
+		t.Errorf("strategy = %+v, want defaulted to RollingUpdate/25%% — PATCH must default just like POST/PUT", d.Spec.Strategy)
+	}
+}
+
 func TestOverlay_DeleteTombstone(t *testing.T) {
 	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
 	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)

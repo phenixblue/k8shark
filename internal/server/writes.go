@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"sort"
 	"strconv"
@@ -12,10 +13,16 @@ import (
 
 	"github.com/google/uuid"
 	jsonpatch "gopkg.in/evanphx/json-patch.v4"
+	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/yaml"
 )
 
@@ -97,6 +104,9 @@ func (h *handler) overlayCreate(w http.ResponseWriter, r *http.Request, group, v
 	body, ok := h.readObjectBody(w, r)
 	if !ok {
 		return
+	}
+	if gvk, known := kindForResource(schema.GroupVersion{Group: group, Version: version}, resource); known {
+		body = defaultObject(gvk, body)
 	}
 	name := metaString(body, "name")
 	if name == "" {
@@ -380,6 +390,11 @@ func (h *handler) overlayReplace(w http.ResponseWriter, r *http.Request, group, 
 	if !ok {
 		return
 	}
+	if sub != "status" {
+		if gvk, known := kindForResource(schema.GroupVersion{Group: group, Version: version}, resource); known {
+			body = defaultObject(gvk, body)
+		}
+	}
 	if h.identityMismatch(w, body, name, namespace) {
 		return
 	}
@@ -435,6 +450,15 @@ func (h *handler) overlayPatch(w http.ResponseWriter, r *http.Request, group, ve
 	if !isJSONObject(next) {
 		h.writeStatus(w, http.StatusUnprocessableEntity, "patch did not produce a JSON object")
 		return
+	}
+	// A patch (e.g. `kubectl apply`) can just as easily leave a defaultable
+	// field unset as a create/replace can — default the patched result the
+	// same way, so a controller reconciling an applied object doesn't panic
+	// on a field the apiserver would have defaulted (see defaultObject).
+	if sub != "status" {
+		if gvk, known := kindForResource(schema.GroupVersion{Group: group, Version: version}, resource); known {
+			next = defaultObject(gvk, next)
+		}
 	}
 	if h.identityMismatch(w, next, name, namespace) {
 		return
@@ -788,6 +812,190 @@ func kindForResource(gv schema.GroupVersion, resource string) (schema.GroupVersi
 		}
 	}
 	return schema.GroupVersionKind{}, false
+}
+
+// defaultObject applies Kubernetes API defaulting to body — e.g. an empty
+// Deployment.spec.strategy.type becomes "RollingUpdate" — matching what a real
+// apiserver does on every write. The overlay has no apiserver behind it, so
+// without this a freshly created object keeps whatever zero values the client
+// didn't set; a real controller (e.g. kube-controller-manager's deployment
+// controller) assumes defaulting already happened and errors on the zero value
+// ("unexpected deployment strategy type: \"\"") instead of treating it as
+// "use the default". Resources outside client-go's built-in scheme (CRDs) are
+// returned unchanged — there's no way to know their defaults without the CRD's
+// schema, which the overlay doesn't have.
+//
+// scheme.Scheme.Default only runs defaulters registered on the client-side
+// scheme, which — for the built-in types this project vendors
+// (k8s.io/api, not the full k8s.io/kubernetes apiserver) — is effectively
+// none of the fields real controllers care about; the actual
+// SetDefaults_Deployment-style functions live in k8s.io/kubernetes's internal
+// packages, which aren't meant to be imported as a library. applyKnownDefaults
+// hand-covers the specific, long-stable defaults our curated
+// --with-controller-manager controllers rely on instead.
+func defaultObject(gvk schema.GroupVersionKind, body json.RawMessage) json.RawMessage {
+	typed, err := scheme.Scheme.New(gvk)
+	if err != nil {
+		return body
+	}
+	if err := json.Unmarshal(body, typed); err != nil {
+		return body
+	}
+	// Marshal the client's own object back out before defaulting (rather than
+	// reusing body directly) so the merge patch computed below only reflects
+	// fields defaulting actually changed, not differences between body's
+	// exact bytes/field order and typed's. Round-tripping through the typed
+	// struct at all would normally risk silently dropping fields the
+	// vendored k8s.io/api types don't know about (e.g. a newer API field) or
+	// explicitly-sent zero values omitempty would elide — but since this
+	// undefaulted marshal is only ever diffed against the defaulted one, not
+	// returned, neither loss ends up in the result: a field defaulting
+	// doesn't touch is absent from the diff either way, and the merge patch
+	// below is applied onto the original body, preserving every field body
+	// actually had.
+	before, err := json.Marshal(typed)
+	if err != nil {
+		return body
+	}
+	scheme.Scheme.Default(typed)
+	applyKnownDefaults(typed)
+	after, err := json.Marshal(typed)
+	if err != nil {
+		return body
+	}
+	patch, err := jsonpatch.CreateMergePatch(before, after)
+	if err != nil {
+		return body
+	}
+	defaulted, err := jsonpatch.MergePatch(body, patch)
+	if err != nil {
+		return body
+	}
+	return defaulted
+}
+
+// applyKnownDefaults hand-applies the handful of long-stable Kubernetes API
+// defaults that the controllers --with-controller-manager enables (see
+// cmd/controllermanager.go) assume are already in place: a zero-valued
+// strategy/update-strategy/concurrency-policy reads as "invalid", not "use the
+// default", to those controllers. Defaulting a *Type without also defaulting
+// its matching *RollingUpdate sub-struct is not enough — real
+// kube-controller-manager code unconditionally dereferences that pointer
+// (e.g. deployment_util.go's NewRSNewReplicas reads
+// Spec.Strategy.RollingUpdate.MaxSurge), so a Type of "RollingUpdate" with a
+// nil RollingUpdate struct panics deep inside the controller instead of
+// erroring cleanly.
+// isIPv6Address reports whether s parses as an IPv6 address. Used to infer a
+// Service's address family from an explicit ClusterIP/ClusterIPs value
+// rather than always assuming IPv4; returns false for "" and "None" (a
+// headless Service), which correctly fall through to the IPv4 default.
+func isIPv6Address(s string) bool {
+	ip := net.ParseIP(s)
+	return ip != nil && ip.To4() == nil
+}
+
+func applyKnownDefaults(obj runtime.Object) {
+	switch o := obj.(type) {
+	case *corev1.Service:
+		if o.Spec.Type == "" {
+			o.Spec.Type = corev1.ServiceTypeClusterIP
+		}
+		if o.Spec.SessionAffinity == "" {
+			o.Spec.SessionAffinity = corev1.ServiceAffinityNone
+		}
+		if len(o.Spec.IPFamilies) == 0 {
+			// The endpoint/endpointslice controllers index IPFamilies[0]
+			// unconditionally; a real apiserver always populates this from the
+			// cluster's configured service-cluster-ip-range. Infer the primary
+			// family from the primary address only — ClusterIP if set, else
+			// ClusterIPs[0] — never by scanning every ClusterIPs entry: for a
+			// dual-stack Service with an IPv4 ClusterIP and an IPv6 secondary in
+			// ClusterIPs, scanning all entries would pick IPv6 and produce
+			// IPFamilies[0] inconsistent with the primary ClusterIP, sending the
+			// endpoint controller down the wrong address family. IPv4 remains the
+			// fallback when nothing indicates IPv6, matching every capture this
+			// project has captured so far.
+			family := corev1.IPv4Protocol
+			switch {
+			case o.Spec.ClusterIP != "" && o.Spec.ClusterIP != corev1.ClusterIPNone:
+				if isIPv6Address(o.Spec.ClusterIP) {
+					family = corev1.IPv6Protocol
+				}
+			case len(o.Spec.ClusterIPs) > 0:
+				if isIPv6Address(o.Spec.ClusterIPs[0]) {
+					family = corev1.IPv6Protocol
+				}
+			}
+			o.Spec.IPFamilies = []corev1.IPFamily{family}
+		}
+	case *appsv1.Deployment:
+		if o.Spec.Strategy.Type == "" {
+			o.Spec.Strategy.Type = appsv1.RollingUpdateDeploymentStrategyType
+		}
+		if o.Spec.Strategy.Type == appsv1.RollingUpdateDeploymentStrategyType && o.Spec.Strategy.RollingUpdate == nil {
+			maxUnavailable := intstr.FromString("25%")
+			maxSurge := intstr.FromString("25%")
+			o.Spec.Strategy.RollingUpdate = &appsv1.RollingUpdateDeployment{
+				MaxUnavailable: &maxUnavailable,
+				MaxSurge:       &maxSurge,
+			}
+		}
+	case *appsv1.DaemonSet:
+		if o.Spec.UpdateStrategy.Type == "" {
+			o.Spec.UpdateStrategy.Type = appsv1.RollingUpdateDaemonSetStrategyType
+		}
+		if o.Spec.UpdateStrategy.Type == appsv1.RollingUpdateDaemonSetStrategyType && o.Spec.UpdateStrategy.RollingUpdate == nil {
+			maxUnavailable := intstr.FromString("25%")
+			maxSurge := intstr.FromInt32(0)
+			o.Spec.UpdateStrategy.RollingUpdate = &appsv1.RollingUpdateDaemonSet{
+				MaxUnavailable: &maxUnavailable,
+				MaxSurge:       &maxSurge,
+			}
+		}
+	case *appsv1.StatefulSet:
+		if o.Spec.UpdateStrategy.Type == "" {
+			o.Spec.UpdateStrategy.Type = appsv1.RollingUpdateStatefulSetStrategyType
+		}
+		if o.Spec.PodManagementPolicy == "" {
+			o.Spec.PodManagementPolicy = appsv1.OrderedReadyPodManagement
+		}
+		if o.Spec.UpdateStrategy.Type == appsv1.RollingUpdateStatefulSetStrategyType && o.Spec.UpdateStrategy.RollingUpdate == nil {
+			partition := int32(0)
+			o.Spec.UpdateStrategy.RollingUpdate = &appsv1.RollingUpdateStatefulSetStrategy{Partition: &partition}
+		}
+	case *batchv1.Job:
+		if o.Spec.Parallelism == nil {
+			o.Spec.Parallelism = ptr.To(int32(1))
+		}
+		if o.Spec.BackoffLimit == nil {
+			o.Spec.BackoffLimit = ptr.To(int32(6))
+		}
+		if o.Spec.CompletionMode == nil {
+			o.Spec.CompletionMode = ptr.To(batchv1.NonIndexedCompletion)
+		}
+		if o.Spec.Suspend == nil {
+			o.Spec.Suspend = ptr.To(false)
+		}
+		if o.Spec.ManualSelector == nil {
+			o.Spec.ManualSelector = ptr.To(false)
+		}
+		if o.Spec.PodReplacementPolicy == nil {
+			o.Spec.PodReplacementPolicy = ptr.To(batchv1.TerminatingOrFailed)
+		}
+	case *batchv1.CronJob:
+		if o.Spec.ConcurrencyPolicy == "" {
+			o.Spec.ConcurrencyPolicy = batchv1.AllowConcurrent
+		}
+		if o.Spec.Suspend == nil {
+			o.Spec.Suspend = ptr.To(false)
+		}
+		if o.Spec.SuccessfulJobsHistoryLimit == nil {
+			o.Spec.SuccessfulJobsHistoryLimit = ptr.To(int32(3))
+		}
+		if o.Spec.FailedJobsHistoryLimit == nil {
+			o.Spec.FailedJobsHistoryLimit = ptr.To(int32(1))
+		}
+	}
 }
 
 // allowedMethods returns the Allow-header value for a write path shape, used on

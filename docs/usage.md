@@ -408,6 +408,7 @@ The primary use case is **local development and testing of controllers/operators
 | `--writable` | false | Accept client writes into an in-memory overlay (closed-loop controller dev) |
 | `--schedule-pods` | true | Bind unscheduled pods to a node on create (the scheduler replay lacks); `--writable` only |
 | `--with-kwok` | false | Also run a detected `kwok` binary against the server to drive pod/node lifecycle (implies `--writable`) — see [KWOK](kwok.md) |
+| `--with-controller-manager` | false | Also run kube-controller-manager (downloaded/built to match the capture's Kubernetes version) against the server, with a curated controller set, to reconcile Deployments/ReplicaSets/DaemonSets/StatefulSets/Jobs/CronJobs/Endpoints (implies `--writable`) — see [KWOK](kwok.md#closing-more-of-the-loop-with-controller-manager) |
 | `--port` | random | Port for the mock API server |
 | `--kubeconfig-out` | `~/.kube/k8shark-<id>.yaml` | Where to write the generated kubeconfig |
 | `--verbose` / `-v` | false | Log every request the server receives |
