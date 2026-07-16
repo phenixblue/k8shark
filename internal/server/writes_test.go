@@ -282,6 +282,24 @@ func TestKindForResource(t *testing.T) {
 	}
 }
 
+func TestIsIPv6Address(t *testing.T) {
+	cases := map[string]bool{
+		"":               false,
+		"None":           false, // headless Service
+		"10.0.0.1":       false,
+		"172.16.0.5":     false,
+		"fd00::1234":     true,
+		"::1":            true,
+		"2001:db8::1":    true,
+		"not-an-ip-addr": false,
+	}
+	for in, want := range cases {
+		if got := isIPv6Address(in); got != want {
+			t.Errorf("isIPv6Address(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
+
 // TestOverlay_APIDefaulting verifies that objects of Kinds real controllers
 // reconcile get the same defaulting a live apiserver applies on create — a
 // regression test for panics found wiring up --with-controller-manager:
@@ -473,6 +491,32 @@ func TestOverlay_APIDefaulting(t *testing.T) {
 		}
 		if len(s.Spec.IPFamilies) == 0 {
 			t.Fatalf("ipFamilies is empty — the endpoint controller panics indexing ipFamilies[0]")
+		}
+		if s.Spec.IPFamilies[0] != "IPv4" {
+			t.Errorf("ipFamilies = %v, want [IPv4] as the fallback when nothing indicates IPv6", s.Spec.IPFamilies)
+		}
+	})
+
+	t.Run("Service IPFamilies infers IPv6 from an explicit ClusterIP", func(t *testing.T) {
+		// Defaulting to IPv4 unconditionally would pair an IPv6 ClusterIP with
+		// an IPv4 family — an inconsistent Service that sends the endpoint
+		// controller looking for the wrong address family.
+		body := `{"apiVersion":"v1","kind":"Service","metadata":{"name":"web6","namespace":"default"},
+			"spec":{"clusterIP":"fd00::1234","selector":{"app":"nginx"},"ports":[{"port":80}]}}`
+		code, out := doReq(t, http.MethodPost, srv.URL+"/api/v1/namespaces/default/services", "application/json", body)
+		if code != http.StatusCreated {
+			t.Fatalf("create: status %d: %s", code, out)
+		}
+		var s struct {
+			Spec struct {
+				IPFamilies []string `json:"ipFamilies"`
+			} `json:"spec"`
+		}
+		if err := json.Unmarshal(out, &s); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(s.Spec.IPFamilies) == 0 || s.Spec.IPFamilies[0] != "IPv6" {
+			t.Errorf("ipFamilies = %v, want [IPv6] inferred from clusterIP fd00::1234", s.Spec.IPFamilies)
 		}
 	})
 

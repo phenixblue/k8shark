@@ -81,3 +81,21 @@ func TestRunUI_WithKwokImpliesReplayMode(t *testing.T) {
 		t.Errorf("error = %v, want it to explain the --at/replay conflict", err)
 	}
 }
+
+// TestRunUI_WithControllerManagerImpliesReplayMode is the symmetric case for
+// --with-controller-manager: it implies replay mode (and thus --writable)
+// exactly like --with-kwok does, so it must conflict with --at the same way.
+func TestRunUI_WithControllerManagerImpliesReplayMode(t *testing.T) {
+	arch := buildDiffArchive(t, healthyPodList)
+	cmd := newTestUICommand()
+	_ = cmd.Flags().Set("at", "-5m")
+	_ = cmd.Flags().Set("with-controller-manager", "true")
+
+	err := runUI(cmd, []string{arch})
+	if err == nil {
+		t.Fatal("expected error: --with-controller-manager implies replay mode, which conflicts with --at")
+	}
+	if !strings.Contains(err.Error(), "--at cannot be combined") {
+		t.Errorf("error = %v, want it to explain the --at/replay conflict", err)
+	}
+}

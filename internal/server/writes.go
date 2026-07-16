@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"sort"
 	"strconv"
@@ -860,6 +861,15 @@ func defaultObject(gvk schema.GroupVersionKind, body json.RawMessage) json.RawMe
 // Spec.Strategy.RollingUpdate.MaxSurge), so a Type of "RollingUpdate" with a
 // nil RollingUpdate struct panics deep inside the controller instead of
 // erroring cleanly.
+// isIPv6Address reports whether s parses as an IPv6 address. Used to infer a
+// Service's address family from an explicit ClusterIP/ClusterIPs value
+// rather than always assuming IPv4; returns false for "" and "None" (a
+// headless Service), which correctly fall through to the IPv4 default.
+func isIPv6Address(s string) bool {
+	ip := net.ParseIP(s)
+	return ip != nil && ip.To4() == nil
+}
+
 func applyKnownDefaults(obj runtime.Object) {
 	switch o := obj.(type) {
 	case *corev1.Service:
@@ -872,9 +882,25 @@ func applyKnownDefaults(obj runtime.Object) {
 		if len(o.Spec.IPFamilies) == 0 {
 			// The endpoint/endpointslice controllers index IPFamilies[0]
 			// unconditionally; a real apiserver always populates this from the
-			// cluster's configured service-cluster-ip-range. IPv4 matches every
-			// capture this project has captured so far.
-			o.Spec.IPFamilies = []corev1.IPFamily{corev1.IPv4Protocol}
+			// cluster's configured service-cluster-ip-range. Infer the family
+			// from an explicit IPv6 ClusterIP/ClusterIPs first — defaulting to
+			// IPv4 unconditionally would otherwise produce an inconsistent
+			// Service (an IPv6 address paired with an IPv4 family) and send
+			// the endpoint controller looking for the wrong address family.
+			// IPv4 remains the fallback when nothing indicates IPv6, matching
+			// every capture this project has captured so far.
+			family := corev1.IPv4Protocol
+			if isIPv6Address(o.Spec.ClusterIP) {
+				family = corev1.IPv6Protocol
+			} else {
+				for _, ip := range o.Spec.ClusterIPs {
+					if isIPv6Address(ip) {
+						family = corev1.IPv6Protocol
+						break
+					}
+				}
+			}
+			o.Spec.IPFamilies = []corev1.IPFamily{family}
 		}
 	case *appsv1.Deployment:
 		if o.Spec.Strategy.Type == "" {
