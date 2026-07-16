@@ -520,6 +520,30 @@ func TestOverlay_APIDefaulting(t *testing.T) {
 		}
 	})
 
+	t.Run("dual-stack Service keeps IPv4 primary despite an IPv6 secondary in clusterIPs", func(t *testing.T) {
+		// Scanning every clusterIPs entry (instead of just the primary address)
+		// would pick IPv6 here and produce ipFamilies[0] inconsistent with the
+		// primary clusterIP, sending the endpoint controller down the wrong
+		// address family.
+		body := `{"apiVersion":"v1","kind":"Service","metadata":{"name":"web-dual","namespace":"default"},
+			"spec":{"clusterIP":"10.0.0.5","clusterIPs":["10.0.0.5","fd00::5678"],"selector":{"app":"nginx"},"ports":[{"port":80}]}}`
+		code, out := doReq(t, http.MethodPost, srv.URL+"/api/v1/namespaces/default/services", "application/json", body)
+		if code != http.StatusCreated {
+			t.Fatalf("create: status %d: %s", code, out)
+		}
+		var s struct {
+			Spec struct {
+				IPFamilies []string `json:"ipFamilies"`
+			} `json:"spec"`
+		}
+		if err := json.Unmarshal(out, &s); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(s.Spec.IPFamilies) == 0 || s.Spec.IPFamilies[0] != "IPv4" {
+			t.Errorf("ipFamilies = %v, want [IPv4] matching the primary clusterIP 10.0.0.5", s.Spec.IPFamilies)
+		}
+	})
+
 	t.Run("unknown resource passes through unchanged", func(t *testing.T) {
 		body := `{"apiVersion":"example.com/v1","kind":"Widget","metadata":{"name":"w1","namespace":"default"},"spec":{}}`
 		code, out := doReq(t, http.MethodPost, srv.URL+"/apis/example.com/v1/namespaces/default/widgets", "application/json", body)

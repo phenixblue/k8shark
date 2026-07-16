@@ -433,3 +433,40 @@ func TestIsExecutableFile(t *testing.T) {
 		t.Errorf("directory reported executable")
 	}
 }
+
+// TestWithEnvOverride verifies buildFromSource's env-scrubbing helper: an
+// override must win even when the base slice already has a same-named entry
+// (in either position), since duplicate-key lookup order in an environ slice
+// varies by platform/libc and can't be relied on to prefer a later entry.
+func TestWithEnvOverride(t *testing.T) {
+	base := []string{"PATH=/usr/bin", "GOFLAGS=-mod=mod", "GOPROXY=https://proxy.golang.org"}
+	got := withEnvOverride(base, "GOFLAGS=-mod=vendor", "GOPROXY=off")
+
+	want := map[string]string{
+		"PATH":    "/usr/bin",
+		"GOFLAGS": "-mod=vendor",
+		"GOPROXY": "off",
+	}
+	seen := map[string]int{}
+	for _, e := range got {
+		i := strings.IndexByte(e, '=')
+		if i < 0 {
+			t.Fatalf("malformed env entry %q", e)
+		}
+		name, val := e[:i], e[i+1:]
+		seen[name]++
+		if wantVal, ok := want[name]; ok && val != wantVal {
+			t.Errorf("%s = %q, want %q", name, val, wantVal)
+		}
+	}
+	for name, count := range seen {
+		if count != 1 {
+			t.Errorf("%s appears %d times in result, want exactly once", name, count)
+		}
+	}
+	for name := range want {
+		if seen[name] == 0 {
+			t.Errorf("%s missing from result", name)
+		}
+	}
+}

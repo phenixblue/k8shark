@@ -238,14 +238,28 @@ func buildFromSource(version, destPath string, progress func(string)) error {
 		return fmt.Errorf("extracting Kubernetes source: %w", err)
 	}
 
+	vendorDir := filepath.Join(srcDir, "vendor")
+	if info, err := os.Stat(vendorDir); err != nil || !info.IsDir() {
+		return fmt.Errorf("kubernetes-src.tar.gz for %s has no vendor/ directory at %s; "+
+			"cannot build without fetching dependencies from outside dl.k8s.io", version, vendorDir)
+	}
+
 	progress("compiling kube-controller-manager...")
 	tmpBinPath, err := uniqueTempPath(filepath.Dir(destPath))
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(goBin, "build", "-o", tmpBinPath, "./cmd/"+binName)
+	cmd := exec.Command(goBin, "build", "-mod=vendor", "-o", tmpBinPath, "./cmd/"+binName)
 	cmd.Dir = srcDir
-	cmd.Env = os.Environ()
+	// Force vendor-only module resolution: the Kubernetes source tarball ships
+	// its full dependency tree under vendor/, and this package's "only fetches
+	// from dl.k8s.io" guarantee depends on go build never reaching out to a
+	// module proxy or VCS host for it. -mod=vendor alone would normally be
+	// enough, but a GOFLAGS already set in the caller's environment could
+	// override it, so GOFLAGS is scrubbed and re-set here, and GOPROXY=off
+	// makes any resolution attempt that slips through fail loudly instead of
+	// silently reaching the network.
+	cmd.Env = withEnvOverride(os.Environ(), "GOFLAGS=-mod=vendor", "GOPROXY=off")
 	var stderr bytes.Buffer
 	cmd.Stdout = &stderr
 	cmd.Stderr = &stderr
@@ -254,6 +268,27 @@ func buildFromSource(version, destPath string, progress func(string)) error {
 		return fmt.Errorf("go build ./cmd/%s: %w\n%s", binName, err, stderr.String())
 	}
 	return atomicInstall(tmpBinPath, destPath)
+}
+
+// withEnvOverride returns a copy of base with any existing entries for the
+// same variable names as overrides removed, then overrides appended — so the
+// override always wins regardless of duplicate-key lookup order, which
+// varies across platforms/libc implementations.
+func withEnvOverride(base []string, overrides ...string) []string {
+	names := make(map[string]bool, len(overrides))
+	for _, o := range overrides {
+		if i := strings.IndexByte(o, '='); i >= 0 {
+			names[o[:i]] = true
+		}
+	}
+	env := make([]string, 0, len(base)+len(overrides))
+	for _, e := range base {
+		if i := strings.IndexByte(e, '='); i >= 0 && names[e[:i]] {
+			continue
+		}
+		env = append(env, e)
+	}
+	return append(env, overrides...)
 }
 
 // atomicInstall marks tmpPath executable and renames it into destPath. Go's

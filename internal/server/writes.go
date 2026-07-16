@@ -882,22 +882,24 @@ func applyKnownDefaults(obj runtime.Object) {
 		if len(o.Spec.IPFamilies) == 0 {
 			// The endpoint/endpointslice controllers index IPFamilies[0]
 			// unconditionally; a real apiserver always populates this from the
-			// cluster's configured service-cluster-ip-range. Infer the family
-			// from an explicit IPv6 ClusterIP/ClusterIPs first — defaulting to
-			// IPv4 unconditionally would otherwise produce an inconsistent
-			// Service (an IPv6 address paired with an IPv4 family) and send
-			// the endpoint controller looking for the wrong address family.
-			// IPv4 remains the fallback when nothing indicates IPv6, matching
-			// every capture this project has captured so far.
+			// cluster's configured service-cluster-ip-range. Infer the primary
+			// family from the primary address only — ClusterIP if set, else
+			// ClusterIPs[0] — never by scanning every ClusterIPs entry: for a
+			// dual-stack Service with an IPv4 ClusterIP and an IPv6 secondary in
+			// ClusterIPs, scanning all entries would pick IPv6 and produce
+			// IPFamilies[0] inconsistent with the primary ClusterIP, sending the
+			// endpoint controller down the wrong address family. IPv4 remains the
+			// fallback when nothing indicates IPv6, matching every capture this
+			// project has captured so far.
 			family := corev1.IPv4Protocol
-			if isIPv6Address(o.Spec.ClusterIP) {
-				family = corev1.IPv6Protocol
-			} else {
-				for _, ip := range o.Spec.ClusterIPs {
-					if isIPv6Address(ip) {
-						family = corev1.IPv6Protocol
-						break
-					}
+			switch {
+			case o.Spec.ClusterIP != "" && o.Spec.ClusterIP != corev1.ClusterIPNone:
+				if isIPv6Address(o.Spec.ClusterIP) {
+					family = corev1.IPv6Protocol
+				}
+			case len(o.Spec.ClusterIPs) > 0:
+				if isIPv6Address(o.Spec.ClusterIPs[0]) {
+					family = corev1.IPv6Protocol
 				}
 			}
 			o.Spec.IPFamilies = []corev1.IPFamily{family}
