@@ -14,6 +14,30 @@ import (
 	"testing"
 )
 
+// TestUniqueTempPath verifies concurrent EnsureControllerManager calls (e.g.
+// two kshrk processes downloading/building the same version at once) get
+// distinct temp files rather than racing through a shared fixed name.
+func TestUniqueTempPath(t *testing.T) {
+	dir := t.TempDir()
+	seen := map[string]bool{}
+	for i := 0; i < 20; i++ {
+		p, err := uniqueTempPath(dir)
+		if err != nil {
+			t.Fatalf("uniqueTempPath: %v", err)
+		}
+		if filepath.Dir(p) != dir {
+			t.Fatalf("uniqueTempPath returned %q, want it inside %q (same filesystem for atomic rename)", p, dir)
+		}
+		if seen[p] {
+			t.Fatalf("uniqueTempPath returned a duplicate path: %q", p)
+		}
+		seen[p] = true
+		if _, err := os.Stat(p); err != nil {
+			t.Fatalf("uniqueTempPath's file doesn't exist: %v", err)
+		}
+	}
+}
+
 func TestHasPrebuiltBinary(t *testing.T) {
 	cases := []struct {
 		goos, goarch string

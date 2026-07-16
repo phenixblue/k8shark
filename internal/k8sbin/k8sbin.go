@@ -143,13 +143,35 @@ func isExecutableFile(path string) bool {
 	return info.Mode()&0o111 != 0
 }
 
+// uniqueTempPath returns a path to a new, empty, uniquely-named file in dir
+// (the same directory destPath lives in, so a later os.Rename into destPath
+// is atomic and same-filesystem). Using a random per-call name rather than a
+// fixed "<dest>.download" means two concurrent EnsureControllerManager calls
+// (e.g. two kshrk processes downloading/building the same version at once)
+// can't corrupt each other by writing through the same path.
+func uniqueTempPath(dir string) (string, error) {
+	f, err := os.CreateTemp(dir, binName+"-*.download")
+	if err != nil {
+		return "", fmt.Errorf("creating temp file: %w", err)
+	}
+	path := f.Name()
+	if err := f.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", fmt.Errorf("creating temp file: %w", err)
+	}
+	return path, nil
+}
+
 // downloadPrebuilt fetches the official release binary for linux/GOARCH.
 func downloadPrebuilt(version, destPath string, progress func(string)) error {
 	arch := runtime.GOARCH
 	url := fmt.Sprintf("%s/%s/bin/linux/%s/%s", dlBaseURL, version, arch, binName)
 	progress(fmt.Sprintf("downloading kube-controller-manager %s for linux/%s", version, arch))
 
-	tmpPath := destPath + ".download"
+	tmpPath, err := uniqueTempPath(filepath.Dir(destPath))
+	if err != nil {
+		return err
+	}
 	if err := downloadAndVerifyToFile(url, tmpPath); err != nil {
 		return fmt.Errorf("downloading kube-controller-manager: %w", err)
 	}
@@ -188,7 +210,10 @@ func buildFromSource(version, destPath string, progress func(string)) error {
 	}
 
 	progress("compiling kube-controller-manager...")
-	tmpBinPath := destPath + ".download"
+	tmpBinPath, err := uniqueTempPath(filepath.Dir(destPath))
+	if err != nil {
+		return err
+	}
 	cmd := exec.Command(goBin, "build", "-o", tmpBinPath, "./cmd/"+binName)
 	cmd.Dir = srcDir
 	cmd.Env = os.Environ()
@@ -196,6 +221,7 @@ func buildFromSource(version, destPath string, progress func(string)) error {
 	cmd.Stdout = &stderr
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		_ = os.Remove(tmpBinPath)
 		return fmt.Errorf("go build ./cmd/%s: %w\n%s", binName, err, stderr.String())
 	}
 	return atomicInstall(tmpBinPath, destPath)

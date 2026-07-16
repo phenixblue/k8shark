@@ -354,6 +354,104 @@ func TestOverlay_APIDefaulting(t *testing.T) {
 		}
 	})
 
+	t.Run("DaemonSet updateStrategy", func(t *testing.T) {
+		body := `{"apiVersion":"apps/v1","kind":"DaemonSet","metadata":{"name":"fluentd","namespace":"default"},
+			"spec":{"selector":{"matchLabels":{"app":"fluentd"}},
+			"template":{"metadata":{"labels":{"app":"fluentd"}},"spec":{"containers":[{"name":"fluentd","image":"fluentd"}]}}}}`
+		code, out := doReq(t, http.MethodPost, srv.URL+"/apis/apps/v1/namespaces/default/daemonsets", "application/json", body)
+		if code != http.StatusCreated {
+			t.Fatalf("create: status %d: %s", code, out)
+		}
+		var d struct {
+			Spec struct {
+				UpdateStrategy struct {
+					Type          string `json:"type"`
+					RollingUpdate *struct {
+						MaxUnavailable string `json:"maxUnavailable"`
+					} `json:"rollingUpdate"`
+				} `json:"updateStrategy"`
+			} `json:"spec"`
+		}
+		if err := json.Unmarshal(out, &d); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if d.Spec.UpdateStrategy.Type != "RollingUpdate" {
+			t.Errorf("updateStrategy.type = %q, want RollingUpdate", d.Spec.UpdateStrategy.Type)
+		}
+		if d.Spec.UpdateStrategy.RollingUpdate == nil || d.Spec.UpdateStrategy.RollingUpdate.MaxUnavailable != "25%" {
+			t.Errorf("updateStrategy.rollingUpdate = %+v, want non-nil with maxUnavailable 25%%", d.Spec.UpdateStrategy.RollingUpdate)
+		}
+	})
+
+	t.Run("StatefulSet updateStrategy and podManagementPolicy", func(t *testing.T) {
+		body := `{"apiVersion":"apps/v1","kind":"StatefulSet","metadata":{"name":"web","namespace":"default"},
+			"spec":{"serviceName":"web","selector":{"matchLabels":{"app":"web"}},
+			"template":{"metadata":{"labels":{"app":"web"}},"spec":{"containers":[{"name":"web","image":"nginx"}]}}}}`
+		code, out := doReq(t, http.MethodPost, srv.URL+"/apis/apps/v1/namespaces/default/statefulsets", "application/json", body)
+		if code != http.StatusCreated {
+			t.Fatalf("create: status %d: %s", code, out)
+		}
+		var s struct {
+			Spec struct {
+				PodManagementPolicy string `json:"podManagementPolicy"`
+				UpdateStrategy      struct {
+					Type          string `json:"type"`
+					RollingUpdate *struct {
+						Partition *int32 `json:"partition"`
+					} `json:"rollingUpdate"`
+				} `json:"updateStrategy"`
+			} `json:"spec"`
+		}
+		if err := json.Unmarshal(out, &s); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if s.Spec.PodManagementPolicy != "OrderedReady" {
+			t.Errorf("podManagementPolicy = %q, want OrderedReady", s.Spec.PodManagementPolicy)
+		}
+		if s.Spec.UpdateStrategy.Type != "RollingUpdate" {
+			t.Errorf("updateStrategy.type = %q, want RollingUpdate", s.Spec.UpdateStrategy.Type)
+		}
+		if s.Spec.UpdateStrategy.RollingUpdate == nil || s.Spec.UpdateStrategy.RollingUpdate.Partition == nil {
+			t.Fatalf("updateStrategy.rollingUpdate.partition is nil — statefulset controller panics dereferencing it")
+		}
+		if *s.Spec.UpdateStrategy.RollingUpdate.Partition != 0 {
+			t.Errorf("partition = %d, want 0", *s.Spec.UpdateStrategy.RollingUpdate.Partition)
+		}
+	})
+
+	t.Run("CronJob concurrencyPolicy and history limits", func(t *testing.T) {
+		body := `{"apiVersion":"batch/v1","kind":"CronJob","metadata":{"name":"hello-cron","namespace":"default"},
+			"spec":{"schedule":"* * * * *","jobTemplate":{"spec":{"template":{"spec":{
+			"containers":[{"name":"hello","image":"busybox"}],"restartPolicy":"OnFailure"}}}}}}`
+		code, out := doReq(t, http.MethodPost, srv.URL+"/apis/batch/v1/namespaces/default/cronjobs", "application/json", body)
+		if code != http.StatusCreated {
+			t.Fatalf("create: status %d: %s", code, out)
+		}
+		var c struct {
+			Spec struct {
+				ConcurrencyPolicy          string `json:"concurrencyPolicy"`
+				Suspend                    *bool  `json:"suspend"`
+				SuccessfulJobsHistoryLimit *int32 `json:"successfulJobsHistoryLimit"`
+				FailedJobsHistoryLimit     *int32 `json:"failedJobsHistoryLimit"`
+			} `json:"spec"`
+		}
+		if err := json.Unmarshal(out, &c); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if c.Spec.ConcurrencyPolicy != "Allow" {
+			t.Errorf("concurrencyPolicy = %q, want Allow", c.Spec.ConcurrencyPolicy)
+		}
+		if c.Spec.Suspend == nil || *c.Spec.Suspend != false {
+			t.Errorf("suspend = %v, want false", c.Spec.Suspend)
+		}
+		if c.Spec.SuccessfulJobsHistoryLimit == nil || *c.Spec.SuccessfulJobsHistoryLimit != 3 {
+			t.Errorf("successfulJobsHistoryLimit = %v, want 3", c.Spec.SuccessfulJobsHistoryLimit)
+		}
+		if c.Spec.FailedJobsHistoryLimit == nil || *c.Spec.FailedJobsHistoryLimit != 1 {
+			t.Errorf("failedJobsHistoryLimit = %v, want 1", c.Spec.FailedJobsHistoryLimit)
+		}
+	})
+
 	t.Run("Service IPFamilies", func(t *testing.T) {
 		body := `{"apiVersion":"v1","kind":"Service","metadata":{"name":"web","namespace":"default"},
 			"spec":{"selector":{"app":"nginx"},"ports":[{"port":80}]}}`
