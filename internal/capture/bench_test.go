@@ -80,7 +80,8 @@ func benchConfig(output string) *config.Config {
 }
 
 // BenchmarkEngine_CaptureToArchive measures a full capture run writing to a
-// tar.gz archive.
+// .kshrk archive (a ZIP container with Zstd-compressed record entries; see
+// archive.StreamWriter).
 func BenchmarkEngine_CaptureToArchive(b *testing.B) {
 	client, baseURL := fakeCaptureClient()
 	// archive.NewStreamWriter opens the output path with os.Create (O_TRUNC),
@@ -98,8 +99,9 @@ func BenchmarkEngine_CaptureToArchive(b *testing.B) {
 	}
 }
 
-// BenchmarkEngine_CaptureToNDJSON measures a full capture run writing to NDJSON
-// (no I/O bottleneck from gzip compression).
+// BenchmarkEngine_CaptureToNDJSON measures a full capture run writing NDJSON
+// to an in-memory buffer, with no archive compression in the write path
+// (unlike BenchmarkEngine_CaptureToArchive's Zstd-compressed .kshrk output).
 func BenchmarkEngine_CaptureToNDJSON(b *testing.B) {
 	client, baseURL := fakeCaptureClient()
 
