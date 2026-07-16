@@ -77,7 +77,7 @@ func EnsureControllerManager(gitVersion string, progress func(string)) (string, 
 		return "", fmt.Errorf("creating cache directory %s: %w", dir, err)
 	}
 
-	if runtime.GOOS == "linux" {
+	if hasPrebuiltBinary(runtime.GOOS, runtime.GOARCH) {
 		if err := downloadPrebuilt(version, destPath, progress); err != nil {
 			return "", err
 		}
@@ -87,6 +87,16 @@ func EnsureControllerManager(gitVersion string, progress func(string)) (string, 
 		}
 	}
 	return destPath, nil
+}
+
+// hasPrebuiltBinary reports whether dl.k8s.io publishes an official
+// kube-controller-manager binary for goos/goarch. Kubernetes only builds
+// server components for linux, and only for amd64 and arm64 among linux
+// architectures — linux/386, linux/ppc64le, linux/s390x, etc. have no
+// published binary either, so they must fall back to the source-build path
+// just like darwin/windows do.
+func hasPrebuiltBinary(goos, goarch string) bool {
+	return goos == "linux" && (goarch == "amd64" || goarch == "arm64")
 }
 
 // normalizeVersion strips any "+build" metadata and validates the result
@@ -280,27 +290,6 @@ func fetchChecksum(ctx context.Context, url string) (string, error) {
 // decompressed).
 const maxExtractedBytes = 4 << 30 // 4 GiB
 
-// safeJoin resolves a tar entry name against destDir (which must already be
-// filepath.Clean-ed) and reports whether the result stays within destDir.
-// name comes from an archive entry and must never be trusted directly: a
-// hostile ".."-laden or absolute name could otherwise write outside destDir
-// ("Zip Slip"). A traversal attempt is rejected outright — not remapped into
-// destDir — so entries never silently collide or land somewhere surprising.
-// filepath.Rel re-verifies containment on the joined result as a second,
-// independent check.
-func safeJoin(destDir, name string) (target string, safe bool) {
-	cleaned := filepath.Clean(name)
-	if cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) || filepath.IsAbs(cleaned) {
-		return "", false
-	}
-	target = filepath.Join(destDir, cleaned)
-	rel, err := filepath.Rel(destDir, target)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", false
-	}
-	return target, true
-}
-
 // extractTarGz extracts a gzip-compressed tar archive into destDir, which is
 // created if needed. Entries are path-sanitized so nothing can escape
 // destDir (no "..", no absolute paths), and only regular files and
@@ -335,8 +324,20 @@ func extractTarGz(tarGzPath, destDir string) error {
 			return fmt.Errorf("reading tar entry: %w", err)
 		}
 
-		target, safe := safeJoin(cleanDestDir, hdr.Name)
-		if !safe {
+		// hdr.Name comes from the archive and must never be trusted directly: a
+		// hostile ".."-laden or absolute name could otherwise write outside
+		// destDir ("Zip Slip"). Reject a traversal attempt outright — not
+		// remap it into destDir — so entries never silently collide or land
+		// somewhere surprising. filepath.Rel re-verifies containment on the
+		// joined result as a second, independent check before target is ever
+		// used in a filesystem operation below.
+		cleanedName := filepath.Clean(hdr.Name)
+		if cleanedName == ".." || strings.HasPrefix(cleanedName, ".."+string(filepath.Separator)) || filepath.IsAbs(cleanedName) {
+			continue
+		}
+		target := filepath.Join(cleanDestDir, cleanedName)
+		rel, relErr := filepath.Rel(cleanDestDir, target)
+		if relErr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			continue
 		}
 

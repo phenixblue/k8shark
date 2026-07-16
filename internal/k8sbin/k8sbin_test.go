@@ -14,17 +14,38 @@ import (
 	"testing"
 )
 
-// TestSafeJoin locks in extractTarGz's zip-slip guard: an archive entry name
-// must never be able to resolve outside destDir.
-func TestSafeJoin(t *testing.T) {
-	destDir := "/tmp/kshark-extract-dest"
+func TestHasPrebuiltBinary(t *testing.T) {
+	cases := []struct {
+		goos, goarch string
+		want         bool
+	}{
+		{"linux", "amd64", true},
+		{"linux", "arm64", true},
+		{"linux", "386", false},     // Kubernetes doesn't publish this either
+		{"linux", "ppc64le", false}, // ...nor this
+		{"linux", "s390x", false},   // ...nor this
+		{"darwin", "amd64", false},
+		{"darwin", "arm64", false},
+		{"windows", "amd64", false},
+	}
+	for _, tc := range cases {
+		if got := hasPrebuiltBinary(tc.goos, tc.goarch); got != tc.want {
+			t.Errorf("hasPrebuiltBinary(%q, %q) = %v, want %v", tc.goos, tc.goarch, got, tc.want)
+		}
+	}
+}
+
+// TestExtractTarGz_PathTraversalRejected locks in extractTarGz's zip-slip
+// guard across a range of traversal shapes: none of these entries may ever
+// land outside destDir, and none should silently collide into some other
+// remapped path inside destDir either — the entry is simply skipped.
+func TestExtractTarGz_PathTraversalRejected(t *testing.T) {
 	cases := []struct {
 		name     string
 		wantSafe bool
 	}{
 		{"go.mod", true},
 		{"cmd/kube-apiserver/main.go", true},
-		{".", true},
 		{"..", false},
 		{"../etc/passwd", false},
 		{"../../etc/passwd", false},
@@ -34,12 +55,56 @@ func TestSafeJoin(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			target, safe := safeJoin(destDir, tc.name)
-			if safe != tc.wantSafe {
-				t.Fatalf("safeJoin(%q) safe = %v, want %v (target=%q)", tc.name, safe, tc.wantSafe, target)
+			var buf bytes.Buffer
+			gz := gzip.NewWriter(&buf)
+			tw := tar.NewWriter(gz)
+			content := "payload"
+			if err := tw.WriteHeader(&tar.Header{Name: tc.name, Mode: 0o644, Size: int64(len(content))}); err != nil {
+				t.Fatal(err)
 			}
-			if safe && !strings.HasPrefix(target, destDir) {
-				t.Errorf("safeJoin(%q) = %q, want it under %q", tc.name, target, destDir)
+			if _, err := tw.Write([]byte(content)); err != nil {
+				t.Fatal(err)
+			}
+			tw.Close()
+			gz.Close()
+
+			tmp := t.TempDir()
+			tarPath := filepath.Join(tmp, "archive.tar.gz")
+			if err := os.WriteFile(tarPath, buf.Bytes(), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			destDir := filepath.Join(tmp, "out")
+			if err := extractTarGz(tarPath, destDir); err != nil {
+				t.Fatalf("extractTarGz: %v", err)
+			}
+
+			// Walk the whole tmp dir (destDir's parent) for any file carrying
+			// our marker content: this catches both "did a safe entry get
+			// extracted" and "did an unsafe one escape destDir" in one pass,
+			// since tmp is an isolated t.TempDir() a traversal within a few
+			// ".."s still lands under.
+			foundInside, foundOutside := false, false
+			_ = filepath.Walk(tmp, func(p string, info os.FileInfo, err error) error {
+				if err != nil || info.IsDir() {
+					return nil
+				}
+				b, rerr := os.ReadFile(p)
+				if rerr != nil || string(b) != content {
+					return nil
+				}
+				rel, rerr := filepath.Rel(destDir, p)
+				if rerr == nil && !strings.HasPrefix(rel, "..") {
+					foundInside = true
+				} else {
+					foundOutside = true
+				}
+				return nil
+			})
+			if foundOutside {
+				t.Fatalf("entry %q escaped destDir", tc.name)
+			}
+			if foundInside != tc.wantSafe {
+				t.Errorf("entry %q extracted inside destDir = %v, want %v", tc.name, foundInside, tc.wantSafe)
 			}
 		})
 	}

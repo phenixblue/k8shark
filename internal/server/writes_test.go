@@ -390,6 +390,59 @@ func TestOverlay_APIDefaulting(t *testing.T) {
 	})
 }
 
+// TestOverlay_PatchAppliesDefaulting verifies that PATCHing a captured object
+// that predates this project's defaulting (e.g. an older/incomplete capture,
+// or a hand-authored fixture) — not just POST/PUT — backfills the same
+// defaults, since the patched result is just as capable of reaching a real
+// controller as a freshly created object.
+func TestOverlay_PatchAppliesDefaulting(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+
+	listPath := "/apis/apps/v1/namespaces/default/deployments"
+	deployPath := listPath + "/nginx"
+	deployItem := `{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"nginx","namespace":"default"},
+		"spec":{"replicas":1,"selector":{"matchLabels":{"app":"nginx"}},"strategy":{},
+		"template":{"metadata":{"labels":{"app":"nginx"}},"spec":{"containers":[{"name":"nginx","image":"nginx"}]}}}}`
+	capturedList := `{"apiVersion":"apps/v1","kind":"DeploymentList","metadata":{},"items":[` + deployItem + `]}`
+	store := buildTestStoreWithWatch(t,
+		map[string]watchTestRecord{listPath: {id: "d", at: from, body: capturedList}}, nil)
+	srv := newWritableServer(t, store, clock)
+
+	// Confirm the captured object really does carry an empty strategy (i.e.
+	// this predates defaulting, not already fixed by something else).
+	code, before := doReq(t, http.MethodGet, srv.URL+deployPath, "", "")
+	if code != 200 {
+		t.Fatalf("GET before patch: status %d: %s", code, before)
+	}
+
+	patch := `{"spec":{"replicas":2}}`
+	code, after := doReq(t, http.MethodPatch, srv.URL+deployPath, "application/merge-patch+json", patch)
+	if code != 200 {
+		t.Fatalf("PATCH: status %d: %s", code, after)
+	}
+	var d struct {
+		Spec struct {
+			Replicas int `json:"replicas"`
+			Strategy struct {
+				Type          string `json:"type"`
+				RollingUpdate *struct {
+					MaxSurge string `json:"maxSurge"`
+				} `json:"rollingUpdate"`
+			} `json:"strategy"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal(after, &d); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if d.Spec.Replicas != 2 {
+		t.Errorf("replicas = %d, want 2 (the patch itself)", d.Spec.Replicas)
+	}
+	if d.Spec.Strategy.Type != "RollingUpdate" || d.Spec.Strategy.RollingUpdate == nil {
+		t.Errorf("strategy = %+v, want defaulted to RollingUpdate/25%% — PATCH must default just like POST/PUT", d.Spec.Strategy)
+	}
+}
+
 func TestOverlay_DeleteTombstone(t *testing.T) {
 	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
 	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)

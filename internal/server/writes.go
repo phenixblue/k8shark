@@ -450,6 +450,15 @@ func (h *handler) overlayPatch(w http.ResponseWriter, r *http.Request, group, ve
 		h.writeStatus(w, http.StatusUnprocessableEntity, "patch did not produce a JSON object")
 		return
 	}
+	// A patch (e.g. `kubectl apply`) can just as easily leave a defaultable
+	// field unset as a create/replace can — default the patched result the
+	// same way, so a controller reconciling an applied object doesn't panic
+	// on a field the apiserver would have defaulted (see defaultObject).
+	if sub != "status" {
+		if gvk, known := kindForResource(schema.GroupVersion{Group: group, Version: version}, resource); known {
+			next = defaultObject(gvk, next)
+		}
+	}
 	if h.identityMismatch(w, next, name, namespace) {
 		return
 	}
