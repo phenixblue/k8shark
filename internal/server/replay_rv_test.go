@@ -336,3 +336,14 @@ func TestWithResourceVersion_NilMetadata(t *testing.T) {
 		})
 	}
 }
+
+// TestWithResourceVersion_NullObject verifies withResourceVersion doesn't panic
+// when the entire object body is the JSON literal null: json.Unmarshal("null",
+// &m) succeeds but leaves m itself nil (not an empty map), so the later
+// m["metadata"] = ... assignment would panic without the m == nil guard.
+func TestWithResourceVersion_NullObject(t *testing.T) {
+	out := withResourceVersion(json.RawMessage("null"), 7)
+	if string(out) != "null" {
+		t.Errorf("out = %q, want unchanged %q", out, "null")
+	}
+}

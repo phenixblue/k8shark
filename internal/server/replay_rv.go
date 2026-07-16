@@ -176,7 +176,7 @@ func rvAsOf(timeline []replayEvent, at time.Time) int64 {
 // preserving all other fields. On any parse error it returns obj unchanged.
 func withResourceVersion(obj json.RawMessage, rv int64) json.RawMessage {
 	var m map[string]json.RawMessage
-	if err := json.Unmarshal(obj, &m); err != nil {
+	if err := json.Unmarshal(obj, &m); err != nil || m == nil {
 		return obj
 	}
 	meta := map[string]json.RawMessage{}
