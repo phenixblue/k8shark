@@ -14,6 +14,37 @@ import (
 	"testing"
 )
 
+// TestSafeJoin locks in extractTarGz's zip-slip guard: an archive entry name
+// must never be able to resolve outside destDir.
+func TestSafeJoin(t *testing.T) {
+	destDir := "/tmp/kshark-extract-dest"
+	cases := []struct {
+		name     string
+		wantSafe bool
+	}{
+		{"go.mod", true},
+		{"cmd/kube-apiserver/main.go", true},
+		{".", true},
+		{"..", false},
+		{"../etc/passwd", false},
+		{"../../etc/passwd", false},
+		{"foo/../../bar", false},
+		{"/etc/passwd", false},
+		{"foo/../bar", true}, // cleans to "bar", still inside destDir
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			target, safe := safeJoin(destDir, tc.name)
+			if safe != tc.wantSafe {
+				t.Fatalf("safeJoin(%q) safe = %v, want %v (target=%q)", tc.name, safe, tc.wantSafe, target)
+			}
+			if safe && !strings.HasPrefix(target, destDir) {
+				t.Errorf("safeJoin(%q) = %q, want it under %q", tc.name, target, destDir)
+			}
+		})
+	}
+}
+
 func TestNormalizeVersion(t *testing.T) {
 	cases := []struct {
 		in      string

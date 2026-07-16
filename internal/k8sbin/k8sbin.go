@@ -280,6 +280,27 @@ func fetchChecksum(ctx context.Context, url string) (string, error) {
 // decompressed).
 const maxExtractedBytes = 4 << 30 // 4 GiB
 
+// safeJoin resolves a tar entry name against destDir (which must already be
+// filepath.Clean-ed) and reports whether the result stays within destDir.
+// name comes from an archive entry and must never be trusted directly: a
+// hostile ".."-laden or absolute name could otherwise write outside destDir
+// ("Zip Slip"). A traversal attempt is rejected outright — not remapped into
+// destDir — so entries never silently collide or land somewhere surprising.
+// filepath.Rel re-verifies containment on the joined result as a second,
+// independent check.
+func safeJoin(destDir, name string) (target string, safe bool) {
+	cleaned := filepath.Clean(name)
+	if cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) || filepath.IsAbs(cleaned) {
+		return "", false
+	}
+	target = filepath.Join(destDir, cleaned)
+	rel, err := filepath.Rel(destDir, target)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return target, true
+}
+
 // extractTarGz extracts a gzip-compressed tar archive into destDir, which is
 // created if needed. Entries are path-sanitized so nothing can escape
 // destDir (no "..", no absolute paths), and only regular files and
@@ -314,12 +335,8 @@ func extractTarGz(tarGzPath, destDir string) error {
 			return fmt.Errorf("reading tar entry: %w", err)
 		}
 
-		cleanName := filepath.Clean(hdr.Name)
-		if cleanName == "." || cleanName == ".." || strings.HasPrefix(cleanName, ".."+string(filepath.Separator)) || filepath.IsAbs(cleanName) {
-			continue
-		}
-		target := filepath.Join(cleanDestDir, cleanName)
-		if target != cleanDestDir && !strings.HasPrefix(target, cleanDestDir+string(filepath.Separator)) {
+		target, safe := safeJoin(cleanDestDir, hdr.Name)
+		if !safe {
 			continue
 		}
 
