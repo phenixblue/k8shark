@@ -13,10 +13,26 @@ import (
 	"github.com/phenixblue/k8shark/internal/config"
 )
 
-// fakeCaptureServer returns a TLS server with realistic responses for
-// benchmark use. It serves pods, nodes, and a /version endpoint.
-func fakeCaptureServer(b *testing.B) *httptest.Server {
-	b.Helper()
+// inProcessTransport serves requests by invoking an http.Handler directly,
+// with no real TCP dial or TLS handshake. Benchmarks use it instead of a real
+// httptest.Server (see fakeCaptureClient) because handshake cost and socket
+// scheduling vary run-to-run enough to dominate B/op measurements; what these
+// benchmarks measure is the capture engine's poll/decode/archive-write path,
+// not the network transport.
+type inProcessTransport struct {
+	handler http.Handler
+}
+
+func (t *inProcessTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	rec := httptest.NewRecorder()
+	t.handler.ServeHTTP(rec, req)
+	return rec.Result(), nil
+}
+
+// fakeCaptureClient returns an HTTP client wired to an in-process handler
+// serving pods, nodes, and a /version endpoint, plus the base URL to pass to
+// newEngineWith.
+func fakeCaptureClient() (*http.Client, string) {
 	podList := `{"apiVersion":"v1","kind":"PodList","metadata":{},"items":[` +
 		`{"apiVersion":"v1","kind":"Pod","metadata":{"name":"nginx","namespace":"default"}},` +
 		`{"apiVersion":"v1","kind":"Pod","metadata":{"name":"redis","namespace":"default"}}]}`
@@ -24,7 +40,7 @@ func fakeCaptureServer(b *testing.B) *httptest.Server {
 		`{"apiVersion":"v1","kind":"Node","metadata":{"name":"node1"}},` +
 		`{"apiVersion":"v1","kind":"Node","metadata":{"name":"node2"}}]}`
 
-	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/version":
@@ -37,51 +53,63 @@ func fakeCaptureServer(b *testing.B) *httptest.Server {
 			w.WriteHeader(http.StatusNotFound)
 			fmt.Fprint(w, `{"kind":"Status","code":404}`)
 		}
-	}))
-	return srv
+	})
+
+	client := &http.Client{Transport: &inProcessTransport{handler: handler}}
+	return client, "http://fake-api-server"
+}
+
+// benchPollPasses fixes the number of times each resource is fetched per
+// capture run, matching what a 500ms window at a 200ms poll interval would
+// have produced (immediate fetch + 2 ticks). Engine.pollPasses bypasses the
+// real time.Ticker so each benchmark iteration completes as fast as the fake
+// handler can respond rather than blocking for the configured wall-clock
+// window, letting b.N scale into the thousands.
+const benchPollPasses = 3
+
+func benchConfig(output string) *config.Config {
+	return &config.Config{
+		DurationRaw: "500ms",
+		Duration:    500 * time.Millisecond,
+		Output:      output,
+		Resources: []config.Resource{
+			{Version: "v1", Resource: "pods", Namespaces: []string{"default"}, IntervalRaw: "200ms", Interval: 200 * time.Millisecond},
+			{Version: "v1", Resource: "nodes", IntervalRaw: "200ms", Interval: 200 * time.Millisecond},
+		},
+	}
 }
 
 // BenchmarkEngine_CaptureToArchive measures a full capture run writing to a
-// tar.gz archive.
+// .kshrk archive (a ZIP container with Zstd-compressed record entries; see
+// archive.StreamWriter).
 func BenchmarkEngine_CaptureToArchive(b *testing.B) {
-	srv := fakeCaptureServer(b)
-	defer srv.Close()
+	client, baseURL := fakeCaptureClient()
+	// archive.NewStreamWriter opens the output path with os.Create (O_TRUNC),
+	// so reusing one path across iterations is safe and avoids b.TempDir()'s
+	// per-call mkdir overhead from skewing the measurement.
+	output := filepath.Join(b.TempDir(), "capture.kshrk")
 
 	for i := 0; i < b.N; i++ {
-		cfg := &config.Config{
-			DurationRaw: "500ms",
-			Duration:    500 * time.Millisecond,
-			Output:      filepath.Join(b.TempDir(), "capture.kshrk"),
-			Resources: []config.Resource{
-				{Version: "v1", Resource: "pods", Namespaces: []string{"default"}, IntervalRaw: "200ms", Interval: 200 * time.Millisecond},
-				{Version: "v1", Resource: "nodes", IntervalRaw: "200ms", Interval: 200 * time.Millisecond},
-			},
-		}
-		eng := newEngineWith(cfg, srv.Client(), srv.URL, false)
+		cfg := benchConfig(output)
+		eng := newEngineWith(cfg, client, baseURL, false)
+		eng.pollPasses = benchPollPasses
 		if _, err := eng.Run(); err != nil {
 			b.Fatal(err)
 		}
 	}
 }
 
-// BenchmarkEngine_CaptureToNDJSON measures a full capture run writing to NDJSON
-// (no I/O bottleneck from gzip compression).
+// BenchmarkEngine_CaptureToNDJSON measures a full capture run writing NDJSON
+// to an in-memory buffer, with no archive compression in the write path
+// (unlike BenchmarkEngine_CaptureToArchive's Zstd-compressed .kshrk output).
 func BenchmarkEngine_CaptureToNDJSON(b *testing.B) {
-	srv := fakeCaptureServer(b)
-	defer srv.Close()
+	client, baseURL := fakeCaptureClient()
 
 	for i := 0; i < b.N; i++ {
-		cfg := &config.Config{
-			DurationRaw: "500ms",
-			Duration:    500 * time.Millisecond,
-			Output:      "-",
-			Resources: []config.Resource{
-				{Version: "v1", Resource: "pods", Namespaces: []string{"default"}, IntervalRaw: "200ms", Interval: 200 * time.Millisecond},
-				{Version: "v1", Resource: "nodes", IntervalRaw: "200ms", Interval: 200 * time.Millisecond},
-			},
-		}
-		eng := newEngineWith(cfg, srv.Client(), srv.URL, false)
+		cfg := benchConfig("-")
+		eng := newEngineWith(cfg, client, baseURL, false)
 		eng.sink = archive.NewNDJSONWriter(&bytes.Buffer{})
+		eng.pollPasses = benchPollPasses
 		if _, err := eng.Run(); err != nil {
 			b.Fatal(err)
 		}
