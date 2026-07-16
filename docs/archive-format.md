@@ -46,7 +46,7 @@ Capture-level information. Written once at the end of the capture run.
 |-------|-------------|
 | `format_version` | Archive schema version (see [below](#format-version--compatibility)). Absent in pre-versioning archives, which are read as version 1. |
 | `capture_id` | UUID, unique per capture run. Used in the generated kubeconfig filename. |
-| `captured_at` | UTC timestamp when the first poll fired (approximately `now - duration`). |
+| `captured_at` | UTC timestamp recorded immediately before the first poll/watch goroutines launch (after preflight and discovery). |
 | `captured_until` | UTC timestamp when the capture ended. |
 | `kubernetes_version` | `gitVersion` from `/version` on the source cluster. |
 | `server_address` | API server URL from the kubeconfig used during capture. |

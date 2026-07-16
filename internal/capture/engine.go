@@ -250,6 +250,18 @@ func (e *Engine) Run() (*CaptureSummary, error) {
 		return nil, err
 	}
 
+	// pollStart is recorded right before the first poll/watch goroutines launch,
+	// so it can stand in for CapturedAt below: preflight, discovery, and
+	// namespace expansion above can themselves take non-trivial wall-clock time
+	// (a full CRD discovery pass in particular), and backdating CapturedAt from
+	// e.cfg.Duration ignored all of it — understating the true first-poll time
+	// by that same amount. A replay session's default window start (from ≈
+	// CapturedAt) could then land before any resource's first captured
+	// snapshot, so a client querying immediately at replay start (e.g. `replay
+	// --with-kwok`'s auto-launched kwok subprocess) would see a spurious "not
+	// found in capture" for a resource that genuinely was captured.
+	pollStart := time.Now().UTC()
+
 	var wg sync.WaitGroup
 
 	// Record columns-only Table schemas for native kinds whose cluster-scoped
@@ -309,7 +321,7 @@ func (e *Engine) Run() (*CaptureSummary, error) {
 	meta := &CaptureMetadata{
 		FormatVersion:     CurrentFormatVersion,
 		CaptureID:         uuid.New().String(),
-		CapturedAt:        time.Now().UTC().Add(-e.cfg.Duration),
+		CapturedAt:        pollStart,
 		CapturedUntil:     time.Now().UTC(),
 		KubernetesVersion: kVersion,
 		ServerAddress:     serverAddr,
