@@ -39,11 +39,28 @@ func TestParseAPIPath(t *testing.T) {
 
 func TestResourceToKind(t *testing.T) {
 	cases := map[string]string{
-		"pods":        "Pod",
-		"deployments": "Deployment",
-		"configmaps":  "ConfigMap",
-		"services":    "Service",
-		"widgets":     "Widget", // fallback
+		"pods":                              "Pod",
+		"deployments":                       "Deployment",
+		"configmaps":                        "ConfigMap",
+		"services":                          "Service",
+		"endpointslices":                    "EndpointSlice", // naive singularize+capitalize would give "Endpointslice"
+		"ipaddresses":                       "IPAddress",
+		"csidrivers":                        "CSIDriver",
+		"csinodes":                          "CSINode",
+		"csistoragecapacities":              "CSIStorageCapacity", // irregular plural too ("capacitie")
+		"priorityclasses":                   "PriorityClass",
+		"validatingadmissionpolicies":       "ValidatingAdmissionPolicy", // irregular plural ("policie")
+		"validatingadmissionpolicybindings": "ValidatingAdmissionPolicyBinding",
+		"mutatingwebhookconfigurations":     "MutatingWebhookConfiguration",
+		"validatingwebhookconfigurations":   "ValidatingWebhookConfiguration",
+		"resourceclaimtemplates":            "ResourceClaimTemplate",
+		"servicecidrs":                      "ServiceCIDR",
+		"flowschemas":                       "FlowSchema",
+		"prioritylevelconfigurations":       "PriorityLevelConfiguration",
+		"certificatesigningrequests":        "CertificateSigningRequest",
+		"customresourcedefinitions":         "CustomResourceDefinition", // aggregated API group, not in client-go scheme
+		"apiservices":                       "APIService",               // aggregated API group, not in client-go scheme
+		"widgets":                           "Widget",                   // unknown resource: naive fallback
 	}
 	for resource, want := range cases {
 		if got := resourceToKind(resource); got != want {

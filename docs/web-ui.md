@@ -174,8 +174,11 @@ the clock; the views auto-refresh as the clock crosses each snapshot. If a view 
 mid-playback, replay **pauses** and surfaces the error rather than pressing on.
 
 Replay flags mirror the [`replay` command](usage.md#replay): `--speed`, `--from`, `--to`, `--loop`,
-`--start-paused`, `--writable`. See [docs/usage.md](usage.md#replay) for the full model
-(resourceVersion coherence, poll-only inference, etc.).
+`--start-paused`, `--writable`, `--with-kwok`, `--with-controller-manager`. See
+[docs/usage.md](usage.md#replay) for the full model (resourceVersion coherence, poll-only inference,
+etc.) and [docs/kwok.md](kwok.md) for the closed-loop KWOK/controller-manager setup — watching a
+Deployment's Pods flip Pending → Running live in the dashboard works the same way it does over
+`kubectl`.
 
 Unlike the headless `kshrk replay` command (which auto-plays by default), `kshrk ui` starts replay
 **paused** by default — the dashboard renders the window-start state and waits for you to press

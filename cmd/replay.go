@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/phenixblue/k8shark/internal/server"
@@ -51,6 +52,7 @@ func init() {
 	replayCmd.Flags().Bool("writable", false, "accept client writes into an in-memory overlay (closed-loop controller dev)")
 	replayCmd.Flags().Bool("schedule-pods", true, "bind unscheduled pods to a node on create (the scheduler replay lacks); --writable only")
 	replayCmd.Flags().Bool("with-kwok", false, "also run a detected 'kwok' binary against the server to drive pod/node lifecycle (implies --writable)")
+	replayCmd.Flags().Bool("with-controller-manager", false, "also run kube-controller-manager (downloaded/built to match the capture's Kubernetes version) against the server, with a curated controller set, to reconcile Deployments/ReplicaSets/DaemonSets/StatefulSets/Jobs/CronJobs/Endpoints (implies --writable)")
 }
 
 func runReplay(cmd *cobra.Command, args []string) error {
@@ -64,14 +66,16 @@ func runReplay(cmd *cobra.Command, args []string) error {
 	writable, _ := cmd.Flags().GetBool("writable")
 	schedulePods, _ := cmd.Flags().GetBool("schedule-pods")
 	withKwok, _ := cmd.Flags().GetBool("with-kwok")
+	withControllerManager, _ := cmd.Flags().GetBool("with-controller-manager")
 	verbose, _ := cmd.Root().PersistentFlags().GetBool("verbose")
 
 	if err := validateKwokFlags(withKwok, schedulePods); err != nil {
 		return err
 	}
-	// --with-kwok drives pod/node lifecycle against the overlay, so it implies
-	// --writable (and needs the scheduling shim on to bind pods to nodes).
-	if withKwok {
+	// --with-kwok and --with-controller-manager both drive the overlay from a
+	// live process, so either implies --writable (and --with-kwok needs the
+	// scheduling shim on to bind pods to nodes).
+	if withKwok || withControllerManager {
 		writable = true
 	}
 
@@ -92,20 +96,35 @@ func runReplay(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("starting replay: %w", err)
 	}
 
-	// Optionally launch a detected kwok against the server to drive pod/node
-	// lifecycle. Started after the server is up (it needs the kubeconfig) and torn
-	// down on shutdown. waitForNodesReady blocks briefly first so kwok's own
-	// first LIST doesn't race the replay clock past the nodes resource's first
-	// captured snapshot (see waitForNodesReady).
+	// Optionally launch a detected kwok and/or kube-controller-manager against the
+	// server to drive pod/node lifecycle and reconcile the curated controller set
+	// (Deployments/ReplicaSets/Jobs/CronJobs/...). Started after the server is up
+	// (they need the kubeconfig) and torn down on shutdown. waitForNodesReady
+	// blocks briefly first so their informers' first LIST doesn't race the replay
+	// clock past the nodes resource's first captured snapshot (see
+	// waitForNodesReady) — needed at most once even when both are enabled.
+	if withKwok || withControllerManager {
+		waitForNodesReady(srv.Address(), srv.CertPEM(), nodesReadyTimeout)
+	}
+
 	var kwokCleanup func()
 	if withKwok {
-		waitForNodesReady(srv.Address(), srv.CertPEM(), nodesReadyTimeout)
 		kwokCleanup, err = startKwok(srv.KubeconfigPath())
 		if err != nil {
 			srv.Shutdown()
 			return err
 		}
 		defer kwokCleanup()
+	}
+
+	var controllerManagerCleanup func()
+	if withControllerManager {
+		controllerManagerCleanup, err = startControllerManager(srv.KubeconfigPath(), srv.KubernetesVersion())
+		if err != nil {
+			srv.Shutdown()
+			return err
+		}
+		defer controllerManagerCleanup()
 	}
 
 	clock := srv.Clock()
@@ -136,6 +155,9 @@ func runReplay(cmd *cobra.Command, args []string) error {
 	}
 	if withKwok {
 		fmt.Printf("  KWOK:       on (driving pod/node lifecycle via bundled stages)\n")
+	}
+	if withControllerManager {
+		fmt.Printf("  Controller-manager: on (reconciling %s)\n", strings.Join(controllerManagerControllers, ", "))
 	}
 	fmt.Printf("  Control:    %s/_k8shark/replay\n", srv.Address())
 	if uiSrv != nil {

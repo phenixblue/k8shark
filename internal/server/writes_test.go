@@ -282,6 +282,114 @@ func TestKindForResource(t *testing.T) {
 	}
 }
 
+// TestOverlay_APIDefaulting verifies that objects of Kinds real controllers
+// reconcile get the same defaulting a live apiserver applies on create — a
+// regression test for panics found wiring up --with-controller-manager:
+// kube-controller-manager unconditionally dereferences fields like
+// Deployment.spec.strategy.rollingUpdate.maxSurge and Job.spec.backoffLimit,
+// assuming the apiserver already defaulted them.
+func TestOverlay_APIDefaulting(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	t.Run("Deployment strategy", func(t *testing.T) {
+		body := `{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"nginx","namespace":"default"},
+			"spec":{"replicas":1,"selector":{"matchLabels":{"app":"nginx"}},
+			"template":{"metadata":{"labels":{"app":"nginx"}},"spec":{"containers":[{"name":"nginx","image":"nginx"}]}}}}`
+		code, out := doReq(t, http.MethodPost, srv.URL+"/apis/apps/v1/namespaces/default/deployments", "application/json", body)
+		if code != http.StatusCreated {
+			t.Fatalf("create: status %d: %s", code, out)
+		}
+		var d struct {
+			Spec struct {
+				Strategy struct {
+					Type          string `json:"type"`
+					RollingUpdate *struct {
+						MaxSurge       string `json:"maxSurge"`
+						MaxUnavailable string `json:"maxUnavailable"`
+					} `json:"rollingUpdate"`
+				} `json:"strategy"`
+			} `json:"spec"`
+		}
+		if err := json.Unmarshal(out, &d); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if d.Spec.Strategy.Type != "RollingUpdate" {
+			t.Errorf("strategy.type = %q, want RollingUpdate", d.Spec.Strategy.Type)
+		}
+		if d.Spec.Strategy.RollingUpdate == nil {
+			t.Fatalf("strategy.rollingUpdate is nil — kube-controller-manager panics dereferencing .maxSurge")
+		}
+		if d.Spec.Strategy.RollingUpdate.MaxSurge != "25%" || d.Spec.Strategy.RollingUpdate.MaxUnavailable != "25%" {
+			t.Errorf("rollingUpdate = %+v, want 25%%/25%%", d.Spec.Strategy.RollingUpdate)
+		}
+	})
+
+	t.Run("Job backoffLimit and friends", func(t *testing.T) {
+		body := `{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"hello","namespace":"default"},
+			"spec":{"template":{"spec":{"containers":[{"name":"hello","image":"busybox"}],"restartPolicy":"Never"}}}}`
+		code, out := doReq(t, http.MethodPost, srv.URL+"/apis/batch/v1/namespaces/default/jobs", "application/json", body)
+		if code != http.StatusCreated {
+			t.Fatalf("create: status %d: %s", code, out)
+		}
+		var j struct {
+			Spec struct {
+				Parallelism    *int32  `json:"parallelism"`
+				BackoffLimit   *int32  `json:"backoffLimit"`
+				CompletionMode *string `json:"completionMode"`
+			} `json:"spec"`
+		}
+		if err := json.Unmarshal(out, &j); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if j.Spec.BackoffLimit == nil || *j.Spec.BackoffLimit != 6 {
+			t.Errorf("backoffLimit = %v, want 6 — job controller panics dereferencing a nil backoffLimit", j.Spec.BackoffLimit)
+		}
+		if j.Spec.Parallelism == nil || *j.Spec.Parallelism != 1 {
+			t.Errorf("parallelism = %v, want 1", j.Spec.Parallelism)
+		}
+		if j.Spec.CompletionMode == nil || *j.Spec.CompletionMode != "NonIndexed" {
+			t.Errorf("completionMode = %v, want NonIndexed", j.Spec.CompletionMode)
+		}
+	})
+
+	t.Run("Service IPFamilies", func(t *testing.T) {
+		body := `{"apiVersion":"v1","kind":"Service","metadata":{"name":"web","namespace":"default"},
+			"spec":{"selector":{"app":"nginx"},"ports":[{"port":80}]}}`
+		code, out := doReq(t, http.MethodPost, srv.URL+"/api/v1/namespaces/default/services", "application/json", body)
+		if code != http.StatusCreated {
+			t.Fatalf("create: status %d: %s", code, out)
+		}
+		var s struct {
+			Spec struct {
+				Type       string   `json:"type"`
+				IPFamilies []string `json:"ipFamilies"`
+			} `json:"spec"`
+		}
+		if err := json.Unmarshal(out, &s); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if s.Spec.Type != "ClusterIP" {
+			t.Errorf("type = %q, want ClusterIP", s.Spec.Type)
+		}
+		if len(s.Spec.IPFamilies) == 0 {
+			t.Fatalf("ipFamilies is empty — the endpoint controller panics indexing ipFamilies[0]")
+		}
+	})
+
+	t.Run("unknown resource passes through unchanged", func(t *testing.T) {
+		body := `{"apiVersion":"example.com/v1","kind":"Widget","metadata":{"name":"w1","namespace":"default"},"spec":{}}`
+		code, out := doReq(t, http.MethodPost, srv.URL+"/apis/example.com/v1/namespaces/default/widgets", "application/json", body)
+		if code != http.StatusCreated {
+			t.Fatalf("create: status %d: %s", code, out)
+		}
+		if metaString(out, "name") != "w1" {
+			t.Errorf("name = %q, want w1 (custom resource create should be unaffected)", metaString(out, "name"))
+		}
+	})
+}
+
 func TestOverlay_DeleteTombstone(t *testing.T) {
 	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
 	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)

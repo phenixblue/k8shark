@@ -12,10 +12,16 @@ import (
 
 	"github.com/google/uuid"
 	jsonpatch "gopkg.in/evanphx/json-patch.v4"
+	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/yaml"
 )
 
@@ -97,6 +103,9 @@ func (h *handler) overlayCreate(w http.ResponseWriter, r *http.Request, group, v
 	body, ok := h.readObjectBody(w, r)
 	if !ok {
 		return
+	}
+	if gvk, known := kindForResource(schema.GroupVersion{Group: group, Version: version}, resource); known {
+		body = defaultObject(gvk, body)
 	}
 	name := metaString(body, "name")
 	if name == "" {
@@ -379,6 +388,11 @@ func (h *handler) overlayReplace(w http.ResponseWriter, r *http.Request, group, 
 	body, ok := h.readObjectBody(w, r)
 	if !ok {
 		return
+	}
+	if sub != "status" {
+		if gvk, known := kindForResource(schema.GroupVersion{Group: group, Version: version}, resource); known {
+			body = defaultObject(gvk, body)
+		}
 	}
 	if h.identityMismatch(w, body, name, namespace) {
 		return
@@ -788,6 +802,139 @@ func kindForResource(gv schema.GroupVersion, resource string) (schema.GroupVersi
 		}
 	}
 	return schema.GroupVersionKind{}, false
+}
+
+// defaultObject applies Kubernetes API defaulting to body — e.g. an empty
+// Deployment.spec.strategy.type becomes "RollingUpdate" — matching what a real
+// apiserver does on every write. The overlay has no apiserver behind it, so
+// without this a freshly created object keeps whatever zero values the client
+// didn't set; a real controller (e.g. kube-controller-manager's deployment
+// controller) assumes defaulting already happened and errors on the zero value
+// ("unexpected deployment strategy type: \"\"") instead of treating it as
+// "use the default". Resources outside client-go's built-in scheme (CRDs) are
+// returned unchanged — there's no way to know their defaults without the CRD's
+// schema, which the overlay doesn't have.
+//
+// scheme.Scheme.Default only runs defaulters registered on the client-side
+// scheme, which — for the built-in types this project vendors
+// (k8s.io/api, not the full k8s.io/kubernetes apiserver) — is effectively
+// none of the fields real controllers care about; the actual
+// SetDefaults_Deployment-style functions live in k8s.io/kubernetes's internal
+// packages, which aren't meant to be imported as a library. applyKnownDefaults
+// hand-covers the specific, long-stable defaults our curated
+// --with-controller-manager controllers rely on instead.
+func defaultObject(gvk schema.GroupVersionKind, body json.RawMessage) json.RawMessage {
+	typed, err := scheme.Scheme.New(gvk)
+	if err != nil {
+		return body
+	}
+	if err := json.Unmarshal(body, typed); err != nil {
+		return body
+	}
+	scheme.Scheme.Default(typed)
+	applyKnownDefaults(typed)
+	defaulted, err := json.Marshal(typed)
+	if err != nil {
+		return body
+	}
+	return defaulted
+}
+
+// applyKnownDefaults hand-applies the handful of long-stable Kubernetes API
+// defaults that the controllers --with-controller-manager enables (see
+// cmd/controllermanager.go) assume are already in place: a zero-valued
+// strategy/update-strategy/concurrency-policy reads as "invalid", not "use the
+// default", to those controllers. Defaulting a *Type without also defaulting
+// its matching *RollingUpdate sub-struct is not enough — real
+// kube-controller-manager code unconditionally dereferences that pointer
+// (e.g. deployment_util.go's NewRSNewReplicas reads
+// Spec.Strategy.RollingUpdate.MaxSurge), so a Type of "RollingUpdate" with a
+// nil RollingUpdate struct panics deep inside the controller instead of
+// erroring cleanly.
+func applyKnownDefaults(obj runtime.Object) {
+	switch o := obj.(type) {
+	case *corev1.Service:
+		if o.Spec.Type == "" {
+			o.Spec.Type = corev1.ServiceTypeClusterIP
+		}
+		if o.Spec.SessionAffinity == "" {
+			o.Spec.SessionAffinity = corev1.ServiceAffinityNone
+		}
+		if len(o.Spec.IPFamilies) == 0 {
+			// The endpoint/endpointslice controllers index IPFamilies[0]
+			// unconditionally; a real apiserver always populates this from the
+			// cluster's configured service-cluster-ip-range. IPv4 matches every
+			// capture this project has captured so far.
+			o.Spec.IPFamilies = []corev1.IPFamily{corev1.IPv4Protocol}
+		}
+	case *appsv1.Deployment:
+		if o.Spec.Strategy.Type == "" {
+			o.Spec.Strategy.Type = appsv1.RollingUpdateDeploymentStrategyType
+		}
+		if o.Spec.Strategy.Type == appsv1.RollingUpdateDeploymentStrategyType && o.Spec.Strategy.RollingUpdate == nil {
+			maxUnavailable := intstr.FromString("25%")
+			maxSurge := intstr.FromString("25%")
+			o.Spec.Strategy.RollingUpdate = &appsv1.RollingUpdateDeployment{
+				MaxUnavailable: &maxUnavailable,
+				MaxSurge:       &maxSurge,
+			}
+		}
+	case *appsv1.DaemonSet:
+		if o.Spec.UpdateStrategy.Type == "" {
+			o.Spec.UpdateStrategy.Type = appsv1.RollingUpdateDaemonSetStrategyType
+		}
+		if o.Spec.UpdateStrategy.Type == appsv1.RollingUpdateDaemonSetStrategyType && o.Spec.UpdateStrategy.RollingUpdate == nil {
+			maxUnavailable := intstr.FromString("25%")
+			maxSurge := intstr.FromInt32(0)
+			o.Spec.UpdateStrategy.RollingUpdate = &appsv1.RollingUpdateDaemonSet{
+				MaxUnavailable: &maxUnavailable,
+				MaxSurge:       &maxSurge,
+			}
+		}
+	case *appsv1.StatefulSet:
+		if o.Spec.UpdateStrategy.Type == "" {
+			o.Spec.UpdateStrategy.Type = appsv1.RollingUpdateStatefulSetStrategyType
+		}
+		if o.Spec.PodManagementPolicy == "" {
+			o.Spec.PodManagementPolicy = appsv1.OrderedReadyPodManagement
+		}
+		if o.Spec.UpdateStrategy.Type == appsv1.RollingUpdateStatefulSetStrategyType && o.Spec.UpdateStrategy.RollingUpdate == nil {
+			partition := int32(0)
+			o.Spec.UpdateStrategy.RollingUpdate = &appsv1.RollingUpdateStatefulSetStrategy{Partition: &partition}
+		}
+	case *batchv1.Job:
+		if o.Spec.Parallelism == nil {
+			o.Spec.Parallelism = ptr.To(int32(1))
+		}
+		if o.Spec.BackoffLimit == nil {
+			o.Spec.BackoffLimit = ptr.To(int32(6))
+		}
+		if o.Spec.CompletionMode == nil {
+			o.Spec.CompletionMode = ptr.To(batchv1.NonIndexedCompletion)
+		}
+		if o.Spec.Suspend == nil {
+			o.Spec.Suspend = ptr.To(false)
+		}
+		if o.Spec.ManualSelector == nil {
+			o.Spec.ManualSelector = ptr.To(false)
+		}
+		if o.Spec.PodReplacementPolicy == nil {
+			o.Spec.PodReplacementPolicy = ptr.To(batchv1.TerminatingOrFailed)
+		}
+	case *batchv1.CronJob:
+		if o.Spec.ConcurrencyPolicy == "" {
+			o.Spec.ConcurrencyPolicy = batchv1.AllowConcurrent
+		}
+		if o.Spec.Suspend == nil {
+			o.Spec.Suspend = ptr.To(false)
+		}
+		if o.Spec.SuccessfulJobsHistoryLimit == nil {
+			o.Spec.SuccessfulJobsHistoryLimit = ptr.To(int32(3))
+		}
+		if o.Spec.FailedJobsHistoryLimit == nil {
+			o.Spec.FailedJobsHistoryLimit = ptr.To(int32(1))
+		}
+	}
 }
 
 // allowedMethods returns the Allow-header value for a write path shape, used on

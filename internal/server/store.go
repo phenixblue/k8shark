@@ -11,6 +11,8 @@ import (
 
 	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/capture"
+	"k8s.io/apimachinery/pkg/api/meta"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 )
 
 // CaptureStore holds the in-memory index and provides record lookups against
@@ -887,48 +889,46 @@ func parseAPIPath(path string) (group, version, resource, namespace string) {
 	return
 }
 
+// builtinKindByResource maps a bare plural resource name (e.g.
+// "endpointslices") to its canonical Kind (e.g. "EndpointSlice"), derived
+// once from client-go's built-in type registry — the same authority real
+// clients (kubectl, controller-manager informers) use to resolve Kind names.
+// A hand-maintained table drifts silently as the Kubernetes API grows, and a
+// naive "strip trailing s, capitalize" guess is wrong for most multi-word
+// Kinds ("endpointslices" -> "Endpointslice", not "EndpointSlice";
+// "csistoragecapacities" -> "Csistoragecapacitie", not "CSIStorageCapacity").
+var builtinKindByResource = buildBuiltinKindByResource()
+
+func buildBuiltinKindByResource() map[string]string {
+	m := map[string]string{}
+	for gvk := range clientgoscheme.Scheme.AllKnownTypes() {
+		if gvk.Kind == "" || strings.HasSuffix(gvk.Kind, "List") || strings.HasSuffix(gvk.Kind, "Options") {
+			continue
+		}
+		gvr, _ := meta.UnsafeGuessKindToResource(gvk)
+		if gvr.Resource == "" {
+			continue
+		}
+		if _, ok := m[gvr.Resource]; !ok {
+			m[gvr.Resource] = gvk.Kind
+		}
+	}
+	return m
+}
+
 // resourceToKind maps a plural resource name to its Kind string.
 func resourceToKind(resource string) string {
-	known := map[string]string{
-		"bindings":                  "Binding",
-		"componentstatuses":         "ComponentStatus",
-		"configmaps":                "ConfigMap",
-		"endpoints":                 "Endpoints",
-		"events":                    "Event",
-		"limitranges":               "LimitRange",
-		"namespaces":                "Namespace",
-		"nodes":                     "Node",
-		"persistentvolumeclaims":    "PersistentVolumeClaim",
-		"persistentvolumes":         "PersistentVolume",
-		"pods":                      "Pod",
-		"podtemplates":              "PodTemplate",
-		"replicationcontrollers":    "ReplicationController",
-		"resourcequotas":            "ResourceQuota",
-		"secrets":                   "Secret",
-		"serviceaccounts":           "ServiceAccount",
-		"services":                  "Service",
-		"controllerrevisions":       "ControllerRevision",
-		"daemonsets":                "DaemonSet",
-		"deployments":               "Deployment",
-		"replicasets":               "ReplicaSet",
-		"statefulsets":              "StatefulSet",
-		"horizontalpodautoscalers":  "HorizontalPodAutoscaler",
-		"cronjobs":                  "CronJob",
-		"jobs":                      "Job",
-		"ingresses":                 "Ingress",
-		"ingressclasses":            "IngressClass",
-		"networkpolicies":           "NetworkPolicy",
-		"poddisruptionbudgets":      "PodDisruptionBudget",
-		"clusterrolebindings":       "ClusterRoleBinding",
-		"clusterroles":              "ClusterRole",
-		"rolebindings":              "RoleBinding",
-		"roles":                     "Role",
-		"storageclasses":            "StorageClass",
-		"volumeattachments":         "VolumeAttachment",
-		"customresourcedefinitions": "CustomResourceDefinition",
-	}
-	if k, ok := known[resource]; ok {
+	if k, ok := builtinKindByResource[resource]; ok {
 		return k
+	}
+	// A couple of well-known Kinds live in aggregated-API-server groups
+	// (apiextensions.k8s.io, apiregistration.k8s.io) whose types aren't
+	// registered in client-go's built-in scheme.
+	switch resource {
+	case "customresourcedefinitions":
+		return "CustomResourceDefinition"
+	case "apiservices":
+		return "APIService"
 	}
 	s := strings.TrimSuffix(resource, "s")
 	if s == "" {

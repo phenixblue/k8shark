@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/phenixblue/k8shark/internal/config"
@@ -28,7 +29,10 @@ the config file).`,
   kshrk ui capture.kshrk --port 8080 --api-port 8081
 
   # Open the UI pinned to a point in time
-  kshrk ui capture.kshrk --at -5m`,
+  kshrk ui capture.kshrk --at -5m
+
+  # Watch a closed-loop simulation in the dashboard (see docs/kwok.md)
+  kshrk ui capture.kshrk --with-kwok --with-controller-manager`,
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeArchiveArg,
 	RunE:              runUI,
@@ -48,6 +52,8 @@ func init() {
 	uiCmd.Flags().Bool("loop", false, "replay mode: restart from the window start when the end is reached")
 	uiCmd.Flags().Bool("start-paused", false, "replay mode: start paused (the UI defaults to this; pass --start-paused=false to auto-play)")
 	uiCmd.Flags().Bool("writable", false, "replay mode: accept client writes into an in-memory overlay")
+	uiCmd.Flags().Bool("with-kwok", false, "replay mode: also run a detected 'kwok' binary against the server to drive pod/node lifecycle (implies --writable)")
+	uiCmd.Flags().Bool("with-controller-manager", false, "replay mode: also run kube-controller-manager against the server, with a curated controller set, to reconcile Deployments/ReplicaSets/Jobs/CronJobs/Endpoints (implies --writable)")
 }
 
 func runUI(cmd *cobra.Command, args []string) error {
@@ -77,14 +83,25 @@ func runUI(cmd *cobra.Command, args []string) error {
 	loop, _ := cmd.Flags().GetBool("loop")
 	startPaused, _ := cmd.Flags().GetBool("start-paused")
 	writable, _ := cmd.Flags().GetBool("writable")
+	withKwok, _ := cmd.Flags().GetBool("with-kwok")
+	withControllerManager, _ := cmd.Flags().GetBool("with-controller-manager")
+	// --with-kwok and --with-controller-manager both drive the overlay from a
+	// live process, so either implies --writable (and replay mode).
+	if withKwok || withControllerManager {
+		writable = true
+	}
 	replayMode := cmd.Flags().Changed("speed") || cmd.Flags().Changed("from") ||
 		cmd.Flags().Changed("to") || loop || startPaused || writable
 	startPaused = resolveUIStartPaused(replayMode, startPaused, cmd.Flags().Changed("start-paused"))
 
+	if err := validateKwokFlags(withKwok, true); err != nil {
+		return err
+	}
+
 	// --at pins a single instant, which is meaningless once the replay clock is
 	// driving time — reject the combination rather than silently ignoring --at.
 	if replayMode && cmd.Flags().Changed("at") {
-		return fmt.Errorf("--at cannot be combined with replay flags (--speed/--from/--to/--loop/--start-paused/--writable); use --from/--to to set the replay window")
+		return fmt.Errorf("--at cannot be combined with replay flags (--speed/--from/--to/--loop/--start-paused/--writable/--with-kwok/--with-controller-manager); use --from/--to to set the replay window")
 	}
 
 	var mockSrv *server.Server
@@ -103,6 +120,33 @@ func runUI(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("opening mock API: %w", err)
 	}
 
+	// Optionally launch a detected kwok and/or kube-controller-manager against the
+	// server, mirroring `kshrk replay`. Started after the server is up (they need
+	// the kubeconfig) and torn down on shutdown. waitForNodesReady guards against
+	// their informers' first LIST racing the replay clock's startup jitter (see
+	// cmd/kwok.go) — needed at most once even when both are enabled.
+	var kwokCleanup, controllerManagerCleanup func()
+	if withKwok || withControllerManager {
+		waitForNodesReady(mockSrv.Address(), mockSrv.CertPEM(), nodesReadyTimeout)
+	}
+	if withKwok {
+		kwokCleanup, err = startKwok(mockSrv.KubeconfigPath())
+		if err != nil {
+			mockSrv.Shutdown()
+			return err
+		}
+	}
+	if withControllerManager {
+		controllerManagerCleanup, err = startControllerManager(mockSrv.KubeconfigPath(), mockSrv.KubernetesVersion())
+		if err != nil {
+			if kwokCleanup != nil {
+				kwokCleanup()
+			}
+			mockSrv.Shutdown()
+			return err
+		}
+	}
+
 	uiSrv, err := ui.Open(ui.OpenOptions{
 		ArchivePath: archivePath,
 		Port:        uiPort,
@@ -111,6 +155,12 @@ func runUI(cmd *cobra.Command, args []string) error {
 		Clock:       mockSrv.Clock(), // nil unless replay mode → shared clock
 	})
 	if err != nil {
+		if controllerManagerCleanup != nil {
+			controllerManagerCleanup()
+		}
+		if kwokCleanup != nil {
+			kwokCleanup()
+		}
 		mockSrv.Shutdown()
 		return fmt.Errorf("opening UI: %w", err)
 	}
@@ -121,6 +171,12 @@ func runUI(cmd *cobra.Command, args []string) error {
 	if c := mockSrv.Clock(); c != nil {
 		wf, wt := c.Window()
 		fmt.Printf("  Replay:     %s → %s · %s\n", wf.Format("15:04:05Z07:00"), wt.Format("15:04:05Z07:00"), formatSpeed(c.Speed()))
+	}
+	if withKwok {
+		fmt.Printf("  KWOK:       on (driving pod/node lifecycle via bundled stages)\n")
+	}
+	if withControllerManager {
+		fmt.Printf("  Controller-manager: on (reconciling %s)\n", strings.Join(controllerManagerControllers, ", "))
 	}
 	fmt.Printf("\nRun: export KUBECONFIG=%s\n", mockSrv.KubeconfigPath())
 	fmt.Printf("Then use kubectl normally against the capture.\n\n")
@@ -138,6 +194,12 @@ func runUI(cmd *cobra.Command, args []string) error {
 	<-sigCh
 
 	uiSrv.Shutdown()
+	if controllerManagerCleanup != nil {
+		controllerManagerCleanup()
+	}
+	if kwokCleanup != nil {
+		kwokCleanup()
+	}
 	mockSrv.Shutdown()
 
 	return nil

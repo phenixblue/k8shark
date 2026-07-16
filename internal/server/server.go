@@ -45,15 +45,16 @@ type ReplayOptions struct {
 
 // Server represents a running mock API server.
 type Server struct {
-	address        string
-	kubeconfigPath string
-	certPEM        []byte // this run's self-signed TLS cert, for callers that need to pin it
-	ar             *archive.Archive
-	httpServer     *http.Server
-	done           chan struct{}
-	clock          *ReplayClock // non-nil in replay mode
-	writable       bool         // overlay enabled
-	hasWatch       bool         // capture contains watch events
+	address           string
+	kubeconfigPath    string
+	certPEM           []byte // this run's self-signed TLS cert, for callers that need to pin it
+	ar                *archive.Archive
+	httpServer        *http.Server
+	done              chan struct{}
+	clock             *ReplayClock // non-nil in replay mode
+	writable          bool         // overlay enabled
+	hasWatch          bool         // capture contains watch events
+	kubernetesVersion string       // capture's /version gitVersion, e.g. "v1.36.1"
 }
 
 // Open opens a capture archive, starts the mock HTTPS server, and writes
@@ -164,15 +165,16 @@ func serve(ar *archive.Archive, store *CaptureStore, at time.Time, clock *Replay
 	}()
 
 	return &Server{
-		address:        addr,
-		kubeconfigPath: kubeconfigPath,
-		certPEM:        certPEM,
-		ar:             ar,
-		httpServer:     httpSrv,
-		done:           done,
-		clock:          clock,
-		writable:       h.overlay != nil,
-		hasWatch:       len(store.WatchIndex) > 0,
+		address:           addr,
+		kubeconfigPath:    kubeconfigPath,
+		certPEM:           certPEM,
+		ar:                ar,
+		httpServer:        httpSrv,
+		done:              done,
+		clock:             clock,
+		writable:          h.overlay != nil,
+		hasWatch:          len(store.WatchIndex) > 0,
+		kubernetesVersion: store.Metadata.KubernetesVersion,
 	}, nil
 }
 
@@ -198,6 +200,10 @@ func (s *Server) CertPEM() []byte {
 
 // Clock returns the replay clock, or nil when the server is not in replay mode.
 func (s *Server) Clock() *ReplayClock { return s.clock }
+
+// KubernetesVersion returns the capture's Kubernetes gitVersion (e.g.
+// "v1.36.1"), as reported by the captured cluster's /version endpoint.
+func (s *Server) KubernetesVersion() string { return s.kubernetesVersion }
 
 // HasWatchEvents reports whether the capture contains watch events to stream.
 // Poll-only captures return false; replay still serves LIST/GET as-of the clock

@@ -108,16 +108,75 @@ runner lacks), so it is not part of `make e2e` or the automatic e2e job. In CI i
 runs from the **e2e-kwok** GitHub Actions workflow (Actions tab → Run workflow),
 which installs `kwok` first.
 
+## Closing more of the loop: `--with-controller-manager`
+
+KWOK plays the kubelet; `--with-controller-manager` adds a real
+`kube-controller-manager` reconciling a curated set of controllers against the
+same writable overlay, so a Deployment you create actually gets a ReplicaSet
+and Pods, a CronJob spawns Jobs on schedule, and a Service gets Endpoints and
+an EndpointSlice — all without a full second cluster:
+
+```sh
+kshrk replay capture.kshrk --with-kwok --with-controller-manager
+export KUBECONFIG=/Users/you/.kube/k8shark-<id>.yaml
+kubectl create deployment demo --image=nginx --replicas=2
+kubectl get pods -w   # ReplicaSet + Pods appear, KWOK takes them to Running
+```
+
+**Curated controller set** (`internal/k8sbin` + `cmd/controllermanager.go`):
+`namespace`, `serviceaccount`, `resourcequota`, `garbagecollector`,
+`daemonset`, `deployment`, `replicaset`, `statefulset`, `job`, `cronjob`,
+`endpoint`, `endpointslice`, `endpointslicemirroring`, `disruption` — pure
+API-object reconcilers that only need CRUD+watch against the overlay, not a
+real kubelet, storage provisioner, cloud provider, or node lifecycle. Started
+with `--leader-elect=false` (a single local process needs no leader election)
+and `--use-service-account-credentials=false`.
+
+**Binary sourcing.** Kubernetes only publishes `kube-controller-manager` for
+`linux/{amd64,arm64}` — there's no macOS or Windows build. On Linux,
+`--with-controller-manager` downloads the official release binary from
+`dl.k8s.io` (matching the capture's Kubernetes version) and verifies it
+against the published SHA-256 checksum. On other platforms it instead
+downloads and verifies the official Kubernetes **source** tarball from the
+same `dl.k8s.io` origin and compiles it with the host's Go toolchain — the
+same approach [KWOK's own docs recommend](https://kwok.sigs.k8s.io/docs/user/kwokctl-platform-specific-binaries/)
+for platforms it doesn't publish binaries for either. Either way, the result is
+cached under the OS cache directory, keyed by version and GOOS/GOARCH, so this
+only runs once per version per machine. `go` must be on `PATH` for the
+source-build path.
+
+**API defaulting.** A real apiserver defaults dozens of fields on every write
+(e.g. an empty `Deployment.spec.strategy.type` becomes `RollingUpdate` with a
+25%/25% `rollingUpdate` struct); the writable overlay has no apiserver behind
+it, so `internal/server/writes.go`'s `applyKnownDefaults` hand-applies the
+specific, long-stable defaults these controllers assume are already
+present — real controller code unconditionally dereferences fields like
+`Spec.Strategy.RollingUpdate.MaxSurge` or `Spec.BackoffLimit`, so a missing
+default panics deep inside the controller (caught by client-go's recover, so
+it doesn't crash the process, but the object never reconciles) rather than
+erroring cleanly.
+
 ## Non-goals
 
-Standalone KWOK + the overlay covers pod/node lifecycle. It intentionally does
-**not** provide the rest of a control plane:
+Even with `--with-controller-manager`, this intentionally does **not** provide
+a full control plane:
 
-- **Scheduling fit** — the shim is round-robin, not a real scheduler (no
-  resource/affinity/taint evaluation).
-- **Endpoints/EndpointSlices and the rest of kube-controller-manager** — only a
-  real control plane (`kwokctl`, a separate throwaway cluster) runs these.
-- **Full CNCF conformance** via replay.
+- **Scheduling fit** — the pod-scheduling shim is round-robin, not a real
+  scheduler (no resource/affinity/taint evaluation).
+- **A real kubelet/container runtime** — KWOK fakes Pod status transitions; it
+  never runs a container, so anything that depends on actual process/exit-code
+  behavior (`kubectl exec`, `kubectl logs`, a Job ever reaching `Succeeded`)
+  doesn't work. See the "exec, cp, port-forward, and proxy are not supported"
+  error for the replay server's own explicit stance on this.
+- **PersistentVolume binding, HorizontalPodAutoscaler, node-lifecycle,
+  certificate-signing, and the other kube-controller-manager controllers**
+  outside the curated set above — they need a real storage provisioner, a real
+  metrics-server, or real node health, which nothing here provides. A full
+  control plane (`kwokctl`, a separate throwaway cluster) is still the answer
+  for those.
+- **Full CNCF conformance** via replay — measured directly; see
+  [docs/conformance.md](conformance.md) and the upstream `[Conformance]` suite
+  results for what this closes and what it doesn't.
 
 See [#160](https://github.com/phenixblue/k8shark/issues/160) for the tracking
 issue and [#123](https://github.com/phenixblue/k8shark/issues/123) for the
