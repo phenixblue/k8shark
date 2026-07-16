@@ -47,6 +47,7 @@ type ReplayOptions struct {
 type Server struct {
 	address        string
 	kubeconfigPath string
+	certPEM        []byte // this run's self-signed TLS cert, for callers that need to pin it
 	ar             *archive.Archive
 	httpServer     *http.Server
 	done           chan struct{}
@@ -165,6 +166,7 @@ func serve(ar *archive.Archive, store *CaptureStore, at time.Time, clock *Replay
 	return &Server{
 		address:        addr,
 		kubeconfigPath: kubeconfigPath,
+		certPEM:        certPEM,
 		ar:             ar,
 		httpServer:     httpSrv,
 		done:           done,
@@ -182,6 +184,11 @@ func (s *Server) Address() string { return s.address }
 
 // KubeconfigPath returns the path to the generated kubeconfig.
 func (s *Server) KubeconfigPath() string { return s.kubeconfigPath }
+
+// CertPEM returns this run's self-signed TLS certificate in PEM form, so an
+// in-process client (one that isn't going through the generated kubeconfig's
+// insecure-skip-tls-verify) can pin it instead of disabling verification.
+func (s *Server) CertPEM() []byte { return s.certPEM }
 
 // Clock returns the replay clock, or nil when the server is not in replay mode.
 func (s *Server) Clock() *ReplayClock { return s.clock }

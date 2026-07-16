@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -30,23 +31,41 @@ func validateKwokFlags(withKwok, schedulePods bool) error {
 // and letting kwok start anyway.
 const nodesReadyTimeout = 5 * time.Second
 
+// nodesReadyReqTimeout bounds a single readiness request, so one slow/hung
+// response can't itself blow past waitForNodesReady's overall timeout.
+const nodesReadyReqTimeout = 2 * time.Second
+
 // waitForNodesReady polls addr's /api/v1/nodes until it reports at least one
-// node, or nodesReadyTimeout elapses. In replay mode the as-of clock starts
-// advancing the instant the mock server comes up, but a resource's first
-// captured snapshot can land a moment after the clock's nominal window start
+// node, or timeout elapses. In replay mode the as-of clock starts advancing
+// the instant the mock server comes up, but a resource's first captured
+// snapshot can land a moment after the clock's nominal window start
 // (goroutine scheduling and network round-trip jitter around capture start);
 // until the clock catches up, /api/v1/nodes briefly reports an empty list.
 // kwok's node informer LISTs exactly once at startup — if that race loses,
 // its cache stays empty for the whole session and pods it manages never get
 // scheduled to Running. Waiting here (rather than in kwok itself) keeps the
 // launched kwok binary unmodified.
-func waitForNodesReady(addr string, timeout time.Duration) {
-	client := &http.Client{
-		Timeout:   2 * time.Second,
-		Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}},
-	}
+//
+// certPEM pins the mock server's own self-signed cert (Server.CertPEM())
+// rather than disabling certificate verification: this client talks straight
+// to an HTTPS listener we just spawned in this process, so the real
+// certificate is on hand and there's no reason to skip validating it.
+func waitForNodesReady(addr string, certPEM []byte, timeout time.Duration) {
+	pool := x509.NewCertPool()
+	pool.AppendCertsFromPEM(certPEM)
+	transport := &http.Transport{TLSClientConfig: &tls.Config{RootCAs: pool}}
+
 	deadline := time.Now().Add(timeout)
 	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return
+		}
+		reqTimeout := remaining
+		if reqTimeout > nodesReadyReqTimeout {
+			reqTimeout = nodesReadyReqTimeout
+		}
+		client := &http.Client{Timeout: reqTimeout, Transport: transport}
 		if nodesReady(client, addr) {
 			return
 		}

@@ -99,7 +99,7 @@ func runReplay(cmd *cobra.Command, args []string) error {
 	// captured snapshot (see waitForNodesReady).
 	var kwokCleanup func()
 	if withKwok {
-		waitForNodesReady(srv.Address(), nodesReadyTimeout)
+		waitForNodesReady(srv.Address(), srv.CertPEM(), nodesReadyTimeout)
 		kwokCleanup, err = startKwok(srv.KubeconfigPath())
 		if err != nil {
 			srv.Shutdown()
