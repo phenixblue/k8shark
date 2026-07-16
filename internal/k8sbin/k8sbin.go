@@ -143,7 +143,7 @@ func binDir(version string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolving cache directory: %w", err)
 	}
-	return filepath.Join(base, "kshark", "kube-controller-manager", version, runtime.GOOS+"-"+runtime.GOARCH), nil
+	return filepath.Join(base, "k8shark", "kube-controller-manager", version, runtime.GOOS+"-"+runtime.GOARCH), nil
 }
 
 // isExecutableFile reports whether path is a regular file this package can
@@ -222,7 +222,7 @@ func buildFromSource(version, destPath string, progress func(string)) error {
 	progress(fmt.Sprintf("no official kube-controller-manager binary for %s/%s; building from official source "+
 		"%s (this can take a minute)", runtime.GOOS, runtime.GOARCH, srcURL))
 
-	tmpDir, err := os.MkdirTemp("", "kshark-k8s-src-*")
+	tmpDir, err := os.MkdirTemp("", "kshrk-k8s-src-*")
 	if err != nil {
 		return fmt.Errorf("creating temp build directory: %w", err)
 	}
