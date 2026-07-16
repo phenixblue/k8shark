@@ -40,7 +40,12 @@ type ReplayClock struct {
 // NewReplayClock creates a clock over [from, to] advancing at speed (a factor:
 // 1 = real time, 2 = twice as fast, 0.5 = half). When loop is true the position
 // wraps back to from on reaching to; otherwise it stops at to. When paused the
-// clock does not advance until Resume is called.
+// clock does not advance until Resume is called, and starts positioned at to
+// (the most complete captured state) rather than from — a capture's opening
+// moments are typically sparse (informers are still completing their initial
+// LIST), so a client reading through a clock parked at the window start would
+// otherwise see a near-empty cluster until someone presses Play. An unpaused
+// clock still starts at from and plays forward through the window as before.
 func NewReplayClock(from, to time.Time, speed float64, loop, paused bool) *ReplayClock {
 	if !to.After(from) {
 		to = from // degenerate window; Sample reports ended immediately
@@ -56,6 +61,9 @@ func NewReplayClock(from, to time.Time, speed float64, loop, paused bool) *Repla
 		paused:        paused,
 		captureAnchor: from,
 		now:           time.Now,
+	}
+	if paused {
+		c.captureAnchor = to
 	}
 	c.wallAnchor = c.now()
 	return c

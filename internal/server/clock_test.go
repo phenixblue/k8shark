@@ -94,6 +94,29 @@ func TestReplayClock_PauseResume(t *testing.T) {
 	}
 }
 
+func TestReplayClock_StartsPausedAtWindowEnd(t *testing.T) {
+	from := time.Unix(2_000_000, 0).UTC()
+	to := from.Add(60 * time.Second)
+	c, _ := newTestClock(t, from, to, 1, false, true)
+
+	if got := c.Now(); !got.Equal(to) {
+		t.Errorf("paused start pos = %s, want window end %s", got, to)
+	}
+	if !c.Paused() {
+		t.Error("expected clock to start paused")
+	}
+}
+
+func TestReplayClock_UnpausedStillStartsAtWindowStart(t *testing.T) {
+	from := time.Unix(2_000_000, 0).UTC()
+	to := from.Add(60 * time.Second)
+	c, _ := newTestClock(t, from, to, 1, false, false)
+
+	if got := c.Now(); !got.Equal(from) {
+		t.Errorf("unpaused start pos = %s, want window start %s", got, from)
+	}
+}
+
 func TestReplayClock_Seek(t *testing.T) {
 	from := time.Unix(2_000_000, 0).UTC()
 	to := from.Add(60 * time.Second)
