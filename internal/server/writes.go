@@ -841,9 +841,33 @@ func defaultObject(gvk schema.GroupVersionKind, body json.RawMessage) json.RawMe
 	if err := json.Unmarshal(body, typed); err != nil {
 		return body
 	}
+	// Marshal the client's own object back out before defaulting (rather than
+	// reusing body directly) so the merge patch computed below only reflects
+	// fields defaulting actually changed, not differences between body's
+	// exact bytes/field order and typed's. Round-tripping through the typed
+	// struct at all would normally risk silently dropping fields the
+	// vendored k8s.io/api types don't know about (e.g. a newer API field) or
+	// explicitly-sent zero values omitempty would elide — but since this
+	// undefaulted marshal is only ever diffed against the defaulted one, not
+	// returned, neither loss ends up in the result: a field defaulting
+	// doesn't touch is absent from the diff either way, and the merge patch
+	// below is applied onto the original body, preserving every field body
+	// actually had.
+	before, err := json.Marshal(typed)
+	if err != nil {
+		return body
+	}
 	scheme.Scheme.Default(typed)
 	applyKnownDefaults(typed)
-	defaulted, err := json.Marshal(typed)
+	after, err := json.Marshal(typed)
+	if err != nil {
+		return body
+	}
+	patch, err := jsonpatch.CreateMergePatch(before, after)
+	if err != nil {
+		return body
+	}
+	defaulted, err := jsonpatch.MergePatch(body, patch)
 	if err != nil {
 		return body
 	}

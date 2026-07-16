@@ -554,6 +554,41 @@ func TestOverlay_APIDefaulting(t *testing.T) {
 			t.Errorf("name = %q, want w1 (custom resource create should be unaffected)", metaString(out, "name"))
 		}
 	})
+
+	t.Run("defaulting preserves fields unknown to the vendored types", func(t *testing.T) {
+		// defaultObject round-trips through a typed struct to compute what
+		// defaulting changed, but must apply that as a merge patch onto the
+		// original body rather than returning the re-marshaled typed struct
+		// directly — otherwise a field the vendored k8s.io/api types don't
+		// know about (e.g. a newer API field a live cluster's capture might
+		// have, or here a made-up one standing in for that case) would be
+		// silently dropped even though the client explicitly sent it.
+		body := `{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"nginx-unknown","namespace":"default"},
+			"spec":{"replicas":1,"selector":{"matchLabels":{"app":"nginx"}},
+			"template":{"metadata":{"labels":{"app":"nginx"}},"spec":{"containers":[{"name":"nginx","image":"nginx"}]}},
+			"unknownFutureField":"should-survive"}}`
+		code, out := doReq(t, http.MethodPost, srv.URL+"/apis/apps/v1/namespaces/default/deployments", "application/json", body)
+		if code != http.StatusCreated {
+			t.Fatalf("create: status %d: %s", code, out)
+		}
+		var d struct {
+			Spec struct {
+				Strategy struct {
+					Type string `json:"type"`
+				} `json:"strategy"`
+				UnknownFutureField string `json:"unknownFutureField"`
+			} `json:"spec"`
+		}
+		if err := json.Unmarshal(out, &d); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if d.Spec.UnknownFutureField != "should-survive" {
+			t.Errorf("unknownFutureField = %q, want it preserved through defaulting", d.Spec.UnknownFutureField)
+		}
+		if d.Spec.Strategy.Type != "RollingUpdate" {
+			t.Errorf("strategy.type = %q, want defaulting to still apply alongside the unknown field", d.Spec.Strategy.Type)
+		}
+	})
 }
 
 // TestOverlay_PatchAppliesDefaulting verifies that PATCHing a captured object
