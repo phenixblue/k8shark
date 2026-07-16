@@ -88,16 +88,22 @@ const (
 )
 
 type Engine struct {
-	cfg            *config.Config
-	verbose        bool
-	httpClient     *http.Client
-	dynClient      dynamic.Interface // client-go dynamic client used for watch streams
-	baseURL        string
-	mu             sync.Mutex
-	index          Index
-	watchIndex     WatchIndex
-	sink           archive.RecordSink // set by Run(); exposed for tests
-	discoveryCache map[string][]byte  // bodies saved by fetchDiscovery for autoDiscoverResources
+	cfg        *config.Config
+	verbose    bool
+	httpClient *http.Client
+	dynClient  dynamic.Interface // client-go dynamic client used for watch streams
+	baseURL    string
+	mu         sync.Mutex
+	index      Index
+	watchIndex WatchIndex
+	sink       archive.RecordSink // set by Run(); exposed for tests
+	// pollPasses, when non-zero, makes pollResource fetch exactly this many
+	// times back-to-back instead of waiting on a real time.Ticker gated by
+	// res.Interval/e.cfg.Duration. Set by benchmarks so Run() finishes in the
+	// time actual fetches take rather than blocking for the wall-clock capture
+	// window, keeping the number of samples per run deterministic.
+	pollPasses     int
+	discoveryCache map[string][]byte // bodies saved by fetchDiscovery for autoDiscoverResources
 	lastHash       map[string][32]byte
 	dedupSkipped   int
 	warnedFallback map[string]bool // dedup set for allNotFound cluster-scoped fallback warnings
@@ -400,6 +406,13 @@ func kubeconfigLabel(cfg *config.Config) string {
 
 // pollResource polls a single resource kind at its configured interval until ctx is done.
 func (e *Engine) pollResource(ctx context.Context, res config.Resource) {
+	if e.pollPasses > 0 {
+		for i := 0; i < e.pollPasses && ctx.Err() == nil; i++ {
+			e.fetchResource(ctx, res)
+		}
+		return
+	}
+
 	ticker := time.NewTicker(res.Interval)
 	defer ticker.Stop()
 
