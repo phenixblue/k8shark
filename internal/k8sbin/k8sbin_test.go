@@ -214,6 +214,64 @@ func TestDownloadAndVerifyToFile(t *testing.T) {
 	})
 }
 
+// TestDlClient_RejectsCrossHostRedirect verifies dlClient's CheckRedirect:
+// a redirect to a different host is refused (defense in depth against a
+// compromised or malicious intermediate redirecting an otherwise-trusted
+// dl.k8s.io fetch to an attacker-controlled host), while a same-host
+// redirect — which dl.k8s.io doesn't currently use for anything this
+// package fetches, but might in the future — still works.
+func TestDlClient_RejectsCrossHostRedirect(t *testing.T) {
+	content := []byte("payload")
+
+	otherHost := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(content)
+	}))
+	defer otherHost.Close()
+
+	var originHost *httptest.Server
+	originHost = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/cross-host-redirect":
+			http.Redirect(w, r, otherHost.URL+"/target", http.StatusFound)
+		case "/same-host-redirect":
+			http.Redirect(w, r, originHost.URL+"/target", http.StatusFound)
+		case "/target":
+			_, _ = w.Write(content)
+		}
+	}))
+	defer originHost.Close()
+
+	t.Run("cross-host redirect refused", func(t *testing.T) {
+		req, err := http.NewRequest(http.MethodGet, originHost.URL+"/cross-host-redirect", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := dlClient.Do(req)
+		if err == nil {
+			resp.Body.Close()
+			t.Fatalf("expected cross-host redirect to be refused, got a response")
+		}
+		if !strings.Contains(err.Error(), "different host") {
+			t.Errorf("error = %v, want it to mention the refused cross-host redirect", err)
+		}
+	})
+
+	t.Run("same-host redirect allowed", func(t *testing.T) {
+		req, err := http.NewRequest(http.MethodGet, originHost.URL+"/same-host-redirect", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := dlClient.Do(req)
+		if err != nil {
+			t.Fatalf("same-host redirect: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("status = %d, want 200", resp.StatusCode)
+		}
+	})
+}
+
 // buildTarGz packs the given name->content map into a gzip-compressed tar
 // archive and returns its bytes.
 func buildTarGz(t *testing.T, files map[string]string) []byte {

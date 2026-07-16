@@ -38,6 +38,23 @@ const (
 	downloadTimeout = 10 * time.Minute
 )
 
+// dlClient is the HTTP client used for every dl.k8s.io fetch (binary,
+// source tarball, and their .sha256 companions). Its CheckRedirect rejects a
+// redirect to a different host than the one originally requested: every
+// artifact this package fetches is served directly by dl.k8s.io with no
+// redirect involved (verified empirically), so this is pure defense in
+// depth against a compromised or malicious intermediate redirecting an
+// otherwise-trusted download to an attacker-controlled host — the checksum
+// fetch and the artifact fetch would otherwise both silently follow it.
+var dlClient = &http.Client{
+	CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		if req.URL.Host != via[0].URL.Host {
+			return fmt.Errorf("refusing to follow redirect from %s to a different host %s", via[0].URL.Host, req.URL.Host)
+		}
+		return nil
+	},
+}
+
 // versionRE matches a dl.k8s.io release version, e.g. "v1.36.1" or
 // "v1.30.0-rc.1". Validated strictly before use in any URL or filesystem
 // path: the version string originates from capture metadata (a field a
@@ -227,12 +244,26 @@ func buildFromSource(version, destPath string, progress func(string)) error {
 	return atomicInstall(tmpBinPath, destPath)
 }
 
+// atomicInstall marks tmpPath executable and renames it into destPath. Go's
+// os.Rename already replaces an existing destPath on every platform this
+// package supports (Windows included: internal/syscall/windows.Rename passes
+// MOVEFILE_REPLACE_EXISTING), so the common case is a single atomic,
+// same-filesystem rename. The remove-then-retry fallback below only matters
+// for edge cases plain rename can't handle regardless of platform (e.g.
+// destPath somehow left behind as a directory from a prior version of this
+// code, or an unwritable/locked leftover) — it isn't a full substitute for
+// atomicity, just a best-effort recovery path.
 func atomicInstall(tmpPath, destPath string) error {
 	if err := os.Chmod(tmpPath, 0o755); err != nil {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("marking binary executable: %w", err)
 	}
 	if err := os.Rename(tmpPath, destPath); err != nil {
+		if rmErr := os.RemoveAll(destPath); rmErr == nil {
+			if err := os.Rename(tmpPath, destPath); err == nil {
+				return nil
+			}
+		}
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("installing binary: %w", err)
 	}
@@ -257,7 +288,7 @@ func downloadAndVerifyToFile(url, destPath string) error {
 	if err != nil {
 		return err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := dlClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("GET %s: %w", url, err)
 	}
@@ -301,7 +332,7 @@ func fetchChecksum(ctx context.Context, url string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := dlClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("GET %s: %w", url, err)
 	}
@@ -386,6 +417,13 @@ func extractTarGz(tarGzPath, destDir string) error {
 				return err
 			}
 		case tar.TypeReg:
+			// hdr.Size is attacker-controlled (it comes straight from the
+			// archive); a malformed or hostile header could set it negative,
+			// which would underflow the running extracted total and defeat
+			// the maxExtractedBytes check below for every entry after it.
+			if hdr.Size < 0 {
+				return fmt.Errorf("tar entry %q has a negative size (%d); rejecting as malformed", cleanedName, hdr.Size)
+			}
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
 			}
