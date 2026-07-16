@@ -143,11 +143,14 @@ func TestNormalizeVersion(t *testing.T) {
 	}{
 		{"v1.36.1", "v1.36.1", false},
 		{"v1.30.0-rc.1", "v1.30.0-rc.1", false},
-		{"v1.28.5+vmware.1", "v1.28.5", false}, // build metadata stripped
+		{"v1.28.5+vmware.1", "v1.28.5", false},          // build metadata stripped
+		{"v1.29.0-eks-a5c69e0", "v1.29.0", false},       // managed-distro suffix: fall back to upstream base
+		{"v1.29.0-gke.1500", "v1.29.0-gke.1500", false}, // single dash-delimited suffix already matches versionRE in full
 		{"unknown", "", true},
-		{"1.36.1", "", true},    // missing leading "v"
-		{"v1.36", "", true},     // not a full semver
-		{"../../etc", "", true}, // path traversal attempt
+		{"1.36.1", "", true},        // missing leading "v"
+		{"v1.36", "", true},         // not a full semver
+		{"v1.36-eks-abc", "", true}, // base itself isn't a full semver even after truncation
+		{"../../etc", "", true},     // path traversal attempt
 		{"v1.2.3; rm -rf", "", true},
 	}
 	for _, tc := range cases {

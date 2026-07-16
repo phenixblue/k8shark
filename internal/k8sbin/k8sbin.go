@@ -68,6 +68,10 @@ var dlClient = &http.Client{CheckRedirect: dlCheckRedirect}
 // crafted archive could set arbitrarily), so it must not be trusted as-is.
 var versionRE = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$`)
 
+// baseVersionRE matches just the upstream "vX.Y.Z" portion of a version,
+// with no suffix at all. Used by normalizeVersion's managed-distro fallback.
+var baseVersionRE = regexp.MustCompile(`^v[0-9]+\.[0-9]+\.[0-9]+$`)
+
 // EnsureControllerManager returns the path to a cached, executable
 // kube-controller-manager binary matching gitVersion (as reported by a
 // cluster's /version endpoint, e.g. "v1.36.1"). progress, if non-nil, is
@@ -126,16 +130,30 @@ func hasPrebuiltBinary(goos, goarch string) bool {
 // normalizeVersion strips any "+build" metadata and validates the result
 // against versionRE, rejecting anything that isn't a plausible dl.k8s.io
 // release version before it's used to build a URL or filesystem path.
+//
+// A managed-distro gitVersion (e.g. GKE/EKS's "v1.29.0-eks-a5c69e0") won't
+// match versionRE, since its suffix has its own internal "-"-separated
+// structure that versionRE's single dash-delimited segment doesn't allow —
+// but dl.k8s.io only ever publishes the plain upstream "vX.Y.Z" release
+// anyway, so when the full string doesn't match, fall back to truncating at
+// the first remaining "-" and using that base version if it's valid on its
+// own. An explicit upstream prerelease like "v1.30.0-rc.1" already matches
+// versionRE in full and is returned as-is, never reaching this fallback.
 func normalizeVersion(raw string) (string, error) {
 	v := raw
 	if i := strings.IndexByte(v, '+'); i >= 0 {
 		v = v[:i]
 	}
-	if !versionRE.MatchString(v) {
-		return "", fmt.Errorf("capture's Kubernetes version %q doesn't look like a dl.k8s.io release version "+
-			"(want vX.Y.Z); can't determine which kube-controller-manager to fetch", raw)
+	if versionRE.MatchString(v) {
+		return v, nil
 	}
-	return v, nil
+	if i := strings.IndexByte(v, '-'); i >= 0 {
+		if base := v[:i]; baseVersionRE.MatchString(base) {
+			return base, nil
+		}
+	}
+	return "", fmt.Errorf("capture's Kubernetes version %q doesn't look like a dl.k8s.io release version "+
+		"(want vX.Y.Z); can't determine which kube-controller-manager to fetch", raw)
 }
 
 func binDir(version string) (string, error) {
