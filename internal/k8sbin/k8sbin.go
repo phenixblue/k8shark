@@ -38,22 +38,29 @@ const (
 	downloadTimeout = 10 * time.Minute
 )
 
-// dlClient is the HTTP client used for every dl.k8s.io fetch (binary,
-// source tarball, and their .sha256 companions). Its CheckRedirect rejects a
-// redirect to a different host than the one originally requested: every
-// artifact this package fetches is served directly by dl.k8s.io with no
+// dlCheckRedirect rejects a redirect to a different host, or off HTTPS
+// entirely, than the request that started the chain: every artifact this
+// package fetches is served directly by dl.k8s.io over HTTPS with no
 // redirect involved (verified empirically), so this is pure defense in
 // depth against a compromised or malicious intermediate redirecting an
-// otherwise-trusted download to an attacker-controlled host — the checksum
-// fetch and the artifact fetch would otherwise both silently follow it.
-var dlClient = &http.Client{
-	CheckRedirect: func(req *http.Request, via []*http.Request) error {
-		if req.URL.Host != via[0].URL.Host {
-			return fmt.Errorf("refusing to follow redirect from %s to a different host %s", via[0].URL.Host, req.URL.Host)
-		}
-		return nil
-	},
+// otherwise-trusted download to an attacker-controlled host, or downgrading
+// it to plaintext — same-host doesn't imply same-scheme, so both are
+// checked. Exposed as its own function (rather than inlined in dlClient) so
+// tests can pair it with a test server's own trusted Transport instead of
+// dlClient's real one, which only trusts the public CA pool.
+func dlCheckRedirect(req *http.Request, via []*http.Request) error {
+	if req.URL.Scheme != "https" {
+		return fmt.Errorf("refusing to follow a non-HTTPS redirect to %s", req.URL)
+	}
+	if req.URL.Host != via[0].URL.Host {
+		return fmt.Errorf("refusing to follow redirect from %s to a different host %s", via[0].URL.Host, req.URL.Host)
+	}
+	return nil
 }
+
+// dlClient is the HTTP client used for every dl.k8s.io fetch (binary,
+// source tarball, and their .sha256 companions).
+var dlClient = &http.Client{CheckRedirect: dlCheckRedirect}
 
 // versionRE matches a dl.k8s.io release version, e.g. "v1.36.1" or
 // "v1.30.0-rc.1". Validated strictly before use in any URL or filesystem

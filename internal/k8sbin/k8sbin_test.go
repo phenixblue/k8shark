@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -236,38 +237,48 @@ func TestDownloadAndVerifyToFile(t *testing.T) {
 }
 
 // TestDlClient_RejectsCrossHostRedirect verifies dlClient's CheckRedirect:
-// a redirect to a different host is refused (defense in depth against a
-// compromised or malicious intermediate redirecting an otherwise-trusted
-// dl.k8s.io fetch to an attacker-controlled host), while a same-host
-// redirect — which dl.k8s.io doesn't currently use for anything this
-// package fetches, but might in the future — still works.
+// a redirect to a different host, or off HTTPS, is refused (defense in depth
+// against a compromised or malicious intermediate redirecting an otherwise-
+// trusted dl.k8s.io fetch to an attacker-controlled host or downgrading it
+// to plaintext), while a same-host HTTPS redirect — which dl.k8s.io doesn't
+// currently use for anything this package fetches, but might in the future
+// — still works. Uses real TLS test servers (not plain HTTP ones) so the
+// HTTPS-only check is genuinely exercised rather than trivially satisfied.
 func TestDlClient_RejectsCrossHostRedirect(t *testing.T) {
 	content := []byte("payload")
 
-	otherHost := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	otherHost := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(content)
 	}))
 	defer otherHost.Close()
 
 	var originHost *httptest.Server
-	originHost = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	originHost = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/cross-host-redirect":
 			http.Redirect(w, r, otherHost.URL+"/target", http.StatusFound)
 		case "/same-host-redirect":
 			http.Redirect(w, r, originHost.URL+"/target", http.StatusFound)
+		case "/downgrade-redirect":
+			plain := "http://" + r.Host + "/target"
+			http.Redirect(w, r, plain, http.StatusFound)
 		case "/target":
 			_, _ = w.Write(content)
 		}
 	}))
 	defer originHost.Close()
 
+	// A client using the real dlCheckRedirect policy, but trusting these test
+	// servers' self-signed certs (via their own Client()'s Transport) instead
+	// of dlClient's real one, which only trusts the public CA pool.
+	testClient := &http.Client{CheckRedirect: dlCheckRedirect, Transport: originHost.Client().Transport}
+
 	t.Run("cross-host redirect refused", func(t *testing.T) {
 		req, err := http.NewRequest(http.MethodGet, originHost.URL+"/cross-host-redirect", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		resp, err := dlClient.Do(req)
+		resp, err := testClient.Do(req)
 		if err == nil {
 			resp.Body.Close()
 			t.Fatalf("expected cross-host redirect to be refused, got a response")
@@ -277,12 +288,27 @@ func TestDlClient_RejectsCrossHostRedirect(t *testing.T) {
 		}
 	})
 
-	t.Run("same-host redirect allowed", func(t *testing.T) {
+	t.Run("HTTPS-to-HTTP downgrade redirect refused", func(t *testing.T) {
+		req, err := http.NewRequest(http.MethodGet, originHost.URL+"/downgrade-redirect", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := testClient.Do(req)
+		if err == nil {
+			resp.Body.Close()
+			t.Fatalf("expected an HTTPS-to-HTTP downgrade redirect to be refused, got a response")
+		}
+		if !strings.Contains(err.Error(), "non-HTTPS") {
+			t.Errorf("error = %v, want it to mention the refused scheme downgrade", err)
+		}
+	})
+
+	t.Run("same-host HTTPS redirect allowed", func(t *testing.T) {
 		req, err := http.NewRequest(http.MethodGet, originHost.URL+"/same-host-redirect", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		resp, err := dlClient.Do(req)
+		resp, err := testClient.Do(req)
 		if err != nil {
 			t.Fatalf("same-host redirect: %v", err)
 		}
@@ -345,35 +371,9 @@ func TestExtractTarGz(t *testing.T) {
 		}
 	})
 
-	t.Run("rejects path traversal entries", func(t *testing.T) {
-		var buf bytes.Buffer
-		gz := gzip.NewWriter(&buf)
-		tw := tar.NewWriter(gz)
-		evil := "../../../tmp/kshark-extract-escape-test"
-		content := "escaped!"
-		if err := tw.WriteHeader(&tar.Header{Name: evil, Mode: 0o644, Size: int64(len(content))}); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tw.Write([]byte(content)); err != nil {
-			t.Fatal(err)
-		}
-		tw.Close()
-		gz.Close()
-
-		tmp := t.TempDir()
-		tarPath := filepath.Join(tmp, "evil.tar.gz")
-		if err := os.WriteFile(tarPath, buf.Bytes(), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		destDir := filepath.Join(tmp, "out")
-		if err := extractTarGz(tarPath, destDir); err != nil {
-			t.Fatalf("extractTarGz: %v", err)
-		}
-		if _, err := os.Stat("/tmp/kshark-extract-escape-test"); !os.IsNotExist(err) {
-			t.Fatalf("path traversal entry escaped destDir")
-			_ = os.Remove("/tmp/kshark-extract-escape-test")
-		}
-	})
+	// Path traversal is covered thoroughly by TestExtractTarGz_PathTraversalRejected
+	// (portable: walks the whole temp tree for containment rather than
+	// assuming a Unix /tmp).
 
 	t.Run("skips symlink entries", func(t *testing.T) {
 		var buf bytes.Buffer
@@ -408,8 +408,13 @@ func TestIsExecutableFile(t *testing.T) {
 	if err := os.WriteFile(notExec, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if isExecutableFile(notExec) {
-		t.Errorf("0o644 file reported executable")
+	// isExecutableFile intentionally treats any non-empty regular file as
+	// "executable" on Windows (the execute-bit isn't a meaningful concept
+	// there — see its doc comment); the mode-bit check below only applies on
+	// other platforms.
+	wantNotExec := runtime.GOOS == "windows"
+	if got := isExecutableFile(notExec); got != wantNotExec {
+		t.Errorf("isExecutableFile(non-empty 0o644 file) = %v, want %v", got, wantNotExec)
 	}
 
 	exec := filepath.Join(tmp, "exec")
@@ -417,7 +422,7 @@ func TestIsExecutableFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !isExecutableFile(exec) {
-		t.Errorf("0o755 file not reported executable")
+		t.Errorf("0o755 non-empty file not reported executable")
 	}
 
 	if isExecutableFile(filepath.Join(tmp, "missing")) {
