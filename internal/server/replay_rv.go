@@ -176,12 +176,12 @@ func rvAsOf(timeline []replayEvent, at time.Time) int64 {
 // preserving all other fields. On any parse error it returns obj unchanged.
 func withResourceVersion(obj json.RawMessage, rv int64) json.RawMessage {
 	var m map[string]json.RawMessage
-	if err := json.Unmarshal(obj, &m); err != nil {
+	if err := json.Unmarshal(obj, &m); err != nil || m == nil {
 		return obj
 	}
 	meta := map[string]json.RawMessage{}
 	if raw, ok := m["metadata"]; ok {
-		if err := json.Unmarshal(raw, &meta); err != nil {
+		if err := json.Unmarshal(raw, &meta); err != nil || meta == nil {
 			meta = map[string]json.RawMessage{}
 		}
 	}
@@ -210,7 +210,7 @@ func rewriteListResourceVersion(body []byte, rvFn func() int64) []byte {
 	rv := rvFn()
 	meta := map[string]json.RawMessage{}
 	if raw, ok := m["metadata"]; ok {
-		if err := json.Unmarshal(raw, &meta); err != nil {
+		if err := json.Unmarshal(raw, &meta); err != nil || meta == nil {
 			meta = map[string]json.RawMessage{}
 		}
 	}
