@@ -83,9 +83,13 @@ func benchConfig(output string) *config.Config {
 // tar.gz archive.
 func BenchmarkEngine_CaptureToArchive(b *testing.B) {
 	client, baseURL := fakeCaptureClient()
+	// archive.NewStreamWriter opens the output path with os.Create (O_TRUNC),
+	// so reusing one path across iterations is safe and avoids b.TempDir()'s
+	// per-call mkdir overhead from skewing the measurement.
+	output := filepath.Join(b.TempDir(), "capture.kshrk")
 
 	for i := 0; i < b.N; i++ {
-		cfg := benchConfig(filepath.Join(b.TempDir(), "capture.kshrk"))
+		cfg := benchConfig(output)
 		eng := newEngineWith(cfg, client, baseURL, false)
 		eng.pollPasses = benchPollPasses
 		if _, err := eng.Run(); err != nil {
