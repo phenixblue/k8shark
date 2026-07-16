@@ -443,11 +443,16 @@ func extractTarGz(tarGzPath, destDir string) error {
 
 		// hdr.Name comes from the archive and must never be trusted directly: a
 		// hostile ".."-laden or absolute name could otherwise write outside
-		// destDir ("Zip Slip"). Reject a traversal attempt outright — not
-		// remap it into destDir — so entries never silently collide or land
-		// somewhere surprising. filepath.Rel re-verifies containment on the
-		// joined result as a second, independent check before target is ever
-		// used in a filesystem operation below.
+		// destDir ("Zip Slip"). filepath.Clean first normalizes harmless
+		// internal ".." segments that still resolve inside destDir (e.g.
+		// "foo/../bar" becomes "bar" — see TestExtractTarGz_PathTraversalRejected),
+		// but any name that still escapes destDir after cleaning (a leading
+		// "..", an absolute path) is rejected outright here — not remapped
+		// into destDir — so an escaping entry never silently lands somewhere
+		// surprising inside destDir instead of failing. filepath.Rel
+		// re-verifies containment on the joined result as a second,
+		// independent check before target is ever used in a filesystem
+		// operation below.
 		cleanedName := filepath.Clean(hdr.Name)
 		if cleanedName == ".." || strings.HasPrefix(cleanedName, ".."+string(filepath.Separator)) || filepath.IsAbs(cleanedName) {
 			continue
