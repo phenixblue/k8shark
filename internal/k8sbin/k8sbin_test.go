@@ -149,14 +149,14 @@ func TestDownloadAndVerifyToFile(t *testing.T) {
 	sumHex := hex.EncodeToString(sum[:])
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/good/bin", func(w http.ResponseWriter, r *http.Request) { w.Write(content) })
-	mux.HandleFunc("/good/bin.sha256", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(sumHex)) })
+	mux.HandleFunc("/good/bin", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(content) })
+	mux.HandleFunc("/good/bin.sha256", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(sumHex)) })
 	mux.HandleFunc("/good/bin.sha256-withname", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(sumHex + "  bin\n"))
+		_, _ = w.Write([]byte(sumHex + "  bin\n"))
 	})
-	mux.HandleFunc("/bad/bin", func(w http.ResponseWriter, r *http.Request) { w.Write(content) })
+	mux.HandleFunc("/bad/bin", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(content) })
 	mux.HandleFunc("/bad/bin.sha256", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("0000000000000000000000000000000000000000000000000000000000000000"))
+		_, _ = w.Write([]byte("0000000000000000000000000000000000000000000000000000000000000000"))
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
