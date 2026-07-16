@@ -212,6 +212,27 @@ func TestDownloadAndVerifyToFile(t *testing.T) {
 			t.Errorf("dest file should have been removed after checksum mismatch")
 		}
 	})
+
+	t.Run("checksum fetch failure leaves no stale temp file", func(t *testing.T) {
+		// A failure before downloadAndVerifyToFile ever opens dest (here: the
+		// checksum fetch 404s) doesn't reach downloadAndVerifyToFile's own
+		// cleanup path — downloadPrebuilt's caller-side os.Remove(tmpPath) on
+		// any error is what actually cleans this up. uniqueTempPath always
+		// creates its file up front, so replicate that exact composition.
+		dir := t.TempDir()
+		tmpPath, err := uniqueTempPath(dir)
+		if err != nil {
+			t.Fatalf("uniqueTempPath: %v", err)
+		}
+		derr := downloadAndVerifyToFile(srv.URL+"/missing/bin", tmpPath)
+		if derr == nil {
+			t.Fatalf("expected an error fetching a missing artifact's checksum")
+		}
+		_ = os.Remove(tmpPath) // mirrors downloadPrebuilt's cleanup-on-error
+		if _, statErr := os.Stat(tmpPath); !os.IsNotExist(statErr) {
+			t.Errorf("temp file should not remain after a checksum-fetch failure")
+		}
+	})
 }
 
 // TestDlClient_RejectsCrossHostRedirect verifies dlClient's CheckRedirect:

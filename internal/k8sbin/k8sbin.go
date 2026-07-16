@@ -190,6 +190,11 @@ func downloadPrebuilt(version, destPath string, progress func(string)) error {
 		return err
 	}
 	if err := downloadAndVerifyToFile(url, tmpPath); err != nil {
+		// uniqueTempPath's file may still be sitting there empty: a failure
+		// before downloadAndVerifyToFile ever opens destPath (e.g. the
+		// checksum fetch, or the artifact GET itself, failing) never reaches
+		// its own cleanup path. Remove is a no-op if that path already did.
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("downloading kube-controller-manager: %w", err)
 	}
 	return atomicInstall(tmpPath, destPath)
