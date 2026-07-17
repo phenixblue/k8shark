@@ -47,7 +47,8 @@ type overlayEntry struct {
 	namespace, name          string
 	obj                      json.RawMessage // last-known body (kept even when deleted, for the DELETED event)
 	deleted                  bool            // tombstone
-	rv                       int64
+	rv                       int64           // RV of the most recent write
+	createdRV                int64           // RV of the write that (re-)created this identity; see store
 }
 
 // overlayWatchEvent is a single live overlay change delivered to subscribers.
@@ -196,6 +197,29 @@ func (o *overlay) scopeRV(group, version, resource, namespace string) int64 {
 	return maxRV
 }
 
+// entriesSince returns every overlay entry in scope (group/version/resource,
+// and namespace — empty for cluster-wide, matching applyToList/scopeRV) whose
+// last write RV exceeds floorRV — live or tombstoned — plus the highest RV
+// among them (floorRV itself if none matched). Used to catch a resuming watch
+// (resourceVersion=X>0) up on overlay writes already committed between X and
+// when the watch actually connects; see streamReplayWatch's resume branch.
+func (o *overlay) entriesSince(group, version, resource, namespace string, floorRV int64) ([]*overlayEntry, int64) {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	var out []*overlayEntry
+	maxRV := floorRV
+	for _, e := range o.items {
+		if e.group == group && e.version == version && e.resource == resource &&
+			(namespace == "" || e.namespace == namespace) && e.rv > floorRV {
+			out = append(out, e)
+			if e.rv > maxRV {
+				maxRV = e.rv
+			}
+		}
+	}
+	return out, maxRV
+}
+
 // bumpRV advances the monotonic counter to at least floorRV+1 and returns it.
 // Callers hold o.mu.
 func (o *overlay) bumpRVLocked(floorRV int64) int64 {
@@ -224,12 +248,14 @@ func (o *overlay) store(group, version, resource, namespace, name string, obj js
 	defer o.mu.Unlock()
 	key := overlayKey(group, version, resource, namespace, name)
 	typ := "ADDED"
+	createdRV := rv
 	if prior, ok := o.items[key]; ok && !prior.deleted {
 		typ = "MODIFIED"
+		createdRV = prior.createdRV // preserve — this identity isn't new
 	}
 	o.items[key] = &overlayEntry{
 		group: group, version: version, resource: resource,
-		namespace: namespace, name: name, obj: obj, rv: rv,
+		namespace: namespace, name: name, obj: obj, rv: rv, createdRV: createdRV,
 	}
 	o.publishLocked(overlayWatchEvent{
 		typ: typ, rv: rv, obj: obj,
@@ -252,7 +278,7 @@ func (o *overlay) storeIfAbsent(group, version, resource, namespace, name string
 	}
 	o.items[key] = &overlayEntry{
 		group: group, version: version, resource: resource,
-		namespace: namespace, name: name, obj: obj, rv: rv,
+		namespace: namespace, name: name, obj: obj, rv: rv, createdRV: rv,
 	}
 	o.publishLocked(overlayWatchEvent{
 		typ: "ADDED", rv: rv, obj: obj,

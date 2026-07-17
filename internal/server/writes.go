@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"net"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -60,10 +62,18 @@ func (h *handler) handleWrite(w http.ResponseWriter, r *http.Request, path strin
 			h.writeStatus(w, http.StatusBadRequest, "PUT requires an object name")
 			return
 		}
+		if sub == "scale" {
+			h.overlayScaleWrite(w, r, group, version, resource, namespace, name)
+			return
+		}
 		h.overlayReplace(w, r, group, version, resource, namespace, name, sub)
 	case http.MethodPatch:
 		if name == "" {
 			h.writeStatus(w, http.StatusBadRequest, "PATCH requires an object name")
+			return
+		}
+		if sub == "scale" {
+			h.overlayScaleWrite(w, r, group, version, resource, namespace, name)
 			return
 		}
 		h.overlayPatch(w, r, group, version, resource, namespace, name, sub)
@@ -135,6 +145,17 @@ func (h *handler) overlayCreate(w http.ResponseWriter, r *http.Request, group, v
 		return
 	}
 
+	obj := h.storeNewObject(group, version, resource, namespace, name, body)
+	writeJSON(w, http.StatusCreated, json.RawMessage(stampTypeMeta(group, version, resource, obj)))
+}
+
+// storeNewObject stamps and stores a brand-new object identity in the overlay,
+// applying the same create-time side effects regardless of whether the create
+// arrived via POST (overlayCreate) or a first Server-Side Apply PATCH
+// (overlayApplyCreate): the Pod scheduling/pending shim, RV/uid/creationTimestamp
+// stamping, and namespace-default synthesis. Callers are responsible for any
+// pre-checks (identity match, AlreadyExists) — this always stores.
+func (h *handler) storeNewObject(group, version, resource, namespace, name string, body json.RawMessage) json.RawMessage {
 	if group == "" && resource == "pods" {
 		// The apiserver stamps a freshly created Pod with status.phase=Pending; the
 		// overlay has no registry doing that. Replicate it — both for fidelity and
@@ -166,7 +187,7 @@ func (h *handler) overlayCreate(w http.ResponseWriter, r *http.Request, group, v
 	if group == "" && resource == "namespaces" {
 		h.ensureNamespaceDefaults(name)
 	}
-	writeJSON(w, http.StatusCreated, json.RawMessage(obj))
+	return obj
 }
 
 // ensureNamespaceDefaults synthesizes the per-namespace objects a real cluster's
@@ -408,13 +429,13 @@ func (h *handler) overlayReplace(w http.ResponseWriter, r *http.Request, group, 
 	}
 	var next json.RawMessage
 	if sub == "status" {
-		next = replaceField(current, "status", body) // status subresource: only status changes
+		next = protectSpecOnly(body, current)
 	} else {
 		next = body
 	}
 	// Status updates don't bump generation (which tracks spec changes).
 	next = h.stampUpdate(next, current, group, version, resource, namespace, name, sub != "status")
-	writeJSON(w, http.StatusOK, json.RawMessage(next))
+	writeJSON(w, http.StatusOK, json.RawMessage(stampTypeMeta(group, version, resource, next)))
 }
 
 func (h *handler) overlayPatch(w http.ResponseWriter, r *http.Request, group, version, resource, namespace, name, sub string) {
@@ -439,6 +460,18 @@ func (h *handler) overlayPatch(w http.ResponseWriter, r *http.Request, group, ve
 	}
 	current := h.currentObject(group, version, resource, namespace, name)
 	if current == nil {
+		// Server-Side Apply (Content-Type: application/apply-patch+yaml) is
+		// create-or-update, matching the real apiserver: a first apply to an
+		// object that doesn't exist yet creates it, rather than 404ing. This is
+		// how `helm install --create-namespace`, `kubectl apply --server-side`,
+		// and CRD/webhook installers all provision brand-new objects — without
+		// this, every first-apply to a not-yet-existing object in the overlay
+		// fails with "object not found". The status subresource can't
+		// create its parent object, so it keeps the 404.
+		if sub == "" && patchMediaType(r.Header.Get("Content-Type")) == "application/apply-patch+yaml" {
+			h.overlayApplyCreate(w, group, version, resource, namespace, name, patch)
+			return
+		}
 		h.writeStatus(w, http.StatusNotFound, "object not found: "+name)
 		return
 	}
@@ -463,13 +496,40 @@ func (h *handler) overlayPatch(w http.ResponseWriter, r *http.Request, group, ve
 	if h.identityMismatch(w, next, name, namespace) {
 		return
 	}
-	// A status-subresource patch may only change status; keep the rest of the
-	// current object, and don't bump generation.
+	// A status-subresource patch protects .spec; don't bump generation (which
+	// tracks spec changes, and spec remains unchanged either way).
 	if sub == "status" {
-		next = replaceField(current, "status", next)
+		next = protectSpecOnly(next, current)
 	}
 	next = h.stampUpdate(next, current, group, version, resource, namespace, name, sub != "status")
-	writeJSON(w, http.StatusOK, json.RawMessage(next))
+	writeJSON(w, http.StatusOK, json.RawMessage(stampTypeMeta(group, version, resource, next)))
+}
+
+// overlayApplyCreate handles a Server-Side Apply PATCH targeting an object
+// identity that doesn't exist yet: the patch's YAML body is the entire desired
+// object (there's no `current` to merge onto), so it's decoded and stored
+// through the same create path as a POST (storeNewObject), rather than
+// jsonpatch-merged. Responds 201, matching a real apiserver's response to a
+// first apply that creates an object.
+func (h *handler) overlayApplyCreate(w http.ResponseWriter, group, version, resource, namespace, name string, patch []byte) {
+	j, err := yaml.YAMLToJSON(patch)
+	if err != nil {
+		h.writeStatus(w, http.StatusBadRequest, "decoding apply patch: "+err.Error())
+		return
+	}
+	if !isJSONObject(j) {
+		h.writeStatus(w, http.StatusUnprocessableEntity, "apply patch did not produce a JSON object")
+		return
+	}
+	body := json.RawMessage(j)
+	if gvk, known := kindForResource(schema.GroupVersion{Group: group, Version: version}, resource); known {
+		body = defaultObject(gvk, body)
+	}
+	if h.identityMismatch(w, body, name, namespace) {
+		return
+	}
+	obj := h.storeNewObject(group, version, resource, namespace, name, body)
+	writeJSON(w, http.StatusCreated, json.RawMessage(stampTypeMeta(group, version, resource, obj)))
 }
 
 // deleteOneObject tombstones a single object identity if it currently exists
@@ -718,6 +778,198 @@ func (h *handler) currentObject(group, version, resource, namespace, name string
 	return body
 }
 
+// objectForRead resolves a single object for a read (GET-style) request,
+// correctly whether or not the overlay is enabled. currentObject always calls
+// h.overlay.get, which panics on a nil *overlay — safe only on the write path,
+// which is reached exclusively when h.overlay != nil. This is the read-path
+// equivalent, used by serveScale (GET works in read-only replay too, unlike
+// scale writes).
+func (h *handler) objectForRead(group, version, resource, namespace, name string, at time.Time) (json.RawMessage, bool) {
+	if h.overlay != nil {
+		obj := h.currentObject(group, version, resource, namespace, name)
+		return obj, obj != nil
+	}
+	body, code := h.trySingleItemGet(listPathFor(group, version, resource, namespace)+"/"+name, at)
+	return body, code == 200
+}
+
+// scaleSubresourceResources are the built-in Kinds with a real /scale
+// subresource on a live apiserver (Deployment, ReplicaSet, StatefulSet,
+// ReplicationController) — anything else 404s, matching upstream.
+var scaleSubresourceResources = map[string]bool{
+	"deployments":            true,
+	"replicasets":            true,
+	"statefulsets":           true,
+	"replicationcontrollers": true,
+}
+
+// scaleObject synthesizes an autoscaling/v1 Scale representation of a
+// Deployment/ReplicaSet/StatefulSet/ReplicationController — the real
+// apiserver does the same conversion server-side for its generic scale
+// subresource (e.g. pkg/registry/apps/deployment/storage's scaleClient).
+func scaleObject(namespace, name string, obj json.RawMessage) (json.RawMessage, error) {
+	var o struct {
+		Metadata struct {
+			UID             string `json:"uid"`
+			ResourceVersion string `json:"resourceVersion"`
+		} `json:"metadata"`
+		Spec struct {
+			Replicas *int32                `json:"replicas"`
+			Selector *metav1.LabelSelector `json:"selector"`
+		} `json:"spec"`
+		Status struct {
+			Replicas int32 `json:"replicas"`
+		} `json:"status"`
+	}
+	if err := json.Unmarshal(obj, &o); err != nil {
+		return nil, err
+	}
+	var replicas int32
+	if o.Spec.Replicas != nil {
+		replicas = *o.Spec.Replicas
+	}
+	// HPA (and kubectl) reads status.selector to count matching Pods directly,
+	// rather than via the scaled resource's own selector field.
+	selectorStr := ""
+	if o.Spec.Selector != nil {
+		if sel, err := metav1.LabelSelectorAsSelector(o.Spec.Selector); err == nil {
+			selectorStr = sel.String()
+		}
+	}
+	return json.Marshal(map[string]any{
+		"apiVersion": "autoscaling/v1",
+		"kind":       "Scale",
+		"metadata": map[string]any{
+			"name":            name,
+			"namespace":       namespace,
+			"uid":             o.Metadata.UID,
+			"resourceVersion": o.Metadata.ResourceVersion,
+		},
+		"spec":   map[string]any{"replicas": replicas},
+		"status": map[string]any{"replicas": o.Status.Replicas, "selector": selectorStr},
+	})
+}
+
+// scaleReplicas extracts .spec.replicas from a Scale-shaped body (the PUT
+// body, or a patch already applied onto a synthesized current Scale).
+func scaleReplicas(body []byte) (int32, error) {
+	var s struct {
+		Spec struct {
+			Replicas int32 `json:"replicas"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal(body, &s); err != nil {
+		return 0, err
+	}
+	return s.Spec.Replicas, nil
+}
+
+// setSpecReplicas returns body with spec.replicas set, preserving the rest of
+// the object. On a decode/encode error the body is returned unchanged.
+func setSpecReplicas(body json.RawMessage, replicas int32) json.RawMessage {
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil || m == nil {
+		return body
+	}
+	spec, ok := m["spec"].(map[string]any)
+	if !ok || spec == nil {
+		spec = map[string]any{}
+		m["spec"] = spec
+	}
+	spec["replicas"] = replicas
+	out, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// overlayScaleWrite handles PUT/PATCH .../scale: only .spec.replicas on the
+// underlying object is settable this way (matching the real apiserver's scale
+// subresource — every other field, including the rest of .spec, is read-only
+// through this path), so unlike overlayReplace/overlayPatch there's no
+// defaultObject/identityMismatch handling here — those apply to the
+// underlying resource's own body shape, not a Scale request.
+func (h *handler) overlayScaleWrite(w http.ResponseWriter, r *http.Request, group, version, resource, namespace, name string) {
+	if !scaleSubresourceResources[resource] {
+		h.writeStatus(w, http.StatusNotFound, resource+" has no scale subresource")
+		return
+	}
+	current := h.currentObject(group, version, resource, namespace, name)
+	if current == nil {
+		h.writeStatus(w, http.StatusNotFound, "object not found: "+name)
+		return
+	}
+
+	var replicas int32
+	if r.Method == http.MethodPut {
+		body, ok := h.readObjectBody(w, r)
+		if !ok {
+			return
+		}
+		rep, err := scaleReplicas(body)
+		if err != nil {
+			h.writeStatus(w, http.StatusBadRequest, "decoding scale: "+err.Error())
+			return
+		}
+		replicas = rep
+	} else { // PATCH
+		if !supportedPatchType(r.Header.Get("Content-Type")) {
+			h.writeStatus(w, http.StatusUnsupportedMediaType,
+				"unsupported patch Content-Type "+strconv.Quote(r.Header.Get("Content-Type")))
+			return
+		}
+		patch, err := io.ReadAll(io.LimitReader(r.Body, maxWriteBytes))
+		if err != nil {
+			h.writeStatus(w, http.StatusBadRequest, "reading body: "+err.Error())
+			return
+		}
+		currentScale, err := scaleObject(namespace, name, current)
+		if err != nil {
+			h.writeStatus(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		// Scale has no listType/patchMergeKey fields to strategically merge, so
+		// treat a strategic-merge-patch request the same as a plain merge patch
+		// rather than resolving it against the underlying resource's own Kind
+		// (which has an entirely different shape than Scale).
+		patched, perr := jsonMergeOrPatch(currentScale, patch, r.Header.Get("Content-Type"))
+		if perr != nil {
+			h.writeStatus(w, http.StatusUnprocessableEntity, "applying patch: "+perr.Error())
+			return
+		}
+		rep, err := scaleReplicas(patched)
+		if err != nil {
+			h.writeStatus(w, http.StatusUnprocessableEntity, "patch did not produce a valid scale object")
+			return
+		}
+		replicas = rep
+	}
+
+	next := setSpecReplicas(current, replicas)
+	next = h.stampUpdate(next, current, group, version, resource, namespace, name, true) // scaling is a spec change
+	scale, err := scaleObject(namespace, name, next)
+	if err != nil {
+		h.writeStatus(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, json.RawMessage(scale))
+}
+
+// jsonMergeOrPatch applies patch to current per contentType, supporting JSON
+// Patch (RFC 6902) and treating anything else (merge-patch, strategic-merge,
+// unspecified) as a plain JSON merge patch.
+func jsonMergeOrPatch(current, patch []byte, contentType string) ([]byte, error) {
+	if patchMediaType(contentType) == "application/json-patch+json" {
+		p, err := jsonpatch.DecodePatch(patch)
+		if err != nil {
+			return nil, err
+		}
+		return p.Apply(current)
+	}
+	return jsonpatch.MergePatch(current, patch)
+}
+
 func (h *handler) nowRFC3339() string {
 	if h.clock != nil {
 		return h.clock.Now().UTC().Format(time.RFC3339)
@@ -749,11 +1001,12 @@ func supportedPatchType(contentType string) bool {
 	return false
 }
 
-// applyPatch applies a patch of the given (already-validated) content type to the
-// current object. Supports JSON merge patch, JSON patch (RFC 6902), and
-// strategic-merge patch (for built-in types, via their registered schema).
-// Server-side apply still falls back to a JSON merge patch for now (real SSA
-// field management lands in a later PR).
+// applyPatch applies a patch of the given (already-validated) content type onto
+// an existing current object (the create-on-first-apply case is handled
+// earlier, by overlayApplyCreate, before this is reached). Supports JSON merge
+// patch, JSON patch (RFC 6902), and strategic-merge patch (for built-in types,
+// via their registered schema). Server-side apply still falls back to a JSON
+// merge patch for now (real SSA field management lands in a later PR).
 func applyPatch(current, patch []byte, contentType, group, version, resource string) ([]byte, error) {
 	switch patchMediaType(contentType) {
 	case "application/json-patch+json":
@@ -812,6 +1065,31 @@ func kindForResource(gv schema.GroupVersion, resource string) (schema.GroupVersi
 		}
 	}
 	return schema.GroupVersionKind{}, false
+}
+
+// stampTypeMeta returns obj with apiVersion/kind stamped, for a resource that
+// maps to a known built-in Kind (a no-op via withKind if already present or
+// the Kind is unknown/custom). Reads already do this (see handler.go's
+// trySingleItemGet and watch_replay.go's withKind for streamed events); write
+// responses need it too — client-go's typed Update/UpdateStatus calls
+// round-trip an object fetched via Get/List, whose TypeMeta the apiserver
+// strips on read (a well-known client-go quirk), so the request body often
+// carries no kind/apiVersion at all. A real apiserver's response is always
+// fully typed regardless; without stamping it here, a typed client-go decoder
+// fails the response with `Object 'Kind' is missing` — exactly what broke the
+// deployment controller's DeploymentStatus update path, found via the
+// upstream conformance suite's "Deployment should run the lifecycle of a
+// Deployment" spec.
+func stampTypeMeta(group, version, resource string, obj json.RawMessage) json.RawMessage {
+	gvk, ok := kindForResource(schema.GroupVersion{Group: group, Version: version}, resource)
+	if !ok {
+		return obj
+	}
+	apiVersion := version
+	if group != "" {
+		apiVersion = group + "/" + version
+	}
+	return withKind(obj, apiVersion, gvk.Kind)
 }
 
 // defaultObject applies Kubernetes API defaulting to body — e.g. an empty
@@ -884,7 +1162,12 @@ func defaultObject(gvk schema.GroupVersionKind, body json.RawMessage) json.RawMe
 // (e.g. deployment_util.go's NewRSNewReplicas reads
 // Spec.Strategy.RollingUpdate.MaxSurge), so a Type of "RollingUpdate" with a
 // nil RollingUpdate struct panics deep inside the controller instead of
-// erroring cleanly.
+// erroring cleanly. The same function also dereferences
+// *deployment.Spec.Replicas unconditionally, so a manifest that omits
+// `replicas` (relying on the apiserver's default of 1, as e.g. Istio's charts
+// do) panics the same way — hence Deployment/StatefulSet/ReplicaSet.Replicas
+// are defaulted here too.
+
 // isIPv6Address reports whether s parses as an IPv6 address. Used to infer a
 // Service's address family from an explicit ClusterIP/ClusterIPs value
 // rather than always assuming IPv4; returns false for "" and "None" (a
@@ -892,6 +1175,32 @@ func defaultObject(gvk schema.GroupVersionKind, body json.RawMessage) json.RawMe
 func isIPv6Address(s string) bool {
 	ip := net.ParseIP(s)
 	return ip != nil && ip.To4() == nil
+}
+
+// syntheticLoadBalancerIP deterministically derives a fake external address
+// for a LoadBalancer Service from its identity, landing in TEST-NET-3
+// (203.0.113.0/24 — reserved by RFC 5737 for documentation/example use, so it
+// can never collide with anything real). Deterministic rather than a counter
+// so the same Service gets the same address across repeated writes instead of
+// a new one every time defaultObject runs.
+func syntheticLoadBalancerIP(namespace, name string) string {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(namespace + "/" + name))
+	return fmt.Sprintf("203.0.113.%d", 1+h.Sum32()%254)
+}
+
+// syntheticClusterIP deterministically derives a fake ClusterIP for a Service
+// from its identity, landing in 10.96.0.0/12 — the conventional kubeadm
+// service-cluster-ip-range, so it looks at home next to a typical capture's
+// real ClusterIPs. Deterministic (like syntheticLoadBalancerIP) rather than a
+// counter, so the same Service keeps the same address across repeated writes.
+func syntheticClusterIP(namespace, name string) string {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte("clusterip/" + namespace + "/" + name))
+	sum := h.Sum32()
+	// 10.96.0.0/12 spans 10.96.0.0-10.111.255.255: only the low 4 bits of the
+	// second octet vary (96 = 0110_0000 through 111 = 0110_1111).
+	return fmt.Sprintf("10.%d.%d.%d", 96+sum%16, (sum>>8)%256, 1+(sum>>16)%254)
 }
 
 func applyKnownDefaults(obj runtime.Object) {
@@ -902,6 +1211,23 @@ func applyKnownDefaults(obj runtime.Object) {
 		}
 		if o.Spec.SessionAffinity == "" {
 			o.Spec.SessionAffinity = corev1.ServiceAffinityNone
+		}
+		// The real apiserver's IP allocator assigns every Service a ClusterIP —
+		// even LoadBalancer/NodePort ones — as soon as it's created; the overlay
+		// has no IPAM, so nothing else ever populates this. kstatus's readiness
+		// check for a LoadBalancer Service (which Helm v4's `--wait` uses via
+		// sigs.k8s.io/cli-utils) specifically requires spec.clusterIP to be
+		// non-empty — NOT status.loadBalancer.ingress — so a Service that never
+		// gets one hangs `helm install --wait` forever regardless of the
+		// synthesized external address below. A headless Service
+		// (clusterIP: "None", set explicitly by the client) and ExternalName
+		// Services are left alone — they don't get one on a real cluster either.
+		if o.Spec.Type != corev1.ServiceTypeExternalName && o.Spec.ClusterIP == "" {
+			ip := syntheticClusterIP(o.Namespace, o.Name)
+			o.Spec.ClusterIP = ip
+			if len(o.Spec.ClusterIPs) == 0 {
+				o.Spec.ClusterIPs = []string{ip}
+			}
 		}
 		if len(o.Spec.IPFamilies) == 0 {
 			// The endpoint/endpointslice controllers index IPFamilies[0]
@@ -928,7 +1254,24 @@ func applyKnownDefaults(obj runtime.Object) {
 			}
 			o.Spec.IPFamilies = []corev1.IPFamily{family}
 		}
+		// A real cloud-controller-manager (or an on-prem equivalent like MetalLB)
+		// eventually assigns a LoadBalancer Service an external address;
+		// --with-controller-manager's curated set deliberately excludes
+		// cloud-provider controllers (see cmd/controllermanager.go — no real cloud
+		// provider to ask), so nothing else in the overlay ever populates this
+		// field. Without it, `helm install --wait` and any other client polling
+		// for a LoadBalancer Service to become ready hangs forever. Synthesize an
+		// address deterministically from the Service's identity (rather than a
+		// counter) so repeated writes to the same Service don't reassign it.
+		if o.Spec.Type == corev1.ServiceTypeLoadBalancer && len(o.Status.LoadBalancer.Ingress) == 0 {
+			o.Status.LoadBalancer.Ingress = []corev1.LoadBalancerIngress{
+				{IP: syntheticLoadBalancerIP(o.Namespace, o.Name)},
+			}
+		}
 	case *appsv1.Deployment:
+		if o.Spec.Replicas == nil {
+			o.Spec.Replicas = ptr.To(int32(1))
+		}
 		if o.Spec.Strategy.Type == "" {
 			o.Spec.Strategy.Type = appsv1.RollingUpdateDeploymentStrategyType
 		}
@@ -939,6 +1282,10 @@ func applyKnownDefaults(obj runtime.Object) {
 				MaxUnavailable: &maxUnavailable,
 				MaxSurge:       &maxSurge,
 			}
+		}
+	case *appsv1.ReplicaSet:
+		if o.Spec.Replicas == nil {
+			o.Spec.Replicas = ptr.To(int32(1))
 		}
 	case *appsv1.DaemonSet:
 		if o.Spec.UpdateStrategy.Type == "" {
@@ -952,9 +1299,32 @@ func applyKnownDefaults(obj runtime.Object) {
 				MaxSurge:       &maxSurge,
 			}
 		}
+		// pkg/controller/daemon/update.go's cleanupHistory dereferences
+		// *ds.Spec.RevisionHistoryLimit unconditionally (`toKeep :=
+		// int(*ds.Spec.RevisionHistoryLimit)`) — unlike the deployment
+		// controller's equivalent cleanup, which nil-checks first
+		// (HasRevisionHistoryLimit). A nil value here crashes the whole
+		// daemonset controller goroutine (client-go's crash handler logs it,
+		// then repanics — this isn't a swallowed panic like the others in this
+		// function, it takes the controller-manager process down).
+		if o.Spec.RevisionHistoryLimit == nil {
+			o.Spec.RevisionHistoryLimit = ptr.To(int32(10))
+		}
 	case *appsv1.StatefulSet:
+		if o.Spec.Replicas == nil {
+			o.Spec.Replicas = ptr.To(int32(1))
+		}
 		if o.Spec.UpdateStrategy.Type == "" {
 			o.Spec.UpdateStrategy.Type = appsv1.RollingUpdateStatefulSetStrategyType
+		}
+		// pkg/controller/statefulset/stateful_set_control.go's truncateHistory
+		// dereferences *set.Spec.RevisionHistoryLimit unconditionally
+		// (`historyLimit := int(*set.Spec.RevisionHistoryLimit)`) — same
+		// unguarded-pointer class as DaemonSet's cleanupHistory above, and
+		// likewise fatal to the whole controller-manager process, not just
+		// that one StatefulSet's reconcile.
+		if o.Spec.RevisionHistoryLimit == nil {
+			o.Spec.RevisionHistoryLimit = ptr.To(int32(10))
 		}
 		if o.Spec.PodManagementPolicy == "" {
 			o.Spec.PodManagementPolicy = appsv1.OrderedReadyPodManagement
@@ -1008,7 +1378,7 @@ func allowedMethods(name, sub string) string {
 		return "GET, HEAD, POST, DELETE"
 	case sub == "":
 		return "GET, HEAD, PUT, PATCH, DELETE"
-	case sub == "status":
+	case sub == "status", sub == "scale":
 		return "GET, HEAD, PUT, PATCH"
 	default:
 		return "GET, HEAD"
@@ -1187,8 +1557,25 @@ func mergeMeta(obj json.RawMessage, updates map[string]any) json.RawMessage {
 	return out
 }
 
+// protectSpecOnly returns next with .spec forced back to current's .spec,
+// otherwise unchanged — the status subresource's real apiserver semantics
+// (see e.g. pkg/registry/apps/deployment/strategy.go's
+// deploymentStatusStrategy.PrepareForUpdate): only .spec is universally
+// protected against a status-subresource write, while .status and .metadata
+// (annotations, and often labels — this varies slightly per resource type
+// upstream, but protecting only .spec is the one rule that holds everywhere)
+// pass through from the submitted body. This matters in practice: the
+// deployment controller sets `deployment.kubernetes.io/revision` on the
+// Deployment itself via UpdateStatus (a full-object PUT to .../status), not a
+// spec/metadata write — an earlier version of this code protected all of
+// metadata too, which silently dropped that annotation and broke revision
+// tracking for every Deployment reconciled by --with-controller-manager.
+func protectSpecOnly(next, current json.RawMessage) json.RawMessage {
+	return replaceField(next, "spec", current)
+}
+
 // replaceField returns base with top-level field set to the same field taken
-// from src (used for the status subresource: only status changes).
+// from src.
 func replaceField(base json.RawMessage, field string, src json.RawMessage) json.RawMessage {
 	var b map[string]json.RawMessage
 	if err := json.Unmarshal(base, &b); err != nil || b == nil {

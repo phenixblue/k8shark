@@ -247,6 +247,19 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if !h.tryServeFromStore(w, path, replayAt) {
 			h.serveGroupResourceList(w, path)
 		}
+	case strings.HasPrefix(path, "/apis/") && isBareGroupPath(path):
+		// The bare, version-less APIGroup discovery document (distinct from
+		// /apis/<group>/<version>'s resource list) — client-go's discovery
+		// client fetches this to enumerate a group's available versions
+		// before making a versioned request. Not synthesized before, so a
+		// group whose only captured resource is a version nested deeper (or
+		// simply never walked at this exact literal path) 404'd here even
+		// though /apis/<group>/<version> worked fine — breaking any client
+		// that discovers a group this way first (found via the upstream
+		// conformance suite's Ingress/IngressClass API specs).
+		if !h.tryServeFromStore(w, path, replayAt) {
+			h.serveAPIGroup(w, strings.TrimPrefix(path, "/apis/"))
+		}
 	case strings.HasSuffix(path, "/log"):
 		// Pod log sub-resource: serve captured content or a helpful stub.
 		h.serveLog(w, r, path, replayAt)
@@ -272,6 +285,14 @@ func (h *handler) tryServeFromStore(w http.ResponseWriter, path string, at time.
 func isGroupVersionPath(path string) bool {
 	rest := strings.TrimPrefix(path, "/apis/")
 	return len(strings.Split(rest, "/")) == 2
+}
+
+// isBareGroupPath returns true when path is exactly /apis/<group> (no version) —
+// the APIGroup discovery document, distinct from /apis/<group>/<version>'s
+// resource list.
+func isBareGroupPath(path string) bool {
+	rest := strings.TrimPrefix(path, "/apis/")
+	return rest != "" && len(strings.Split(rest, "/")) == 1
 }
 
 func (h *handler) serveVersion(w http.ResponseWriter) {
@@ -344,6 +365,46 @@ func (h *handler) serveAPIGroupList(w http.ResponseWriter) {
 		"kind":       "APIGroupList",
 		"apiVersion": "v1",
 		"groups":     groups,
+	})
+}
+
+// serveAPIGroup serves the single-group APIGroup discovery document for
+// /apis/<group> — the same grouping serveAPIGroupList does for the full
+// cross-group list, scoped to one group. 404s (matching a real apiserver)
+// when the group has no captured resources at all, rather than serving an
+// APIGroup with an empty version list.
+func (h *handler) serveAPIGroup(w http.ResponseWriter, group string) {
+	type gv struct{ version, groupVersion string }
+	var gvs []gv
+	seen := map[string]bool{}
+	for _, ri := range h.store.Resources() {
+		if ri.Group != group {
+			continue
+		}
+		groupVersion := ri.Group + "/" + ri.Version
+		if seen[groupVersion] {
+			continue
+		}
+		seen[groupVersion] = true
+		gvs = append(gvs, gv{ri.Version, groupVersion})
+	}
+	if len(gvs) == 0 {
+		h.writeStatus(w, http.StatusNotFound, fmt.Sprintf("the server could not find the requested resource, group %q not found in capture", group))
+		return
+	}
+	versions := make([]map[string]string, 0, len(gvs))
+	for _, v := range gvs {
+		versions = append(versions, map[string]string{
+			"groupVersion": v.groupVersion,
+			"version":      v.version,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"kind":             "APIGroup",
+		"apiVersion":       "v1",
+		"name":             group,
+		"versions":         versions,
+		"preferredVersion": versions[0],
 	})
 }
 
@@ -432,11 +493,19 @@ func (h *handler) serveGroupResourceList(w http.ResponseWriter, path string) {
 }
 
 func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path string, at time.Time) {
+	g, v, res, ns, name, sub := parseWritePath(strings.TrimSuffix(path, "/"))
+	// GET .../scale works in both writable and read-only replay (unlike scale
+	// writes, which need the overlay) — it's just a read, synthesized from
+	// whatever the underlying object's current spec/status are.
+	if name != "" && sub == "scale" {
+		h.serveScale(w, g, v, res, ns, name, at)
+		return
+	}
+
 	// Writable replay: a single-object GET is served from the overlay when the
 	// overlay owns it (created/updated → the overlay copy; deleted → 404).
 	if h.overlay != nil {
 		h.syncEpoch()
-		g, v, res, ns, name, sub := parseWritePath(strings.TrimSuffix(path, "/"))
 		// A single-object GET in a namespace deleted in the overlay is gone
 		// (cascade), even for captured objects.
 		if name != "" && h.overlay.isNamespaceDeleted(ns) {
@@ -668,6 +737,30 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	_, _ = w.Write(body)
+}
+
+// serveScale handles GET .../scale: synthesizes an autoscaling/v1 Scale
+// representation of the underlying Deployment/ReplicaSet/StatefulSet/
+// ReplicationController — the only built-in Kinds with a real scale
+// subresource on a live apiserver. Works in read-only replay too (unlike
+// scale writes, which need --writable), by resolving the object via
+// objectForRead instead of currentObject.
+func (h *handler) serveScale(w http.ResponseWriter, group, version, resource, namespace, name string, at time.Time) {
+	if !scaleSubresourceResources[resource] {
+		h.writeStatus(w, http.StatusNotFound, resource+" has no scale subresource")
+		return
+	}
+	obj, ok := h.objectForRead(group, version, resource, namespace, name, at)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, notFoundStatus(group, resource, name))
+		return
+	}
+	scale, err := scaleObject(namespace, name, obj)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, statusObj(500, err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, json.RawMessage(scale))
 }
 
 // mergeOverlayList merges overlay objects into a list body for the list's scope.

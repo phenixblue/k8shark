@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -429,6 +430,43 @@ func (h *handler) streamReplayWatch(w http.ResponseWriter, r *http.Request, path
 			emit("ADDED", withResourceVersion(item, minRV))
 		}
 		emitBookmark(list, minRV, sendInitialEvents)
+	} else if h.overlay != nil {
+		// Catch up on overlay writes already committed between reqRV and now — the
+		// exact race client-go's List-then-Watch pattern relies on a real
+		// apiserver's watch cache to cover (List gets RV=X, an object is created,
+		// *then* the client watches from X expecting to see it). Our overlay's live
+		// pub-sub (the pump below) only reaches watchers already subscribed at
+		// write time; a subscription created after the write — which is exactly
+		// what happens here, since subscribe() (above) necessarily runs after any
+		// write that already completed before this request even arrived — would
+		// otherwise miss it forever, hanging any client that resumes a watch
+		// expecting to observe its own just-created object (#185's watch-ADDED
+		// timeouts, e.g. "Deployment should run the lifecycle of a Deployment").
+		entries, caughtUpRV := h.overlay.entriesSince(g, v, resource, watchNS, reqRV)
+		sort.Slice(entries, func(i, j int) bool { return entries[i].rv < entries[j].rv })
+		for _, e := range entries {
+			if !matchesSelectors(e.obj, labelSel, fieldSel) {
+				continue
+			}
+			switch {
+			case e.deleted:
+				emit("DELETED", withResourceVersion(e.obj, e.rv))
+			case e.createdRV > reqRV:
+				// This identity didn't exist as of the client's RV — its List
+				// (or an earlier resumed watch) never saw it.
+				emit("ADDED", withResourceVersion(e.obj, e.rv))
+			default:
+				// Already existed as of the client's RV; it's since changed.
+				emit("MODIFIED", withResourceVersion(e.obj, e.rv))
+			}
+		}
+		// Events up to caughtUpRV are now reflected in the client's stream; the
+		// live pump below only needs to deliver anything after that (mirroring how
+		// the !resume branch's overlaySkip = list.OverlaySkipRV keeps the fresh
+		// burst and the live pump from double-delivering the same write).
+		if caughtUpRV > overlaySkip {
+			overlaySkip = caughtUpRV
+		}
 	}
 
 	// Overlay pump: deliver live overlay writes (create/update/delete) as watch

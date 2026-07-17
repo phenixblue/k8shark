@@ -344,6 +344,85 @@ func TestOverlay_APIDefaulting(t *testing.T) {
 		}
 	})
 
+	t.Run("Deployment/StatefulSet/ReplicaSet replicas default to 1 when omitted", func(t *testing.T) {
+		// Some charts (e.g. Istio's istiod) omit `replicas` entirely, relying on
+		// the apiserver's default of 1 — a nil Spec.Replicas panics
+		// kube-controller-manager's NewRSNewReplicas (which dereferences it
+		// unconditionally), so the Deployment never gets a ReplicaSet.
+		cases := []struct {
+			name, path, body string
+		}{
+			{"deployment", "/apis/apps/v1/namespaces/default/deployments", `{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"no-replicas-d","namespace":"default"},
+				"spec":{"selector":{"matchLabels":{"app":"x"}},
+				"template":{"metadata":{"labels":{"app":"x"}},"spec":{"containers":[{"name":"x","image":"x"}]}}}}`},
+			{"statefulset", "/apis/apps/v1/namespaces/default/statefulsets", `{"apiVersion":"apps/v1","kind":"StatefulSet","metadata":{"name":"no-replicas-s","namespace":"default"},
+				"spec":{"serviceName":"x","selector":{"matchLabels":{"app":"x"}},
+				"template":{"metadata":{"labels":{"app":"x"}},"spec":{"containers":[{"name":"x","image":"x"}]}}}}`},
+			{"replicaset", "/apis/apps/v1/namespaces/default/replicasets", `{"apiVersion":"apps/v1","kind":"ReplicaSet","metadata":{"name":"no-replicas-r","namespace":"default"},
+				"spec":{"selector":{"matchLabels":{"app":"x"}},
+				"template":{"metadata":{"labels":{"app":"x"}},"spec":{"containers":[{"name":"x","image":"x"}]}}}}`},
+		}
+		for _, c := range cases {
+			t.Run(c.name, func(t *testing.T) {
+				code, out := doReq(t, http.MethodPost, srv.URL+c.path, "application/json", c.body)
+				if code != http.StatusCreated {
+					t.Fatalf("create: status %d: %s", code, out)
+				}
+				var d struct {
+					Spec struct {
+						Replicas *int32 `json:"replicas"`
+					} `json:"spec"`
+				}
+				if err := json.Unmarshal(out, &d); err != nil {
+					t.Fatalf("decode: %v", err)
+				}
+				if d.Spec.Replicas == nil || *d.Spec.Replicas != 1 {
+					t.Errorf("replicas = %v, want 1", d.Spec.Replicas)
+				}
+			})
+		}
+	})
+
+	t.Run("StatefulSet/DaemonSet revisionHistoryLimit defaults to 10 when omitted", func(t *testing.T) {
+		// Unlike Deployment's cleanup (which nil-checks via HasRevisionHistoryLimit
+		// before dereferencing), the StatefulSet and DaemonSet controllers'
+		// history-truncation code (truncateHistory / cleanupHistory) dereference
+		// *set.Spec.RevisionHistoryLimit unconditionally — a nil value crashes
+		// the whole controller-manager process (client-go's crash handler logs
+		// it, then repanics), not just that one object's reconcile. Found by
+		// actually running the upstream conformance suite against
+		// --with-controller-manager.
+		cases := []struct {
+			name, path, body string
+		}{
+			{"statefulset", "/apis/apps/v1/namespaces/default/statefulsets", `{"apiVersion":"apps/v1","kind":"StatefulSet","metadata":{"name":"no-rhl-s","namespace":"default"},
+				"spec":{"serviceName":"x","selector":{"matchLabels":{"app":"x"}},
+				"template":{"metadata":{"labels":{"app":"x"}},"spec":{"containers":[{"name":"x","image":"x"}]}}}}`},
+			{"daemonset", "/apis/apps/v1/namespaces/default/daemonsets", `{"apiVersion":"apps/v1","kind":"DaemonSet","metadata":{"name":"no-rhl-d","namespace":"default"},
+				"spec":{"selector":{"matchLabels":{"app":"x"}},
+				"template":{"metadata":{"labels":{"app":"x"}},"spec":{"containers":[{"name":"x","image":"x"}]}}}}`},
+		}
+		for _, c := range cases {
+			t.Run(c.name, func(t *testing.T) {
+				code, out := doReq(t, http.MethodPost, srv.URL+c.path, "application/json", c.body)
+				if code != http.StatusCreated {
+					t.Fatalf("create: status %d: %s", code, out)
+				}
+				var d struct {
+					Spec struct {
+						RevisionHistoryLimit *int32 `json:"revisionHistoryLimit"`
+					} `json:"spec"`
+				}
+				if err := json.Unmarshal(out, &d); err != nil {
+					t.Fatalf("decode: %v", err)
+				}
+				if d.Spec.RevisionHistoryLimit == nil || *d.Spec.RevisionHistoryLimit != 10 {
+					t.Errorf("revisionHistoryLimit = %v, want 10 — a nil value crashes the whole controller-manager process", d.Spec.RevisionHistoryLimit)
+				}
+			})
+		}
+	})
+
 	t.Run("Job backoffLimit and friends", func(t *testing.T) {
 		body := `{"apiVersion":"batch/v1","kind":"Job","metadata":{"name":"hello","namespace":"default"},
 			"spec":{"template":{"spec":{"containers":[{"name":"hello","image":"busybox"}],"restartPolicy":"Never"}}}}`
@@ -541,6 +620,119 @@ func TestOverlay_APIDefaulting(t *testing.T) {
 		}
 		if len(s.Spec.IPFamilies) == 0 || s.Spec.IPFamilies[0] != "IPv4" {
 			t.Errorf("ipFamilies = %v, want [IPv4] matching the primary clusterIP 10.0.0.5", s.Spec.IPFamilies)
+		}
+	})
+
+	t.Run("LoadBalancer Service gets a synthesized external IP", func(t *testing.T) {
+		// No cloud-controller-manager runs against the overlay (see
+		// cmd/controllermanager.go), so nothing else would ever populate
+		// status.loadBalancer.ingress — `helm install --wait` (and any client
+		// polling for a LoadBalancer Service to become ready) hangs without this.
+		body := `{"apiVersion":"v1","kind":"Service","metadata":{"name":"gw","namespace":"default"},
+			"spec":{"type":"LoadBalancer","selector":{"app":"gw"},"ports":[{"port":80}]}}`
+		code, out := doReq(t, http.MethodPost, srv.URL+"/api/v1/namespaces/default/services", "application/json", body)
+		if code != http.StatusCreated {
+			t.Fatalf("create: status %d: %s", code, out)
+		}
+		var s struct {
+			Status struct {
+				LoadBalancer struct {
+					Ingress []struct {
+						IP string `json:"ip"`
+					} `json:"ingress"`
+				} `json:"loadBalancer"`
+			} `json:"status"`
+		}
+		if err := json.Unmarshal(out, &s); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(s.Status.LoadBalancer.Ingress) == 0 || s.Status.LoadBalancer.Ingress[0].IP == "" {
+			t.Fatalf("loadBalancer.ingress is empty — helm install --wait hangs forever on this Service")
+		}
+		gotIP := s.Status.LoadBalancer.Ingress[0].IP
+
+		// A ClusterIP Service (the common case) must not get a bogus LoadBalancer
+		// ingress synthesized.
+		cbody := `{"apiVersion":"v1","kind":"Service","metadata":{"name":"web-clusterip","namespace":"default"},
+			"spec":{"selector":{"app":"nginx"},"ports":[{"port":80}]}}`
+		_, cout := doReq(t, http.MethodPost, srv.URL+"/api/v1/namespaces/default/services", "application/json", cbody)
+		if strings.Contains(string(cout), "loadBalancer") {
+			t.Errorf("ClusterIP Service got a loadBalancer status: %s", cout)
+		}
+
+		// A subsequent write to the same Service (e.g. a label patch) must keep
+		// the same address rather than reassigning a new one.
+		_, patched := doReq(t, http.MethodPatch, srv.URL+"/api/v1/namespaces/default/services/gw",
+			"application/merge-patch+json", `{"metadata":{"labels":{"x":"y"}}}`)
+		var s2 struct {
+			Status struct {
+				LoadBalancer struct {
+					Ingress []struct {
+						IP string `json:"ip"`
+					} `json:"ingress"`
+				} `json:"loadBalancer"`
+			} `json:"status"`
+		}
+		if err := json.Unmarshal(patched, &s2); err != nil {
+			t.Fatalf("decode patched: %v\n%s", err, patched)
+		}
+		if len(s2.Status.LoadBalancer.Ingress) == 0 || s2.Status.LoadBalancer.Ingress[0].IP != gotIP {
+			t.Errorf("loadBalancer ingress changed across writes: got %v, want stable %q", s2.Status.LoadBalancer.Ingress, gotIP)
+		}
+	})
+
+	t.Run("Service gets a synthesized ClusterIP", func(t *testing.T) {
+		// kstatus's readiness check (which Helm v4's `--wait` uses) requires
+		// spec.clusterIP to be non-empty for a LoadBalancer Service — NOT
+		// status.loadBalancer.ingress — so a missing ClusterIP hangs
+		// `helm install --wait` forever even with an external address assigned.
+		body := `{"apiVersion":"v1","kind":"Service","metadata":{"name":"gw-cip","namespace":"default"},
+			"spec":{"type":"LoadBalancer","selector":{"app":"gw"},"ports":[{"port":80}]}}`
+		code, out := doReq(t, http.MethodPost, srv.URL+"/api/v1/namespaces/default/services", "application/json", body)
+		if code != http.StatusCreated {
+			t.Fatalf("create: status %d: %s", code, out)
+		}
+		var s struct {
+			Spec struct {
+				ClusterIP  string   `json:"clusterIP"`
+				ClusterIPs []string `json:"clusterIPs"`
+			} `json:"spec"`
+		}
+		if err := json.Unmarshal(out, &s); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if s.Spec.ClusterIP == "" {
+			t.Fatalf("clusterIP is empty — kstatus reports this LoadBalancer Service InProgress forever")
+		}
+		if len(s.Spec.ClusterIPs) == 0 || s.Spec.ClusterIPs[0] != s.Spec.ClusterIP {
+			t.Errorf("clusterIPs = %v, want [%q]", s.Spec.ClusterIPs, s.Spec.ClusterIP)
+		}
+		gotIP := s.Spec.ClusterIP
+
+		// A headless Service (explicit clusterIP: None) is left alone.
+		hbody := `{"apiVersion":"v1","kind":"Service","metadata":{"name":"headless","namespace":"default"},
+			"spec":{"clusterIP":"None","selector":{"app":"x"},"ports":[{"port":80}]}}`
+		_, hout := doReq(t, http.MethodPost, srv.URL+"/api/v1/namespaces/default/services", "application/json", hbody)
+		if got := metaString(hout, "name"); got != "headless" {
+			t.Fatalf("create headless: %s", hout)
+		}
+		var h struct {
+			Spec struct {
+				ClusterIP string `json:"clusterIP"`
+			} `json:"spec"`
+		}
+		if err := json.Unmarshal(hout, &h); err != nil {
+			t.Fatalf("decode headless: %v", err)
+		}
+		if h.Spec.ClusterIP != "None" {
+			t.Errorf("headless Service clusterIP = %q, want None left untouched", h.Spec.ClusterIP)
+		}
+
+		// A subsequent write keeps the same ClusterIP rather than reassigning one.
+		_, patched := doReq(t, http.MethodPatch, srv.URL+"/api/v1/namespaces/default/services/gw-cip",
+			"application/merge-patch+json", `{"metadata":{"labels":{"x":"y"}}}`)
+		if !strings.Contains(string(patched), `"clusterIP":"`+gotIP+`"`) {
+			t.Errorf("clusterIP changed across writes: %s, want stable %q", patched, gotIP)
 		}
 	})
 
@@ -766,6 +958,107 @@ func TestOverlay_StatusSubresource(t *testing.T) {
 	}
 }
 
+// TestOverlay_StatusPUTSetsAnnotation reproduces the exact write pattern the
+// real deployment controller uses to stamp `deployment.kubernetes.io/revision`
+// onto a Deployment: client-go's UpdateStatus PUTs the *entire* object
+// (metadata included) to .../status. Discovered by actually running the
+// upstream conformance suite against --with-controller-manager: every
+// Deployment reconciled that way never got its revision annotation, because
+// an earlier version of the overlay's status-subresource handling protected
+// all of metadata, not just .spec.
+func TestOverlay_StatusPUTSetsAnnotation(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	deployPath := "/apis/apps/v1/namespaces/default/deployments"
+	depBody := `{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"dep-s"},
+		"spec":{"replicas":1,"selector":{"matchLabels":{"app":"x"}},
+		"template":{"metadata":{"labels":{"app":"x"}},"spec":{"containers":[{"name":"x","image":"x"}]}}}}`
+	code, created := doReq(t, http.MethodPost, srv.URL+deployPath, "application/json", depBody)
+	if code != http.StatusCreated {
+		t.Fatalf("create: status %d: %s", code, created)
+	}
+
+	// Simulate UpdateStatus: PUT the whole object (with a new annotation and a
+	// spec change that must NOT take effect) to .../status.
+	var full map[string]any
+	if err := json.Unmarshal(created, &full); err != nil {
+		t.Fatalf("decode created: %v", err)
+	}
+	meta := full["metadata"].(map[string]any)
+	meta["annotations"] = map[string]any{"deployment.kubernetes.io/revision": "1"}
+	full["spec"].(map[string]any)["replicas"] = float64(99) // must be dropped
+	full["status"] = map[string]any{"observedGeneration": float64(1), "replicas": float64(1)}
+	putBody, err := json.Marshal(full)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	code, got := doReq(t, http.MethodPut, srv.URL+deployPath+"/dep-s/status", "application/json", string(putBody))
+	if code != 200 {
+		t.Fatalf("PUT status: %d: %s", code, got)
+	}
+	if !strings.Contains(string(got), `"deployment.kubernetes.io/revision":"1"`) {
+		t.Errorf("annotation set via status PUT did not persist: %s", got)
+	}
+	if strings.Contains(string(got), `"replicas":99`) {
+		t.Errorf("status PUT leaked a spec change: %s", got)
+	}
+	if !strings.Contains(string(got), `"observedGeneration":1`) {
+		t.Errorf("status change did not apply: %s", got)
+	}
+}
+
+// TestOverlay_WriteResponseStampsKind verifies a write response always
+// carries apiVersion/kind, even when the client's request body omitted them —
+// exactly what client-go's typed Update/UpdateStatus calls do (they
+// round-trip an object fetched via Get/List, whose TypeMeta the apiserver
+// strips on read, a well-known client-go quirk). Reads already stamped this;
+// writes didn't, so a typed client-go decoder failed the *response* to its
+// own UpdateStatus call with "Object 'Kind' is missing" — found via the
+// upstream conformance suite's "Deployment should run the lifecycle of a
+// Deployment" spec, which does exactly this after creating a Deployment.
+func TestOverlay_WriteResponseStampsKind(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	deployPath := "/apis/apps/v1/namespaces/default/deployments"
+	// No apiVersion/kind at all — mirrors a client-go object fetched via
+	// Get/List, whose TypeMeta the apiserver strips.
+	noKindBody := `{"metadata":{"name":"d-nokind"},
+		"spec":{"replicas":1,"selector":{"matchLabels":{"app":"x"}},
+		"template":{"metadata":{"labels":{"app":"x"}},"spec":{"containers":[{"name":"x","image":"x"}]}}}}`
+	code, created := doReq(t, http.MethodPost, srv.URL+deployPath, "application/json", noKindBody)
+	if code != http.StatusCreated {
+		t.Fatalf("create: status %d: %s", code, created)
+	}
+	if !strings.Contains(string(created), `"apiVersion":"apps/v1"`) || !strings.Contains(string(created), `"kind":"Deployment"`) {
+		t.Errorf("create response missing apiVersion/kind: %s", created)
+	}
+
+	// PUT .../status with a body that (like a real UpdateStatus call) also
+	// carries no apiVersion/kind.
+	putBody := `{"metadata":{"name":"d-nokind","namespace":"default"},"status":{"readyReplicas":1}}`
+	code, put := doReq(t, http.MethodPut, srv.URL+deployPath+"/d-nokind/status", "application/json", putBody)
+	if code != 200 {
+		t.Fatalf("PUT status: status %d: %s", code, put)
+	}
+	if !strings.Contains(string(put), `"apiVersion":"apps/v1"`) || !strings.Contains(string(put), `"kind":"Deployment"`) {
+		t.Errorf("PUT status response missing apiVersion/kind: %s", put)
+	}
+
+	// PATCH .../status likewise.
+	code, patched := doReq(t, http.MethodPatch, srv.URL+deployPath+"/d-nokind/status",
+		"application/merge-patch+json", `{"status":{"readyReplicas":2}}`)
+	if code != 200 {
+		t.Fatalf("PATCH status: status %d: %s", code, patched)
+	}
+	if !strings.Contains(string(patched), `"apiVersion":"apps/v1"`) || !strings.Contains(string(patched), `"kind":"Deployment"`) {
+		t.Errorf("PATCH status response missing apiVersion/kind: %s", patched)
+	}
+}
+
 func TestOverlay_CreateConflict(t *testing.T) {
 	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
 	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
@@ -788,11 +1081,146 @@ func TestOverlay_UnknownSubresourceRejected(t *testing.T) {
 	srv := newWritableServer(t, writableTestStore(t, from), clock)
 	doReq(t, http.MethodPost, srv.URL+podsPath, "application/json", podBody("pod-x"))
 
-	if code, _ := doReq(t, http.MethodPut, srv.URL+podsPath+"/pod-x/scale", "application/json", `{"spec":{"replicas":2}}`); code != http.StatusMethodNotAllowed {
+	// "scale" itself isn't a good example here: it's a real subresource, just
+	// inapplicable to Pods (see TestOverlay_Scale_UnsupportedResourceRejected
+	// for that 404 case). Use a name that isn't a subresource on anything.
+	if code, _ := doReq(t, http.MethodPut, srv.URL+podsPath+"/pod-x/frobnicate", "application/json", `{"x":1}`); code != http.StatusMethodNotAllowed {
 		t.Errorf("PUT unknown subresource: status %d, want 405", code)
 	}
-	if code, _ := doReq(t, http.MethodPatch, srv.URL+podsPath+"/pod-x/scale", "application/merge-patch+json", `{"spec":{"replicas":2}}`); code != http.StatusMethodNotAllowed {
+	if code, _ := doReq(t, http.MethodPatch, srv.URL+podsPath+"/pod-x/frobnicate", "application/merge-patch+json", `{"x":1}`); code != http.StatusMethodNotAllowed {
 		t.Errorf("PATCH unknown subresource: status %d, want 405", code)
+	}
+}
+
+// TestOverlay_Scale_UnsupportedResourceRejected verifies GET/PUT .../scale
+// 404s for a resource kind with no real scale subresource (Pods), matching a
+// real apiserver's response for an unregistered route — unlike Deployments/
+// ReplicaSets/StatefulSets/ReplicationControllers, which do have one.
+func TestOverlay_Scale_UnsupportedResourceRejected(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+	doReq(t, http.MethodPost, srv.URL+podsPath, "application/json", podBody("pod-x"))
+
+	if code, _ := doReq(t, http.MethodGet, srv.URL+podsPath+"/pod-x/scale", "", ""); code != http.StatusNotFound {
+		t.Errorf("GET pod scale: status %d, want 404", code)
+	}
+	if code, _ := doReq(t, http.MethodPut, srv.URL+podsPath+"/pod-x/scale", "application/json",
+		`{"apiVersion":"autoscaling/v1","kind":"Scale","spec":{"replicas":2}}`); code != http.StatusNotFound {
+		t.Errorf("PUT pod scale: status %d, want 404", code)
+	}
+}
+
+// TestOverlay_Scale_GetPutPatch covers the full /scale lifecycle for a
+// Deployment: GET reflects current spec/status, PUT sets a new replica count
+// (and nothing else, even if the client tries to sneak in other spec/status
+// fields), and a subsequent merge-patch and JSON-patch each update replicas
+// too. Discovered via actually running the upstream conformance suite's
+// "Deployment should have a working scale subresource" spec against
+// --with-controller-manager, which uses exactly this GET→PUT round trip
+// (client-go's ScalesGetter).
+func TestOverlay_Scale_GetPutPatch(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	deployPath := "/apis/apps/v1/namespaces/default/deployments"
+	body := `{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"scale-d"},
+		"spec":{"replicas":2,"selector":{"matchLabels":{"app":"x"}},
+		"template":{"metadata":{"labels":{"app":"x"}},"spec":{"containers":[{"name":"x","image":"x"}]}}}}`
+	if code, out := doReq(t, http.MethodPost, srv.URL+deployPath, "application/json", body); code != http.StatusCreated {
+		t.Fatalf("create: status %d: %s", code, out)
+	}
+
+	// GET reflects the created object's spec.replicas and derived selector.
+	code, got := doReq(t, http.MethodGet, srv.URL+deployPath+"/scale-d/scale", "", "")
+	if code != 200 {
+		t.Fatalf("GET scale: status %d: %s", code, got)
+	}
+	var s struct {
+		APIVersion string `json:"apiVersion"`
+		Kind       string `json:"kind"`
+		Spec       struct {
+			Replicas int32 `json:"replicas"`
+		} `json:"spec"`
+		Status struct {
+			Selector string `json:"selector"`
+		} `json:"status"`
+	}
+	if err := json.Unmarshal(got, &s); err != nil {
+		t.Fatalf("decode: %v\n%s", err, got)
+	}
+	if s.APIVersion != "autoscaling/v1" || s.Kind != "Scale" {
+		t.Errorf("apiVersion/kind = %s/%s, want autoscaling/v1/Scale", s.APIVersion, s.Kind)
+	}
+	if s.Spec.Replicas != 2 {
+		t.Errorf("GET scale replicas = %d, want 2", s.Spec.Replicas)
+	}
+	if s.Status.Selector != "app=x" {
+		t.Errorf("GET scale status.selector = %q, want app=x", s.Status.Selector)
+	}
+
+	// PUT a higher replica count, and try to sneak in an unrelated spec field —
+	// only replicas may change on the underlying Deployment.
+	putBody := `{"apiVersion":"autoscaling/v1","kind":"Scale","metadata":{"name":"scale-d","namespace":"default"},"spec":{"replicas":5}}`
+	code, put := doReq(t, http.MethodPut, srv.URL+deployPath+"/scale-d/scale", "application/json", putBody)
+	if code != 200 {
+		t.Fatalf("PUT scale: status %d: %s", code, put)
+	}
+	if !strings.Contains(string(put), `"replicas":5`) {
+		t.Errorf("PUT scale response = %s, want replicas 5", put)
+	}
+	_, dep := doReq(t, http.MethodGet, srv.URL+deployPath+"/scale-d", "", "")
+	if !strings.Contains(string(dep), `"replicas":5`) {
+		t.Errorf("underlying Deployment not scaled: %s", dep)
+	}
+	if metaInt(dep, "generation") != 2 {
+		t.Errorf("scaling did not bump generation: %s", dep)
+	}
+
+	// A merge-patch to scale also updates replicas.
+	code, patched := doReq(t, http.MethodPatch, srv.URL+deployPath+"/scale-d/scale",
+		"application/merge-patch+json", `{"spec":{"replicas":7}}`)
+	if code != 200 || !strings.Contains(string(patched), `"replicas":7`) {
+		t.Fatalf("merge-patch scale: status %d: %s", code, patched)
+	}
+
+	// A JSON patch (RFC 6902) works too.
+	code, jpatched := doReq(t, http.MethodPatch, srv.URL+deployPath+"/scale-d/scale",
+		"application/json-patch+json", `[{"op":"replace","path":"/spec/replicas","value":3}]`)
+	if code != 200 || !strings.Contains(string(jpatched), `"replicas":3`) {
+		t.Fatalf("json-patch scale: status %d: %s", code, jpatched)
+	}
+	_, dep2 := doReq(t, http.MethodGet, srv.URL+deployPath+"/scale-d", "", "")
+	if !strings.Contains(string(dep2), `"replicas":3`) {
+		t.Errorf("underlying Deployment not scaled by json-patch: %s", dep2)
+	}
+}
+
+// TestOverlay_Scale_ReadOnlyGet verifies GET .../scale works against a plain
+// captured Deployment even without --writable (unlike scale writes, which
+// need the overlay).
+func TestOverlay_Scale_ReadOnlyGet(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	depList := `{"apiVersion":"apps/v1","kind":"DeploymentList","metadata":{},"items":[
+		{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"web","namespace":"default"},
+		 "spec":{"replicas":4,"selector":{"matchLabels":{"app":"web"}}},
+		 "status":{"replicas":4}}]}`
+	store := buildTestStoreWithWatch(t,
+		map[string]watchTestRecord{"/apis/apps/v1/namespaces/default/deployments": {id: "s", at: from, body: depList}},
+		nil)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	h := newHandler(store, time.Time{}, false)
+	h.clock = clock
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+
+	code, got := doReq(t, http.MethodGet, srv.URL+"/apis/apps/v1/namespaces/default/deployments/web/scale", "", "")
+	if code != 200 {
+		t.Fatalf("GET scale (read-only): status %d: %s", code, got)
+	}
+	if !strings.Contains(string(got), `"replicas":4`) {
+		t.Errorf("read-only scale = %s, want replicas 4", got)
 	}
 }
 
@@ -856,9 +1284,16 @@ func TestOverlay_NullBodyNoPanic(t *testing.T) {
 	}
 }
 
-// TestOverlay_StatusPatchIsolated verifies a PATCH to .../status only changes
-// status (not spec/metadata) and does not bump generation, while a spec PATCH
-// does bump it.
+// TestOverlay_StatusPatchIsolated verifies a PATCH to .../status protects
+// .spec (reset back to the current object) and does not bump generation
+// (which tracks spec changes), while a spec PATCH does bump it. Metadata
+// (annotations, labels) is NOT protected — matching the real apiserver's
+// per-type status strategies (e.g. pkg/registry/core/pod/strategy.go's
+// podStatusStrategy.PrepareForUpdate only resets Spec/DeletionTimestamp/
+// OwnerReferences, not labels or annotations). This matters in practice: the
+// deployment controller sets `deployment.kubernetes.io/revision` on the
+// Deployment itself via UpdateStatus (a full-object PUT to .../status), not a
+// spec/metadata write.
 func TestOverlay_StatusPatchIsolated(t *testing.T) {
 	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
 	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
@@ -866,15 +1301,20 @@ func TestOverlay_StatusPatchIsolated(t *testing.T) {
 
 	doReq(t, http.MethodPost, srv.URL+podsPath, "application/json", podBody("pod-s")) // generation 1
 
-	// Status patch also tries to sneak in a label — the label must be ignored.
+	// Status patch also sets a label and tries to sneak in a spec change — the
+	// label must pass through (matching a real apiserver); the spec change must
+	// be dropped (reset back to current).
 	doReq(t, http.MethodPatch, srv.URL+podsPath+"/pod-s/status", "application/merge-patch+json",
-		`{"metadata":{"labels":{"hacked":"x"}},"status":{"phase":"Running"}}`)
+		`{"metadata":{"labels":{"team":"a"}},"spec":{"nodeName":"sneaky"},"status":{"phase":"Running"}}`)
 	_, got := doReq(t, http.MethodGet, srv.URL+podsPath+"/pod-s", "", "")
 	if !strings.Contains(string(got), `"phase":"Running"`) {
 		t.Errorf("status not applied: %s", got)
 	}
-	if strings.Contains(string(got), `"hacked"`) {
-		t.Errorf("status patch leaked a metadata change: %s", got)
+	if !strings.Contains(string(got), `"team":"a"`) {
+		t.Errorf("status patch dropped a metadata change (should pass through): %s", got)
+	}
+	if strings.Contains(string(got), `"nodeName":"sneaky"`) {
+		t.Errorf("status patch leaked a spec change: %s", got)
 	}
 	if g := metaInt(got, "generation"); g != 1 {
 		t.Errorf("status patch bumped generation to %d, want 1", g)
@@ -987,6 +1427,64 @@ func TestOverlay_ApplyPatchYAML(t *testing.T) {
 	}
 	if !strings.Contains(string(got), `"applied":"yes"`) {
 		t.Errorf("apply-patch did not merge YAML body: %s", got)
+	}
+}
+
+// TestOverlay_ApplyPatchCreatesMissingObject verifies a Server-Side Apply
+// PATCH (Content-Type: application/apply-patch+yaml) targeting an object that
+// doesn't exist yet creates it — matching the real apiserver's
+// create-or-update SSA semantics — rather than 404ing. This is the codepath
+// `helm install --create-namespace`, `kubectl apply --server-side`, and
+// CRD/webhook installers rely on to provision brand-new objects.
+func TestOverlay_ApplyPatchCreatesMissingObject(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	// Namespaced resource, mirroring a Helm chart's first apply of a new object.
+	yamlBody := "apiVersion: v1\nkind: Pod\nmetadata:\n  name: pod-ssa\n  namespace: default\n  labels:\n    applied: \"yes\"\n"
+	code, got := doReq(t, http.MethodPatch, srv.URL+podsPath+"/pod-ssa", "application/apply-patch+yaml", yamlBody)
+	if code != http.StatusCreated {
+		t.Fatalf("apply-patch create: status %d, want 201: %s", code, got)
+	}
+	if !strings.Contains(string(got), `"applied":"yes"`) {
+		t.Errorf("created object missing applied label: %s", got)
+	}
+	if rv := bodyRV(t, got); rv == "" || rv == "0" {
+		t.Errorf("created object rv = %q, want non-zero", rv)
+	}
+	if metaString(got, "uid") == "" {
+		t.Errorf("created object missing uid: %s", got)
+	}
+	code, get := doReq(t, http.MethodGet, srv.URL+podsPath+"/pod-ssa", "", "")
+	if code != 200 || metaString(get, "name") != "pod-ssa" {
+		t.Fatalf("GET pod-ssa: status %d name %q", code, metaString(get, "name"))
+	}
+
+	// Cluster-scoped resource — mirrors `helm install --create-namespace`.
+	nsYAML := "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: ns-ssa\n"
+	code, nsGot := doReq(t, http.MethodPatch, srv.URL+"/api/v1/namespaces/ns-ssa", "application/apply-patch+yaml", nsYAML)
+	if code != http.StatusCreated {
+		t.Fatalf("apply-patch create namespace: status %d, want 201: %s", code, nsGot)
+	}
+	// Namespace-create side effects (default SA, kube-root-ca.crt) still fire.
+	code, sa := doReq(t, http.MethodGet, srv.URL+"/api/v1/namespaces/ns-ssa/serviceaccounts/default", "", "")
+	if code != http.StatusOK {
+		t.Fatalf("GET default SA after apply-create: status %d, want 200\n%s", code, sa)
+	}
+
+	// A status-subresource apply cannot create its (missing) parent object.
+	code, _ = doReq(t, http.MethodPatch, srv.URL+podsPath+"/pod-nope/status", "application/apply-patch+yaml",
+		"apiVersion: v1\nkind: Pod\nstatus:\n  phase: Running\n")
+	if code != http.StatusNotFound {
+		t.Errorf("status apply-create on missing object: status %d, want 404", code)
+	}
+
+	// A body identity mismatched with the request path is still rejected on create.
+	code, _ = doReq(t, http.MethodPatch, srv.URL+podsPath+"/pod-mismatch", "application/apply-patch+yaml",
+		"apiVersion: v1\nkind: Pod\nmetadata:\n  name: other-name\n  namespace: default\n")
+	if code != http.StatusBadRequest {
+		t.Errorf("mismatched name on apply-create: status %d, want 400", code)
 	}
 }
 

@@ -114,6 +114,65 @@ func TestHandler_GroupResourceList(t *testing.T) {
 	assertJSON(t, rw, 200, "kind", "APIResourceList")
 }
 
+// TestHandler_BareGroupDiscovery verifies GET /apis/<group> (no version) —
+// the APIGroup discovery document distinct from /apis/<group>/<version>'s
+// resource list — synthesizes an APIGroup rather than 404ing. client-go's
+// discovery client fetches this to enumerate a group's versions before
+// making a versioned request; found missing via the upstream conformance
+// suite's Ingress/IngressClass API specs, which do exactly that.
+func TestHandler_BareGroupDiscovery(t *testing.T) {
+	store := buildTestStore(t, map[string][]byte{
+		"/apis/networking.k8s.io/v1/ingresses": []byte(`{"kind":"IngressList","items":[]}`),
+	})
+	h := newHandler(store, time.Time{}, false)
+
+	req := httptest.NewRequest(http.MethodGet, "/apis/networking.k8s.io", nil)
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rw.Code, rw.Body.String())
+	}
+	var body struct {
+		Kind             string              `json:"kind"`
+		Name             string              `json:"name"`
+		Versions         []map[string]string `json:"versions"`
+		PreferredVersion map[string]string   `json:"preferredVersion"`
+	}
+	if err := json.Unmarshal(rw.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v\n%s", err, rw.Body.String())
+	}
+	if body.Kind != "APIGroup" {
+		t.Errorf("kind = %q, want APIGroup", body.Kind)
+	}
+	if body.Name != "networking.k8s.io" {
+		t.Errorf("name = %q, want networking.k8s.io", body.Name)
+	}
+	if len(body.Versions) != 1 || body.Versions[0]["groupVersion"] != "networking.k8s.io/v1" {
+		t.Errorf("versions = %v, want [{groupVersion: networking.k8s.io/v1, version: v1}]", body.Versions)
+	}
+	if body.PreferredVersion["groupVersion"] != "networking.k8s.io/v1" {
+		t.Errorf("preferredVersion = %v", body.PreferredVersion)
+	}
+}
+
+// TestHandler_BareGroupDiscovery_UnknownGroup404s verifies a group with no
+// captured resources 404s rather than serving an empty-versions APIGroup.
+func TestHandler_BareGroupDiscovery_UnknownGroup404s(t *testing.T) {
+	store := buildTestStore(t, map[string][]byte{
+		"/api/v1/namespaces/default/pods": []byte(`{"kind":"PodList","items":[]}`),
+	})
+	h := newHandler(store, time.Time{}, false)
+
+	req := httptest.NewRequest(http.MethodGet, "/apis/does-not-exist.example.com", nil)
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404: %s", rw.Code, rw.Body.String())
+	}
+}
+
 // TestHandler_NotFound_ListPath verifies that a list-level resource not in the capture
 // returns 200 + empty list + Warning header rather than a 404 error.
 func TestHandler_NotFound_ListPath(t *testing.T) {
