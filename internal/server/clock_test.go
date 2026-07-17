@@ -110,6 +110,7 @@ func TestReplayClock_ParkAtWindowEnd(t *testing.T) {
 
 	// Play rewinds to the window start and plays forward — it doesn't resume
 	// from the parked `to` position, which would immediately re-report ended.
+	genBefore := c.SeekGen()
 	c.Resume()
 	if _, _, ended := c.Sample(); ended {
 		t.Error("expected ended=false immediately after resuming from a parked-at-end preview")
@@ -117,6 +118,12 @@ func TestReplayClock_ParkAtWindowEnd(t *testing.T) {
 	advance(2 * time.Second)
 	if got, want := c.Now(), from.Add(2*time.Second); !got.Equal(want) {
 		t.Errorf("after resume+2s: pos = %s, want %s", got, want)
+	}
+	// The rewind must bump SeekGen — a watch stream idling in waitForRestart
+	// after exhausting the timeline at the parked `to` position only wakes on
+	// a SeekGen (or epoch) change, not a plain Resume.
+	if got := c.SeekGen(); got == genBefore {
+		t.Errorf("SeekGen unchanged after parked-at-end rewind (%d); watch streams would idle forever", got)
 	}
 }
 

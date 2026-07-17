@@ -37,8 +37,10 @@ type ReplayClock struct {
 	// played through to completion. It suppresses the "ended" report (nothing
 	// has played yet) and makes the next Resume rewind to from first — without
 	// it, resuming a clock anchored at to with looping disabled would
-	// immediately re-clamp to to and appear to end on the spot. Seek or a
-	// second Resume clears it, since the user has now taken an explicit action.
+	// immediately re-clamp to to and appear to end on the spot. Cleared by
+	// Seek immediately (an explicit user action), or by that same Resume call
+	// as part of performing the rewind — never survives past the first Resume
+	// or Seek after ParkAtWindowEnd.
 	parkedAtEnd bool
 
 	events atomic.Int64
@@ -165,6 +167,13 @@ func (c *ReplayClock) Resume() {
 	if c.parkedAtEnd {
 		c.captureAnchor = c.from
 		c.parkedAtEnd = false
+		// The rewind is a position jump like a Seek, not a natural continuation
+		// from where playback left off — a watch stream that started while
+		// parked at the end has already exhausted its timeline and is blocked
+		// in waitForRestart, which only wakes on a SeekGen or epoch change.
+		// Without bumping SeekGen here, it would sit idle for the rest of
+		// playback despite the clock now actively advancing from `from`.
+		c.seekGen++
 	}
 	c.paused = false
 	c.wallAnchor = c.now()
