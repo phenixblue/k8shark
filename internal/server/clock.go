@@ -52,8 +52,10 @@ type ReplayClock struct {
 // 1 = real time, 2 = twice as fast, 0.5 = half). When loop is true the position
 // wraps back to from on reaching to; otherwise it stops at to. When paused the
 // clock does not advance until Resume is called. The initial position is
-// always from — callers that want a paused clock parked elsewhere (e.g. the
-// Web UI defaulting to the window end) should Seek() right after construction.
+// always from. Callers that want a paused clock parked elsewhere for preview
+// (e.g. the Web UI defaulting to the window end) should call ParkAtWindowEnd
+// right after construction, not Seek — a plain Seek(to) would report
+// ended=true while parked and wouldn't get Resume's rewind-and-play behavior.
 func NewReplayClock(from, to time.Time, speed float64, loop, paused bool) *ReplayClock {
 	if !to.After(from) {
 		to = from // degenerate window; Sample reports ended immediately
