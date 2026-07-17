@@ -181,8 +181,10 @@ Deployment's Pods flip Pending → Running live in the dashboard works the same 
 `kubectl`.
 
 Unlike the headless `kshrk replay` command (which auto-plays by default), `kshrk ui` starts replay
-**paused** by default — the dashboard renders the window-start state and waits for you to press
-**Play**. Pass `--start-paused=false` to have it auto-play from launch instead.
+**paused** by default — the dashboard renders the window-*end* state (the most complete capture,
+skipping past the sparse informer-warmup moments at window start) and waits for you to press
+**Play**, which rewinds to the window start and plays forward from there. Pass `--start-paused=false`
+to auto-play through the whole window from the start instead.
 
 The transport is backed by a small same-origin control API the dashboard calls (also useful for
 scripting the UI clock):

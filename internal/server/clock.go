@@ -32,6 +32,17 @@ type ReplayClock struct {
 	baseEpoch     int       // loop wraps accumulated before the current segment
 	seekGen       int       // increments on each Seek, so watchers can restart
 
+	// parkedAtEnd is set by ParkAtWindowEnd: the clock is paused and displaying
+	// the window end for preview purposes only, not because a replay actually
+	// played through to completion. It suppresses the "ended" report (nothing
+	// has played yet) and makes the next Resume rewind to from first — without
+	// it, resuming a clock anchored at to with looping disabled would
+	// immediately re-clamp to to and appear to end on the spot. Cleared by
+	// Seek immediately (an explicit user action), or by that same Resume call
+	// as part of performing the rewind — never survives past the first Resume
+	// or Seek after ParkAtWindowEnd.
+	parkedAtEnd bool
+
 	events atomic.Int64
 
 	now func() time.Time // injectable wall clock (tests)
@@ -40,7 +51,11 @@ type ReplayClock struct {
 // NewReplayClock creates a clock over [from, to] advancing at speed (a factor:
 // 1 = real time, 2 = twice as fast, 0.5 = half). When loop is true the position
 // wraps back to from on reaching to; otherwise it stops at to. When paused the
-// clock does not advance until Resume is called.
+// clock does not advance until Resume is called. The initial position is
+// always from. Callers that want a paused clock parked elsewhere for preview
+// (e.g. the Web UI defaulting to the window end) should call ParkAtWindowEnd
+// right after construction, not Seek — a plain Seek(to) would report
+// ended=true while parked and wouldn't get Resume's rewind-and-play behavior.
 func NewReplayClock(from, to time.Time, speed float64, loop, paused bool) *ReplayClock {
 	if !to.After(from) {
 		to = from // degenerate window; Sample reports ended immediately
@@ -64,7 +79,8 @@ func NewReplayClock(from, to time.Time, speed float64, loop, paused bool) *Repla
 // sample computes the current position. Callers must hold c.mu.
 func (c *ReplayClock) sample() (pos time.Time, epoch int, ended bool) {
 	if c.paused {
-		return c.captureAnchor, c.baseEpoch, !c.loop && !c.captureAnchor.Before(c.to)
+		ended := !c.parkedAtEnd && !c.loop && !c.captureAnchor.Before(c.to)
+		return c.captureAnchor, c.baseEpoch, ended
 	}
 	span := c.to.Sub(c.from)
 	if span <= 0 {
@@ -140,12 +156,26 @@ func (c *ReplayClock) Pause() {
 	c.paused = true
 }
 
-// Resume restarts a paused clock from where it stopped.
+// Resume restarts a paused clock from where it stopped — unless it was merely
+// parked at the window end for preview (ParkAtWindowEnd), in which case it
+// rewinds to from first, so Play actually plays the window rather than
+// re-reporting the end it was already sitting at.
 func (c *ReplayClock) Resume() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.paused {
 		return
+	}
+	if c.parkedAtEnd {
+		c.captureAnchor = c.from
+		c.parkedAtEnd = false
+		// The rewind is a position jump like a Seek, not a natural continuation
+		// from where playback left off — a watch stream that started while
+		// parked at the end has already exhausted its timeline and is blocked
+		// in waitForRestart, which only wakes on a SeekGen or epoch change.
+		// Without bumping SeekGen here, it would sit idle for the rest of
+		// playback despite the clock now actively advancing from `from`.
+		c.seekGen++
 	}
 	c.paused = false
 	c.wallAnchor = c.now()
@@ -159,10 +189,12 @@ func (c *ReplayClock) Paused() bool {
 }
 
 // Seek jumps the position to t, clamped to [from, to]. The loop epoch is
-// unchanged.
+// unchanged. Clears any pending ParkAtWindowEnd preview state — an explicit
+// seek is the user choosing a position, not a request to preview the end.
 func (c *ReplayClock) Seek(t time.Time) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.parkedAtEnd = false
 	if t.Before(c.from) {
 		t = c.from
 	}
@@ -181,6 +213,23 @@ func (c *ReplayClock) SeekGen() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.seekGen
+}
+
+// ParkAtWindowEnd positions a paused clock at the window end for preview —
+// the Web UI's default, so a client reading through the clock sees the most
+// complete captured state rather than a capture's typically-sparse opening
+// moments. It does not count as the replay having ended: Sample reports
+// ended=false, and the next Resume rewinds to the window start and plays
+// forward normally, rather than immediately re-reporting the end it was
+// parked at. A no-op if the clock isn't paused.
+func (c *ReplayClock) ParkAtWindowEnd() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.paused {
+		return
+	}
+	c.captureAnchor = c.to
+	c.parkedAtEnd = true
 }
 
 // SetSpeed changes the speed factor, preserving the current position.

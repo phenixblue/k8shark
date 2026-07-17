@@ -109,7 +109,8 @@ func runUI(cmd *cobra.Command, args []string) error {
 	if replayMode {
 		mockSrv, err = server.Replay(server.ReplayOptions{
 			ArchivePath: archivePath, Port: apiPort, KubeconfigOut: kubeconfigOut,
-			Speed: speed, From: from, To: to, Loop: loop, StartPaused: startPaused, Writable: writable, Verbose: verbose,
+			Speed: speed, From: from, To: to, Loop: loop, StartPaused: startPaused, PauseAtWindowEnd: true,
+			Writable: writable, Verbose: verbose,
 		})
 	} else {
 		mockSrv, err = server.Open(server.OpenOptions{

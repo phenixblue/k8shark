@@ -203,3 +203,55 @@ func TestServer_Open_RejectsOutOfRangeAt(t *testing.T) {
 		t.Fatal("expected error, got nil")
 	}
 }
+
+// TestServer_Replay_PauseAtWindowEnd covers the Web UI's default: a paused
+// replay clock should start at the window end (the most complete captured
+// state), not the sparse window-start moment.
+func TestServer_Replay_PauseAtWindowEnd(t *testing.T) {
+	archivePath := buildTestArchive(t)
+
+	srv, err := Replay(ReplayOptions{
+		ArchivePath:      archivePath,
+		KubeconfigOut:    filepath.Join(t.TempDir(), "kubeconfig.yaml"),
+		StartPaused:      true,
+		PauseAtWindowEnd: true,
+	})
+	if err != nil {
+		t.Fatalf("server.Replay: %v", err)
+	}
+	defer srv.Shutdown()
+
+	_, to := srv.Clock().Window()
+	if got := srv.Clock().Now(); !got.Equal(to) {
+		t.Errorf("clock position = %s, want window end %s", got, to)
+	}
+	if !srv.Clock().Paused() {
+		t.Error("expected clock to start paused")
+	}
+	if _, _, ended := srv.Clock().Sample(); ended {
+		t.Error("initial window-end preview should not report ended")
+	}
+}
+
+// TestServer_Replay_HeadlessStartPausedStartsAtWindowStart covers headless
+// `kshrk replay --start-paused`, which documents "press Enter to begin
+// playback" — it must keep starting at the window start, not the end.
+func TestServer_Replay_HeadlessStartPausedStartsAtWindowStart(t *testing.T) {
+	archivePath := buildTestArchive(t)
+
+	srv, err := Replay(ReplayOptions{
+		ArchivePath:   archivePath,
+		KubeconfigOut: filepath.Join(t.TempDir(), "kubeconfig.yaml"),
+		StartPaused:   true,
+		// PauseAtWindowEnd intentionally left unset.
+	})
+	if err != nil {
+		t.Fatalf("server.Replay: %v", err)
+	}
+	defer srv.Shutdown()
+
+	from, _ := srv.Clock().Window()
+	if got := srv.Clock().Now(); !got.Equal(from) {
+		t.Errorf("clock position = %s, want window start %s", got, from)
+	}
+}

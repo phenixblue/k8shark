@@ -94,6 +94,63 @@ func TestReplayClock_PauseResume(t *testing.T) {
 	}
 }
 
+func TestReplayClock_ParkAtWindowEnd(t *testing.T) {
+	from := time.Unix(2_000_000, 0).UTC()
+	to := from.Add(60 * time.Second)
+	c, advance := newTestClock(t, from, to, 1, false, true)
+
+	c.ParkAtWindowEnd()
+	pos, _, ended := c.Sample()
+	if !pos.Equal(to) {
+		t.Errorf("parked pos = %s, want window end %s", pos, to)
+	}
+	if ended {
+		t.Error("parked-at-end preview should not report ended (nothing has played yet)")
+	}
+
+	// Play rewinds to the window start and plays forward — it doesn't resume
+	// from the parked `to` position, which would immediately re-report ended.
+	genBefore := c.SeekGen()
+	c.Resume()
+	if _, _, ended := c.Sample(); ended {
+		t.Error("expected ended=false immediately after resuming from a parked-at-end preview")
+	}
+	advance(2 * time.Second)
+	if got, want := c.Now(), from.Add(2*time.Second); !got.Equal(want) {
+		t.Errorf("after resume+2s: pos = %s, want %s", got, want)
+	}
+	// The rewind must bump SeekGen — a watch stream idling in waitForRestart
+	// after exhausting the timeline at the parked `to` position only wakes on
+	// a SeekGen (or epoch) change, not a plain Resume.
+	if got := c.SeekGen(); got == genBefore {
+		t.Errorf("SeekGen unchanged after parked-at-end rewind (%d); watch streams would idle forever", got)
+	}
+}
+
+func TestReplayClock_ParkAtWindowEnd_SeekClearsPreview(t *testing.T) {
+	from := time.Unix(2_000_000, 0).UTC()
+	to := from.Add(60 * time.Second)
+	c, _ := newTestClock(t, from, to, 1, false, true)
+
+	c.ParkAtWindowEnd()
+	c.Seek(from.Add(10 * time.Second))
+	c.Resume() // no rewind: an explicit seek already cleared the preview state
+	if got, want := c.Now(), from.Add(10*time.Second); !got.Equal(want) {
+		t.Errorf("after seek+resume: pos = %s, want %s (not rewound to from)", got, want)
+	}
+}
+
+func TestReplayClock_ParkAtWindowEnd_RequiresPaused(t *testing.T) {
+	from := time.Unix(2_000_000, 0).UTC()
+	to := from.Add(60 * time.Second)
+	c, _ := newTestClock(t, from, to, 1, false, false)
+
+	c.ParkAtWindowEnd() // no-op: clock isn't paused
+	if got := c.Now(); !got.Equal(from) {
+		t.Errorf("pos = %s, want unchanged window start %s", got, from)
+	}
+}
+
 func TestReplayClock_Seek(t *testing.T) {
 	from := time.Unix(2_000_000, 0).UTC()
 	to := from.Add(60 * time.Second)
