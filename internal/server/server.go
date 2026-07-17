@@ -35,7 +35,16 @@ type ReplayOptions struct {
 	To            string // window end: RFC3339 or relative like -1m (empty = capture end)
 	Loop          bool
 	StartPaused   bool
-	Writable      bool // accept client writes into an in-memory overlay
+	// PauseAtWindowEnd, when StartPaused is set, parks the clock at the window
+	// end (the most complete captured state) instead of the window start. The
+	// Web UI sets this: a capture's opening moments are typically sparse
+	// (informers are still completing their initial LIST), so a dashboard
+	// paused at the window start until the user presses Play would otherwise
+	// show a near-empty cluster by default. Headless `kshrk replay
+	// --start-paused` leaves this unset — its documented behavior is "press
+	// Enter to begin playback" from the window start.
+	PauseAtWindowEnd bool
+	Writable         bool // accept client writes into an in-memory overlay
 	// DisableScheduling turns off the pod-scheduling shim (which otherwise binds
 	// an unscheduled Pod to a node on create). Zero value keeps the shim on under
 	// --writable; set it to opt out (--schedule-pods=false).
@@ -101,6 +110,9 @@ func Replay(opts ReplayOptions) (*Server, error) {
 		return nil, err
 	}
 	clock := NewReplayClock(from, to, speed, opts.Loop, opts.StartPaused)
+	if opts.StartPaused && opts.PauseAtWindowEnd {
+		clock.ParkAtWindowEnd()
+	}
 	return serve(ar, store, time.Time{}, clock, opts.Writable, !opts.DisableScheduling, opts.Port, opts.KubeconfigOut, opts.Verbose)
 }
 
