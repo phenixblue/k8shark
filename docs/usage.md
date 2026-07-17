@@ -14,11 +14,22 @@
 brew install phenixblue/tap/k8shark
 ```
 
+To follow the **prerelease (release-candidate) channel** instead of stable:
+
+```sh
+brew install phenixblue/tap/k8shark@rc
+```
+
+`k8shark@rc` tracks the latest `-rc` release; `k8shark` tracks the latest stable.
+They install the same `kshrk` binary, so use one or the other (not both at once).
+
 ### go install
 
 ```sh
 go install github.com/phenixblue/k8shark@latest
 ```
+
+For a specific prerelease, pin the tag, e.g. `go install github.com/phenixblue/k8shark@v0.5.1-rc.1`.
 
 The binary is named `kshrk`.
 
