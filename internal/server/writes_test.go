@@ -1197,6 +1197,79 @@ func TestOverlay_Scale_GetPutPatch(t *testing.T) {
 	}
 }
 
+// TestOverlay_Scale_ApplyPatchYAML verifies a Server-Side Apply PATCH
+// (Content-Type: application/apply-patch+yaml, body is YAML) against .../scale
+// works — supportedPatchType() accepts this content type for any subresource,
+// but the scale path's patch application didn't actually convert YAML to JSON
+// before merging, so it would 422 instead of scaling. Found via Copilot
+// review.
+func TestOverlay_Scale_ApplyPatchYAML(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	deployPath := "/apis/apps/v1/namespaces/default/deployments"
+	body := `{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"scale-yaml"},
+		"spec":{"replicas":1,"selector":{"matchLabels":{"app":"x"}},
+		"template":{"metadata":{"labels":{"app":"x"}},"spec":{"containers":[{"name":"x","image":"x"}]}}}}`
+	if code, out := doReq(t, http.MethodPost, srv.URL+deployPath, "application/json", body); code != http.StatusCreated {
+		t.Fatalf("create: status %d: %s", code, out)
+	}
+
+	yamlPatch := "apiVersion: autoscaling/v1\nkind: Scale\nspec:\n  replicas: 4\n"
+	code, out := doReq(t, http.MethodPatch, srv.URL+deployPath+"/scale-yaml/scale", "application/apply-patch+yaml", yamlPatch)
+	if code != 200 {
+		t.Fatalf("apply-patch scale: status %d: %s", code, out)
+	}
+	if !strings.Contains(string(out), `"replicas":4`) {
+		t.Errorf("apply-patch scale response = %s, want replicas 4", out)
+	}
+	_, dep := doReq(t, http.MethodGet, srv.URL+deployPath+"/scale-yaml", "", "")
+	if !strings.Contains(string(dep), `"replicas":4`) {
+		t.Errorf("underlying Deployment not scaled by apply-patch: %s", dep)
+	}
+}
+
+// TestOverlay_Scale_ReplicationControllerSelector verifies a
+// ReplicationController's Scale.status.selector is populated correctly.
+// Unlike Deployment/ReplicaSet/StatefulSet, RC's .spec.selector is a plain
+// map[string]string, not a structured metav1.LabelSelector — decoding it as
+// the latter silently succeeds with a zero-value result (unknown JSON fields
+// on a struct are ignored), producing an empty status.selector that breaks
+// HPA/kubectl expectations. Found via Copilot review.
+func TestOverlay_Scale_ReplicationControllerSelector(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	rcPath := "/api/v1/namespaces/default/replicationcontrollers"
+	body := `{"apiVersion":"v1","kind":"ReplicationController","metadata":{"name":"rc-scale"},
+		"spec":{"replicas":2,"selector":{"app":"x","tier":"web"},
+		"template":{"metadata":{"labels":{"app":"x","tier":"web"}},"spec":{"containers":[{"name":"x","image":"x"}]}}}}`
+	if code, out := doReq(t, http.MethodPost, srv.URL+rcPath, "application/json", body); code != http.StatusCreated {
+		t.Fatalf("create: status %d: %s", code, out)
+	}
+
+	code, out := doReq(t, http.MethodGet, srv.URL+rcPath+"/rc-scale/scale", "", "")
+	if code != 200 {
+		t.Fatalf("GET scale: status %d: %s", code, out)
+	}
+	var s struct {
+		Status struct {
+			Selector string `json:"selector"`
+		} `json:"status"`
+	}
+	if err := json.Unmarshal(out, &s); err != nil {
+		t.Fatalf("decode: %v\n%s", err, out)
+	}
+	if s.Status.Selector == "" {
+		t.Fatalf("RC scale status.selector is empty, want app=x,tier=web (or similar): %s", out)
+	}
+	if !strings.Contains(s.Status.Selector, "app=x") || !strings.Contains(s.Status.Selector, "tier=web") {
+		t.Errorf("RC scale status.selector = %q, want both app=x and tier=web", s.Status.Selector)
+	}
+}
+
 // TestOverlay_Scale_ReadOnlyGet verifies GET .../scale works against a plain
 // captured Deployment even without --writable (unlike scale writes, which
 // need the overlay).

@@ -88,6 +88,50 @@ func TestHandler_APIGroupList(t *testing.T) {
 	assertJSON(t, rw, 200, "kind", "APIGroupList")
 }
 
+// TestHandler_APIGroupList_PreferredVersionDeterministic verifies a group
+// with multiple captured versions always reports the highest-priority one
+// (GA over beta/alpha, highest major/minor within a type) as preferredVersion
+// — CaptureStore.Resources() iterates a map internally, so without sorting,
+// preferredVersion could flip between any of the group's versions from one
+// call to the next. Found via Copilot review of the /apis/<group> fix.
+func TestHandler_APIGroupList_PreferredVersionDeterministic(t *testing.T) {
+	store := buildTestStore(t, map[string][]byte{
+		"/apis/autoscaling/v2beta2/horizontalpodautoscalers": []byte(`{"kind":"HorizontalPodAutoscalerList","items":[]}`),
+		"/apis/autoscaling/v1/horizontalpodautoscalers":      []byte(`{"kind":"HorizontalPodAutoscalerList","items":[]}`),
+		"/apis/autoscaling/v2beta1/horizontalpodautoscalers": []byte(`{"kind":"HorizontalPodAutoscalerList","items":[]}`),
+		"/apis/autoscaling/v2/horizontalpodautoscalers":      []byte(`{"kind":"HorizontalPodAutoscalerList","items":[]}`),
+	})
+	h := newHandler(store, time.Time{}, false)
+
+	for i := 0; i < 20; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/apis", nil)
+		rw := httptest.NewRecorder()
+		h.ServeHTTP(rw, req)
+		var body struct {
+			Groups []struct {
+				Name             string            `json:"name"`
+				PreferredVersion map[string]string `json:"preferredVersion"`
+			} `json:"groups"`
+		}
+		if err := json.Unmarshal(rw.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode: %v\n%s", err, rw.Body.String())
+		}
+		found := false
+		for _, g := range body.Groups {
+			if g.Name != "autoscaling" {
+				continue
+			}
+			found = true
+			if g.PreferredVersion["version"] != "v2" {
+				t.Fatalf("run %d: preferredVersion = %v, want v2 (highest GA)", i, g.PreferredVersion)
+			}
+		}
+		if !found {
+			t.Fatalf("run %d: autoscaling group missing from /apis", i)
+		}
+	}
+}
+
 func TestHandler_CoreResourceList(t *testing.T) {
 	store := buildTestStore(t, map[string][]byte{
 		"/api/v1/namespaces/default/pods": []byte(`{"kind":"PodList","items":[]}`),
@@ -153,6 +197,33 @@ func TestHandler_BareGroupDiscovery(t *testing.T) {
 	}
 	if body.PreferredVersion["groupVersion"] != "networking.k8s.io/v1" {
 		t.Errorf("preferredVersion = %v", body.PreferredVersion)
+	}
+}
+
+// TestHandler_BareGroupDiscovery_PreferredVersionDeterministic is
+// serveAPIGroup's analog of TestHandler_APIGroupList_PreferredVersionDeterministic.
+func TestHandler_BareGroupDiscovery_PreferredVersionDeterministic(t *testing.T) {
+	store := buildTestStore(t, map[string][]byte{
+		"/apis/autoscaling/v2beta2/horizontalpodautoscalers": []byte(`{"kind":"HorizontalPodAutoscalerList","items":[]}`),
+		"/apis/autoscaling/v1/horizontalpodautoscalers":      []byte(`{"kind":"HorizontalPodAutoscalerList","items":[]}`),
+		"/apis/autoscaling/v2beta1/horizontalpodautoscalers": []byte(`{"kind":"HorizontalPodAutoscalerList","items":[]}`),
+		"/apis/autoscaling/v2/horizontalpodautoscalers":      []byte(`{"kind":"HorizontalPodAutoscalerList","items":[]}`),
+	})
+	h := newHandler(store, time.Time{}, false)
+
+	for i := 0; i < 20; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/apis/autoscaling", nil)
+		rw := httptest.NewRecorder()
+		h.ServeHTTP(rw, req)
+		var body struct {
+			PreferredVersion map[string]string `json:"preferredVersion"`
+		}
+		if err := json.Unmarshal(rw.Body.Bytes(), &body); err != nil {
+			t.Fatalf("run %d: decode: %v\n%s", i, err, rw.Body.String())
+		}
+		if body.PreferredVersion["version"] != "v2" {
+			t.Fatalf("run %d: preferredVersion = %v, want v2 (highest GA)", i, body.PreferredVersion)
+		}
 	}
 }
 

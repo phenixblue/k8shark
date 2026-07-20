@@ -19,6 +19,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -803,6 +804,37 @@ var scaleSubresourceResources = map[string]bool{
 	"replicationcontrollers": true,
 }
 
+// scaleSelectorString renders a resource's .spec.selector as the label-query
+// string HPA (and kubectl) read from a Scale's status.selector — handling
+// both selector shapes real Kubernetes types use: Deployment/ReplicaSet/
+// StatefulSet's structured metav1.LabelSelector ({matchLabels,
+// matchExpressions}), and ReplicationController's plain map[string]string.
+// Trying the map shape first is required, not just sufficient: unmarshaling a
+// flat map like {"app":"foo"} into a LabelSelector struct silently succeeds
+// with a zero-value result (unknown JSON fields are ignored on structs), so
+// checking LabelSelector first would always win and produce an empty
+// selector for every ReplicationController. A real LabelSelector's fields
+// nest an object/array under "matchLabels"/"matchExpressions", which cannot
+// decode into a map[string]string value, so that shape reliably fails first.
+func scaleSelectorString(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var flat map[string]string
+	if err := json.Unmarshal(raw, &flat); err == nil {
+		return labels.SelectorFromSet(flat).String()
+	}
+	var sel metav1.LabelSelector
+	if err := json.Unmarshal(raw, &sel); err != nil {
+		return ""
+	}
+	selector, err := metav1.LabelSelectorAsSelector(&sel)
+	if err != nil {
+		return ""
+	}
+	return selector.String()
+}
+
 // scaleObject synthesizes an autoscaling/v1 Scale representation of a
 // Deployment/ReplicaSet/StatefulSet/ReplicationController — the real
 // apiserver does the same conversion server-side for its generic scale
@@ -814,8 +846,8 @@ func scaleObject(namespace, name string, obj json.RawMessage) (json.RawMessage, 
 			ResourceVersion string `json:"resourceVersion"`
 		} `json:"metadata"`
 		Spec struct {
-			Replicas *int32                `json:"replicas"`
-			Selector *metav1.LabelSelector `json:"selector"`
+			Replicas *int32          `json:"replicas"`
+			Selector json.RawMessage `json:"selector"`
 		} `json:"spec"`
 		Status struct {
 			Replicas int32 `json:"replicas"`
@@ -830,12 +862,7 @@ func scaleObject(namespace, name string, obj json.RawMessage) (json.RawMessage, 
 	}
 	// HPA (and kubectl) reads status.selector to count matching Pods directly,
 	// rather than via the scaled resource's own selector field.
-	selectorStr := ""
-	if o.Spec.Selector != nil {
-		if sel, err := metav1.LabelSelectorAsSelector(o.Spec.Selector); err == nil {
-			selectorStr = sel.String()
-		}
-	}
+	selectorStr := scaleSelectorString(o.Spec.Selector)
 	return json.Marshal(map[string]any{
 		"apiVersion": "autoscaling/v1",
 		"kind":       "Scale",
@@ -957,17 +984,28 @@ func (h *handler) overlayScaleWrite(w http.ResponseWriter, r *http.Request, grou
 }
 
 // jsonMergeOrPatch applies patch to current per contentType, supporting JSON
-// Patch (RFC 6902) and treating anything else (merge-patch, strategic-merge,
-// unspecified) as a plain JSON merge patch.
+// Patch (RFC 6902), Server-Side Apply (application/apply-patch+yaml — the
+// body is YAML, unlike every other supported type here, so it needs
+// converting before merging same as the main write path's applyPatch), and
+// treating anything else (merge-patch, strategic-merge, unspecified) as a
+// plain JSON merge patch.
 func jsonMergeOrPatch(current, patch []byte, contentType string) ([]byte, error) {
-	if patchMediaType(contentType) == "application/json-patch+json" {
+	switch patchMediaType(contentType) {
+	case "application/json-patch+json":
 		p, err := jsonpatch.DecodePatch(patch)
 		if err != nil {
 			return nil, err
 		}
 		return p.Apply(current)
+	case "application/apply-patch+yaml":
+		j, err := yaml.YAMLToJSON(patch)
+		if err != nil {
+			return nil, err
+		}
+		return jsonpatch.MergePatch(current, j)
+	default:
+		return jsonpatch.MergePatch(current, patch)
 	}
-	return jsonpatch.MergePatch(current, patch)
 }
 
 func (h *handler) nowRFC3339() string {

@@ -4,10 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	apimachineryversion "k8s.io/apimachinery/pkg/version"
 )
 
 // handler is the http.Handler for the mock Kubernetes API server.
@@ -326,34 +329,33 @@ func (h *handler) serveAPIVersions(w http.ResponseWriter) {
 
 func (h *handler) serveAPIGroupList(w http.ResponseWriter) {
 	// Collect non-core API groups present in the capture.
-	type gv struct{ group, version, groupVersion string }
-	seen := map[string][]gv{}
+	seen := map[string][]groupVersion{}
 	for _, ri := range h.store.Resources() {
 		if ri.Group == "" {
 			continue
 		}
-		groupVersion := ri.Group + "/" + ri.Version
+		gv := groupVersion{ri.Version, ri.Group + "/" + ri.Version}
 		duplicate := false
 		for _, existing := range seen[ri.Group] {
-			if existing.groupVersion == groupVersion {
+			if existing.groupVersion == gv.groupVersion {
 				duplicate = true
 				break
 			}
 		}
 		if !duplicate {
-			seen[ri.Group] = append(seen[ri.Group], gv{ri.Group, ri.Version, groupVersion})
+			seen[ri.Group] = append(seen[ri.Group], gv)
 		}
 	}
 
+	groupNames := make([]string, 0, len(seen))
+	for g := range seen {
+		groupNames = append(groupNames, g)
+	}
+	sort.Strings(groupNames) // seen is a map; iteration order is nondeterministic
+
 	groups := make([]map[string]any, 0, len(seen))
-	for g, gvs := range seen {
-		versions := make([]map[string]string, 0, len(gvs))
-		for _, v := range gvs {
-			versions = append(versions, map[string]string{
-				"groupVersion": v.groupVersion,
-				"version":      v.version,
-			})
-		}
+	for _, g := range groupNames {
+		versions := sortedGroupVersions(seen[g])
 		groups = append(groups, map[string]any{
 			"name":             g,
 			"versions":         versions,
@@ -368,37 +370,58 @@ func (h *handler) serveAPIGroupList(w http.ResponseWriter) {
 	})
 }
 
+// groupVersion is one version entry within a group, as returned by
+// CaptureStore.Resources() (an unordered map iteration — see
+// sortedGroupVersions).
+type groupVersion struct{ version, groupVersion string }
+
+// sortedGroupVersions renders gvs (a single group's versions) as the
+// {groupVersion, version} maps APIGroup/APIGroupList expect, ordered by real
+// Kubernetes version priority (GA descending, then beta descending, then
+// alpha descending — e.g. v2, v1, v1beta2, v1beta1, v1alpha1) so
+// versions[0]/preferredVersion is deterministic and semantically correct.
+// h.store.Resources() iterates a map internally, so gvs arrives in random
+// order on every call — without this, preferredVersion could flip between
+// any of the group's versions from one call to the next.
+func sortedGroupVersions(gvs []groupVersion) []map[string]string {
+	sorted := append([]groupVersion(nil), gvs...)
+	sort.Slice(sorted, func(i, j int) bool {
+		return apimachineryversion.CompareKubeAwareVersionStrings(sorted[i].version, sorted[j].version) > 0
+	})
+	versions := make([]map[string]string, 0, len(sorted))
+	for _, v := range sorted {
+		versions = append(versions, map[string]string{
+			"groupVersion": v.groupVersion,
+			"version":      v.version,
+		})
+	}
+	return versions
+}
+
 // serveAPIGroup serves the single-group APIGroup discovery document for
 // /apis/<group> — the same grouping serveAPIGroupList does for the full
 // cross-group list, scoped to one group. 404s (matching a real apiserver)
 // when the group has no captured resources at all, rather than serving an
 // APIGroup with an empty version list.
 func (h *handler) serveAPIGroup(w http.ResponseWriter, group string) {
-	type gv struct{ version, groupVersion string }
-	var gvs []gv
+	var gvs []groupVersion
 	seen := map[string]bool{}
 	for _, ri := range h.store.Resources() {
 		if ri.Group != group {
 			continue
 		}
-		groupVersion := ri.Group + "/" + ri.Version
-		if seen[groupVersion] {
+		groupVersionStr := ri.Group + "/" + ri.Version
+		if seen[groupVersionStr] {
 			continue
 		}
-		seen[groupVersion] = true
-		gvs = append(gvs, gv{ri.Version, groupVersion})
+		seen[groupVersionStr] = true
+		gvs = append(gvs, groupVersion{ri.Version, groupVersionStr})
 	}
 	if len(gvs) == 0 {
 		h.writeStatus(w, http.StatusNotFound, fmt.Sprintf("the server could not find the requested resource, group %q not found in capture", group))
 		return
 	}
-	versions := make([]map[string]string, 0, len(gvs))
-	for _, v := range gvs {
-		versions = append(versions, map[string]string{
-			"groupVersion": v.groupVersion,
-			"version":      v.version,
-		})
-	}
+	versions := sortedGroupVersions(gvs)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"kind":             "APIGroup",
 		"apiVersion":       "v1",
