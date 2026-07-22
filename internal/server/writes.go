@@ -389,7 +389,10 @@ func ensureCRDEstablished(body json.RawMessage, now string) json.RawMessage {
 		return body
 	}
 	spec, _ := m["spec"].(map[string]any)
-	names, _ := spec["names"].(map[string]any)
+	names, ok := spec["names"].(map[string]any)
+	if !ok || names == nil {
+		names = map[string]any{} // non-nil: a real CRD's acceptedNames is never omitted
+	}
 	storedVersions := []string{} // non-nil: a real CRD's storedVersions is never omitted
 	if versions, ok := spec["versions"].([]any); ok {
 		for _, v := range versions {

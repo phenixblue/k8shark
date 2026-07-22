@@ -2186,12 +2186,14 @@ func TestOverlay_CRDEstablishedOnCreate(t *testing.T) {
 	}
 }
 
-// TestOverlay_CRDEstablished_StoredVersionsFallbacks covers two edge cases in
-// storedVersions: it must be an empty JSON array (not null) when spec.versions
-// is missing/malformed, and it must fall back to a legacy
+// TestOverlay_CRDEstablished_EdgeCases covers edge cases in the synthesized
+// CRD status: storedVersions must be an empty JSON array (not null) when
+// spec.versions is missing/malformed, it must fall back to a legacy
 // apiextensions.k8s.io/v1beta1-style single spec.version string when the v1
-// spec.versions list isn't present.
-func TestOverlay_CRDEstablished_StoredVersionsFallbacks(t *testing.T) {
+// spec.versions list isn't present, and acceptedNames must be an empty JSON
+// object (not null) when spec.names can't be decoded — matching how real
+// Kubernetes APIs represent an empty array/object rather than a JSON null.
+func TestOverlay_CRDEstablished_EdgeCases(t *testing.T) {
 	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
 	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
 	srv := newWritableServer(t, writableTestStore(t, from), clock)
@@ -2233,6 +2235,22 @@ func TestOverlay_CRDEstablished_StoredVersionsFallbacks(t *testing.T) {
 		}
 		if len(crd.Status.StoredVersions) != 1 || crd.Status.StoredVersions[0] != "v1beta1" {
 			t.Errorf("storedVersions = %v, want [v1beta1] (fallback from legacy spec.version)", crd.Status.StoredVersions)
+		}
+	})
+
+	t.Run("acceptedNames empty, not null, when spec.names is malformed", func(t *testing.T) {
+		body := `{"apiVersion":"apiextensions.k8s.io/v1","kind":"CustomResourceDefinition",
+			"metadata":{"name":"whatsits.example.com"},
+			"spec":{"group":"example.com","scope":"Namespaced","versions":[]}}`
+		code, out := doReq(t, http.MethodPost, srv.URL+"/apis/apiextensions.k8s.io/v1/customresourcedefinitions", "application/json", body)
+		if code != http.StatusCreated {
+			t.Fatalf("create CRD: status %d, want 201: %s", code, out)
+		}
+		if strings.Contains(string(out), `"acceptedNames":null`) {
+			t.Errorf("acceptedNames is null, want {}: %s", out)
+		}
+		if !strings.Contains(string(out), `"acceptedNames":{}`) {
+			t.Errorf("acceptedNames = %s, want {}", out)
 		}
 	})
 }
