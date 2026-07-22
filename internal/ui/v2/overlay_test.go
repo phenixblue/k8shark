@@ -70,6 +70,7 @@ func newOverlayTestHandler(t *testing.T) (*Handler, *server.Server) {
 
 var overlayTestClient = &http.Client{
 	Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}, // #nosec G402 -- test only
+	Timeout:   10 * time.Second,                                                        // bound test failures instead of hanging on a stalled server
 }
 
 // overlayPost creates an object through the mock server's real HTTPS API.

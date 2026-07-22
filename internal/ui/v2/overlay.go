@@ -9,14 +9,28 @@ import (
 	"github.com/phenixblue/k8shark/internal/server"
 )
 
-// reconstructMergedItems reconstructs the list body at path (parsed for its
-// group/version/resource/namespace) and merges any writable-overlay writes
-// over it — see server.Server.MergeOverlayList. This is the one-stop read for
-// every list view in this package: it returns overlay-created items even for
+// mergeOverlay merges the overlay's writes for path's scope over
+// capturedItems (the base list, already read and parsed by the caller, or nil
+// when the path was never captured) — see server.Server.MergeOverlayList.
+// Callers that already read the captured body for another reason (e.g. to
+// pull List-envelope Kind/apiVersion hints) should call this directly instead
+// of reconstructMergedItems, to avoid reading and re-parsing it twice.
+func (h *Handler) mergeOverlay(path string, capturedItems []json.RawMessage) []json.RawMessage {
+	if h.Overlay == nil {
+		return capturedItems
+	}
+	group, version, resource, ns := parseAPIPath(path)
+	return h.Overlay.MergeOverlayList(group, version, resource, ns, capturedItems)
+}
+
+// reconstructMergedItems reconstructs the list body at path and merges any
+// writable-overlay writes over it (see mergeOverlay). This is the one-stop
+// read for every list view in this package that doesn't already need the raw
+// captured body for something else: it returns overlay-created items even for
 // a path the capture never recorded at all (a brand-new namespace, or a
 // resource kind that didn't exist until a CRD was installed at runtime), since
-// MergeOverlayList tolerates a nil/empty base. Returns nil if there is nothing
-// to show either way.
+// mergeOverlay tolerates a nil/empty base. Returns nil if there is nothing to
+// show either way.
 func (h *Handler) reconstructMergedItems(path string, at time.Time) []json.RawMessage {
 	var items []json.RawMessage
 	if body, code, err := h.Store.ReconstructAt(path, at); err == nil && code == http.StatusOK && len(body) > 0 {
@@ -27,11 +41,7 @@ func (h *Handler) reconstructMergedItems(path string, at time.Time) []json.RawMe
 			items = list.Items
 		}
 	}
-	if h.Overlay != nil {
-		group, version, resource, ns := parseAPIPath(path)
-		items = h.Overlay.MergeOverlayList(group, version, resource, ns, items)
-	}
-	return items
+	return h.mergeOverlay(path, items)
 }
 
 // resourcePathsFor returns every distinct API list path for a resource plural

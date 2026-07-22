@@ -25,6 +25,16 @@ type ObjectDetail struct {
 	YAML      string `json:"yaml"`
 }
 
+// capturedListEnvelope is the subset of a captured list body serveObject
+// needs: the envelope's Kind/APIVersion (for casing hints on an item) and the
+// raw items (as the overlay merge's base), parsed once and reused by both of
+// serveObject's branches instead of each re-reading/re-parsing the body.
+type capturedListEnvelope struct {
+	Kind       string            `json:"kind"`
+	APIVersion string            `json:"apiVersion"`
+	Items      []json.RawMessage `json:"items"`
+}
+
 // serveObject returns one captured object (by list path + name) as JSON+YAML.
 // When name is empty the whole list body is returned, which lets the view show
 // cluster/list-scoped resources too. A writable overlay's copy of the object
@@ -49,10 +59,15 @@ func (h *Handler) serveObject(w http.ResponseWriter, r *http.Request) {
 		resp.At = at.UTC().Format(time.RFC3339)
 	}
 
+	capturedBody, code, err := h.Store.ReconstructAt(path, at)
+	captured := err == nil && code == http.StatusOK && len(capturedBody) > 0
+	var capturedList capturedListEnvelope
+	if captured && json.Unmarshal(capturedBody, &capturedList) != nil {
+		captured = false // malformed body — treat exactly like "nothing captured"
+	}
+
 	if name == "" {
-		capturedBody, code, err := h.Store.ReconstructAt(path, at)
-		captured := err == nil && code == http.StatusOK && len(capturedBody) > 0
-		items := h.reconstructMergedItems(path, at)
+		items := h.mergeOverlay(path, capturedList.Items)
 		if !captured && len(items) == 0 {
 			writeJSON(w, http.StatusOK, resp) // Found=false: never captured, and the overlay has nothing either
 			return
@@ -72,24 +87,18 @@ func (h *Handler) serveObject(w http.ResponseWriter, r *http.Request) {
 	// resource name. An overlay-only item already carries its own kind/
 	// apiVersion (a real write payload), so these hints simply go unused for it.
 	var apiVersionHint, kindHint string
-	if capturedBody, code, err := h.Store.ReconstructAt(path, at); err == nil && code == http.StatusOK && len(capturedBody) > 0 {
-		var list struct {
-			Kind       string `json:"kind"`
-			APIVersion string `json:"apiVersion"`
-		}
-		if json.Unmarshal(capturedBody, &list) == nil {
-			apiVersionHint = list.APIVersion
-			kindHint = strings.TrimSuffix(list.Kind, "List")
-			if kindHint == list.Kind { // didn't end in "List" — not a usable hint
-				kindHint = ""
-			}
+	if captured {
+		apiVersionHint = capturedList.APIVersion
+		kindHint = strings.TrimSuffix(capturedList.Kind, "List")
+		if kindHint == capturedList.Kind { // didn't end in "List" — not a usable hint
+			kindHint = ""
 		}
 	}
 
-	// reconstructMergedItems already applies overlay-wins semantics (including
-	// a tombstone dropping the item, which correctly reads as not-found here)
+	// mergeOverlay already applies overlay-wins semantics (including a
+	// tombstone dropping the item, which correctly reads as not-found here)
 	// and tolerates a path the capture never recorded at all.
-	for _, it := range h.reconstructMergedItems(path, at) {
+	for _, it := range h.mergeOverlay(path, capturedList.Items) {
 		if getName(it) == name {
 			h.writeObjectFound(w, &resp, it, path, apiVersionHint, kindHint)
 			return
