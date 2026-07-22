@@ -363,3 +363,66 @@ func TestResourcePathsForResources_GroupsBySingleScan(t *testing.T) {
 		t.Errorf("resourcePathsFor(pods) = %v, want to match resourcePathsForResources' pods entry %v", single, got["pods"])
 	}
 }
+
+// TestServeObject_WholeListView_IgnoresNonListCapturedBody is a regression
+// test: when the path's last captured record was NOT a successful list
+// response (e.g. a Kubernetes Status object from a 404, from before a CRD
+// existed), the whole-list view must build the synthetic envelope from the
+// live overlay items instead of treating the Status body as the envelope —
+// which would otherwise leak a bogus kind/apiVersion/status into the output.
+func TestServeObject_WholeListView_IgnoresNonListCapturedBody(t *testing.T) {
+	now := time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC)
+	dir := t.TempDir()
+	path := filepath.Join(dir, "capture.kshrk")
+
+	statusBody := `{"kind":"Status","apiVersion":"v1","status":"Failure","message":"the server could not find the requested resource","code":404}`
+	recs := []*capture.Record{
+		{ID: "s1", CapturedAt: now, APIPath: vsPath, HTTPMethod: "GET", ResponseCode: 404, ResponseBody: json.RawMessage(statusBody)},
+	}
+	idx := capture.Index{
+		vsPath: {APIPath: vsPath, Seqs: []int{0}, Times: []time.Time{now}},
+	}
+	meta := &capture.CaptureMetadata{CaptureID: "overlay-404-test", CapturedAt: now.Add(-5 * time.Minute), CapturedUntil: now, RecordCount: len(recs)}
+
+	sw, err := archive.NewStreamWriter(path)
+	if err != nil {
+		t.Fatalf("NewStreamWriter: %v", err)
+	}
+	for _, r := range recs {
+		if err := sw.WriteRecord(r); err != nil {
+			t.Fatalf("WriteRecord: %v", err)
+		}
+	}
+	if err := sw.Finish(meta, idx, nil); err != nil {
+		t.Fatalf("archive Finish: %v", err)
+	}
+	srv, err := server.Replay(server.ReplayOptions{
+		ArchivePath:       path,
+		KubeconfigOut:     filepath.Join(dir, "kubeconfig.yaml"),
+		StartPaused:       true,
+		PauseAtWindowEnd:  true,
+		Writable:          true,
+		DisableScheduling: true,
+	})
+	if err != nil {
+		t.Fatalf("server.Replay: %v", err)
+	}
+	t.Cleanup(srv.Shutdown)
+	h := &Handler{Store: srv.Store(), Overlay: srv, At: now}
+
+	overlayPost(t, srv, vsPath, vsBody)
+
+	var d ObjectDetail
+	if code := getJSONInto(t, h, h.serveObject, "/v2/api/object", "?path="+strings.ReplaceAll(vsPath, "/", "%2F"), &d); code != http.StatusOK {
+		t.Fatalf("status = %d", code)
+	}
+	if !d.Found {
+		t.Fatalf("Found = false, want true (the overlay has a live item)")
+	}
+	if !strings.Contains(d.JSON, `"kind": "VirtualServiceList"`) {
+		t.Errorf("JSON missing correct synthetic envelope kind:\n%s", d.JSON)
+	}
+	if strings.Contains(d.JSON, "Failure") || strings.Contains(d.JSON, `"code": 404`) {
+		t.Errorf("JSON leaked the captured 404 Status body instead of a synthetic list envelope:\n%s", d.JSON)
+	}
+}

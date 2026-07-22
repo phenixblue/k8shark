@@ -55,6 +55,9 @@ func (h *Handler) serveObject(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, resp) // Found=false: never captured, and the overlay has nothing either
 			return
 		}
+		if !captured {
+			capturedBody = nil // not a successful captured list response — don't treat it as the envelope
+		}
 		_, _, resource, _ := parseAPIPath(path)
 		h.writeObjectFound(w, &resp, listEnvelopeWithItems(capturedBody, resource, items), path, "", "")
 		return
