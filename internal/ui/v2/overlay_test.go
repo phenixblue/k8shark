@@ -336,3 +336,30 @@ func TestOverlay_PodInExistingNamespace_VisibleInLists(t *testing.T) {
 		t.Errorf("pods = %v, want sidecar-injected included", names)
 	}
 }
+
+// TestResourcePathsForResources_GroupsBySingleScan covers the multi-resource
+// helper the cluster-wide workload list uses to avoid scanning the index once
+// per workload kind: a single call must correctly group paths — including an
+// overlay-only one with no index entry at all — by resource.
+func TestResourcePathsForResources_GroupsBySingleScan(t *testing.T) {
+	h, srv := newOverlayTestHandler(t)
+	overlayPost(t, srv, "/apis/apps/v1/namespaces/default/deployments",
+		`{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"web","namespace":"default"}}`)
+
+	got := h.resourcePathsForResources(map[string]bool{"pods": true, "deployments": true, "statefulsets": true})
+
+	if paths := got["pods"]; len(paths) != 1 || paths[0] != "/api/v1/namespaces/default/pods" {
+		t.Errorf("pods = %v, want exactly the captured path", paths)
+	}
+	if paths := got["deployments"]; len(paths) != 1 || paths[0] != "/apis/apps/v1/namespaces/default/deployments" {
+		t.Errorf("deployments = %v, want the overlay-only path (no index entry for it)", paths)
+	}
+	if paths := got["statefulsets"]; len(paths) != 0 {
+		t.Errorf("statefulsets = %v, want none (neither captured nor overlay-created)", paths)
+	}
+
+	// resourcePathsFor(resource) must agree with the grouped result.
+	if single := h.resourcePathsFor("pods"); len(single) != 1 || single[0] != got["pods"][0] {
+		t.Errorf("resourcePathsFor(pods) = %v, want to match resourcePathsForResources' pods entry %v", single, got["pods"])
+	}
+}

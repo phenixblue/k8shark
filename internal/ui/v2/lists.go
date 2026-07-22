@@ -163,9 +163,15 @@ func (h *Handler) loadAllWorkloadRows(at time.Time) []ClusterWorkloadRow {
 		"jobs":         {"Job", "Job"},
 		"cronjobs":     {"CronJob", "CronJob"},
 	}
+	wanted := make(map[string]bool, len(kinds))
+	for resource := range kinds {
+		wanted[resource] = true
+	}
+	pathsByResource := h.resourcePathsForResources(wanted)
+
 	var rows []ClusterWorkloadRow
 	for resource, k := range kinds {
-		for _, path := range h.resourcePathsFor(resource) {
+		for _, path := range pathsByResource[resource] {
 			_, _, _, ns := parseAPIPath(path)
 			if ns == "" {
 				continue

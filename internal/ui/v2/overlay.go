@@ -42,24 +42,34 @@ func (h *Handler) reconstructMergedItems(path string, at time.Time) []json.RawMe
 // hardcode a resource's list path(s) per namespace (namespace.go's workload/
 // VM/pod groups) don't need this — reconstructMergedItems alone is enough,
 // since it tolerates an uncaptured path. This is for callers that otherwise
-// discover paths by walking the index (lists.go, overview.go).
+// discover paths by walking the index (lists.go, overview.go). A caller
+// needing several resources at once (e.g. every workload kind) should use
+// resourcePathsForResources instead, to scan the index only once.
 func (h *Handler) resourcePathsFor(resource string) []string {
+	return h.resourcePathsForResources(map[string]bool{resource: true})[resource]
+}
+
+// resourcePathsForResources is resourcePathsFor for several resources at
+// once: it scans the index (and overlay scopes) exactly once, grouping
+// matching paths by resource, instead of once per resource — the cluster-wide
+// workload list would otherwise re-walk the whole index per workload kind.
+func (h *Handler) resourcePathsForResources(resources map[string]bool) map[string][]string {
+	out := map[string][]string{}
 	seen := map[string]bool{}
-	var paths []string
 	for path, entry := range h.Store.Index {
 		if entry == nil || len(entry.Seqs) == 0 || strings.Contains(path, "?") {
 			continue
 		}
 		_, _, res, _ := parseAPIPath(path)
-		if res != resource || seen[path] {
+		if !resources[res] || seen[path] {
 			continue
 		}
 		seen[path] = true
-		paths = append(paths, path)
+		out[res] = append(out[res], path)
 	}
 	if h.Overlay != nil {
 		for _, sc := range h.Overlay.OverlayScopes() {
-			if sc.Resource != resource {
+			if !resources[sc.Resource] {
 				continue
 			}
 			path := apiListPath(sc.Group, sc.Version, sc.Resource, sc.Namespace)
@@ -67,10 +77,10 @@ func (h *Handler) resourcePathsFor(resource string) []string {
 				continue
 			}
 			seen[path] = true
-			paths = append(paths, path)
+			out[sc.Resource] = append(out[sc.Resource], path)
 		}
 	}
-	return paths
+	return out
 }
 
 // mergeOverlayNamespaceCounts folds overlay-only per-namespace resource counts
