@@ -479,6 +479,18 @@ func (h *handler) registerCRDResourceInfo(body json.RawMessage) {
 	if crd.Spec.Group == "" || crd.Spec.Names.Plural == "" {
 		return
 	}
+	// mergeResourceInfo treats namespaced as authoritative and overwrites any
+	// existing value, so an empty/unrecognized spec.scope (a malformed body)
+	// must be skipped entirely rather than defaulting to namespaced=true.
+	var namespaced bool
+	switch crd.Spec.Scope {
+	case "Namespaced":
+		namespaced = true
+	case "Cluster":
+		namespaced = false
+	default:
+		return
+	}
 	versions := crd.Spec.Versions
 	if len(versions) == 0 && crd.Spec.Version != "" {
 		// Legacy v1beta1 CRDs specify a single top-level spec.version instead
@@ -487,7 +499,6 @@ func (h *handler) registerCRDResourceInfo(body json.RawMessage) {
 		// fallback above.
 		versions = []crdVersion{{Name: crd.Spec.Version, Served: true}}
 	}
-	namespaced := crd.Spec.Scope != "Cluster"
 	for _, v := range versions {
 		if !v.Served || v.Name == "" {
 			continue
