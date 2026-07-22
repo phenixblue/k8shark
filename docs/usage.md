@@ -17,11 +17,14 @@ brew install phenixblue/tap/k8shark
 To follow the **prerelease (release-candidate) channel** instead of stable:
 
 ```sh
-brew install phenixblue/tap/k8shark@rc
+brew install --cask phenixblue/tap/k8shark@rc
 ```
 
 `k8shark@rc` tracks the latest `-rc` release; `k8shark` tracks the latest stable.
 They install the same `kshrk` binary, so use one or the other (not both at once).
+The prerelease channel is a Homebrew *cask*, not a formula — `@` in a Ruby class
+name is invalid, so `k8shark@rc` can only be distributed as a cask (which uses a
+`cask "name" do` string, not a class name). Hence the `--cask` flag.
 
 ### go install
 

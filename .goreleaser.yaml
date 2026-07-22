@@ -70,15 +70,20 @@ brews:
     install: |
       bin.install "kshrk"
 
-  # Prerelease channel: `brew install phenixblue/tap/k8shark@rc`. The inverse of
-  # the stable entry — uploads only for prerelease tags (.Prerelease is the semver
-  # prerelease part, non-empty for -rc/-beta tags), so k8shark@rc.rb tracks the
-  # latest RC while stable releases leave it untouched.
+homebrew_casks:
+  # Prerelease channel: `brew install --cask phenixblue/tap/k8shark@rc`. This must be
+  # a cask, not a brews: entry — brews generates `class K8shark@rc < Formula`, and "@"
+  # is not a legal Ruby class-name character (this shipped broken in #189/#190; see
+  # https://github.com/phenixblue/k8shark/issues for the report). Casks instead
+  # generate `cask "k8shark@rc" do ... end`, a plain string argument, so "@" is fine.
+  # skip_upload mirrors the brews entry: uploads only for prerelease tags, so
+  # k8shark@rc.rb tracks the latest RC while stable releases leave it untouched.
   - name: k8shark@rc
     homepage: https://github.com/phenixblue/k8shark
     description: Kubernetes cluster state capture and mock API replay tool (prerelease channel)
-    license: Apache-2.0
     skip_upload: '{{ if .Prerelease }}false{{ else }}true{{ end }}'
+    binaries:
+      - kshrk
     repository:
       owner: "{{ .Env.HOMEBREW_TAP_OWNER }}"
       name: "{{ .Env.HOMEBREW_TAP_NAME }}"
@@ -86,10 +91,6 @@ brews:
     commit_author:
       name: github-actions[bot]
       email: github-actions[bot]@users.noreply.github.com
-    test: |
-      system "#{bin}/kshrk", "version"
-    install: |
-      bin.install "kshrk"
 
 release:
   draft: false
