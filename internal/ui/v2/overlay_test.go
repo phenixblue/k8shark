@@ -56,6 +56,7 @@ func newOverlayTestHandler(t *testing.T) (*Handler, *server.Server) {
 		ArchivePath:       path,
 		KubeconfigOut:     filepath.Join(dir, "kubeconfig.yaml"),
 		StartPaused:       true,
+		PauseAtWindowEnd:  true, // park after the pod/namespace records, not before
 		Writable:          true,
 		DisableScheduling: true,
 	})
@@ -82,6 +83,27 @@ func overlayPost(t *testing.T, srv *server.Server, path, body string) {
 	if resp.StatusCode != http.StatusCreated {
 		b, _ := io.ReadAll(resp.Body)
 		t.Fatalf("POST %s = %d, want 201: %s", path, resp.StatusCode, b)
+	}
+}
+
+// overlayPatch strategic-merge-patches an object (adopting it into the
+// overlay if it was only ever captured) through the mock server's real
+// HTTPS API.
+func overlayPatch(t *testing.T, srv *server.Server, path, body string) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPatch, srv.Address()+path, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("new PATCH request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/strategic-merge-patch+json")
+	resp, err := overlayTestClient.Do(req)
+	if err != nil {
+		t.Fatalf("PATCH %s: %v", path, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("PATCH %s = %d, want 200: %s", path, resp.StatusCode, b)
 	}
 }
 
@@ -208,6 +230,33 @@ func TestOverlay_NewCRDResourceType_VisibleEverywhere(t *testing.T) {
 	})
 }
 
+// TestOverlay_UpdateExistingObject_CatalogCountNotDoubled is a regression
+// test: an overlay write that updates an object the capture already had
+// (not a new one) must not inflate the resource catalog's count. Before the
+// fix, OverlayScopes' count (every *live* overlay entry, including updates)
+// was summed on top of the index-derived count unconditionally.
+func TestOverlay_UpdateExistingObject_CatalogCountNotDoubled(t *testing.T) {
+	h, srv := newOverlayTestHandler(t)
+	overlayPatch(t, srv, "/api/v1/namespaces/default/pods/web", `{"metadata":{"labels":{"updated":"true"}}}`)
+
+	var out ResourceCatalog
+	if code := getJSONInto(t, h, h.serveResourceCatalog, "/v2/api/resources", "", &out); code != http.StatusOK {
+		t.Fatalf("status = %d", code)
+	}
+	var row *ResourceCatalogRow
+	for i := range out.Resources {
+		if out.Resources[i].Resource == "pods" {
+			row = &out.Resources[i]
+		}
+	}
+	if row == nil {
+		t.Fatalf("serveResourceCatalog missing pods: %+v", out.Resources)
+	}
+	if row.Count != 1 {
+		t.Errorf("pods Count = %d, want 1 (the same pod, updated in place — not double-counted against the index)", row.Count)
+	}
+}
+
 // TestOverlay_NewNamespace_VisibleInPicker covers a namespace created purely
 // via the overlay (e.g. `helm install --create-namespace`), which — like the
 // CRD case above — has no index entry at all: it must still appear in the
@@ -232,6 +281,28 @@ func TestOverlay_NewNamespace_VisibleInPicker(t *testing.T) {
 	}
 	if found.Resources < 1 {
 		t.Errorf("istio-system.Resources = %d, want >= 1 (the virtualservice)", found.Resources)
+	}
+}
+
+// TestOverlay_NewNamespace_KPIsResourcesIncludesPodsWorkloadsVMs is a
+// regression test: KPIs.Resources for an overlay-only namespace (no index
+// counts at all) must include the exact pod/workload/VM counts, not just the
+// index-derived resTotal — before the fix it stayed at 0 for those kinds.
+func TestOverlay_NewNamespace_KPIsResourcesIncludesPodsWorkloadsVMs(t *testing.T) {
+	h, srv := newOverlayTestHandler(t)
+	overlayPost(t, srv, "/api/v1/namespaces", `{"apiVersion":"v1","kind":"Namespace","metadata":{"name":"istio-system"}}`)
+	overlayPost(t, srv, "/api/v1/namespaces/istio-system/pods",
+		`{"apiVersion":"v1","kind":"Pod","metadata":{"name":"istiod","namespace":"istio-system"},"status":{"phase":"Running"}}`)
+
+	var d NamespaceDetail
+	if code := getJSONInto(t, h, h.serveNamespace, "/v2/api/namespace", "?ns=istio-system", &d); code != http.StatusOK {
+		t.Fatalf("status = %d", code)
+	}
+	if d.KPIs.Pods != 1 {
+		t.Fatalf("KPIs.Pods = %d, want 1", d.KPIs.Pods)
+	}
+	if d.KPIs.Resources < 1 {
+		t.Errorf("KPIs.Resources = %d, want >= 1 (must include the overlay-only pod)", d.KPIs.Resources)
 	}
 }
 

@@ -292,7 +292,16 @@ func (h *Handler) serveResourceCatalog(w http.ResponseWriter, r *http.Request) {
 	// Resource kinds/namespaces that exist only because of overlay writes (a
 	// CRD installed at runtime, or objects in a namespace the capture never
 	// saw) have no index entry at all, so the loop above never visits them —
-	// add or extend their rows here from the overlay directly.
+	// add or extend their rows here from the overlay directly. zeroIndexCount
+	// snapshots, before any overlay scope is folded in, which rows had no
+	// index-derived count at all: OverlayScopes' Count is every *live* overlay
+	// entry (including in-place updates to already-captured objects), so
+	// summing it into an already-nonzero index count would double-count —
+	// only fill Count in when the index gave us nothing for this resource.
+	zeroIndexCount := map[key]bool{}
+	for k, row := range agg {
+		zeroIndexCount[k] = row.Count == 0
+	}
 	for _, sc := range h.Overlay.OverlayScopes() {
 		k := key{sc.Group, sc.Version, sc.Resource}
 		row := agg[k]
@@ -302,11 +311,14 @@ func (h *Handler) serveResourceCatalog(w http.ResponseWriter, r *http.Request) {
 				Kind: kindFromSample(sc.Sample, sc.Resource), Link: resourceLink(sc.Resource, ""),
 			}
 			agg[k] = row
+			zeroIndexCount[k] = true // brand-new row — nothing from the index at all
 		}
 		if sc.Namespace != "" {
 			row.Namespaced = true
 		}
-		row.Count += sc.Count
+		if zeroIndexCount[k] {
+			row.Count += sc.Count
+		}
 	}
 
 	out := ResourceCatalog{Capture: h.captureMeta()}

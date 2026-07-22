@@ -13,7 +13,13 @@ import "encoding/json"
 
 // Store returns the CaptureStore backing this server, so a second in-process
 // reader (the web UI) can share it instead of loading the archive again.
-func (s *Server) Store() *CaptureStore { return s.handler.store }
+// Returns nil on a nil *Server, matching every other accessor in this file.
+func (s *Server) Store() *CaptureStore {
+	if s == nil {
+		return nil
+	}
+	return s.handler.store
+}
 
 // OverlayScope identifies a group/version/resource/namespace combination with
 // at least one live object in the writable overlay, plus a representative

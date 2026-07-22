@@ -22,6 +22,16 @@ func TestServer_Store_ReturnsSharedInstance(t *testing.T) {
 	}
 }
 
+// TestServer_Store_NilReceiver covers the contract every accessor in this
+// file shares: nil-safe on a nil *Server, not just on a Server without a
+// writable overlay.
+func TestServer_Store_NilReceiver(t *testing.T) {
+	var srv *Server
+	if got := srv.Store(); got != nil {
+		t.Errorf("Store() on nil *Server = %v, want nil", got)
+	}
+}
+
 // TestServer_OverlayAccessors_NilSafeWithoutOverlay covers a plain `open`/`ui`
 // server (no --writable): every overlay accessor must behave as an empty
 // overlay rather than panicking, so a caller (the web UI) doesn't need to

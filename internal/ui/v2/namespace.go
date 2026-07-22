@@ -103,12 +103,18 @@ func (h *Handler) buildNamespaceDetail(ns string, at time.Time) (*NamespaceDetai
 		},
 	}
 
-	// Per-resource counts scoped to this ns (no body reads).
+	// Per-resource counts scoped to this ns (no body reads). Pods/workloads/
+	// VMs are excluded from resTotal — those KPIs are set below from the
+	// exact, overlay-merged row lists, and KPIs.Resources is computed once at
+	// the end from resTotal plus those exact figures, so nothing is
+	// double-counted or missed for an overlay-only namespace.
 	byRes := store.NamespaceItemCountsAt(at)[ns]
 	resTotal := map[string]int{}
 	for res, n := range byRes {
+		if workloadResources[res] || res == "pods" || vmResources[res] {
+			continue
+		}
 		resTotal[res] = n
-		d.KPIs.Resources += n
 		switch res {
 		case "configmaps":
 			d.KPIs.ConfigMaps += n
@@ -118,9 +124,7 @@ func (h *Handler) buildNamespaceDetail(ns string, at time.Time) (*NamespaceDetai
 	}
 	// Resource kinds that exist in this namespace only because of overlay
 	// writes (e.g. a CRD's custom resources) have no index entry at all, so
-	// the loop above misses them entirely. Pods/workloads/VMs are excluded
-	// here — their KPIs are set below from the exact, already overlay-merged
-	// row lists rather than this approximate index-derived count.
+	// the loop above misses them entirely.
 	if h.Overlay != nil {
 		for _, sc := range h.Overlay.OverlayScopes() {
 			if sc.Namespace != ns || sc.Count == 0 || resTotal[sc.Resource] != 0 ||
@@ -128,7 +132,6 @@ func (h *Handler) buildNamespaceDetail(ns string, at time.Time) (*NamespaceDetai
 				continue
 			}
 			resTotal[sc.Resource] = sc.Count
-			d.KPIs.Resources += sc.Count
 			switch sc.Resource {
 			case "configmaps":
 				d.KPIs.ConfigMaps += sc.Count
@@ -165,6 +168,14 @@ func (h *Handler) buildNamespaceDetail(ns string, at time.Time) (*NamespaceDetai
 
 	// Resource tiles: every non-workload, non-pod, non-vm resource.
 	d.Resources = buildNamespaceTiles(ns, resTotal)
+
+	// KPIs.Resources sums every resource kind in this namespace: the
+	// non-pod/workload/vm kinds in resTotal, plus the exact pod/workload/vm
+	// counts just computed (kept out of resTotal to avoid double-counting).
+	for _, n := range resTotal {
+		d.KPIs.Resources += n
+	}
+	d.KPIs.Resources += d.KPIs.Pods + d.KPIs.Workloads + d.KPIs.VirtualMachines
 
 	// Pod-state sparkline scoped to this namespace.
 	d.Sparkline = h.sparklineForNS(ns, sparkBucketCount)
