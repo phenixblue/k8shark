@@ -8,6 +8,7 @@ import (
 	"embed"
 	"io/fs"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/phenixblue/k8shark/internal/server"
@@ -25,6 +26,24 @@ type Handler struct {
 	// Clock, when non-nil, puts the dashboard in replay mode: resolveAt follows
 	// the clock and /v2/api/replay drives it (see replay.go).
 	Clock *server.ReplayClock
+	// Overlay is the mock API server backing this same archive. Every
+	// list/detail read merges its writable-overlay writes (kubectl/helm/kwok/
+	// controller-manager) over the captured state, so the dashboard shows
+	// live changes instead of only what was captured. Its accessor methods
+	// (OverlayScopes, MergeOverlayList, ...) are nil-safe on both a nil
+	// *Server (plain `open`, or a caller that didn't wire one up) and a
+	// Server without a writable overlay — callers here can call them on
+	// h.Overlay directly without checking either case first.
+	Overlay *server.Server
+
+	// discoveryMetaOnce/discoveryMetaCache memoize discoveryResourceMeta
+	// (objects.go): it's derived purely from the capture's own discovery
+	// documents, which never change for a given archive, but computing it
+	// scans the whole index and re-parses every discovery document — worth
+	// doing once per Handler (one per running dashboard) rather than per
+	// request.
+	discoveryMetaOnce  sync.Once
+	discoveryMetaCache map[string]discMeta
 }
 
 // Mount registers all /v2/* routes on mux. The /v2/ HTML shell is served

@@ -149,6 +149,7 @@ func runUI(cmd *cobra.Command, args []string) error {
 	}
 
 	uiSrv, err := ui.Open(ui.OpenOptions{
+		MockServer:  mockSrv,
 		ArchivePath: archivePath,
 		Port:        uiPort,
 		At:          at,

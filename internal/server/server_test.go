@@ -196,6 +196,31 @@ func TestParseReplayAt(t *testing.T) {
 	})
 }
 
+// TestServer_Open_ClosesArchiveOnShutdown is a regression test for the
+// file-handle leak fixed in #91: Shutdown must release the archive's
+// underlying file descriptor. Asserted by checking that a second Close on the
+// archive errors — proving Shutdown already closed it (closing an
+// already-closed *os.File returns os.ErrClosed). internal/ui no longer opens
+// its own archive (it shares this one via Server.Store()), so this server is
+// now the only place that owns and must close it — see docs/CLAUDE.md's
+// "Archive lifecycle" section.
+func TestServer_Open_ClosesArchiveOnShutdown(t *testing.T) {
+	archivePath := buildTestArchive(t)
+	srv, err := Open(OpenOptions{ArchivePath: archivePath, KubeconfigOut: filepath.Join(t.TempDir(), "kubeconfig.yaml")})
+	if err != nil {
+		t.Fatalf("server.Open: %v", err)
+	}
+	if srv.ar == nil {
+		t.Fatal("Server did not retain the archive; it can never be closed")
+	}
+
+	srv.Shutdown()
+
+	if err := srv.ar.Close(); err == nil {
+		t.Error("archive still open after Shutdown; expected it to be closed (file-handle leak)")
+	}
+}
+
 func TestServer_Open_RejectsOutOfRangeAt(t *testing.T) {
 	archivePath := buildTestArchive(t)
 	_, err := Open(OpenOptions{ArchivePath: archivePath, At: "1900-01-01T00:00:00Z"})

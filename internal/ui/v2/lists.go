@@ -1,11 +1,9 @@
 package v2
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"sort"
-	"strings"
 	"time"
 )
 
@@ -111,35 +109,19 @@ func (h *Handler) serveAllWorkloads(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// loadAllPodRows walks every per-namespace pod LIST in the index and builds a
-// flat, sorted slice of rows. Returns the rows and the count of unhealthy pods
-// (matching the overview unhealthy_pods KPI: pods whose health has issues).
+// loadAllPodRows walks every per-namespace pod LIST in the index (plus any
+// overlay-only namespace) and builds a flat, sorted slice of rows. Returns the
+// rows and the count of unhealthy pods (matching the overview unhealthy_pods
+// KPI: pods whose health has issues).
 func (h *Handler) loadAllPodRows(at time.Time) ([]ClusterPodRow, int) {
-	store := h.Store
 	var rows []ClusterPodRow
 	unhealthy := 0
-	for path, entry := range store.Index {
-		if entry == nil || len(entry.Seqs) == 0 {
+	for _, path := range h.resourcePathsFor("pods") {
+		_, _, _, ns := parseAPIPath(path)
+		if ns == "" {
 			continue
 		}
-		if strings.Contains(path, "?") {
-			continue // skip Table and other query-suffix variants
-		}
-		_, _, resource, ns := parseAPIPath(path)
-		if resource != "pods" || ns == "" {
-			continue
-		}
-		body, code, err := store.ReconstructAt(path, at)
-		if err != nil || code != http.StatusOK || len(body) == 0 {
-			continue
-		}
-		var list struct {
-			Items []json.RawMessage `json:"items"`
-		}
-		if err := json.Unmarshal(body, &list); err != nil {
-			continue
-		}
-		for _, raw := range list.Items {
+		for _, raw := range h.reconstructMergedItems(path, at) {
 			name := getName(raw)
 			if name == "" {
 				continue
@@ -169,10 +151,9 @@ func (h *Handler) loadAllPodRows(at time.Time) ([]ClusterPodRow, int) {
 	return rows, unhealthy
 }
 
-// loadAllWorkloadRows walks every per-namespace workload LIST in the index and
-// builds a flat, sorted slice of rows.
+// loadAllWorkloadRows walks every per-namespace workload LIST in the index
+// (plus any overlay-only namespace) and builds a flat, sorted slice of rows.
 func (h *Handler) loadAllWorkloadRows(at time.Time) []ClusterWorkloadRow {
-	store := h.Store
 	// resource → (full kind, short label) for the workload kinds we surface.
 	kinds := map[string]struct{ kind, short string }{
 		"deployments":  {"Deployment", "Deploy"},
@@ -182,46 +163,34 @@ func (h *Handler) loadAllWorkloadRows(at time.Time) []ClusterWorkloadRow {
 		"jobs":         {"Job", "Job"},
 		"cronjobs":     {"CronJob", "CronJob"},
 	}
+	wanted := make(map[string]bool, len(kinds))
+	for resource := range kinds {
+		wanted[resource] = true
+	}
+	pathsByResource := h.resourcePathsForResources(wanted)
+
 	var rows []ClusterWorkloadRow
-	for path, entry := range store.Index {
-		if entry == nil || len(entry.Seqs) == 0 {
-			continue
-		}
-		if strings.Contains(path, "?") {
-			continue
-		}
-		_, _, resource, ns := parseAPIPath(path)
-		if ns == "" {
-			continue
-		}
-		k, ok := kinds[resource]
-		if !ok {
-			continue
-		}
-		body, code, err := store.ReconstructAt(path, at)
-		if err != nil || code != http.StatusOK || len(body) == 0 {
-			continue
-		}
-		var list struct {
-			Items []json.RawMessage `json:"items"`
-		}
-		if err := json.Unmarshal(body, &list); err != nil {
-			continue
-		}
-		for _, raw := range list.Items {
-			row := classifyWorkload(k.short, k.kind, raw, at)
-			rows = append(rows, ClusterWorkloadRow{
-				Namespace: ns,
-				Kind:      k.kind,
-				Resource:  resource,
-				Name:      row.Name,
-				Status:    row.Status,
-				Severity:  row.Severity,
-				Restarts:  row.Restarts,
-				Age:       row.Age,
-				Link:      "#/ns/" + escapeHash(ns),
-				Labels:    getLabels(raw),
-			})
+	for resource, k := range kinds {
+		for _, path := range pathsByResource[resource] {
+			_, _, _, ns := parseAPIPath(path)
+			if ns == "" {
+				continue
+			}
+			for _, raw := range h.reconstructMergedItems(path, at) {
+				row := classifyWorkload(k.short, k.kind, raw, at)
+				rows = append(rows, ClusterWorkloadRow{
+					Namespace: ns,
+					Kind:      k.kind,
+					Resource:  resource,
+					Name:      row.Name,
+					Status:    row.Status,
+					Severity:  row.Severity,
+					Restarts:  row.Restarts,
+					Age:       row.Age,
+					Link:      "#/ns/" + escapeHash(ns),
+					Labels:    getLabels(raw),
+				})
+			}
 		}
 	}
 	sort.SliceStable(rows, func(i, j int) bool {

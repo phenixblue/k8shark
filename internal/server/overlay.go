@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"sort"
 	"sync"
 )
 
@@ -390,6 +391,57 @@ func (o *overlay) get(group, version, resource, namespace, name string) (*overla
 	defer o.mu.RUnlock()
 	e, ok := o.items[overlayKey(group, version, resource, namespace, name)]
 	return e, ok
+}
+
+// overlayScope summarizes the live (non-tombstoned) overlay entries for one
+// group/version/resource/namespace combination — used by callers (the web UI)
+// that need to discover object kinds/namespaces which exist only because of
+// overlay writes and have no entry at all in the capture's static index (e.g.
+// custom resources of a CRD installed at runtime, or a namespace created by
+// `helm install --create-namespace`).
+type overlayScope struct {
+	group, version, resource, namespace string
+	count                               int
+	sample                              json.RawMessage // one live object's body, for Kind inference
+}
+
+// scopes returns every distinct scope with at least one live overlay entry,
+// sorted for deterministic output.
+func (o *overlay) scopes() []overlayScope {
+	o.mu.RLock()
+	defer o.mu.RUnlock()
+	type key struct{ group, version, resource, namespace string }
+	agg := map[key]*overlayScope{}
+	for _, e := range o.items {
+		if e.deleted {
+			continue
+		}
+		k := key{e.group, e.version, e.resource, e.namespace}
+		s, ok := agg[k]
+		if !ok {
+			s = &overlayScope{group: e.group, version: e.version, resource: e.resource, namespace: e.namespace, sample: e.obj}
+			agg[k] = s
+		}
+		s.count++
+	}
+	out := make([]overlayScope, 0, len(agg))
+	for _, s := range agg {
+		out = append(out, *s)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if a.group != b.group {
+			return a.group < b.group
+		}
+		if a.version != b.version {
+			return a.version < b.version
+		}
+		if a.resource != b.resource {
+			return a.resource < b.resource
+		}
+		return a.namespace < b.namespace
+	})
+	return out
 }
 
 // applyToList merges the overlay over a base list's items for a given list scope

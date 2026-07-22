@@ -10,6 +10,7 @@ import (
 
 	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/capture"
+	"github.com/phenixblue/k8shark/internal/server"
 )
 
 func TestParseReplayAt(t *testing.T) {
@@ -79,25 +80,28 @@ func TestServeRoot(t *testing.T) {
 	})
 }
 
-// TestOpen_ClosesArchiveOnShutdown is a regression test for the file-handle
-// leak introduced when the UI moved to the held-open ZIP archive: Shutdown must
-// release the archive's underlying file descriptor. We assert this by checking
-// that a second Close on the archive errors — proving Shutdown already closed it
-// (closing an already-closed *os.File returns os.ErrClosed).
-func TestOpen_ClosesArchiveOnShutdown(t *testing.T) {
+// TestOpen_DoesNotOwnArchive covers the ui/server split: the mock API server
+// (MockServer) owns the archive now — Open reuses its store rather than
+// loading a second copy — so ui.Server.Shutdown must not touch it. We assert
+// this by shutting the UI server down first and checking the archive is still
+// readable through the (still-running) mock server's store.
+func TestOpen_DoesNotOwnArchive(t *testing.T) {
 	path := writeMinimalArchive(t)
-	srv, err := Open(OpenOptions{ArchivePath: path, Port: "0"})
+	mockSrv, err := server.Open(server.OpenOptions{ArchivePath: path, Port: "0"})
+	if err != nil {
+		t.Fatalf("server.Open: %v", err)
+	}
+	defer mockSrv.Shutdown()
+
+	uiSrv, err := Open(OpenOptions{MockServer: mockSrv, ArchivePath: path, Port: "0"})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	if srv.archive == nil {
-		t.Fatal("Server did not retain the archive; it can never be closed")
-	}
 
-	srv.Shutdown()
+	uiSrv.Shutdown()
 
-	if err := srv.archive.Close(); err == nil {
-		t.Error("archive still open after Shutdown; expected it to be closed (file-handle leak)")
+	if _, _, err := mockSrv.Store().ReconstructAt("/api/v1/namespaces/default/pods", time.Time{}); err != nil {
+		t.Errorf("mock server's store unusable after ui.Server.Shutdown (archive closed prematurely): %v", err)
 	}
 }
 
@@ -105,7 +109,13 @@ func TestOpen_ClosesArchiveOnShutdown(t *testing.T) {
 // "/" redirects to /v2/ and the v2 API responds.
 func TestOpen_ServesV2(t *testing.T) {
 	path := writeMinimalArchive(t)
-	srv, err := Open(OpenOptions{ArchivePath: path, Port: "0"})
+	mockSrv, err := server.Open(server.OpenOptions{ArchivePath: path, Port: "0"})
+	if err != nil {
+		t.Fatalf("server.Open: %v", err)
+	}
+	defer mockSrv.Shutdown()
+
+	srv, err := Open(OpenOptions{MockServer: mockSrv, ArchivePath: path, Port: "0"})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

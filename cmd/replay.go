@@ -135,7 +135,7 @@ func runReplay(cmd *cobra.Command, args []string) error {
 	uiPort, _ := cmd.Flags().GetString("ui-port")
 	var uiSrv *ui.Server
 	if uiEnabled {
-		uiSrv, err = ui.Open(ui.OpenOptions{ArchivePath: args[0], Port: uiPort, Verbose: verbose, Clock: clock})
+		uiSrv, err = ui.Open(ui.OpenOptions{MockServer: srv, ArchivePath: args[0], Port: uiPort, Verbose: verbose, Clock: clock})
 		if err != nil {
 			srv.Shutdown()
 			return fmt.Errorf("starting dashboard: %w", err)

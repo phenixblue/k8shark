@@ -128,6 +128,41 @@ func TestServeObject_NotFound(t *testing.T) {
 	}
 }
 
+// TestServeObject_CapturedEmptyList_FoundWithEmptyItems is a regression test:
+// a whole-list view (name == "") of a path the capture recorded as a 200 with
+// zero items must read as Found=true with "items": [], not as not-found and
+// not as "items": null — a genuinely empty captured list is a real, distinct
+// answer from "this path was never captured".
+func TestServeObject_CapturedEmptyList_FoundWithEmptyItems(t *testing.T) {
+	now := time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC)
+	emptyCMList := `{"apiVersion":"v1","kind":"ConfigMapList","items":[]}`
+	recs := []*capture.Record{
+		{ID: "r1", CapturedAt: now, APIPath: "/api/v1/namespaces/default/configmaps", HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(emptyCMList)},
+	}
+	idx := capture.Index{
+		"/api/v1/namespaces/default/configmaps": {APIPath: "/api/v1/namespaces/default/configmaps", Seqs: []int{0}, Times: []time.Time{now}},
+	}
+	meta := &capture.CaptureMetadata{CaptureID: "v2-obj-empty-test", CapturedAt: now.Add(-5 * time.Minute), CapturedUntil: now, RecordCount: len(recs)}
+	h := &Handler{Store: buildV2TestStore(t, recs, idx, meta), At: now}
+
+	req := httptest.NewRequest(http.MethodGet, "/v2/api/object?path=%2Fapi%2Fv1%2Fnamespaces%2Fdefault%2Fconfigmaps", nil)
+	w := httptest.NewRecorder()
+	h.serveObject(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	var d ObjectDetail
+	if err := json.Unmarshal(w.Body.Bytes(), &d); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !d.Found {
+		t.Errorf("Found = false, want true for a captured-empty list")
+	}
+	if !strings.Contains(d.JSON, `"items": []`) {
+		t.Errorf("JSON = %s, want an explicit empty items array, not null", d.JSON)
+	}
+}
+
 func TestServeObject_MissingPath(t *testing.T) {
 	h := newObjectTestHandler(t)
 	req := httptest.NewRequest(http.MethodGet, "/v2/api/object?name=x", nil)
@@ -135,6 +170,43 @@ func TestServeObject_MissingPath(t *testing.T) {
 	h.serveObject(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", w.Code)
+	}
+}
+
+// TestDiscoveryResourceMeta_CachedAcrossCalls is a regression test: the
+// capture's discovery documents never change, so discoveryResourceMeta must
+// compute its index scan + discovery-document parse once per Handler and
+// reuse the result, not redo it on every call (serveResourceList and
+// serveResourceCatalog both call it, once per request).
+func TestDiscoveryResourceMeta_CachedAcrossCalls(t *testing.T) {
+	now := time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC)
+	discoveryDoc := `{"kind":"APIResourceList","groupVersion":"apps/v1","resources":[` +
+		`{"name":"deployments","singularName":"deployment","kind":"Deployment","shortNames":["deploy"]}]}`
+	recs := []*capture.Record{
+		{ID: "d1", CapturedAt: now, APIPath: "/apis/apps/v1", HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(discoveryDoc)},
+	}
+	idx := capture.Index{
+		"/apis/apps/v1": {APIPath: "/apis/apps/v1", Seqs: []int{0}, Times: []time.Time{now}},
+	}
+	meta := &capture.CaptureMetadata{CaptureID: "discovery-meta-test", CapturedAt: now.Add(-5 * time.Minute), CapturedUntil: now, RecordCount: len(recs)}
+	h := &Handler{Store: buildV2TestStore(t, recs, idx, meta), At: now}
+
+	first := h.discoveryResourceMeta()
+	if len(first) == 0 {
+		t.Fatal("discoveryResourceMeta() returned empty — fixture has no discovery docs to assert caching against")
+	}
+	// Mutate the map returned by the first call, then call again: if the
+	// result is truly cached (the same map instance), the second call sees
+	// the mutation too. If discoveryResourceMeta rebuilt it instead, the
+	// second call would come back full-sized again.
+	before := len(first)
+	for k := range first {
+		delete(first, k)
+		break
+	}
+	second := h.discoveryResourceMeta()
+	if len(second) != before-1 {
+		t.Errorf("discoveryResourceMeta() len = %d after mutating the prior result, want %d — not returning the cached map", len(second), before-1)
 	}
 }
 
