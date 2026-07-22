@@ -1,0 +1,31 @@
+# k8shark capture config — multi-namespace example
+#
+# Run with:  kshrk capture --config examples/multi-namespace/config.yaml
+# See:       examples/multi-namespace/README.md
+
+duration: 45s
+output: ./examples/multi-namespace/capture.kshrk
+
+resources:
+  - group: ""
+    version: v1
+    resource: pods
+    namespaces: [team-frontend, team-backend, team-data]
+    interval: 15s
+
+  - group: apps
+    version: v1
+    resource: deployments
+    namespaces: [team-frontend, team-backend, team-data]
+    interval: 15s
+
+  - group: ""
+    version: v1
+    resource: services
+    namespaces: [team-frontend, team-backend, team-data]
+    interval: 30s
+
+# Tip: swap the explicit list above for a wildcard to capture every namespace
+# discoverable at capture start, instead of naming each one:
+#
+#   namespaces: ["*"]

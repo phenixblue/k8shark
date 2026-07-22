@@ -1,7 +1,11 @@
-# k8shark capture config
+# k8shark capture config — generic full-cluster starter
 #
 # Run with:  kshrk capture --config examples/k8shark.yaml
 # See also:  docs/config.md for full field reference and more examples
+#
+# Looking for a runnable, self-contained example (with a pre-recorded
+# capture you can replay right away)? See examples/README.md instead — this
+# file is a template to adapt to your own cluster, not paired with a capture.
 
 # How long to run the capture. Polling continues until time runs out.
 duration: 10m

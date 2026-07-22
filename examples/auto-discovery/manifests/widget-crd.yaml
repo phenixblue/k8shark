@@ -1,0 +1,44 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: widgets.demo.k8shark.io
+spec:
+  group: demo.k8shark.io
+  scope: Namespaced
+  names:
+    plural: widgets
+    singular: widget
+    kind: Widget
+    shortNames:
+      - wg
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                color:
+                  type: string
+                size:
+                  type: string
+                  enum: [small, medium, large]
+              required: [color, size]
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Color
+          type: string
+          jsonPath: .spec.color
+        - name: Size
+          type: string
+          jsonPath: .spec.size
