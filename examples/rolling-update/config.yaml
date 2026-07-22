@@ -4,7 +4,7 @@
 # (trigger a rollout partway through — see README.md)
 
 duration: 90s
-output: ./capture.kshrk
+output: ./examples/rolling-update/capture.kshrk
 
 resources:
   - group: ""

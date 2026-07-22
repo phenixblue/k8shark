@@ -4,7 +4,7 @@
 # See:       examples/basic-workloads/README.md
 
 duration: 45s
-output: ./capture.kshrk
+output: ./examples/basic-workloads/capture.kshrk
 
 resources:
   - group: ""

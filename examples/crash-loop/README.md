@@ -46,7 +46,7 @@ INFO      workload  crash-demo/flaky-worker-897c5486c  Container without resourc
 
 `config.yaml` sets `logs: 50` and `previousLogs: true` on the `pods` entry so
 both the current and terminated container logs are captured (see
-[docs/config.md](../../docs/config.md#capturing-pod-logs)), and `dedup: false`
+[docs/config.md](../../docs/config.md#resource-entry-fields)), and `dedup: false`
 on `events` so every event is kept rather than only the first occurrence.
 
 Deploy a container that always exits non-zero and give it a minute to cycle

@@ -4,7 +4,7 @@
 # See:       examples/crash-loop/README.md
 
 duration: 30s
-output: ./capture.kshrk
+output: ./examples/crash-loop/capture.kshrk
 
 resources:
   - group: ""

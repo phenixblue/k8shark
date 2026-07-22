@@ -17,9 +17,10 @@ no live cluster required, plus the `config.yaml` used to record it and a
 ```sh
 # Build kshrk if you haven't already
 make build
+export PATH="$PWD:$PATH"
 
 # Replay any example — starts a mock API server + writes a kubeconfig
-./kshrk open examples/basic-workloads/capture.kshrk
+kshrk open examples/basic-workloads/capture.kshrk
 
 # In another shell
 export KUBECONFIG=~/.kube/k8shark-<id>.yaml   # path printed above
@@ -29,7 +30,7 @@ kubectl get pods -n basic-demo -o wide
 Or browse it visually:
 
 ```sh
-./kshrk ui examples/basic-workloads/capture.kshrk
+kshrk ui examples/basic-workloads/capture.kshrk
 ```
 
 Each example's own `README.md` has the specific `kubectl` / `kshrk` commands
@@ -45,7 +46,7 @@ KinD cluster works fine — see
 `config.yaml` and adjust `namespaces:` to match your own setup:
 
 ```sh
-./kshrk capture --config examples/crash-loop/config.yaml
+kshrk capture --config examples/crash-loop/config.yaml
 ```
 
 For a generic, full-cluster starting point instead of one of these narrow

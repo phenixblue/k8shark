@@ -4,7 +4,7 @@
 # See:       examples/multi-namespace/README.md
 
 duration: 45s
-output: ./capture.kshrk
+output: ./examples/multi-namespace/capture.kshrk
 
 resources:
   - group: ""
