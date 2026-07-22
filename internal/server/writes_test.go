@@ -2186,6 +2186,283 @@ func TestOverlay_CRDEstablishedOnCreate(t *testing.T) {
 	}
 }
 
+// TestOverlay_CRDMergesIntoCapturedDiscovery verifies a CRD created via the
+// overlay under a group/version a capture already recorded a discovery
+// document for (unlike TestOverlay_CRDRegistersDiscoveryOnCreate's
+// brand-new group, which was never captured in the first place) still shows
+// up in discovery, and that the already-captured resource in the same
+// document keeps its original fields (e.g. verbs) untouched. /apis and
+// /apis/<group>/<version> are the one read path a capture (almost) always
+// records — naively serving that frozen captured document verbatim
+// (tryServeFromStore) would otherwise permanently mask any resource type a
+// CRD registers afterward via the overlay. Found via Copilot review of the
+// original CRD discovery registration fix.
+func TestOverlay_CRDMergesIntoCapturedDiscovery(t *testing.T) {
+	store := buildTestStore(t, map[string][]byte{
+		"/apis": []byte(`{"kind":"APIGroupList","apiVersion":"v1","groups":[
+			{"name":"networking.istio.io","versions":[{"groupVersion":"networking.istio.io/v1","version":"v1"}],"preferredVersion":{"groupVersion":"networking.istio.io/v1","version":"v1"}}
+		]}`),
+		"/apis/networking.istio.io/v1": []byte(`{"kind":"APIResourceList","apiVersion":"v1","groupVersion":"networking.istio.io/v1","resources":[
+			{"name":"gateways","namespaced":true,"kind":"Gateway","verbs":["create","delete","get","list","patch","update","watch"]}
+		]}`),
+	})
+	store.discoveryEnrichmentDone.Wait() // deterministically wait for the async enrichment pass
+
+	// No fake replay clock here: buildTestStore stamps captured records with
+	// the real wall-clock time, so a clock pinned to an arbitrary past instant
+	// would make Latest's "at or before" filter reject them as being from the
+	// future — unlike buildTestStoreWithWatch (writableTestStore), which lets
+	// a test pin explicit record times to match a fake clock.
+	h := newHandler(store, time.Time{}, false)
+	h.overlay = newOverlay()
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	// Create a VirtualService CRD under the SAME group/version the capture
+	// already has a discovery document for.
+	crdBody := `{"apiVersion":"apiextensions.k8s.io/v1","kind":"CustomResourceDefinition",
+		"metadata":{"name":"virtualservices.networking.istio.io"},
+		"spec":{"group":"networking.istio.io","scope":"Namespaced",
+			"names":{"kind":"VirtualService","listKind":"VirtualServiceList","plural":"virtualservices","singular":"virtualservice"},
+			"versions":[{"name":"v1","served":true,"storage":true}]}}`
+	code, out := doReq(t, http.MethodPost, srv.URL+"/apis/apiextensions.k8s.io/v1/customresourcedefinitions", "application/json", crdBody)
+	if code != http.StatusCreated {
+		t.Fatalf("create CRD: status %d: %s", code, out)
+	}
+
+	code, out = doReq(t, http.MethodGet, srv.URL+"/apis/networking.istio.io/v1", "", "")
+	if code != http.StatusOK {
+		t.Fatalf("GET /apis/networking.istio.io/v1: status %d: %s", code, out)
+	}
+	var resList struct {
+		Resources []struct {
+			Name  string   `json:"name"`
+			Verbs []string `json:"verbs"`
+		} `json:"resources"`
+	}
+	if err := json.Unmarshal(out, &resList); err != nil {
+		t.Fatalf("decode: %v\n%s", err, out)
+	}
+	var gateways, virtualservices bool
+	for _, r := range resList.Resources {
+		switch r.Name {
+		case "gateways":
+			gateways = true
+			if !contains(r.Verbs, "create") {
+				t.Errorf("gateways lost its originally captured verbs %v — should be untouched by the merge", r.Verbs)
+			}
+		case "virtualservices":
+			virtualservices = true
+		}
+	}
+	if !gateways {
+		t.Errorf("gateways (originally captured) missing after merge: %s", out)
+	}
+	if !virtualservices {
+		t.Errorf("virtualservices (registered by the runtime CRD create) missing from /apis/networking.istio.io/v1 — the captured document shadowed it: %s", out)
+	}
+
+	code, out = doReq(t, http.MethodGet, srv.URL+"/apis", "", "")
+	if code != http.StatusOK {
+		t.Fatalf("GET /apis: status %d: %s", code, out)
+	}
+	if !strings.Contains(string(out), `"networking.istio.io"`) {
+		t.Errorf("/apis lost the already-captured networking.istio.io group: %s", out)
+	}
+}
+
+// TestOverlay_CRDNewVersionMergesIntoCapturedGroup verifies a CRD that adds a
+// *new served version* to a group /apis already lists (rather than an
+// entirely new group) is merged into that group's own versions array in
+// /apis, not just visible via /apis/<group>/<version> and /apis/<group>.
+// groupVersionsByGroup's exclude set is keyed by group name, so a naive
+// "skip any resource whose group is already known" merge would drop this
+// version from /apis entirely — a discovery client that only walks /apis's
+// per-group version lists (rather than trying /apis/<group> too) would never
+// even attempt the new version. Found via Copilot review.
+func TestOverlay_CRDNewVersionMergesIntoCapturedGroup(t *testing.T) {
+	store := buildTestStore(t, map[string][]byte{
+		"/apis": []byte(`{"kind":"APIGroupList","apiVersion":"v1","groups":[
+			{"name":"networking.istio.io","versions":[{"groupVersion":"networking.istio.io/v1","version":"v1"}],"preferredVersion":{"groupVersion":"networking.istio.io/v1","version":"v1"}}
+		]}`),
+		"/apis/networking.istio.io/v1": []byte(`{"kind":"APIResourceList","apiVersion":"v1","groupVersion":"networking.istio.io/v1","resources":[
+			{"name":"gateways","namespaced":true,"kind":"Gateway"}
+		]}`),
+	})
+	store.discoveryEnrichmentDone.Wait()
+
+	h := newHandler(store, time.Time{}, false) // see TestOverlay_CRDMergesIntoCapturedDiscovery for why no fake clock
+	h.overlay = newOverlay()
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	// A CRD registering a NEW version (v1beta1) under the ALREADY-CAPTURED
+	// networking.istio.io group.
+	crdBody := `{"apiVersion":"apiextensions.k8s.io/v1","kind":"CustomResourceDefinition",
+		"metadata":{"name":"sidecars.networking.istio.io"},
+		"spec":{"group":"networking.istio.io","scope":"Namespaced",
+			"names":{"kind":"Sidecar","listKind":"SidecarList","plural":"sidecars","singular":"sidecar"},
+			"versions":[{"name":"v1beta1","served":true,"storage":true}]}}`
+	code, out := doReq(t, http.MethodPost, srv.URL+"/apis/apiextensions.k8s.io/v1/customresourcedefinitions", "application/json", crdBody)
+	if code != http.StatusCreated {
+		t.Fatalf("create CRD: status %d: %s", code, out)
+	}
+
+	code, out = doReq(t, http.MethodGet, srv.URL+"/apis", "", "")
+	if code != http.StatusOK {
+		t.Fatalf("GET /apis: status %d: %s", code, out)
+	}
+	var doc struct {
+		Groups []struct {
+			Name     string `json:"name"`
+			Versions []struct {
+				GroupVersion string `json:"groupVersion"`
+			} `json:"versions"`
+		} `json:"groups"`
+	}
+	if err := json.Unmarshal(out, &doc); err != nil {
+		t.Fatalf("decode: %v\n%s", err, out)
+	}
+	var found *struct {
+		Name     string
+		Versions []string
+	}
+	for _, g := range doc.Groups {
+		if g.Name != "networking.istio.io" {
+			continue
+		}
+		var vs []string
+		for _, v := range g.Versions {
+			vs = append(vs, v.GroupVersion)
+		}
+		found = &struct {
+			Name     string
+			Versions []string
+		}{g.Name, vs}
+	}
+	if found == nil {
+		t.Fatalf("networking.istio.io group missing from /apis: %s", out)
+	}
+	if !contains(found.Versions, "networking.istio.io/v1") {
+		t.Errorf("networking.istio.io lost its originally captured v1 version: %v", found.Versions)
+	}
+	if !contains(found.Versions, "networking.istio.io/v1beta1") {
+		t.Errorf("networking.istio.io/v1beta1 (registered by the runtime CRD create) missing from /apis's group entry: %v", found.Versions)
+	}
+}
+
+// TestOverlay_CRDMissingKindSkipsDiscoveryRegistration verifies a CRD whose
+// spec.names.kind is missing (a malformed body a real apiserver's OpenAPI
+// validation would reject, but registerCRDResourceInfo is deliberately
+// best-effort) doesn't get registered in discovery at all — falling through
+// to mergeResourceInfo's resourceToKind heuristic would guess a Kind that's
+// almost certainly wrong for a CRD (the heuristic is only reliable for
+// built-in types), polluting discovery with bad data. Found via Copilot
+// review.
+func TestOverlay_CRDMissingKindSkipsDiscoveryRegistration(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	crdBody := `{"apiVersion":"apiextensions.k8s.io/v1","kind":"CustomResourceDefinition",
+		"metadata":{"name":"thingamajigs.example.com"},
+		"spec":{"group":"example.com","scope":"Namespaced",
+			"names":{"plural":"thingamajigs","singular":"thingamajig"},
+			"versions":[{"name":"v1","served":true,"storage":true}]}}`
+	code, out := doReq(t, http.MethodPost, srv.URL+"/apis/apiextensions.k8s.io/v1/customresourcedefinitions", "application/json", crdBody)
+	if code != http.StatusCreated {
+		t.Fatalf("create CRD: status %d: %s", code, out)
+	}
+
+	code, out = doReq(t, http.MethodGet, srv.URL+"/apis/example.com/v1", "", "")
+	if code != http.StatusOK {
+		t.Fatalf("GET /apis/example.com/v1: status %d: %s", code, out)
+	}
+	if strings.Contains(string(out), "thingamajigs") {
+		t.Errorf("thingamajigs registered in discovery despite a missing kind — should have been skipped: %s", out)
+	}
+}
+
+// TestOverlay_CRDRegistersDiscoveryOnCreate verifies a freshly created CRD is
+// immediately visible via the discovery endpoints (/apis and
+// /apis/<group>/<version>), not just via a plain object read (`kubectl get
+// crd`). CaptureStore.resourceInfo is otherwise a snapshot built once from the
+// capture archive at startup (see LoadStore/buildResourceInfo), so without
+// registering the CRD's defined type on create, a CRD applied at runtime
+// (e.g. `istioctl install`) never shows up in `kubectl api-resources` or
+// `istioctl analyze`, both of which walk discovery rather than reading the
+// CRD object itself.
+func TestOverlay_CRDRegistersDiscoveryOnCreate(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	crdBody := `{"apiVersion":"apiextensions.k8s.io/v1","kind":"CustomResourceDefinition",
+		"metadata":{"name":"virtualservices.networking.istio.io"},
+		"spec":{"group":"networking.istio.io","scope":"Namespaced",
+			"names":{"kind":"VirtualService","listKind":"VirtualServiceList","plural":"virtualservices","singular":"virtualservice","shortNames":["vs"]},
+			"versions":[
+				{"name":"v1beta1","served":true,"storage":false},
+				{"name":"v1","served":true,"storage":true}
+			]}}`
+	code, out := doReq(t, http.MethodPost, srv.URL+"/apis/apiextensions.k8s.io/v1/customresourcedefinitions", "application/json", crdBody)
+	if code != http.StatusCreated {
+		t.Fatalf("create CRD: status %d, want 201: %s", code, out)
+	}
+
+	code, out = doReq(t, http.MethodGet, srv.URL+"/apis", "", "")
+	if code != http.StatusOK {
+		t.Fatalf("GET /apis: status %d: %s", code, out)
+	}
+	if !strings.Contains(string(out), `"networking.istio.io"`) {
+		t.Errorf("/apis response missing the networking.istio.io group: %s", out)
+	}
+
+	var resList struct {
+		Resources []struct {
+			Name       string   `json:"name"`
+			Kind       string   `json:"kind"`
+			Namespaced bool     `json:"namespaced"`
+			ShortNames []string `json:"shortNames"`
+		} `json:"resources"`
+	}
+	code, out = doReq(t, http.MethodGet, srv.URL+"/apis/networking.istio.io/v1", "", "")
+	if code != http.StatusOK {
+		t.Fatalf("GET /apis/networking.istio.io/v1: status %d: %s", code, out)
+	}
+	if err := json.Unmarshal(out, &resList); err != nil {
+		t.Fatalf("decode: %v\n%s", err, out)
+	}
+	var found bool
+	for _, r := range resList.Resources {
+		if r.Name != "virtualservices" {
+			continue
+		}
+		found = true
+		if r.Kind != "VirtualService" {
+			t.Errorf("kind = %q, want VirtualService", r.Kind)
+		}
+		if !r.Namespaced {
+			t.Error("namespaced = false, want true")
+		}
+		if !contains(r.ShortNames, "vs") {
+			t.Errorf("shortNames = %v, want to contain vs", r.ShortNames)
+		}
+	}
+	if !found {
+		t.Fatalf("virtualservices missing from /apis/networking.istio.io/v1: %s", out)
+	}
+
+	// The served-but-non-storage v1beta1 version is registered too.
+	code, out = doReq(t, http.MethodGet, srv.URL+"/apis/networking.istio.io/v1beta1", "", "")
+	if code != http.StatusOK {
+		t.Fatalf("GET /apis/networking.istio.io/v1beta1: status %d: %s", code, out)
+	}
+	if !strings.Contains(string(out), `"name":"virtualservices"`) {
+		t.Errorf("v1beta1 resource list missing virtualservices: %s", out)
+	}
+}
+
 // TestOverlay_CRDEstablished_EdgeCases covers edge cases in the synthesized
 // CRD status: storedVersions must be an empty JSON array (not null) when
 // spec.versions is missing/malformed, it must fall back to a legacy
