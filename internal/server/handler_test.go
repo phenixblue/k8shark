@@ -1280,3 +1280,51 @@ func TestHandler_WatchFallsBackToClusterPath(t *testing.T) {
 		t.Errorf("redis (kube-system) must not appear in default namespace watch")
 	}
 }
+
+// TestMergeJSONArrayField_RejectsNull verifies that a literal JSON "null" —
+// either as the whole body or as the named field's value — is rejected with
+// ok=false rather than silently unmarshaling into a nil map/slice, which
+// would later panic in setJSONArrayField when assigning into a nil map.
+func TestMergeJSONArrayField_RejectsNull(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"null body", `null`},
+		{"null field", `{"groups": null}`},
+		{"non-object body", `[1,2,3]`},
+		{"non-array field", `{"groups": "not-an-array"}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			doc, arr, ok := mergeJSONArrayField([]byte(c.body), "groups")
+			if ok {
+				t.Errorf("expected ok=false for %s, got doc=%v arr=%v", c.body, doc, arr)
+			}
+		})
+	}
+}
+
+// TestMergeJSONArrayField_AcceptsEmptyAndMissing verifies the two legitimate
+// no-elements shapes are still accepted: an explicit empty array, and the
+// field being absent entirely (both should let a caller proceed to append).
+func TestMergeJSONArrayField_AcceptsEmptyAndMissing(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"empty array", `{"groups": []}`},
+		{"missing field", `{}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			doc, _, ok := mergeJSONArrayField([]byte(c.body), "groups")
+			if !ok {
+				t.Errorf("expected ok=true for %s", c.body)
+			}
+			if doc == nil {
+				t.Errorf("expected non-nil doc for %s", c.body)
+			}
+		})
+	}
+}

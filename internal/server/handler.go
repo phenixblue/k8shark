@@ -307,18 +307,21 @@ func writeRawJSON(w http.ResponseWriter, code int, body []byte) {
 // returns it alongside the full decoded object — so a caller can inspect what
 // the array already contains, append raw additions, and re-marshal only that
 // one field while every other key (and every existing array element) passes
-// through completely untouched. ok is false when body isn't a JSON object or
-// fieldName isn't a JSON array, signaling the caller should give up and serve
-// body verbatim rather than risk corrupting a differently-shaped document.
+// through completely untouched. ok is false when body isn't a JSON object
+// (including a literal JSON "null", which unmarshals into a nil map without
+// error) or fieldName isn't a JSON array (including a literal "null" value,
+// which unmarshals into a nil slice without error), signaling the caller
+// should give up and serve body verbatim rather than risk mutating a nil map
+// or corrupting a differently-shaped document.
 func mergeJSONArrayField(body []byte, fieldName string) (doc map[string]json.RawMessage, arr []json.RawMessage, ok bool) {
-	if json.Unmarshal(body, &doc) != nil {
+	if err := json.Unmarshal(body, &doc); err != nil || doc == nil {
 		return nil, nil, false
 	}
 	raw, present := doc[fieldName]
 	if !present {
 		return doc, nil, true
 	}
-	if json.Unmarshal(raw, &arr) != nil {
+	if err := json.Unmarshal(raw, &arr); err != nil || arr == nil {
 		return nil, nil, false
 	}
 	return doc, arr, true
