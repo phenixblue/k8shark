@@ -2217,11 +2217,16 @@ func TestOverlay_CRDEstablished_EdgeCases(t *testing.T) {
 	})
 
 	t.Run("legacy v1beta1-style spec.version", func(t *testing.T) {
-		body := `{"apiVersion":"apiextensions.k8s.io/v1","kind":"CustomResourceDefinition",
+		// spec.version (singular) without spec.versions is specifically the
+		// apiextensions.k8s.io/v1beta1 CRD shape — v1 requires spec.versions
+		// and a real cluster's OpenAPI validation would reject this body there.
+		// Post it to the actual v1beta1 endpoint so the scenario under test is
+		// a body a real client would legitimately send.
+		body := `{"apiVersion":"apiextensions.k8s.io/v1beta1","kind":"CustomResourceDefinition",
 			"metadata":{"name":"gizmos.example.com"},
 			"spec":{"group":"example.com","scope":"Namespaced","version":"v1beta1",
 				"names":{"kind":"Gizmo","listKind":"GizmoList","plural":"gizmos","singular":"gizmo"}}}`
-		code, out := doReq(t, http.MethodPost, srv.URL+"/apis/apiextensions.k8s.io/v1/customresourcedefinitions", "application/json", body)
+		code, out := doReq(t, http.MethodPost, srv.URL+"/apis/apiextensions.k8s.io/v1beta1/customresourcedefinitions", "application/json", body)
 		if code != http.StatusCreated {
 			t.Fatalf("create CRD: status %d, want 201: %s", code, out)
 		}
