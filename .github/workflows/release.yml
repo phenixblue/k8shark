@@ -42,6 +42,13 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Without this, GoReleaser resolves the "current" tag via `git
+          # describe` on HEAD, which is ambiguous whenever two tags point at
+          # the same commit (e.g. promoting an -rc.N straight to stable) — it
+          # can silently pick the wrong one and collide with that tag's
+          # already-published release assets instead of releasing the tag
+          # that actually triggered this run.
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
           HOMEBREW_TAP_OWNER: phenixblue
           HOMEBREW_TAP_NAME: homebrew-tap
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
