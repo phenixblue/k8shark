@@ -1,0 +1,46 @@
+apiVersion: demo.k8shark.io/v1
+kind: Widget
+metadata:
+  name: gizmo
+  namespace: auto-demo
+spec:
+  color: red
+  size: large
+---
+apiVersion: demo.k8shark.io/v1
+kind: Widget
+metadata:
+  name: sprocket
+  namespace: auto-demo
+spec:
+  color: blue
+  size: small
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: widget-config
+  namespace: auto-demo
+data:
+  refreshInterval: "30s"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: widget-controller
+  namespace: auto-demo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: widget-controller
+  template:
+    metadata:
+      labels:
+        app: widget-controller
+    spec:
+      containers:
+        - name: widget-controller
+          image: nginx:alpine
+          ports:
+            - containerPort: 80

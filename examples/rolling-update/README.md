@@ -74,9 +74,6 @@ wait   # let the remaining ~70s of the capture finish
 
 ## Next step
 
-You've now seen a single-namespace intro
-([basic-workloads](../basic-workloads/)), capturing across namespaces
-([multi-namespace](../multi-namespace/)), an unhealthy workload
-([crash-loop](../crash-loop/)), and a change over time (this example). From
-here, [docs/config.md](../../docs/config.md) covers the full config
-reference, including CRDs, redaction, and auto-discovery.
+See [auto-discovery](../auto-discovery/) for a config that discovers every
+resource type in a namespace — including a custom resource — instead of
+listing each `group`/`version`/`resource` explicitly.

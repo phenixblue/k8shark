@@ -11,6 +11,7 @@ no live cluster required, plus the `config.yaml` used to record it and a
 | [multi-namespace](multi-namespace/) | Capturing the same resource types across several namespaces in one config |
 | [crash-loop](crash-loop/) | Pod logs (current + previous), `kshrk diagnose`, investigating a `CrashLoopBackOff` |
 | [rolling-update](rolling-update/) | Watch-driven capture across a Deployment rollout; `kshrk diff` and `kshrk transitions` |
+| [auto-discovery](auto-discovery/) | `all: true` discovers every resource type in a namespace, built-in and CRD alike, with zero `group`/`version`/`resource` entries |
 
 ## Quick start
 

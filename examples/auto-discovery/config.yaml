@@ -1,0 +1,17 @@
+# k8shark capture config — auto-discovery example
+#
+# Run with:  kshrk capture --config examples/auto-discovery/config.yaml
+# See:       examples/auto-discovery/README.md
+
+duration: 30s
+output: ./examples/auto-discovery/capture.kshrk
+
+resources:
+  # No group/version/resource entries below — a single `all: true` directive
+  # walks /apis and captures every resource type present in this namespace,
+  # built-in and CRD-backed alike. Scoped to one namespace via `namespaces:`
+  # so it doesn't sweep the rest of the cluster.
+  - all: true
+    scope: namespaced
+    namespaces: [auto-demo]
+    interval: 10s
