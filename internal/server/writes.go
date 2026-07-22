@@ -170,6 +170,16 @@ func (h *handler) storeNewObject(group, version, resource, namespace, name strin
 			body = h.schedulePod(body)
 		}
 	}
+	if group == "apiextensions.k8s.io" && resource == "customresourcedefinitions" {
+		// A real apiextensions-apiserver establishes a freshly created CRD
+		// (status.conditions Established/NamesAccepted) within moments of
+		// creation — internal to kube-apiserver, not something
+		// --with-controller-manager's curated kube-controller-manager set runs.
+		// Without it, kstatus (which Helm v4's --wait uses) reports the CRD
+		// "InProgress: Install in progress" forever, hanging any
+		// CRD-heavy chart (e.g. Istio's `base` chart) waiting for its CRDs.
+		body = ensureCRDEstablished(body, h.nowRFC3339())
+	}
 
 	rv := h.overlay.nextRV(h.replayFloorRV(group, version, resource, namespace))
 	obj := mergeMeta(body, map[string]any{
@@ -360,6 +370,64 @@ func ensurePodStatusPending(body json.RawMessage) json.RawMessage {
 		return body // already has a phase; leave it
 	}
 	status["phase"] = "Pending"
+	out, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// ensureCRDEstablished synthesizes the status a real apiextensions-apiserver
+// stamps on a newly created CustomResourceDefinition — NamesAccepted and
+// Established conditions, acceptedNames, and storedVersions — matching what
+// kstatus (and `kubectl wait --for condition=Established`) look for. now is
+// used as every timestamp field's value (this is a one-shot synthesis at
+// creation, not a real transition history).
+func ensureCRDEstablished(body json.RawMessage, now string) json.RawMessage {
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil || m == nil {
+		return body
+	}
+	spec, _ := m["spec"].(map[string]any)
+	names, ok := spec["names"].(map[string]any)
+	if !ok || names == nil {
+		names = map[string]any{} // non-nil: a real CRD's acceptedNames is never omitted
+	}
+	storedVersions := []string{} // non-nil: a real CRD's storedVersions is never omitted
+	if versions, ok := spec["versions"].([]any); ok {
+		for _, v := range versions {
+			vm, ok := v.(map[string]any)
+			if !ok {
+				continue
+			}
+			if storage, _ := vm["storage"].(bool); storage {
+				if n, ok := vm["name"].(string); ok {
+					storedVersions = append(storedVersions, n)
+				}
+			}
+		}
+	} else if v, ok := spec["version"].(string); ok && v != "" {
+		// Legacy apiextensions.k8s.io/v1beta1 CRDs could specify a single
+		// top-level spec.version instead of the spec.versions list v1
+		// introduced; treat it as the (only) stored version.
+		storedVersions = append(storedVersions, v)
+	}
+	m["status"] = map[string]any{
+		"acceptedNames": names,
+		"conditions": []map[string]any{
+			{
+				"type": "NamesAccepted", "status": "True",
+				"reason": "NoConflicts", "message": "no conflicts found",
+				"lastTransitionTime": now,
+			},
+			{
+				"type": "Established", "status": "True",
+				"reason": "InitialNamesAccepted", "message": "the initial names have been accepted",
+				"lastTransitionTime": now,
+			},
+		},
+		"storedVersions": storedVersions,
+	}
 	out, err := json.Marshal(m)
 	if err != nil {
 		return body
