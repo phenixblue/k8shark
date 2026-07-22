@@ -88,6 +88,50 @@ func TestHandler_APIGroupList(t *testing.T) {
 	assertJSON(t, rw, 200, "kind", "APIGroupList")
 }
 
+// TestHandler_APIGroupList_PreferredVersionDeterministic verifies a group
+// with multiple captured versions always reports the highest-priority one
+// (GA over beta/alpha, highest major/minor within a type) as preferredVersion
+// — CaptureStore.Resources() iterates a map internally, so without sorting,
+// preferredVersion could flip between any of the group's versions from one
+// call to the next. Found via Copilot review of the /apis/<group> fix.
+func TestHandler_APIGroupList_PreferredVersionDeterministic(t *testing.T) {
+	store := buildTestStore(t, map[string][]byte{
+		"/apis/autoscaling/v2beta2/horizontalpodautoscalers": []byte(`{"kind":"HorizontalPodAutoscalerList","items":[]}`),
+		"/apis/autoscaling/v1/horizontalpodautoscalers":      []byte(`{"kind":"HorizontalPodAutoscalerList","items":[]}`),
+		"/apis/autoscaling/v2beta1/horizontalpodautoscalers": []byte(`{"kind":"HorizontalPodAutoscalerList","items":[]}`),
+		"/apis/autoscaling/v2/horizontalpodautoscalers":      []byte(`{"kind":"HorizontalPodAutoscalerList","items":[]}`),
+	})
+	h := newHandler(store, time.Time{}, false)
+
+	for i := 0; i < 20; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/apis", nil)
+		rw := httptest.NewRecorder()
+		h.ServeHTTP(rw, req)
+		var body struct {
+			Groups []struct {
+				Name             string            `json:"name"`
+				PreferredVersion map[string]string `json:"preferredVersion"`
+			} `json:"groups"`
+		}
+		if err := json.Unmarshal(rw.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode: %v\n%s", err, rw.Body.String())
+		}
+		found := false
+		for _, g := range body.Groups {
+			if g.Name != "autoscaling" {
+				continue
+			}
+			found = true
+			if g.PreferredVersion["version"] != "v2" {
+				t.Fatalf("run %d: preferredVersion = %v, want v2 (highest GA)", i, g.PreferredVersion)
+			}
+		}
+		if !found {
+			t.Fatalf("run %d: autoscaling group missing from /apis", i)
+		}
+	}
+}
+
 func TestHandler_CoreResourceList(t *testing.T) {
 	store := buildTestStore(t, map[string][]byte{
 		"/api/v1/namespaces/default/pods": []byte(`{"kind":"PodList","items":[]}`),
@@ -112,6 +156,92 @@ func TestHandler_GroupResourceList(t *testing.T) {
 	h.ServeHTTP(rw, req)
 
 	assertJSON(t, rw, 200, "kind", "APIResourceList")
+}
+
+// TestHandler_BareGroupDiscovery verifies GET /apis/<group> (no version) —
+// the APIGroup discovery document distinct from /apis/<group>/<version>'s
+// resource list — synthesizes an APIGroup rather than 404ing. client-go's
+// discovery client fetches this to enumerate a group's versions before
+// making a versioned request; found missing via the upstream conformance
+// suite's Ingress/IngressClass API specs, which do exactly that.
+func TestHandler_BareGroupDiscovery(t *testing.T) {
+	store := buildTestStore(t, map[string][]byte{
+		"/apis/networking.k8s.io/v1/ingresses": []byte(`{"kind":"IngressList","items":[]}`),
+	})
+	h := newHandler(store, time.Time{}, false)
+
+	req := httptest.NewRequest(http.MethodGet, "/apis/networking.k8s.io", nil)
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rw.Code, rw.Body.String())
+	}
+	var body struct {
+		Kind             string              `json:"kind"`
+		Name             string              `json:"name"`
+		Versions         []map[string]string `json:"versions"`
+		PreferredVersion map[string]string   `json:"preferredVersion"`
+	}
+	if err := json.Unmarshal(rw.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v\n%s", err, rw.Body.String())
+	}
+	if body.Kind != "APIGroup" {
+		t.Errorf("kind = %q, want APIGroup", body.Kind)
+	}
+	if body.Name != "networking.k8s.io" {
+		t.Errorf("name = %q, want networking.k8s.io", body.Name)
+	}
+	if len(body.Versions) != 1 || body.Versions[0]["groupVersion"] != "networking.k8s.io/v1" {
+		t.Errorf("versions = %v, want [{groupVersion: networking.k8s.io/v1, version: v1}]", body.Versions)
+	}
+	if body.PreferredVersion["groupVersion"] != "networking.k8s.io/v1" {
+		t.Errorf("preferredVersion = %v", body.PreferredVersion)
+	}
+}
+
+// TestHandler_BareGroupDiscovery_PreferredVersionDeterministic is
+// serveAPIGroup's analog of TestHandler_APIGroupList_PreferredVersionDeterministic.
+func TestHandler_BareGroupDiscovery_PreferredVersionDeterministic(t *testing.T) {
+	store := buildTestStore(t, map[string][]byte{
+		"/apis/autoscaling/v2beta2/horizontalpodautoscalers": []byte(`{"kind":"HorizontalPodAutoscalerList","items":[]}`),
+		"/apis/autoscaling/v1/horizontalpodautoscalers":      []byte(`{"kind":"HorizontalPodAutoscalerList","items":[]}`),
+		"/apis/autoscaling/v2beta1/horizontalpodautoscalers": []byte(`{"kind":"HorizontalPodAutoscalerList","items":[]}`),
+		"/apis/autoscaling/v2/horizontalpodautoscalers":      []byte(`{"kind":"HorizontalPodAutoscalerList","items":[]}`),
+	})
+	h := newHandler(store, time.Time{}, false)
+
+	for i := 0; i < 20; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/apis/autoscaling", nil)
+		rw := httptest.NewRecorder()
+		h.ServeHTTP(rw, req)
+		var body struct {
+			PreferredVersion map[string]string `json:"preferredVersion"`
+		}
+		if err := json.Unmarshal(rw.Body.Bytes(), &body); err != nil {
+			t.Fatalf("run %d: decode: %v\n%s", i, err, rw.Body.String())
+		}
+		if body.PreferredVersion["version"] != "v2" {
+			t.Fatalf("run %d: preferredVersion = %v, want v2 (highest GA)", i, body.PreferredVersion)
+		}
+	}
+}
+
+// TestHandler_BareGroupDiscovery_UnknownGroup404s verifies a group with no
+// captured resources 404s rather than serving an empty-versions APIGroup.
+func TestHandler_BareGroupDiscovery_UnknownGroup404s(t *testing.T) {
+	store := buildTestStore(t, map[string][]byte{
+		"/api/v1/namespaces/default/pods": []byte(`{"kind":"PodList","items":[]}`),
+	})
+	h := newHandler(store, time.Time{}, false)
+
+	req := httptest.NewRequest(http.MethodGet, "/apis/does-not-exist.example.com", nil)
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, req)
+
+	if rw.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404: %s", rw.Code, rw.Body.String())
+	}
 }
 
 // TestHandler_NotFound_ListPath verifies that a list-level resource not in the capture

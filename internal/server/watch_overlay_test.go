@@ -63,6 +63,98 @@ func TestOverlay_WatchFeedback_LiveWrites(t *testing.T) {
 	}
 }
 
+// TestOverlay_WatchResume_CatchesUpMissedOverlayWrite reproduces the exact
+// race client-go's List-then-Watch pattern relies on a real apiserver's watch
+// cache to cover: List() to get a baseline resourceVersion, create an object
+// (landing in the overlay, bumping the RV past that baseline) — *completing*
+// before the watch is ever opened — then resume a watch from the baseline RV,
+// expecting to see the object's ADDED event even though it already happened.
+// Found via running the upstream conformance suite: "Deployment should run
+// the lifecycle of a Deployment" hung forever ("failed to see ADDED event:
+// timed out") on exactly this, since the overlay's live pub-sub only reaches
+// watchers already subscribed at write time.
+func TestOverlay_WatchResume_CatchesUpMissedOverlayWrite(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	store := buildTestStoreWithWatch(t,
+		map[string]watchTestRecord{podsPath: {id: "s", at: from, body: emptyPodList}}, nil)
+	srv := newWritableServer(t, store, clock)
+
+	// Baseline: LIST to get a resourceVersion, as client-go's Reflector does
+	// before opening a watch.
+	_, list := doReq(t, http.MethodGet, srv.URL+podsPath, "", "")
+	var l struct {
+		Metadata struct {
+			ResourceVersion string `json:"resourceVersion"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(list, &l); err != nil {
+		t.Fatalf("decode list: %v\n%s", err, list)
+	}
+	baselineRV := l.Metadata.ResourceVersion
+	if baselineRV == "" {
+		t.Fatalf("list has no resourceVersion: %s", list)
+	}
+
+	// The object is created — and the request completes — before the watch is
+	// ever opened, exactly like the conformance spec's Create-then-Watch order.
+	if code, body := doReq(t, http.MethodPost, srv.URL+podsPath, "application/json", podBody("pod-missed")); code != http.StatusCreated {
+		t.Fatalf("create: status %d: %s", code, body)
+	}
+
+	// Resuming a watch from the baseline RV must still surface the object.
+	next, _, cancel := openWatchStream(t, srv.URL+podsPath+"?watch=1&resourceVersion="+baselineRV)
+	defer cancel()
+	if e := nextNonBookmark(next); e.Type != "ADDED" || e.Object.Metadata.Name != "pod-missed" {
+		t.Fatalf("resumed watch: got %s/%s, want ADDED/pod-missed", e.Type, e.Object.Metadata.Name)
+	}
+}
+
+// TestOverlay_WatchResume_CatchesUpAsModified is the update-side counterpart:
+// an identity that already existed as of the client's resume RV, and was then
+// changed (not created) between that RV and the watch connecting, must be
+// replayed as MODIFIED — not ADDED, which a client's watch.Modified-only
+// condition function (e.g. waiting for a status update) would never match,
+// hanging exactly like the ADDED case ("failed to see MODIFIED event: timed
+// out", also found via the "Deployment should run the lifecycle" spec, a step
+// further than the ADDED race).
+func TestOverlay_WatchResume_CatchesUpAsModified(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	store := buildTestStoreWithWatch(t,
+		map[string]watchTestRecord{podsPath: {id: "s", at: from, body: emptyPodList}}, nil)
+	srv := newWritableServer(t, store, clock)
+
+	// The pod is created and already visible before the client's baseline LIST.
+	if code, body := doReq(t, http.MethodPost, srv.URL+podsPath, "application/json", podBody("pod-modded")); code != http.StatusCreated {
+		t.Fatalf("create: status %d: %s", code, body)
+	}
+	_, list := doReq(t, http.MethodGet, srv.URL+podsPath, "", "")
+	var l struct {
+		Metadata struct {
+			ResourceVersion string `json:"resourceVersion"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(list, &l); err != nil {
+		t.Fatalf("decode list: %v\n%s", err, list)
+	}
+	baselineRV := l.Metadata.ResourceVersion
+
+	// Updated — and the request completes — before the watch is ever opened.
+	if code, body := doReq(t, http.MethodPatch, srv.URL+podsPath+"/pod-modded",
+		"application/merge-patch+json", `{"metadata":{"labels":{"tier":"web"}}}`); code != 200 {
+		t.Fatalf("patch: status %d: %s", code, body)
+	}
+
+	// Resuming a watch from the baseline RV must surface the update as
+	// MODIFIED, since the object already existed as of that RV.
+	next, _, cancel := openWatchStream(t, srv.URL+podsPath+"?watch=1&resourceVersion="+baselineRV)
+	defer cancel()
+	if e := nextNonBookmark(next); e.Type != "MODIFIED" || e.Object.Metadata.Name != "pod-modded" {
+		t.Fatalf("resumed watch: got %s/%s, want MODIFIED/pod-modded", e.Type, e.Object.Metadata.Name)
+	}
+}
+
 // TestOverlay_WatchFeedback_OverlayWinsSuppression verifies that once the overlay
 // owns an identity, replayed captured events for that identity are suppressed —
 // the overlay copy wins — while events for unowned identities still replay.

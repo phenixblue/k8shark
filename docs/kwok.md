@@ -37,6 +37,24 @@ what KWOK's `pod-ready` stage selects on. It does **not** drive the Pod to
 `Running` — that's KWOK's job, which is what makes the loop realistic rather than
 faked by `kshrk`.
 
+## The LoadBalancer shim
+
+A `Service` of `type: LoadBalancer` never gets an external address without a
+real cloud-controller-manager (or an on-prem equivalent like MetalLB) — nothing
+in `--with-controller-manager`'s curated set provides one, deliberately (see
+"Closing more of the loop" below). Without one, `helm install --wait` and any
+other client polling for `status.loadBalancer.ingress` hangs forever — exactly
+what a chart like `istio/gateway` (which defaults its Service to
+`LoadBalancer`) does.
+
+So the overlay synthesizes one: a `LoadBalancer` Service gets a fake external
+IP in `203.0.113.0/24` (TEST-NET-3, reserved by RFC 5737 for documentation/
+example use, so it can never collide with a real address) as soon as it's
+written. The address is derived from the Service's namespace/name rather than
+assigned by a counter, so it stays the same across repeated writes to the same
+Service instead of changing on every update. Nothing routes traffic to it —
+this only exists to satisfy clients checking for a non-empty ingress.
+
 ## Quickstart: `--with-kwok`
 
 If a [`kwok` binary](https://kwok.sigs.k8s.io/docs/user/install/) is on your
