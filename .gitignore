@@ -22,7 +22,8 @@ planning/
 *.kshrk
 # legacy extension (pre-rename captures)
 *.khsrk
-# but keep checked-in test fixtures (golden archives)
+# but keep checked-in test fixtures (golden archives) and example captures
 !**/testdata/*.kshrk
+!examples/**/*.kshrk
 k8shark-capture/
 scale-manifests/
