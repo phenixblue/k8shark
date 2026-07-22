@@ -109,17 +109,32 @@ func (h *Handler) buildNamespaceDetail(ns string, at time.Time) (*NamespaceDetai
 	for res, n := range byRes {
 		resTotal[res] = n
 		d.KPIs.Resources += n
-		switch {
-		case workloadResources[res]:
-			d.KPIs.Workloads += n
-		case res == "pods":
-			d.KPIs.Pods += n
-		case vmResources[res]:
-			d.KPIs.VirtualMachines += n
-		case res == "configmaps":
+		switch res {
+		case "configmaps":
 			d.KPIs.ConfigMaps += n
-		case res == "secrets":
+		case "secrets":
 			d.KPIs.Secrets += n
+		}
+	}
+	// Resource kinds that exist in this namespace only because of overlay
+	// writes (e.g. a CRD's custom resources) have no index entry at all, so
+	// the loop above misses them entirely. Pods/workloads/VMs are excluded
+	// here — their KPIs are set below from the exact, already overlay-merged
+	// row lists rather than this approximate index-derived count.
+	if h.Overlay != nil {
+		for _, sc := range h.Overlay.OverlayScopes() {
+			if sc.Namespace != ns || sc.Count == 0 || resTotal[sc.Resource] != 0 ||
+				workloadResources[sc.Resource] || sc.Resource == "pods" || vmResources[sc.Resource] {
+				continue
+			}
+			resTotal[sc.Resource] = sc.Count
+			d.KPIs.Resources += sc.Count
+			switch sc.Resource {
+			case "configmaps":
+				d.KPIs.ConfigMaps += sc.Count
+			case "secrets":
+				d.KPIs.Secrets += sc.Count
+			}
 		}
 	}
 
@@ -139,10 +154,14 @@ func (h *Handler) buildNamespaceDetail(ns string, at time.Time) (*NamespaceDetai
 	})
 	d.Pods = podRows
 	d.Issues = buildIssues(pods, 8)
+	d.KPIs.Pods = len(podRows)
 
-	// Workloads + VMs (read the per-ns list bodies and turn into compact rows).
+	// Workloads + VMs (read the per-ns list bodies and turn into compact
+	// rows) — exact, overlay-merged counts, unlike the index-derived resTotal.
 	d.Workloads = h.loadWorkloadRowsForNS(ns, at)
 	d.VMs = h.loadVMRowsForNS(ns, at)
+	d.KPIs.Workloads = len(d.Workloads)
+	d.KPIs.VirtualMachines = len(d.VMs)
 
 	// Resource tiles: every non-workload, non-pod, non-vm resource.
 	d.Resources = buildNamespaceTiles(ns, resTotal)
@@ -161,21 +180,11 @@ func (h *Handler) buildNamespaceDetail(ns string, at time.Time) (*NamespaceDetai
 // slice (for the drill-down table).
 func (h *Handler) loadPodsForNS(ns string, at time.Time) ([]podHealthEntry, []PodRow) {
 	listPath := "/api/v1/namespaces/" + ns + "/pods"
-	body, code, err := h.Store.ReconstructAt(listPath, at)
-	if err != nil || code != http.StatusOK || len(body) == 0 {
-		return nil, nil
-	}
-	var list struct {
-		Items []json.RawMessage `json:"items"`
-	}
-	if err := json.Unmarshal(body, &list); err != nil {
-		return nil, nil
-	}
 	var (
 		entries []podHealthEntry
 		rows    []PodRow
 	)
-	for _, raw := range list.Items {
+	for _, raw := range h.reconstructMergedItems(listPath, at) {
 		name := getName(raw)
 		if name == "" {
 			continue
@@ -252,19 +261,10 @@ func (h *Handler) loadWorkloadRowsForNS(ns string, at time.Time) []ResourceRow {
 }
 
 func (h *Handler) loadWorkloadGroup(path, kind, short string, at time.Time) []ResourceRow {
-	body, code, err := h.Store.ReconstructAt(path, at)
-	if err != nil || code != http.StatusOK || len(body) == 0 {
-		return nil
-	}
-	var list struct {
-		Items []json.RawMessage `json:"items"`
-	}
-	if err := json.Unmarshal(body, &list); err != nil {
-		return nil
-	}
+	items := h.reconstructMergedItems(path, at)
 	_, _, resource, _ := parseAPIPath(path)
-	out := make([]ResourceRow, 0, len(list.Items))
-	for _, raw := range list.Items {
+	out := make([]ResourceRow, 0, len(items))
+	for _, raw := range items {
 		row := classifyWorkload(short, kind, raw, at)
 		row.Resource = resource
 		out = append(out, row)
@@ -353,17 +353,7 @@ func (h *Handler) loadVMRowsForNS(ns string, at time.Time) []ResourceRow {
 	}
 	var out []ResourceRow
 	for _, g := range groups {
-		body, code, err := h.Store.ReconstructAt(g.path, at)
-		if err != nil || code != http.StatusOK || len(body) == 0 {
-			continue
-		}
-		var list struct {
-			Items []json.RawMessage `json:"items"`
-		}
-		if err := json.Unmarshal(body, &list); err != nil {
-			continue
-		}
-		for _, raw := range list.Items {
+		for _, raw := range h.reconstructMergedItems(g.path, at) {
 			var v struct {
 				Metadata struct {
 					Name              string    `json:"name"`
@@ -401,17 +391,7 @@ func (h *Handler) loadVMRowsForNS(ns string, at time.Time) []ResourceRow {
 // loadNamespaceMetadata reads the namespace object from /api/v1/namespaces
 // (the cluster-wide list) and surfaces labels/annotations/age/phase.
 func (h *Handler) loadNamespaceMetadata(ns string, at time.Time) NamespaceMetadata {
-	body, code, err := h.Store.ReconstructAt("/api/v1/namespaces", at)
-	if err != nil || code != http.StatusOK || len(body) == 0 {
-		return NamespaceMetadata{}
-	}
-	var list struct {
-		Items []json.RawMessage `json:"items"`
-	}
-	if err := json.Unmarshal(body, &list); err != nil {
-		return NamespaceMetadata{}
-	}
-	for _, raw := range list.Items {
+	for _, raw := range h.reconstructMergedItems("/api/v1/namespaces", at) {
 		var n struct {
 			Metadata struct {
 				Name              string            `json:"name"`

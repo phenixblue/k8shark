@@ -63,19 +63,11 @@ func (h *Handler) serveObjectRelationships(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, out)
 }
 
-// readObjectRaw returns the raw JSON of one object inside a captured list.
+// readObjectRaw returns the raw JSON of one object, by list path + name,
+// merged with any overlay write (overlay wins, including a tombstone dropping
+// the item so it reads as not-found).
 func (h *Handler) readObjectRaw(path, name string, at time.Time) (json.RawMessage, bool) {
-	body, code, err := h.Store.ReconstructAt(path, at)
-	if err != nil || code != http.StatusOK || len(body) == 0 {
-		return nil, false
-	}
-	var list struct {
-		Items []json.RawMessage `json:"items"`
-	}
-	if err := json.Unmarshal(body, &list); err != nil {
-		return nil, false
-	}
-	for _, it := range list.Items {
+	for _, it := range h.reconstructMergedItems(path, at) {
 		if getName(it) == name {
 			return it, true
 		}
@@ -84,17 +76,7 @@ func (h *Handler) readObjectRaw(path, name string, at time.Time) (json.RawMessag
 }
 
 func (h *Handler) podsInNS(ns string, at time.Time) []json.RawMessage {
-	body, code, err := h.Store.ReconstructAt("/api/v1/namespaces/"+ns+"/pods", at)
-	if err != nil || code != http.StatusOK || len(body) == 0 {
-		return nil
-	}
-	var list struct {
-		Items []json.RawMessage `json:"items"`
-	}
-	if err := json.Unmarshal(body, &list); err != nil {
-		return nil
-	}
-	return list.Items
+	return h.reconstructMergedItems("/api/v1/namespaces/"+ns+"/pods", at)
 }
 
 // ownerItems parses metadata.ownerReferences into linked RelatedItems.
@@ -232,34 +214,26 @@ func (h *Handler) ownedChildren(res, name, ns string, at time.Time) []RelatedGro
 	}
 	// Deployments own ReplicaSets (which in turn own the pods).
 	if res == "deployments" {
-		body, code, err := h.Store.ReconstructAt("/apis/apps/v1/namespaces/"+ns+"/replicasets", at)
-		if err == nil && code == http.StatusOK && len(body) > 0 {
-			var list struct {
-				Items []json.RawMessage `json:"items"`
+		var rss []RelatedItem
+		for _, rraw := range h.reconstructMergedItems("/apis/apps/v1/namespaces/"+ns+"/replicasets", at) {
+			var rs struct {
+				Metadata struct {
+					Name            string     `json:"name"`
+					OwnerReferences []ownerRef `json:"ownerReferences"`
+				} `json:"metadata"`
 			}
-			if json.Unmarshal(body, &list) == nil {
-				var rss []RelatedItem
-				for _, rraw := range list.Items {
-					var rs struct {
-						Metadata struct {
-							Name            string     `json:"name"`
-							OwnerReferences []ownerRef `json:"ownerReferences"`
-						} `json:"metadata"`
-					}
-					if json.Unmarshal(rraw, &rs) != nil {
-						continue
-					}
-					for _, o := range rs.Metadata.OwnerReferences {
-						if o.Name == name {
-							rss = append(rss, RelatedItem{Kind: "ReplicaSet", Name: rs.Metadata.Name, Link: objectLink(apiListPath("apps", "v1", "replicasets", ns), rs.Metadata.Name)})
-							break
-						}
-					}
-				}
-				if len(rss) > 0 {
-					groups = append(groups, RelatedGroup{Title: "ReplicaSets", Items: rss})
+			if json.Unmarshal(rraw, &rs) != nil {
+				continue
+			}
+			for _, o := range rs.Metadata.OwnerReferences {
+				if o.Name == name {
+					rss = append(rss, RelatedItem{Kind: "ReplicaSet", Name: rs.Metadata.Name, Link: objectLink(apiListPath("apps", "v1", "replicasets", ns), rs.Metadata.Name)})
+					break
 				}
 			}
+		}
+		if len(rss) > 0 {
+			groups = append(groups, RelatedGroup{Title: "ReplicaSets", Items: rss})
 		}
 	}
 	for i := range groups {

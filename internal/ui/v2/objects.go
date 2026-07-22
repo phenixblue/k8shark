@@ -25,7 +25,11 @@ type ObjectDetail struct {
 
 // serveObject returns one captured object (by list path + name) as JSON+YAML.
 // When name is empty the whole list body is returned, which lets the view show
-// cluster/list-scoped resources too.
+// cluster/list-scoped resources too. A writable overlay's copy of the object
+// wins outright — including a tombstone, which reads as not-found even if a
+// stale captured copy still exists — and an overlay-only identity (a resource
+// kind or namespace the capture never recorded at all) is served the same way
+// a captured object would be.
 func (h *Handler) serveObject(w http.ResponseWriter, r *http.Request) {
 	if h.Store == nil {
 		writeError(w, http.StatusInternalServerError, "store not initialized")
@@ -38,55 +42,85 @@ func (h *Handler) serveObject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	at := h.resolveAt(r)
-	body, code, err := h.Store.ReconstructAt(path, at)
 	resp := ObjectDetail{Path: path, Name: name}
 	if !at.IsZero() {
 		resp.At = at.UTC().Format(time.RFC3339)
 	}
-	if err != nil || code != http.StatusOK || len(body) == 0 {
-		writeJSON(w, http.StatusOK, resp) // Found=false
+
+	if name == "" {
+		items := h.reconstructMergedItems(path, at)
+		if len(items) == 0 {
+			writeJSON(w, http.StatusOK, resp) // Found=false
+			return
+		}
+		capturedBody, _, _ := h.Store.ReconstructAt(path, at) // best-effort, for the envelope's Kind/apiVersion
+		_, _, resource, _ := parseAPIPath(path)
+		h.writeObjectFound(w, &resp, listEnvelopeWithItems(capturedBody, resource, items), path, "", "")
 		return
 	}
 
-	raw := body
-	// The parent List envelope carries the correctly-cased kind
-	// (e.g. "MutatingWebhookConfigurationList") and the real apiVersion, which
-	// individual items inside the list omit. Capture them as hints so we can
-	// restore them on the item without guessing casing from the resource name.
+	// The parent List envelope carries the correctly-cased kind (e.g.
+	// "MutatingWebhookConfigurationList") and the real apiVersion, which
+	// individual items inside a captured list omit. Capture them as hints so
+	// we can restore them on the item without guessing casing from the
+	// resource name. An overlay-only item already carries its own kind/
+	// apiVersion (a real write payload), so these hints simply go unused for it.
 	var apiVersionHint, kindHint string
-	if name != "" {
+	if capturedBody, code, err := h.Store.ReconstructAt(path, at); err == nil && code == http.StatusOK && len(capturedBody) > 0 {
 		var list struct {
-			Kind       string            `json:"kind"`
-			APIVersion string            `json:"apiVersion"`
-			Items      []json.RawMessage `json:"items"`
+			Kind       string `json:"kind"`
+			APIVersion string `json:"apiVersion"`
 		}
-		found := false
-		if err := json.Unmarshal(body, &list); err == nil {
+		if json.Unmarshal(capturedBody, &list) == nil {
 			apiVersionHint = list.APIVersion
 			kindHint = strings.TrimSuffix(list.Kind, "List")
 			if kindHint == list.Kind { // didn't end in "List" — not a usable hint
 				kindHint = ""
 			}
-			for _, it := range list.Items {
-				if getName(it) == name {
-					raw = it
-					found = true
-					break
-				}
-			}
-		}
-		if !found {
-			writeJSON(w, http.StatusOK, resp) // Found=false
-			return
 		}
 	}
 
+	// reconstructMergedItems already applies overlay-wins semantics (including
+	// a tombstone dropping the item, which correctly reads as not-found here)
+	// and tolerates a path the capture never recorded at all.
+	for _, it := range h.reconstructMergedItems(path, at) {
+		if getName(it) == name {
+			h.writeObjectFound(w, &resp, it, path, apiVersionHint, kindHint)
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, resp) // Found=false
+}
+
+// writeObjectFound finishes an ObjectDetail response for a resolved object
+// body: normalizes it, fills in Kind/Namespace/JSON/YAML, and writes it.
+func (h *Handler) writeObjectFound(w http.ResponseWriter, resp *ObjectDetail, raw json.RawMessage, path, apiVersionHint, kindHint string) {
 	resp.Found = true
 	raw = normalizeObjectBody(raw, path, apiVersionHint, kindHint)
 	resp.Kind, resp.Namespace = kindAndNamespace(raw)
 	resp.JSON = prettyJSON(raw)
 	resp.YAML = toYAML(raw)
-	writeJSON(w, http.StatusOK, resp)
+	writeJSON(w, http.StatusOK, *resp)
+}
+
+// listEnvelopeWithItems re-marshals a captured list body with its items
+// replaced by an overlay-merged set. Falls back to a minimal synthetic
+// envelope when there was no captured body at all — a resource kind that
+// exists only because of overlay writes, e.g. a CRD installed at runtime.
+func listEnvelopeWithItems(capturedBody []byte, resource string, items []json.RawMessage) json.RawMessage {
+	var list map[string]any
+	if len(capturedBody) > 0 {
+		_ = json.Unmarshal(capturedBody, &list)
+	}
+	if list == nil {
+		list = map[string]any{"kind": kindFromResource(resource) + "List", "metadata": map[string]any{}}
+	}
+	list["items"] = items
+	out, err := json.Marshal(list)
+	if err != nil {
+		return capturedBody
+	}
+	return out
 }
 
 // ResourceObjectRow is a single object in a generic resource-type list.
@@ -126,36 +160,17 @@ func (h *Handler) serveResourceList(w http.ResponseWriter, r *http.Request) {
 	}
 	at := h.resolveAt(r)
 
-	out := ResourceList{Resource: resource, Kind: kindFromResource(resource), Namespace: nsFilter}
+	out := ResourceList{Resource: resource, Kind: h.resourceKind(resource), Namespace: nsFilter}
 	if !at.IsZero() {
 		out.At = at.UTC().Format(time.RFC3339)
 	}
 
-	for path, entry := range h.Store.Index {
-		if entry == nil || len(entry.Seqs) == 0 {
-			continue
-		}
-		if strings.Contains(path, "?") {
-			continue
-		}
-		_, _, res, ns := parseAPIPath(path)
-		if res != resource {
-			continue
-		}
+	for _, path := range h.resourcePathsFor(resource) {
+		_, _, _, ns := parseAPIPath(path)
 		if nsFilter != "" && ns != nsFilter {
 			continue
 		}
-		body, code, err := h.Store.ReconstructAt(path, at)
-		if err != nil || code != http.StatusOK || len(body) == 0 {
-			continue
-		}
-		var list struct {
-			Items []json.RawMessage `json:"items"`
-		}
-		if err := json.Unmarshal(body, &list); err != nil {
-			continue
-		}
-		for _, it := range list.Items {
+		for _, it := range h.reconstructMergedItems(path, at) {
 			name := getName(it)
 			if name == "" {
 				continue
@@ -245,6 +260,25 @@ func (h *Handler) serveResourceCatalog(w http.ResponseWriter, r *http.Request) {
 		if i := latestIndex(entry, at); i >= 0 && i < len(entry.Counts) && entry.Counts[i] > 0 {
 			row.Count += entry.Counts[i]
 		}
+	}
+	// Resource kinds/namespaces that exist only because of overlay writes (a
+	// CRD installed at runtime, or objects in a namespace the capture never
+	// saw) have no index entry at all, so the loop above never visits them —
+	// add or extend their rows here from the overlay directly.
+	for _, sc := range h.Overlay.OverlayScopes() {
+		k := key{sc.Group, sc.Version, sc.Resource}
+		row := agg[k]
+		if row == nil {
+			row = &ResourceCatalogRow{
+				Group: sc.Group, Version: sc.Version, Resource: sc.Resource,
+				Kind: kindFromSample(sc.Sample, sc.Resource), Link: resourceLink(sc.Resource, ""),
+			}
+			agg[k] = row
+		}
+		if sc.Namespace != "" {
+			row.Namespaced = true
+		}
+		row.Count += sc.Count
 	}
 
 	out := ResourceCatalog{Capture: h.captureMeta()}
@@ -372,6 +406,36 @@ func getLabels(raw json.RawMessage) map[string]string {
 		return nil
 	}
 	return m.Metadata.Labels
+}
+
+// resourceKind resolves a resource plural name's display Kind the same way
+// the catalog does: the capture's own discovery documents first, then (for a
+// resource kind the capture never saw at all, e.g. a CRD's custom resources)
+// an overlay sample, falling back to a titlecased guess.
+func (h *Handler) resourceKind(resource string) string {
+	if dm, ok := h.discoveryResourceMeta()[resource]; ok && dm.Kind != "" {
+		return dm.Kind
+	}
+	for _, sc := range h.Overlay.OverlayScopes() {
+		if sc.Resource == resource {
+			return kindFromSample(sc.Sample, resource)
+		}
+	}
+	return kindFromResource(resource)
+}
+
+// kindFromSample reads the "kind" field from a live overlay object body — a
+// real write payload from kubectl/helm/a controller always carries it, unlike
+// individual items inside a captured list — falling back to kindFromResource
+// when it's missing or unparseable.
+func kindFromSample(sample json.RawMessage, resource string) string {
+	var m struct {
+		Kind string `json:"kind"`
+	}
+	if json.Unmarshal(sample, &m) == nil && m.Kind != "" {
+		return m.Kind
+	}
+	return kindFromResource(resource)
 }
 
 // kindAndNamespace pulls apiVersion/kind and metadata.namespace from a raw

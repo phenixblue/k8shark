@@ -58,6 +58,7 @@ type Server struct {
 	kubeconfigPath    string
 	certPEM           []byte // this run's self-signed TLS cert, for callers that need to pin it
 	ar                *archive.Archive
+	handler           *handler // shared with other in-process readers, e.g. the web UI (see overlay_export.go)
 	httpServer        *http.Server
 	done              chan struct{}
 	clock             *ReplayClock // non-nil in replay mode
@@ -181,6 +182,7 @@ func serve(ar *archive.Archive, store *CaptureStore, at time.Time, clock *Replay
 		kubeconfigPath:    kubeconfigPath,
 		certPEM:           certPEM,
 		ar:                ar,
+		handler:           h,
 		httpServer:        httpSrv,
 		done:              done,
 		clock:             clock,

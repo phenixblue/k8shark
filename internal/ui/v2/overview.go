@@ -93,6 +93,14 @@ func (h *Handler) buildOverview(at time.Time) (*Overview, error) {
 	// Cluster-scoped resource totals from the index — at the latest record per path.
 	clusterCounts := clusterScopedResourceCounts(store.Index, at)
 
+	// Fold in resource kinds/namespaces that exist only because of overlay
+	// writes (a CRD's custom resources, or a namespace + its contents created
+	// mid-replay) — the index-based counts above never see these.
+	if scopes := h.Overlay.OverlayScopes(); len(scopes) > 0 {
+		mergeOverlayNamespaceCounts(counts, scopes)
+		mergeOverlayClusterCounts(clusterCounts, scopes)
+	}
+
 	// Aggregate KPIs + per-resource totals.
 	resourceTotals := map[string]int{}
 	hasPerNS := map[string]bool{}
@@ -168,18 +176,21 @@ func (h *Handler) buildOverview(at time.Time) (*Overview, error) {
 			ns.Unhealthy++
 		}
 	}
-	// Attach namespace labels from the captured namespaces list (one read).
-	if body, code, err := store.ReconstructAt("/api/v1/namespaces", at); err == nil && code == http.StatusOK && len(body) > 0 {
-		var list struct {
-			Items []json.RawMessage `json:"items"`
+	// Attach namespace labels from the namespaces list, merged with any
+	// overlay writes — this also picks up a namespace created mid-replay
+	// (e.g. `helm install --create-namespace`) that has no resources counted
+	// above yet, so it still appears in the namespace picker.
+	for _, raw := range h.reconstructMergedItems("/api/v1/namespaces", at) {
+		name := getName(raw)
+		if name == "" {
+			continue
 		}
-		if json.Unmarshal(body, &list) == nil {
-			for _, raw := range list.Items {
-				if s := nsByName[getName(raw)]; s != nil {
-					s.Labels = getLabels(raw)
-				}
-			}
+		s, ok := nsByName[name]
+		if !ok {
+			s = &NamespaceSummary{Name: name}
+			nsByName[name] = s
 		}
+		s.Labels = getLabels(raw)
 	}
 	ov.Namespaces = make([]NamespaceSummary, 0, len(nsByName))
 	for _, s := range nsByName {
@@ -214,35 +225,18 @@ type podHealthEntry struct {
 	health    PodHealth
 }
 
-// readAllPodHealths walks every per-namespace pod LIST in the index, reads
-// the latest record at or before `at`, and classifies each pod's health.
+// readAllPodHealths walks every per-namespace pod LIST in the index (plus any
+// overlay-only namespace), reads the latest record at or before `at` merged
+// with overlay writes, and classifies each pod's health.
 func (h *Handler) readAllPodHealths(at time.Time) []podHealthEntry {
-	store := h.Store
 	var out []podHealthEntry
 
-	for path, entry := range store.Index {
-		if entry == nil || len(entry.Seqs) == 0 {
+	for _, path := range h.resourcePathsFor("pods") {
+		_, _, _, ns := parseAPIPath(path)
+		if ns == "" {
 			continue
 		}
-		if strings.Contains(path, "?") {
-			continue // skip Table records and other query-suffix variants
-		}
-		_, _, resource, ns := parseAPIPath(path)
-		if resource != "pods" || ns == "" {
-			continue
-		}
-
-		body, code, err := store.ReconstructAt(path, at)
-		if err != nil || code != http.StatusOK || len(body) == 0 {
-			continue
-		}
-		var list struct {
-			Items []json.RawMessage `json:"items"`
-		}
-		if err := json.Unmarshal(body, &list); err != nil {
-			continue
-		}
-		for _, raw := range list.Items {
+		for _, raw := range h.reconstructMergedItems(path, at) {
 			name := getName(raw)
 			if name == "" {
 				continue

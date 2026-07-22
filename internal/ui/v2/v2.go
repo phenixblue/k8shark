@@ -25,6 +25,14 @@ type Handler struct {
 	// Clock, when non-nil, puts the dashboard in replay mode: resolveAt follows
 	// the clock and /v2/api/replay drives it (see replay.go).
 	Clock *server.ReplayClock
+	// Overlay, when non-nil, is the mock API server backing this same archive.
+	// Every list/detail read merges its writable-overlay writes (kubectl/helm/
+	// kwok/controller-manager) over the captured state, so the dashboard shows
+	// live changes instead of only what was captured. Its accessor methods are
+	// nil-safe on a Server without a writable overlay, so callers here never
+	// need to check for that case separately — only for Overlay itself being
+	// nil (plain `open`, or a caller that didn't wire one up).
+	Overlay *server.Server
 }
 
 // Mount registers all /v2/* routes on mux. The /v2/ HTML shell is served

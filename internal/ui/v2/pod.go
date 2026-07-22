@@ -145,20 +145,10 @@ func (h *Handler) buildPodDetail(ns, name string, at time.Time) (*PodDetail, err
 		return nil, fmt.Errorf("store not initialized")
 	}
 
-	// Find the pod's raw body inside the captured pods list.
+	// Find the pod's raw body inside the pods list, merged with any overlay write.
 	listPath := "/api/v1/namespaces/" + ns + "/pods"
-	body, code, err := store.ReconstructAt(listPath, at)
-	if err != nil || code != http.StatusOK || len(body) == 0 {
-		return nil, nil
-	}
-	var list struct {
-		Items []json.RawMessage `json:"items"`
-	}
-	if err := json.Unmarshal(body, &list); err != nil {
-		return nil, nil
-	}
 	var raw json.RawMessage
-	for _, it := range list.Items {
+	for _, it := range h.reconstructMergedItems(listPath, at) {
 		if getName(it) == name {
 			raw = it
 			break
@@ -418,18 +408,8 @@ func (h *Handler) readLogTail(indexKey string, n int) ([]string, bool) {
 // matches this pod.
 func (h *Handler) loadPodEvents(ns, name string, at time.Time, limit int) []PodEvent {
 	listPath := "/api/v1/namespaces/" + ns + "/events"
-	body, code, err := h.Store.ReconstructAt(listPath, at)
-	if err != nil || code != http.StatusOK || len(body) == 0 {
-		return nil
-	}
-	var list struct {
-		Items []json.RawMessage `json:"items"`
-	}
-	if err := json.Unmarshal(body, &list); err != nil {
-		return nil
-	}
 	var out []PodEvent
-	for _, raw := range list.Items {
+	for _, raw := range h.reconstructMergedItems(listPath, at) {
 		var ev eventObject
 		if err := json.Unmarshal(raw, &ev); err != nil {
 			continue

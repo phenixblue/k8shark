@@ -15,13 +15,19 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/server"
 	v2 "github.com/phenixblue/k8shark/internal/ui/v2"
 )
 
 // OpenOptions configures a UI server for a single capture archive.
 type OpenOptions struct {
+	// MockServer is the already-running mock API server for this archive
+	// (`kshrk ui`/`kshrk replay --ui` always start one first). Its store is
+	// reused directly — the UI no longer loads the archive a second time —
+	// and, when writable, its overlay is merged into every v2 read so client
+	// writes (kubectl/helm/kwok/controller-manager) are visible in the
+	// dashboard too. Required.
+	MockServer  *server.Server
 	ArchivePath string
 	Port        string
 	At          string
@@ -38,30 +44,18 @@ type Server struct {
 	address    string
 	httpServer *http.Server
 	done       chan struct{}
-
-	archive   *archive.Archive
-	closeOnce sync.Once
+	closeOnce  sync.Once
 }
 
-// Open loads the archive, mounts the v2 dashboard, and starts serving on the
-// requested port (random when empty/"0"). The archive is kept open for the life
-// of the server so the store can read records on demand, and is closed by
-// Shutdown/Wait once the server stops.
+// Open mounts the v2 dashboard over MockServer's store (and overlay, when
+// writable) and starts serving on the requested port (random when empty/"0").
+// The archive itself is owned by MockServer — Shutdown/Wait here only stop
+// this HTTP server, they don't touch the archive.
 func Open(opts OpenOptions) (*Server, error) {
-	ar, err := archive.Open(opts.ArchivePath)
-	if err != nil {
-		return nil, fmt.Errorf("opening archive: %w", err)
-	}
-
-	store, err := server.LoadStore(ar)
-	if err != nil {
-		_ = ar.Close()
-		return nil, fmt.Errorf("loading capture: %w", err)
-	}
+	store := opts.MockServer.Store()
 
 	at, err := parseReplayAt(store.Metadata.CapturedAt, store.Metadata.CapturedUntil, opts.At)
 	if err != nil {
-		_ = ar.Close()
 		return nil, err
 	}
 
@@ -71,7 +65,6 @@ func Open(opts OpenOptions) (*Server, error) {
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:"+port)
 	if err != nil {
-		_ = ar.Close()
 		return nil, fmt.Errorf("listening: %w", err)
 	}
 
@@ -80,6 +73,7 @@ func Open(opts OpenOptions) (*Server, error) {
 	mux.HandleFunc("/", serveRoot)
 	v2h := &v2.Handler{
 		Store:       store,
+		Overlay:     opts.MockServer,
 		At:          at,
 		ArchivePath: opts.ArchivePath,
 		Verbose:     opts.Verbose,
@@ -95,17 +89,7 @@ func Open(opts OpenOptions) (*Server, error) {
 	}()
 
 	addr := fmt.Sprintf("http://127.0.0.1:%d", ln.Addr().(*net.TCPAddr).Port)
-	return &Server{address: addr, httpServer: httpSrv, done: done, archive: ar}, nil
-}
-
-// closeArchive releases the underlying archive file handle. It is safe to call
-// from both Shutdown and Wait; only the first call closes the archive.
-func (s *Server) closeArchive() {
-	s.closeOnce.Do(func() {
-		if s.archive != nil {
-			_ = s.archive.Close()
-		}
-	})
+	return &Server{address: addr, httpServer: httpSrv, done: done}, nil
 }
 
 // Address returns the base URL the server is listening on.
@@ -113,11 +97,12 @@ func (s *Server) Address() string { return s.address }
 
 // Shutdown gracefully stops the server.
 func (s *Server) Shutdown() {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_ = s.httpServer.Shutdown(ctx)
-	<-s.done
-	s.closeArchive()
+	s.closeOnce.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = s.httpServer.Shutdown(ctx)
+		<-s.done
+	})
 }
 
 // Wait blocks until the server stops or an interrupt signal is received.
@@ -126,13 +111,10 @@ func (s *Server) Wait() error {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	select {
 	case <-s.done:
+		return nil
 	case <-sigCh:
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = s.httpServer.Shutdown(ctx)
-		<-s.done
 	}
-	s.closeArchive()
+	s.Shutdown()
 	return nil
 }
 
