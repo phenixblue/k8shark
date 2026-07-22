@@ -390,7 +390,7 @@ func ensureCRDEstablished(body json.RawMessage, now string) json.RawMessage {
 	}
 	spec, _ := m["spec"].(map[string]any)
 	names, _ := spec["names"].(map[string]any)
-	var storedVersions []string
+	storedVersions := []string{} // non-nil: a real CRD's storedVersions is never omitted
 	if versions, ok := spec["versions"].([]any); ok {
 		for _, v := range versions {
 			vm, ok := v.(map[string]any)
@@ -403,6 +403,11 @@ func ensureCRDEstablished(body json.RawMessage, now string) json.RawMessage {
 				}
 			}
 		}
+	} else if v, ok := spec["version"].(string); ok && v != "" {
+		// Legacy apiextensions.k8s.io/v1beta1 CRDs could specify a single
+		// top-level spec.version instead of the spec.versions list v1
+		// introduced; treat it as the (only) stored version.
+		storedVersions = append(storedVersions, v)
 	}
 	m["status"] = map[string]any{
 		"acceptedNames": names,

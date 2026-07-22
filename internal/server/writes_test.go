@@ -2163,14 +2163,20 @@ func TestOverlay_CRDEstablishedOnCreate(t *testing.T) {
 	if err := json.Unmarshal(out, &crd); err != nil {
 		t.Fatalf("decode: %v\n%s", err, out)
 	}
-	established := false
+	established, namesAccepted := false, false
 	for _, c := range crd.Status.Conditions {
 		if c.Type == "Established" && c.Status == "True" {
 			established = true
 		}
+		if c.Type == "NamesAccepted" && c.Status == "True" {
+			namesAccepted = true
+		}
 	}
 	if !established {
 		t.Errorf("no Established=True condition — kstatus reports this CRD InProgress forever: %s", out)
+	}
+	if !namesAccepted {
+		t.Errorf("no NamesAccepted=True condition: %s", out)
 	}
 	if crd.Status.AcceptedNames.Kind != "Widget" {
 		t.Errorf("acceptedNames.kind = %q, want Widget", crd.Status.AcceptedNames.Kind)
@@ -2178,6 +2184,57 @@ func TestOverlay_CRDEstablishedOnCreate(t *testing.T) {
 	if len(crd.Status.StoredVersions) != 1 || crd.Status.StoredVersions[0] != "v1" {
 		t.Errorf("storedVersions = %v, want [v1] (the version with storage:true)", crd.Status.StoredVersions)
 	}
+}
+
+// TestOverlay_CRDEstablished_StoredVersionsFallbacks covers two edge cases in
+// storedVersions: it must be an empty JSON array (not null) when spec.versions
+// is missing/malformed, and it must fall back to a legacy
+// apiextensions.k8s.io/v1beta1-style single spec.version string when the v1
+// spec.versions list isn't present.
+func TestOverlay_CRDEstablished_StoredVersionsFallbacks(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	t.Run("empty, not null, when no version has storage:true", func(t *testing.T) {
+		body := `{"apiVersion":"apiextensions.k8s.io/v1","kind":"CustomResourceDefinition",
+			"metadata":{"name":"gadgets.example.com"},
+			"spec":{"group":"example.com","scope":"Namespaced",
+				"names":{"kind":"Gadget","listKind":"GadgetList","plural":"gadgets","singular":"gadget"},
+				"versions":[]}}`
+		code, out := doReq(t, http.MethodPost, srv.URL+"/apis/apiextensions.k8s.io/v1/customresourcedefinitions", "application/json", body)
+		if code != http.StatusCreated {
+			t.Fatalf("create CRD: status %d, want 201: %s", code, out)
+		}
+		if strings.Contains(string(out), `"storedVersions":null`) {
+			t.Errorf("storedVersions is null, want []: %s", out)
+		}
+		if !strings.Contains(string(out), `"storedVersions":[]`) {
+			t.Errorf("storedVersions = %s, want []", out)
+		}
+	})
+
+	t.Run("legacy v1beta1-style spec.version", func(t *testing.T) {
+		body := `{"apiVersion":"apiextensions.k8s.io/v1","kind":"CustomResourceDefinition",
+			"metadata":{"name":"gizmos.example.com"},
+			"spec":{"group":"example.com","scope":"Namespaced","version":"v1beta1",
+				"names":{"kind":"Gizmo","listKind":"GizmoList","plural":"gizmos","singular":"gizmo"}}}`
+		code, out := doReq(t, http.MethodPost, srv.URL+"/apis/apiextensions.k8s.io/v1/customresourcedefinitions", "application/json", body)
+		if code != http.StatusCreated {
+			t.Fatalf("create CRD: status %d, want 201: %s", code, out)
+		}
+		var crd struct {
+			Status struct {
+				StoredVersions []string `json:"storedVersions"`
+			} `json:"status"`
+		}
+		if err := json.Unmarshal(out, &crd); err != nil {
+			t.Fatalf("decode: %v\n%s", err, out)
+		}
+		if len(crd.Status.StoredVersions) != 1 || crd.Status.StoredVersions[0] != "v1beta1" {
+			t.Errorf("storedVersions = %v, want [v1beta1] (fallback from legacy spec.version)", crd.Status.StoredVersions)
+		}
+	})
 }
 
 // A WatchList informer (sendInitialEvents=true) must see overlay-created objects
