@@ -179,6 +179,16 @@ func (h *handler) storeNewObject(group, version, resource, namespace, name strin
 		// "InProgress: Install in progress" forever, hanging any
 		// CRD-heavy chart (e.g. Istio's `base` chart) waiting for its CRDs.
 		body = ensureCRDEstablished(body, h.nowRFC3339())
+		// A real apiextensions-apiserver also registers the CRD's defined type
+		// with the aggregated discovery document the moment it's created. The
+		// store's resourceInfo is otherwise a snapshot built once from the
+		// capture archive (see CaptureStore.buildResourceInfo/LoadStore), so
+		// without this a CRD applied at runtime (e.g. `istioctl install`) is
+		// visible via `kubectl get crd` (a plain object read) but absent from
+		// `kubectl api-resources` / `istioctl analyze` (which walk discovery),
+		// since /apis and /apis/<group>/<version> only ever reflect that
+		// snapshot.
+		h.registerCRDResourceInfo(body)
 	}
 
 	rv := h.overlay.nextRV(h.replayFloorRV(group, version, resource, namespace))
@@ -433,6 +443,58 @@ func ensureCRDEstablished(body json.RawMessage, now string) json.RawMessage {
 		return body
 	}
 	return out
+}
+
+// registerCRDResourceInfo parses a freshly created CustomResourceDefinition's
+// spec and registers its defined group/version/resource/kind with the store's
+// discovery metadata (CaptureStore.mergeResourceInfo), so /apis and
+// /apis/<group>/<version> — and therefore `kubectl api-resources` and any
+// client that walks discovery (e.g. `istioctl analyze`) — reflect it
+// immediately, rather than only once the archive is reloaded. Best-effort: a
+// malformed/unparseable CRD body is silently skipped rather than failing the
+// create — the CRD object itself is still stored either way; only its
+// discovery visibility is affected.
+func (h *handler) registerCRDResourceInfo(body json.RawMessage) {
+	type crdVersion struct {
+		Name   string `json:"name"`
+		Served bool   `json:"served"`
+	}
+	var crd struct {
+		Spec struct {
+			Group string `json:"group"`
+			Names struct {
+				Kind       string   `json:"kind"`
+				Singular   string   `json:"singular"`
+				Plural     string   `json:"plural"`
+				ShortNames []string `json:"shortNames"`
+			} `json:"names"`
+			Scope    string       `json:"scope"`
+			Versions []crdVersion `json:"versions"`
+			Version  string       `json:"version"` // legacy apiextensions.k8s.io/v1beta1
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal(body, &crd); err != nil {
+		return
+	}
+	if crd.Spec.Group == "" || crd.Spec.Names.Plural == "" {
+		return
+	}
+	versions := crd.Spec.Versions
+	if len(versions) == 0 && crd.Spec.Version != "" {
+		// Legacy v1beta1 CRDs specify a single top-level spec.version instead
+		// of the spec.versions list v1 introduced; treat it as the (only)
+		// served version, mirroring ensureCRDEstablished's storedVersions
+		// fallback above.
+		versions = []crdVersion{{Name: crd.Spec.Version, Served: true}}
+	}
+	namespaced := crd.Spec.Scope != "Cluster"
+	for _, v := range versions {
+		if !v.Served || v.Name == "" {
+			continue
+		}
+		h.store.mergeResourceInfo(crd.Spec.Group, v.Name, crd.Spec.Names.Plural, namespaced,
+			crd.Spec.Names.Kind, crd.Spec.Names.Singular, crd.Spec.Names.ShortNames)
+	}
 }
 
 // podNodeName returns a pod body's spec.nodeName ("" if unset).

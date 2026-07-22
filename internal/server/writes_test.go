@@ -2186,6 +2186,86 @@ func TestOverlay_CRDEstablishedOnCreate(t *testing.T) {
 	}
 }
 
+// TestOverlay_CRDRegistersDiscoveryOnCreate verifies a freshly created CRD is
+// immediately visible via the discovery endpoints (/apis and
+// /apis/<group>/<version>), not just via a plain object read (`kubectl get
+// crd`). CaptureStore.resourceInfo is otherwise a snapshot built once from the
+// capture archive at startup (see LoadStore/buildResourceInfo), so without
+// registering the CRD's defined type on create, a CRD applied at runtime
+// (e.g. `istioctl install`) never shows up in `kubectl api-resources` or
+// `istioctl analyze`, both of which walk discovery rather than reading the
+// CRD object itself.
+func TestOverlay_CRDRegistersDiscoveryOnCreate(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	crdBody := `{"apiVersion":"apiextensions.k8s.io/v1","kind":"CustomResourceDefinition",
+		"metadata":{"name":"virtualservices.networking.istio.io"},
+		"spec":{"group":"networking.istio.io","scope":"Namespaced",
+			"names":{"kind":"VirtualService","listKind":"VirtualServiceList","plural":"virtualservices","singular":"virtualservice","shortNames":["vs"]},
+			"versions":[
+				{"name":"v1beta1","served":true,"storage":false},
+				{"name":"v1","served":true,"storage":true}
+			]}}`
+	code, out := doReq(t, http.MethodPost, srv.URL+"/apis/apiextensions.k8s.io/v1/customresourcedefinitions", "application/json", crdBody)
+	if code != http.StatusCreated {
+		t.Fatalf("create CRD: status %d, want 201: %s", code, out)
+	}
+
+	code, out = doReq(t, http.MethodGet, srv.URL+"/apis", "", "")
+	if code != http.StatusOK {
+		t.Fatalf("GET /apis: status %d: %s", code, out)
+	}
+	if !strings.Contains(string(out), `"networking.istio.io"`) {
+		t.Errorf("/apis response missing the networking.istio.io group: %s", out)
+	}
+
+	var resList struct {
+		Resources []struct {
+			Name       string   `json:"name"`
+			Kind       string   `json:"kind"`
+			Namespaced bool     `json:"namespaced"`
+			ShortNames []string `json:"shortNames"`
+		} `json:"resources"`
+	}
+	code, out = doReq(t, http.MethodGet, srv.URL+"/apis/networking.istio.io/v1", "", "")
+	if code != http.StatusOK {
+		t.Fatalf("GET /apis/networking.istio.io/v1: status %d: %s", code, out)
+	}
+	if err := json.Unmarshal(out, &resList); err != nil {
+		t.Fatalf("decode: %v\n%s", err, out)
+	}
+	var found bool
+	for _, r := range resList.Resources {
+		if r.Name != "virtualservices" {
+			continue
+		}
+		found = true
+		if r.Kind != "VirtualService" {
+			t.Errorf("kind = %q, want VirtualService", r.Kind)
+		}
+		if !r.Namespaced {
+			t.Error("namespaced = false, want true")
+		}
+		if !contains(r.ShortNames, "vs") {
+			t.Errorf("shortNames = %v, want to contain vs", r.ShortNames)
+		}
+	}
+	if !found {
+		t.Fatalf("virtualservices missing from /apis/networking.istio.io/v1: %s", out)
+	}
+
+	// The served-but-non-storage v1beta1 version is registered too.
+	code, out = doReq(t, http.MethodGet, srv.URL+"/apis/networking.istio.io/v1beta1", "", "")
+	if code != http.StatusOK {
+		t.Fatalf("GET /apis/networking.istio.io/v1beta1: status %d: %s", code, out)
+	}
+	if !strings.Contains(string(out), `"name":"virtualservices"`) {
+		t.Errorf("v1beta1 resource list missing virtualservices: %s", out)
+	}
+}
+
 // TestOverlay_CRDEstablished_EdgeCases covers edge cases in the synthesized
 // CRD status: storedVersions must be an empty JSON array (not null) when
 // spec.versions is missing/malformed, it must fall back to a legacy
