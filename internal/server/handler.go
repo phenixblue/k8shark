@@ -405,6 +405,7 @@ func (h *handler) tryServeAPIGroupListFromStore(w http.ResponseWriter, path stri
 		return true
 	}
 
+	resources := h.store.Resources()
 	changed := false
 	known := make(map[string]bool, len(groups))
 	for i, raw := range groups {
@@ -424,7 +425,7 @@ func (h *handler) tryServeAPIGroupListFromStore(w http.ResponseWriter, path stri
 				knownVersions[v.GroupVersion] = true
 			}
 		}
-		additions := groupVersionsFor(h.store.Resources(), g.Name, knownVersions)
+		additions := groupVersionsFor(resources, g.Name, knownVersions)
 		if len(additions) == 0 {
 			continue
 		}
@@ -435,7 +436,7 @@ func (h *handler) tryServeAPIGroupListFromStore(w http.ResponseWriter, path stri
 	}
 
 	// Append any group the captured document never listed at all.
-	newGroups := groupVersionsByGroup(h.store.Resources(), known)
+	newGroups := groupVersionsByGroup(resources, known)
 	for _, g := range groupEntries(newGroups) {
 		if entryBytes, err := json.Marshal(g); err == nil {
 			groups = append(groups, entryBytes)
