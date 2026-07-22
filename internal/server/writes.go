@@ -476,7 +476,11 @@ func (h *handler) registerCRDResourceInfo(body json.RawMessage) {
 	if err := json.Unmarshal(body, &crd); err != nil {
 		return
 	}
-	if crd.Spec.Group == "" || crd.Spec.Names.Plural == "" {
+	if crd.Spec.Group == "" || crd.Spec.Names.Plural == "" || crd.Spec.Names.Kind == "" {
+		// A missing Kind would otherwise fall through to mergeResourceInfo's
+		// resourceToKind heuristic fallback, which is a plural-depluralizing
+		// guess known to be wrong for most CRDs — skipping keeps a malformed
+		// CRD body from polluting discovery with a made-up Kind.
 		return
 	}
 	// mergeResourceInfo treats namespaced as authoritative and overwrites any

@@ -324,33 +324,72 @@ func mergeJSONArrayField(body []byte, fieldName string) (doc map[string]json.Raw
 	return doc, arr, true
 }
 
-// writeMergedJSON re-marshals doc with fieldName set to arr and writes it, or
-// falls back to serving fallback (the original captured bytes) verbatim on
-// any marshal error.
-func writeMergedJSON(w http.ResponseWriter, code int, doc map[string]json.RawMessage, fieldName string, arr []json.RawMessage, fallback []byte) {
+// setJSONArrayField re-marshals doc with fieldName set to arr, returning
+// ok=false on any marshal error (the map value type is json.RawMessage, so
+// this can only fail if arr itself contains something unmarshalable, which
+// none of this file's callers ever produce — but propagating rather than
+// panicking keeps every caller's existing verbatim-fallback path working).
+func setJSONArrayField(doc map[string]json.RawMessage, fieldName string, arr []json.RawMessage) ([]byte, bool) {
 	merged, err := json.Marshal(arr)
 	if err != nil {
-		writeRawJSON(w, code, fallback)
-		return
+		return nil, false
 	}
 	doc[fieldName] = merged
 	out, err := json.Marshal(doc)
 	if err != nil {
+		return nil, false
+	}
+	return out, true
+}
+
+// writeMergedJSON re-marshals doc with fieldName set to arr and writes it, or
+// falls back to serving fallback (the original captured bytes) verbatim on
+// any marshal error.
+func writeMergedJSON(w http.ResponseWriter, code int, doc map[string]json.RawMessage, fieldName string, arr []json.RawMessage, fallback []byte) {
+	out, ok := setJSONArrayField(doc, fieldName, arr)
+	if !ok {
 		writeRawJSON(w, code, fallback)
 		return
 	}
 	writeRawJSON(w, code, out)
 }
 
-// tryServeAPIGroupListFromStore serves the captured /apis document, appending
-// any group a CRD created via the overlay (see registerCRDResourceInfo)
-// registered that the document doesn't already list. Every pre-existing
-// group entry is passed through as the exact bytes capture recorded —
-// unlike fully re-synthesizing the document from h.store.Resources(), this
-// can't lose fields a real apiserver's response had that the synthesizer
-// doesn't reproduce. Serves the captured bytes verbatim when there's nothing
-// new to add (the common case). Returns false only when path wasn't
-// captured at all, matching tryServeFromStore.
+// mergeVersionsIntoGroup appends additions to a single raw APIGroupList group
+// entry's own "versions" array, leaving every other field of that entry (its
+// name, preferredVersion, and pre-existing version entries) untouched.
+// Returns rawGroup unchanged with ok=false if it isn't a JSON object with a
+// "versions" array, or on a marshal error — callers should skip the merge
+// for that entry (not fail the whole response) in either case.
+func mergeVersionsIntoGroup(rawGroup json.RawMessage, additions []groupVersion) (json.RawMessage, bool) {
+	doc, versions, ok := mergeJSONArrayField(rawGroup, "versions")
+	if !ok {
+		return rawGroup, false
+	}
+	for _, v := range sortedGroupVersions(additions) {
+		if b, err := json.Marshal(v); err == nil {
+			versions = append(versions, b)
+		}
+	}
+	out, ok := setJSONArrayField(doc, "versions", versions)
+	if !ok {
+		return rawGroup, false
+	}
+	return out, true
+}
+
+// tryServeAPIGroupListFromStore serves the captured /apis document, merging
+// in whatever a CRD created via the overlay (see registerCRDResourceInfo)
+// registered that the document doesn't already reflect: a version added
+// under a group the document already lists (merged into that group's own
+// versions array — a second CRD commonly adds a new version to a group
+// capture already saw, e.g. Istio's networking.istio.io), and any group the
+// document never listed at all (appended wholesale). Every pre-existing
+// group/version entry is passed through as the exact bytes capture
+// recorded — unlike fully re-synthesizing the document from
+// h.store.Resources(), this can't lose fields a real apiserver's response
+// had that the synthesizer doesn't reproduce. Serves the captured bytes
+// verbatim when there's nothing new to add (the common case). Returns false
+// only when path wasn't captured at all, matching tryServeFromStore.
 func (h *handler) tryServeAPIGroupListFromStore(w http.ResponseWriter, path string, at time.Time) bool {
 	body, code, err := h.store.Latest(path, at)
 	if err != nil || code != 200 {
@@ -365,24 +404,48 @@ func (h *handler) tryServeAPIGroupListFromStore(w http.ResponseWriter, path stri
 		writeRawJSON(w, code, body)
 		return true
 	}
+
+	changed := false
 	known := make(map[string]bool, len(groups))
-	for _, raw := range groups {
+	for i, raw := range groups {
 		var g struct {
-			Name string `json:"name"`
+			Name     string `json:"name"`
+			Versions []struct {
+				GroupVersion string `json:"groupVersion"`
+			} `json:"versions"`
 		}
-		if json.Unmarshal(raw, &g) == nil && g.Name != "" {
-			known[g.Name] = true
+		if json.Unmarshal(raw, &g) != nil || g.Name == "" {
+			continue
+		}
+		known[g.Name] = true
+		knownVersions := make(map[string]bool, len(g.Versions))
+		for _, v := range g.Versions {
+			if v.GroupVersion != "" {
+				knownVersions[v.GroupVersion] = true
+			}
+		}
+		additions := groupVersionsFor(h.store.Resources(), g.Name, knownVersions)
+		if len(additions) == 0 {
+			continue
+		}
+		if merged, ok := mergeVersionsIntoGroup(raw, additions); ok {
+			groups[i] = merged
+			changed = true
 		}
 	}
-	seen := groupVersionsByGroup(h.store.Resources(), known)
-	if len(seen) == 0 {
-		writeRawJSON(w, code, body) // nothing new since capture — serve verbatim
-		return true
-	}
-	for _, g := range groupEntries(seen) {
+
+	// Append any group the captured document never listed at all.
+	newGroups := groupVersionsByGroup(h.store.Resources(), known)
+	for _, g := range groupEntries(newGroups) {
 		if entryBytes, err := json.Marshal(g); err == nil {
 			groups = append(groups, entryBytes)
+			changed = true
 		}
+	}
+
+	if !changed {
+		writeRawJSON(w, code, body) // nothing new since capture — serve verbatim
+		return true
 	}
 	writeMergedJSON(w, code, doc, "groups", groups, body)
 	return true
