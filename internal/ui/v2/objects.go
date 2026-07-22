@@ -114,7 +114,21 @@ func listEnvelopeWithItems(capturedBody []byte, resource string, items []json.Ra
 		_ = json.Unmarshal(capturedBody, &list)
 	}
 	if list == nil {
-		list = map[string]any{"kind": kindFromResource(resource) + "List", "metadata": map[string]any{}}
+		// No captured envelope at all — a resource kind that exists only via
+		// overlay writes. normalizeObjectBody leaves list envelopes untouched,
+		// so get Kind/apiVersion right here: a sample overlay item carries both
+		// (a real write payload does), giving correct casing (e.g.
+		// "VirtualServiceList", not "Virtualservicelist" from kindFromResource).
+		kind := kindFromResource(resource)
+		var apiVersion string
+		if len(items) > 0 {
+			kind = kindFromSample(items[0], resource)
+			apiVersion = apiVersionFromSample(items[0])
+		}
+		list = map[string]any{"kind": kind + "List", "metadata": map[string]any{}}
+		if apiVersion != "" {
+			list["apiVersion"] = apiVersion
+		}
 	}
 	if items == nil {
 		items = []json.RawMessage{} // a real (possibly captured-empty) list always has "items": [], never null
@@ -125,6 +139,16 @@ func listEnvelopeWithItems(capturedBody []byte, resource string, items []json.Ra
 		return capturedBody
 	}
 	return out
+}
+
+// apiVersionFromSample reads the "apiVersion" field from a live overlay
+// object body (see kindFromSample).
+func apiVersionFromSample(sample json.RawMessage) string {
+	var m struct {
+		APIVersion string `json:"apiVersion"`
+	}
+	_ = json.Unmarshal(sample, &m)
+	return m.APIVersion
 }
 
 // ResourceObjectRow is a single object in a generic resource-type list.

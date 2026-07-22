@@ -171,6 +171,22 @@ func TestOverlay_NewCRDResourceType_VisibleEverywhere(t *testing.T) {
 		}
 	})
 
+	t.Run("serveObject whole-list view has correct synthetic Kind/apiVersion casing", func(t *testing.T) {
+		var d ObjectDetail
+		if code := getJSONInto(t, h, h.serveObject, "/v2/api/object", "?path="+strings.ReplaceAll(vsPath, "/", "%2F"), &d); code != http.StatusOK {
+			t.Fatalf("status = %d", code)
+		}
+		if !d.Found {
+			t.Fatalf("ObjectDetail.Found = false, want true")
+		}
+		if !strings.Contains(d.JSON, `"kind": "VirtualServiceList"`) {
+			t.Errorf("JSON missing correctly-cased synthetic envelope kind:\n%s", d.JSON)
+		}
+		if !strings.Contains(d.JSON, `"apiVersion": "networking.istio.io/v1beta1"`) {
+			t.Errorf("JSON missing synthetic envelope apiVersion:\n%s", d.JSON)
+		}
+	})
+
 	t.Run("delete tombstones it everywhere", func(t *testing.T) {
 		overlayDelete(t, srv, vsPath+"/reviews")
 
