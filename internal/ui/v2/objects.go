@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/phenixblue/k8shark/internal/server"
 )
 
 // ObjectDetail is the response from /v2/api/object — a single captured object
@@ -353,10 +355,21 @@ type discMeta struct {
 // short names} map from the captured API discovery documents (/api/v1 and
 // /apis/<group>/<version>). This gives correct kinds (incl. CRDs / irregular
 // plurals) and the kubectl short names for searching. Keyed by
-// "group/version/resource" and, as a fallback, by bare "resource".
+// "group/version/resource" and, as a fallback, by bare "resource". The result
+// depends only on the capture's own (time-invariant) discovery documents, so
+// it's computed once per Handler and cached — serveResourceList/
+// serveResourceCatalog/resourceKind would otherwise each re-scan the whole
+// index and re-parse every discovery document on every request.
 func (h *Handler) discoveryResourceMeta() map[string]discMeta {
+	h.discoveryMetaOnce.Do(func() {
+		h.discoveryMetaCache = buildDiscoveryResourceMeta(h.Store)
+	})
+	return h.discoveryMetaCache
+}
+
+func buildDiscoveryResourceMeta(store *server.CaptureStore) map[string]discMeta {
 	m := map[string]discMeta{}
-	for path, entry := range h.Store.Index {
+	for path, entry := range store.Index {
 		if entry == nil || len(entry.Seqs) == 0 {
 			continue
 		}
@@ -367,7 +380,7 @@ func (h *Handler) discoveryResourceMeta() map[string]discMeta {
 		if path != "/api/v1" && !(strings.HasPrefix(path, "/apis/") && strings.Count(path, "/") == 3) {
 			continue
 		}
-		body, code, err := h.Store.Latest(path, time.Time{})
+		body, code, err := store.Latest(path, time.Time{})
 		if err != nil || code != http.StatusOK || len(body) == 0 {
 			continue
 		}

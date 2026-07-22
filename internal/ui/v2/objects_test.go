@@ -173,6 +173,43 @@ func TestServeObject_MissingPath(t *testing.T) {
 	}
 }
 
+// TestDiscoveryResourceMeta_CachedAcrossCalls is a regression test: the
+// capture's discovery documents never change, so discoveryResourceMeta must
+// compute its index scan + discovery-document parse once per Handler and
+// reuse the result, not redo it on every call (serveResourceList and
+// serveResourceCatalog both call it, once per request).
+func TestDiscoveryResourceMeta_CachedAcrossCalls(t *testing.T) {
+	now := time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC)
+	discoveryDoc := `{"kind":"APIResourceList","groupVersion":"apps/v1","resources":[` +
+		`{"name":"deployments","singularName":"deployment","kind":"Deployment","shortNames":["deploy"]}]}`
+	recs := []*capture.Record{
+		{ID: "d1", CapturedAt: now, APIPath: "/apis/apps/v1", HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(discoveryDoc)},
+	}
+	idx := capture.Index{
+		"/apis/apps/v1": {APIPath: "/apis/apps/v1", Seqs: []int{0}, Times: []time.Time{now}},
+	}
+	meta := &capture.CaptureMetadata{CaptureID: "discovery-meta-test", CapturedAt: now.Add(-5 * time.Minute), CapturedUntil: now, RecordCount: len(recs)}
+	h := &Handler{Store: buildV2TestStore(t, recs, idx, meta), At: now}
+
+	first := h.discoveryResourceMeta()
+	if len(first) == 0 {
+		t.Fatal("discoveryResourceMeta() returned empty — fixture has no discovery docs to assert caching against")
+	}
+	// Mutate the map returned by the first call, then call again: if the
+	// result is truly cached (the same map instance), the second call sees
+	// the mutation too. If discoveryResourceMeta rebuilt it instead, the
+	// second call would come back full-sized again.
+	before := len(first)
+	for k := range first {
+		delete(first, k)
+		break
+	}
+	second := h.discoveryResourceMeta()
+	if len(second) != before-1 {
+		t.Errorf("discoveryResourceMeta() len = %d after mutating the prior result, want %d — not returning the cached map", len(second), before-1)
+	}
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 func doObject(t *testing.T, h *Handler, path, name string) ObjectDetail {
