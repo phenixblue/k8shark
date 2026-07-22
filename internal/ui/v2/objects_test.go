@@ -128,6 +128,41 @@ func TestServeObject_NotFound(t *testing.T) {
 	}
 }
 
+// TestServeObject_CapturedEmptyList_FoundWithEmptyItems is a regression test:
+// a whole-list view (name == "") of a path the capture recorded as a 200 with
+// zero items must read as Found=true with "items": [], not as not-found and
+// not as "items": null — a genuinely empty captured list is a real, distinct
+// answer from "this path was never captured".
+func TestServeObject_CapturedEmptyList_FoundWithEmptyItems(t *testing.T) {
+	now := time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC)
+	emptyCMList := `{"apiVersion":"v1","kind":"ConfigMapList","items":[]}`
+	recs := []*capture.Record{
+		{ID: "r1", CapturedAt: now, APIPath: "/api/v1/namespaces/default/configmaps", HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(emptyCMList)},
+	}
+	idx := capture.Index{
+		"/api/v1/namespaces/default/configmaps": {APIPath: "/api/v1/namespaces/default/configmaps", Seqs: []int{0}, Times: []time.Time{now}},
+	}
+	meta := &capture.CaptureMetadata{CaptureID: "v2-obj-empty-test", CapturedAt: now.Add(-5 * time.Minute), CapturedUntil: now, RecordCount: len(recs)}
+	h := &Handler{Store: buildV2TestStore(t, recs, idx, meta), At: now}
+
+	req := httptest.NewRequest(http.MethodGet, "/v2/api/object?path=%2Fapi%2Fv1%2Fnamespaces%2Fdefault%2Fconfigmaps", nil)
+	w := httptest.NewRecorder()
+	h.serveObject(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	var d ObjectDetail
+	if err := json.Unmarshal(w.Body.Bytes(), &d); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !d.Found {
+		t.Errorf("Found = false, want true for a captured-empty list")
+	}
+	if !strings.Contains(d.JSON, `"items": []`) {
+		t.Errorf("JSON = %s, want an explicit empty items array, not null", d.JSON)
+	}
+}
+
 func TestServeObject_MissingPath(t *testing.T) {
 	h := newObjectTestHandler(t)
 	req := httptest.NewRequest(http.MethodGet, "/v2/api/object?name=x", nil)

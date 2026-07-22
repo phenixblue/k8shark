@@ -48,12 +48,13 @@ func (h *Handler) serveObject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if name == "" {
+		capturedBody, code, err := h.Store.ReconstructAt(path, at)
+		captured := err == nil && code == http.StatusOK && len(capturedBody) > 0
 		items := h.reconstructMergedItems(path, at)
-		if len(items) == 0 {
-			writeJSON(w, http.StatusOK, resp) // Found=false
+		if !captured && len(items) == 0 {
+			writeJSON(w, http.StatusOK, resp) // Found=false: never captured, and the overlay has nothing either
 			return
 		}
-		capturedBody, _, _ := h.Store.ReconstructAt(path, at) // best-effort, for the envelope's Kind/apiVersion
 		_, _, resource, _ := parseAPIPath(path)
 		h.writeObjectFound(w, &resp, listEnvelopeWithItems(capturedBody, resource, items), path, "", "")
 		return
@@ -114,6 +115,9 @@ func listEnvelopeWithItems(capturedBody []byte, resource string, items []json.Ra
 	}
 	if list == nil {
 		list = map[string]any{"kind": kindFromResource(resource) + "List", "metadata": map[string]any{}}
+	}
+	if items == nil {
+		items = []json.RawMessage{} // a real (possibly captured-empty) list always has "items": [], never null
 	}
 	list["items"] = items
 	out, err := json.Marshal(list)

@@ -52,6 +52,9 @@ type Server struct {
 // The archive itself is owned by MockServer — Shutdown/Wait here only stop
 // this HTTP server, they don't touch the archive.
 func Open(opts OpenOptions) (*Server, error) {
+	if opts.MockServer == nil {
+		return nil, fmt.Errorf("opening UI: MockServer is required")
+	}
 	store := opts.MockServer.Store()
 
 	at, err := parseReplayAt(store.Metadata.CapturedAt, store.Metadata.CapturedUntil, opts.At)
