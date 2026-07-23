@@ -224,7 +224,9 @@ func walkStrings(v any, path string, fn func(field, s string)) {
 // bracket-quoted (path["key"]) so the result is an unambiguous field path.
 func joinField(path, key string) string {
 	if !isSimpleFieldKey(key) {
-		return path + `["` + strings.ReplaceAll(key, `"`, `\"`) + `"]`
+		// %q escapes backslashes, quotes, and control characters (and adds
+		// the surrounding quotes), unlike a bare quote-only replacement.
+		return path + "[" + fmt.Sprintf("%q", key) + "]"
 	}
 	if path == "" {
 		return key

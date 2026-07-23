@@ -2,6 +2,7 @@ package query
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -57,6 +58,45 @@ func TestSearchText_BracketQuotesNonIdentifierMapKeys(t *testing.T) {
 		t.Fatalf("expected 1 match, got %+v", result.Matches)
 	}
 	want := `metadata.annotations["kubectl.kubernetes.io/last-applied-configuration"]`
+	if result.Matches[0].Field != want {
+		t.Errorf("expected field path %q, got %q", want, result.Matches[0].Field)
+	}
+}
+
+func TestSearchText_EscapesBackslashAndControlCharsInMapKeys(t *testing.T) {
+	// A quote-only replacement leaves backslashes and control characters
+	// (tabs, newlines) unescaped, which can make the bracket-quoted segment
+	// ambiguous or malformed. %q must escape all of it.
+	weirdKey := "weird\\key\twith\ncontrol chars"
+	body, err := json.Marshal(map[string]any{
+		"kind":       "PodList",
+		"apiVersion": "v1",
+		"items": []any{
+			map[string]any{
+				"metadata": map[string]any{
+					"name": "web-1",
+					"annotations": map[string]any{
+						weirdKey: "needle-value",
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	store := buildQueryStore(t, map[string]string{
+		"/api/v1/namespaces/prod/pods": string(body),
+	})
+
+	result, err := SearchText(store, TextOptions{Pattern: "needle-value"})
+	if err != nil {
+		t.Fatalf("SearchText: %v", err)
+	}
+	if len(result.Matches) != 1 {
+		t.Fatalf("expected 1 match, got %+v", result.Matches)
+	}
+	want := "metadata.annotations[" + fmt.Sprintf("%q", weirdKey) + "]"
 	if result.Matches[0].Field != want {
 		t.Errorf("expected field path %q, got %q", want, result.Matches[0].Field)
 	}
