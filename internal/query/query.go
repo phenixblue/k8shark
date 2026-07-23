@@ -70,21 +70,26 @@ func Run(store *server.CaptureStore, opts Options) (*Result, error) {
 		if strings.Contains(path, "?") {
 			continue // Table/query-param variants of a path already covered plainly
 		}
-		g, v, r, ns := parseAPIPath(path)
+		g, v, r, pathNS := parseAPIPath(path)
 		if r == "" {
 			continue // discovery/openapi/other non-resource paths
 		}
 		if opts.Resource != "" && r != opts.Resource {
 			continue
 		}
-		if opts.Namespace != "" && ns != opts.Namespace {
-			continue
-		}
+		// Namespace filtering happens per-item below, not here: a cluster-wide
+		// list path (e.g. /api/v1/pods, captured when a namespaced resource has
+		// no namespaces: in its config) has no namespace segment of its own,
+		// but its items each carry their own metadata.namespace.
 		body, code, err := store.ReconstructAt(path, at)
 		if err != nil || code != 200 || len(body) == 0 {
 			continue
 		}
 		for _, item := range extractItems(body) {
+			meta := itemMeta(item, pathNS)
+			if opts.Namespace != "" && meta.Namespace != opts.Namespace {
+				continue
+			}
 			var data any
 			if json.Unmarshal(item, &data) != nil {
 				continue
@@ -93,7 +98,6 @@ func Run(store *server.CaptureStore, opts Options) (*Result, error) {
 			if err != nil {
 				continue
 			}
-			name := itemName(item)
 			for _, set := range results {
 				for _, rv := range set {
 					value, ok := marshalValue(rv)
@@ -102,7 +106,7 @@ func Run(store *server.CaptureStore, opts Options) (*Result, error) {
 					}
 					matches = append(matches, Match{
 						Path: path, Group: g, Version: v, Resource: r,
-						Namespace: ns, Name: name, Value: value,
+						Namespace: meta.Namespace, Name: meta.Name, Value: value,
 					})
 				}
 			}
@@ -123,16 +127,29 @@ func extractItems(body []byte) []json.RawMessage {
 	return list.Items
 }
 
-func itemName(item json.RawMessage) string {
-	var meta struct {
+// objectMeta is an object's resolved identity: its own name and namespace,
+// falling back to the enclosing list path's namespace for cluster-scoped
+// resources (nodes, PVs, …) that have no metadata.namespace of their own.
+type objectMeta struct {
+	Name      string
+	Namespace string
+}
+
+func itemMeta(item json.RawMessage, fallbackNamespace string) objectMeta {
+	var m struct {
 		Metadata struct {
-			Name string `json:"name"`
+			Name      string `json:"name"`
+			Namespace string `json:"namespace"`
 		} `json:"metadata"`
 	}
-	if json.Unmarshal(item, &meta) != nil {
-		return ""
+	if json.Unmarshal(item, &m) != nil {
+		return objectMeta{}
 	}
-	return meta.Metadata.Name
+	ns := m.Metadata.Namespace
+	if ns == "" {
+		ns = fallbackNamespace
+	}
+	return objectMeta{Name: m.Metadata.Name, Namespace: ns}
 }
 
 func marshalValue(rv reflect.Value) (json.RawMessage, bool) {

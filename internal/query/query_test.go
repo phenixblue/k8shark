@@ -89,6 +89,40 @@ func TestRun_FiltersByResourceAndNamespace(t *testing.T) {
 	}
 }
 
+func TestRun_ClusterWideListResolvesPerItemNamespace(t *testing.T) {
+	// A namespaced resource captured with no `namespaces:` in its config lands
+	// at the cluster-wide path (e.g. /api/v1/pods), but its items still carry
+	// their own metadata.namespace. --namespace must filter by that, not by
+	// the (empty) path namespace, and Match.Namespace must reflect it.
+	store := buildQueryStore(t, map[string]string{
+		"/api/v1/pods": `{"kind":"PodList","apiVersion":"v1","items":[
+		  {"metadata":{"name":"a","namespace":"prod"}},
+		  {"metadata":{"name":"b","namespace":"dev"}}
+		]}`,
+	})
+
+	all, err := Run(store, Options{Expression: "{.metadata.name}"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(all.Matches) != 2 {
+		t.Fatalf("expected 2 matches from the cluster-wide list, got %+v", all.Matches)
+	}
+	for _, m := range all.Matches {
+		if m.Namespace == "" {
+			t.Errorf("expected per-item namespace to be populated, got %+v", m)
+		}
+	}
+
+	scoped, err := Run(store, Options{Expression: "{.metadata.name}", Namespace: "dev"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(scoped.Matches) != 1 || scoped.Matches[0].Name != "b" || scoped.Matches[0].Namespace != "dev" {
+		t.Fatalf("expected only dev/b, got %+v", scoped.Matches)
+	}
+}
+
 func TestRun_ResourceFilterExcludesOtherTypes(t *testing.T) {
 	store := buildQueryStore(t, map[string]string{
 		"/api/v1/namespaces/prod/pods":     `{"kind":"PodList","apiVersion":"v1","items":[{"metadata":{"name":"a"}}]}`,
