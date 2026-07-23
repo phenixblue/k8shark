@@ -89,12 +89,12 @@ func Run(store *server.CaptureStore, opts Options) (*Result, error) {
 			continue
 		}
 		for _, item := range extractItems(body) {
-			meta := itemMeta(item, pathNS)
-			if opts.Namespace != "" && meta.Namespace != opts.Namespace {
-				continue
-			}
 			var data any
 			if json.Unmarshal(item, &data) != nil {
+				continue
+			}
+			meta := metaFromData(data, pathNS)
+			if opts.Namespace != "" && meta.Namespace != opts.Namespace {
 				continue
 			}
 			results, err := jp.FindResults(data)
@@ -138,21 +138,23 @@ type objectMeta struct {
 	Namespace string
 }
 
-func itemMeta(item json.RawMessage, fallbackNamespace string) objectMeta {
-	var m struct {
-		Metadata struct {
-			Name      string `json:"name"`
-			Namespace string `json:"namespace"`
-		} `json:"metadata"`
+// metaFromData reads name/namespace out of data — an object already decoded
+// via json.Unmarshal(item, &data) — instead of re-unmarshaling the item's raw
+// bytes. Callers need the decoded value anyway (for JSONPath evaluation or
+// string-walking), so deriving metadata from it avoids double-decoding every
+// object in the archive.
+func metaFromData(data any, fallbackNamespace string) objectMeta {
+	obj, ok := data.(map[string]any)
+	if !ok {
+		return objectMeta{Namespace: fallbackNamespace}
 	}
-	if json.Unmarshal(item, &m) != nil {
-		return objectMeta{}
-	}
-	ns := m.Metadata.Namespace
+	metadata, _ := obj["metadata"].(map[string]any)
+	name, _ := metadata["name"].(string)
+	ns, _ := metadata["namespace"].(string)
 	if ns == "" {
 		ns = fallbackNamespace
 	}
-	return objectMeta{Name: m.Metadata.Name, Namespace: ns}
+	return objectMeta{Name: name, Namespace: ns}
 }
 
 func marshalValue(rv reflect.Value) (json.RawMessage, bool) {

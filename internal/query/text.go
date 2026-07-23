@@ -98,12 +98,12 @@ func SearchText(store *server.CaptureStore, opts TextOptions) (*TextResult, erro
 			continue
 		}
 		for _, item := range extractItems(body) {
-			meta := itemMeta(item, pathNS)
-			if opts.Namespace != "" && meta.Namespace != opts.Namespace {
-				continue
-			}
 			var data any
 			if json.Unmarshal(item, &data) != nil {
+				continue
+			}
+			meta := metaFromData(data, pathNS)
+			if opts.Namespace != "" && meta.Namespace != opts.Namespace {
 				continue
 			}
 			walkStrings(data, "", func(field, s string) {
