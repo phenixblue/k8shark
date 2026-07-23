@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/phenixblue/k8shark/internal/server"
 )
@@ -240,20 +241,30 @@ func newFinder(pattern string, isRegex bool) (finder, error) {
 	}, nil
 }
 
-// snippetRadius is how many characters of context to keep on either side of
-// a match when the matched string is long.
+// snippetRadius is how many bytes of context to keep on either side of a
+// match when the matched string is long. The actual cut point is snapped
+// outward to the nearest UTF-8 rune boundary (see snippet), so this is
+// approximate rather than an exact byte or character count.
 const snippetRadius = 40
 
-// snippet returns s trimmed to snippetRadius characters of context around
-// [start, end), with ellipses marking trimmed content.
+// snippet returns s trimmed to roughly snippetRadius bytes of context around
+// [start, end) (byte offsets, as produced by strings.Index/regexp), with
+// ellipses marking trimmed content. Cut points are snapped outward to the
+// nearest UTF-8 rune boundary so a multi-byte character is never split.
 func snippet(s string, start, end int) string {
 	from := start - snippetRadius
 	if from < 0 {
 		from = 0
 	}
+	for from > 0 && !utf8.RuneStart(s[from]) {
+		from--
+	}
 	to := end + snippetRadius
 	if to > len(s) {
 		to = len(s)
+	}
+	for to < len(s) && !utf8.RuneStart(s[to]) {
+		to++
 	}
 	out := s[from:to]
 	if from > 0 {

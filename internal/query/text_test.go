@@ -2,7 +2,9 @@ package query
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func mustJSONString(t *testing.T, s string) string {
@@ -178,5 +180,24 @@ func TestSearchText_NoMatches(t *testing.T) {
 	}
 	if len(result.Matches) != 0 {
 		t.Fatalf("expected no matches, got %+v", result.Matches)
+	}
+}
+
+func TestSnippet_DoesNotSplitMultiByteRune(t *testing.T) {
+	// "€" is 3 bytes in UTF-8, so a 40-byte radius lands mid-rune (40 isn't a
+	// multiple of 3) unless the cut point is snapped to a rune boundary.
+	euro := "€"
+	prefix := strings.Repeat(euro, 20)
+	suffix := strings.Repeat(euro, 20)
+	s := prefix + "TARGET" + suffix
+	start := len(prefix)
+	end := start + len("TARGET")
+
+	out := snippet(s, start, end)
+	if !utf8.ValidString(out) {
+		t.Fatalf("snippet produced invalid UTF-8: %q", out)
+	}
+	if !strings.Contains(out, "TARGET") {
+		t.Fatalf("snippet lost the match: %q", out)
 	}
 }
