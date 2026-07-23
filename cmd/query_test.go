@@ -16,6 +16,8 @@ func newTestQueryCommand() *cobra.Command {
 	cmd.Flags().String("at", "", "")
 	cmd.Flags().String("resource", "", "")
 	cmd.Flags().String("namespace", "", "")
+	cmd.Flags().Bool("text", false, "")
+	cmd.Flags().Bool("regex", false, "")
 	return cmd
 }
 
@@ -104,5 +106,68 @@ func TestRunQuery_NoMatches(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "No matches.") {
 		t.Errorf("expected 'No matches.' message:\n%s", buf.String())
+	}
+}
+
+func TestRunQuery_TextMode(t *testing.T) {
+	arch := buildDiffArchive(t, queryPodList)
+	cmd := newTestQueryCommand()
+	_ = cmd.Flags().Set("output", "json")
+	_ = cmd.Flags().Set("text", "true")
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+
+	if err := runQuery(cmd, []string{arch, "nginx:alpine"}); err != nil {
+		t.Fatalf("runQuery: %v", err)
+	}
+	var result query.TextResult
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("output not valid JSON: %v\n%s", err, buf.String())
+	}
+	if len(result.Matches) != 2 {
+		t.Fatalf("expected 2 matches, got %d: %+v", len(result.Matches), result.Matches)
+	}
+	for _, m := range result.Matches {
+		if m.Field != "spec.containers[0].image" {
+			t.Errorf("unexpected field %q", m.Field)
+		}
+	}
+}
+
+func TestRunQuery_RegexMode_TableOutput(t *testing.T) {
+	arch := buildDiffArchive(t, queryPodList)
+	cmd := newTestQueryCommand()
+	_ = cmd.Flags().Set("regex", "true")
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+
+	if err := runQuery(cmd, []string{arch, `nginx:\w+`}); err != nil {
+		t.Fatalf("runQuery: %v", err)
+	}
+	if !strings.Contains(buf.String(), "web-1") || !strings.Contains(buf.String(), "2 match(es)") {
+		t.Errorf("expected table output with both matches:\n%s", buf.String())
+	}
+}
+
+func TestRunQuery_TextAndRegexMutuallyExclusive(t *testing.T) {
+	arch := buildDiffArchive(t, queryPodList)
+	cmd := newTestQueryCommand()
+	_ = cmd.Flags().Set("text", "true")
+	_ = cmd.Flags().Set("regex", "true")
+	cmd.SetOut(&bytes.Buffer{})
+
+	if err := runQuery(cmd, []string{arch, "nginx"}); err == nil {
+		t.Error("expected error when --text and --regex are both set")
+	}
+}
+
+func TestRunQuery_InvalidRegex(t *testing.T) {
+	arch := buildDiffArchive(t, queryPodList)
+	cmd := newTestQueryCommand()
+	_ = cmd.Flags().Set("regex", "true")
+	cmd.SetOut(&bytes.Buffer{})
+
+	if err := runQuery(cmd, []string{arch, "(unclosed"}); err == nil {
+		t.Error("expected error for invalid regex")
 	}
 }

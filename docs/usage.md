@@ -619,8 +619,37 @@ kshrk query capture.kshrk '{.spec.replicas}' --resource deployments -o json
 | `--at` | latest | Query state at a timestamp (RFC3339 or relative duration like `-5m`); must be within the capture window |
 | `--resource` | (all) | Limit the query to one resource type, e.g. `pods` |
 | `--namespace` | (all) | Limit the query to one namespace |
+| `--text` | (off) | Treat the expression as a plain substring instead of JSONPath (see [Full-text search](#full-text-search) below) |
+| `--regex` | (off) | Treat the expression as a regular expression instead of JSONPath — mutually exclusive with `--text` |
 
-Expressions follow the same JSONPath syntax as `kubectl get -o jsonpath=`, including wildcards (`[*]`) and filters (`[?(@.key=="value")]`). Only structured JSONPath queries are supported today; full-text search across object bodies and captured logs is planned as a follow-up.
+Expressions follow the same JSONPath syntax as `kubectl get -o jsonpath=`, including wildcards (`[*]`) and filters (`[?(@.key=="value")]`).
+
+### Full-text search
+
+With `--text` or `--regex`, the expression is no longer JSONPath — it's searched as plain text across **every string value in every captured object**, and across captured pod logs (current and `--previous`). This answers "where does this error string appear?" without knowing in advance whether it's in an annotation, a container command, an event message, or a log line.
+
+```sh
+kshrk query capture.kshrk 'connection refused' --text
+```
+
+```
+RESOURCE     NAMESPACE   NAME                          LOCATION                                      SNIPPET
+pods         crash-demo  flaky-worker-897c5486c-lfk2f  spec.containers[0].command[2]                 echo starting up; sleep 3; echo 'fatal: connection refused to db:5432'; exit 1
+pods         crash-demo  flaky-worker-897c5486c-lfk2f  log:worker                                     fatal: connection refused to db:5432
+pods         crash-demo  flaky-worker-897c5486c-lfk2f  log:worker (previous)                           fatal: connection refused to db:5432
+deployments  crash-demo  flaky-worker                  metadata.annotations.kubectl.kubernetes.io/last-applied-configuration  …echo starting up; sleep 3; echo 'fatal: connection refused to db:5432'; exit 1"],"image":"busybox:…
+deployments  crash-demo  flaky-worker                  spec.template.spec.containers[0].command[2]   echo starting up; sleep 3; echo 'fatal: connection refused to db:5432'; exit 1
+
+5 match(es)
+```
+
+`--regex` accepts a Go regular expression (RE2 syntax) instead of a literal substring:
+
+```sh
+kshrk query capture.kshrk 'connection (refused|reset)' --regex
+```
+
+For object matches, `LOCATION` is the dotted JSON field path of the matched string (e.g. `spec.containers[0].command[2]`). For log matches, it's `log:<container>`, with `(previous)` appended for `kubectl logs --previous` content. `--resource`/`--namespace` scope full-text search the same way they scope JSONPath queries; `--resource` values other than `pods` exclude log content entirely, since only pods have logs.
 
 ---
 

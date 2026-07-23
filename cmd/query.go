@@ -13,23 +13,29 @@ import (
 )
 
 var queryCmd = &cobra.Command{
-	Use:   "query <capture.kshrk> <jsonpath-expression>",
-	Short: "Run a JSONPath query across every captured object",
-	Long: `Evaluates a kubectl-style JSONPath expression against every object captured
-in the archive — across all resource types and namespaces — at a chosen
-snapshot, and prints the objects where it matched.
+	Use:   "query <capture.kshrk> <expression>",
+	Short: "Search or run a JSONPath query across every captured object",
+	Long: `Evaluates an expression against every object captured in the archive — across
+all resource types and namespaces — at a chosen snapshot, and prints what
+matched.
+
+By default the expression is a kubectl-style JSONPath template. With --text
+or --regex, it's instead a plain substring or regular expression searched
+across every object body and captured pod log (current and --previous).
 
 Limit the scope with --resource and --namespace, and pin the snapshot in time
-with --at. Objects that don't have the queried field are skipped, not
-reported as errors.`,
-	Example: `  # Every container image in the capture
+with --at.`,
+	Example: `  # Every container image in the capture (JSONPath)
   kshrk query capture.kshrk '{.spec.containers[*].image}'
 
   # Just Deployments' replica counts, as JSON
   kshrk query capture.kshrk '{.spec.replicas}' --resource deployments -o json
 
-  # Pod phases at a point in time
-  kshrk query capture.kshrk '{.status.phase}' --resource pods --at -5m`,
+  # Where does this error string appear, across objects and pod logs?
+  kshrk query capture.kshrk 'connection refused' --text
+
+  # Same, with a regular expression
+  kshrk query capture.kshrk 'connection (refused|reset)' --regex`,
 	Args: cobra.ExactArgs(2),
 	RunE: runQuery,
 }
@@ -40,6 +46,8 @@ func init() {
 	queryCmd.Flags().String("at", "", "query state at a timestamp (RFC3339 or relative duration like -5m); default latest")
 	queryCmd.Flags().String("resource", "", "limit the query to one resource type, e.g. pods")
 	queryCmd.Flags().String("namespace", "", "limit the query to one namespace")
+	queryCmd.Flags().Bool("text", false, "treat the expression as a plain substring, searched across object bodies and pod logs instead of JSONPath")
+	queryCmd.Flags().Bool("regex", false, "treat the expression as a regular expression, searched across object bodies and pod logs instead of JSONPath")
 	_ = queryCmd.RegisterFlagCompletionFunc("output",
 		cobra.FixedCompletions([]string{"table", "json"}, cobra.ShellCompDirectiveNoFileComp))
 }
@@ -49,6 +57,11 @@ func runQuery(cmd *cobra.Command, args []string) error {
 	atRaw, _ := cmd.Flags().GetString("at")
 	resource, _ := cmd.Flags().GetString("resource")
 	namespace, _ := cmd.Flags().GetString("namespace")
+	text, _ := cmd.Flags().GetBool("text")
+	useRegex, _ := cmd.Flags().GetBool("regex")
+	if text && useRegex {
+		return fmt.Errorf("--text and --regex are mutually exclusive")
+	}
 
 	ar, err := archive.Open(args[0])
 	if err != nil {
@@ -63,6 +76,28 @@ func runQuery(cmd *cobra.Command, args []string) error {
 	at, err := parseAtFlag(atRaw, store.Metadata.CapturedAt, store.Metadata.CapturedUntil)
 	if err != nil {
 		return err
+	}
+
+	if text || useRegex {
+		result, err := query.SearchText(store, query.TextOptions{
+			Pattern:   args[1],
+			Regex:     useRegex,
+			At:        at,
+			Resource:  resource,
+			Namespace: namespace,
+		})
+		if err != nil {
+			return err
+		}
+		switch strings.ToLower(output) {
+		case "json":
+			enc := json.NewEncoder(cmd.OutOrStdout())
+			enc.SetIndent("", "  ")
+			return enc.Encode(result)
+		default:
+			printTextTable(cmd, result)
+		}
+		return nil
 	}
 
 	result, err := query.Run(store, query.Options{
@@ -96,6 +131,28 @@ func printQueryTable(cmd *cobra.Command, r *query.Result) {
 	fmt.Fprintln(tw, "RESOURCE\tNAMESPACE\tNAME\tVALUE")
 	for _, m := range r.Matches {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", m.Resource, m.Namespace, m.Name, string(m.Value))
+	}
+	_ = tw.Flush()
+	fmt.Fprintf(out, "\n%d match(es)\n", len(r.Matches))
+}
+
+func printTextTable(cmd *cobra.Command, r *query.TextResult) {
+	out := cmd.OutOrStdout()
+	if len(r.Matches) == 0 {
+		fmt.Fprintln(out, "No matches.")
+		return
+	}
+	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "RESOURCE\tNAMESPACE\tNAME\tLOCATION\tSNIPPET")
+	for _, m := range r.Matches {
+		loc := m.Field
+		if m.Container != "" {
+			loc = "log:" + m.Container
+			if m.Previous {
+				loc += " (previous)"
+			}
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", m.Resource, m.Namespace, m.Name, loc, m.Snippet)
 	}
 	_ = tw.Flush()
 	fmt.Fprintf(out, "\n%d match(es)\n", len(r.Matches))
