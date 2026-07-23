@@ -109,6 +109,32 @@ func TestRunQuery_NoMatches(t *testing.T) {
 	}
 }
 
+func TestRunQuery_TextMode_TableOutputEscapesNewlines(t *testing.T) {
+	// A matched value containing a raw newline or tab must not split the
+	// tabwriter row/column when rendered as a table.
+	podWithMultilineAnnotation := `{"apiVersion":"v1","kind":"PodList","items":[` +
+		`{"metadata":{"name":"web-1","namespace":"default","annotations":{"note":"line one\nline two\tindented"}}}]}`
+	arch := buildDiffArchive(t, podWithMultilineAnnotation)
+	cmd := newTestQueryCommand()
+	_ = cmd.Flags().Set("text", "true")
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+
+	if err := runQuery(cmd, []string{arch, "line one"}); err != nil {
+		t.Fatalf("runQuery: %v", err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "line one\nline two") {
+		t.Errorf("expected the embedded newline to be escaped, not printed raw:\n%s", out)
+	}
+	if !strings.Contains(out, `line one\nline two\tindented`) {
+		t.Errorf("expected escaped snippet in output:\n%s", out)
+	}
+	if strings.Count(out, "web-1") != 1 {
+		t.Errorf("expected exactly one match row, got:\n%s", out)
+	}
+}
+
 func TestRunQuery_TextMode(t *testing.T) {
 	arch := buildDiffArchive(t, queryPodList)
 	cmd := newTestQueryCommand()

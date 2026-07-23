@@ -152,8 +152,19 @@ func printTextTable(cmd *cobra.Command, r *query.TextResult) {
 				loc += " (previous)"
 			}
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", m.Resource, m.Namespace, m.Name, loc, m.Snippet)
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", m.Resource, m.Namespace, m.Name, tableSafe(loc), tableSafe(m.Snippet))
 	}
 	_ = tw.Flush()
 	fmt.Fprintf(out, "\n%d match(es)\n", len(r.Matches))
+}
+
+// tableSafe replaces tab and newline characters so a matched value (e.g. a
+// multi-line ConfigMap entry or log line) can't split a tabwriter row/column
+// when printed as a table cell.
+func tableSafe(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", `\n`)
+	s = strings.ReplaceAll(s, "\n", `\n`)
+	s = strings.ReplaceAll(s, "\r", `\n`)
+	s = strings.ReplaceAll(s, "\t", `\t`)
+	return s
 }
