@@ -67,8 +67,11 @@ func Run(store *server.CaptureStore, opts Options) (*Result, error) {
 
 	matches := make([]Match, 0)
 	for _, path := range paths {
-		if strings.Contains(path, "?") {
-			continue // Table/query-param variants of a path already covered plainly
+		if isDuplicateView(path) {
+			continue // ?as=Table / ?as=TableSchema alternate representations of a path already covered plainly
+		}
+		if isLogPath(path) {
+			continue // plain-text pod logs aren't JSON objects; searched by SearchText instead
 		}
 		g, v, r, pathNS := parseAPIPath(path)
 		if r == "" {
@@ -161,6 +164,15 @@ func marshalValue(rv reflect.Value) (json.RawMessage, bool) {
 		return nil, false
 	}
 	return json.RawMessage(b), true
+}
+
+// isDuplicateView reports whether path is an alternate representation of a
+// resource already captured plainly under the same base path — the Table
+// (?as=Table) and TableSchema (?as=TableSchema) views used by `kubectl -o
+// wide`. Other query-param variants (pagination like ?limit=500, log paths)
+// are real, distinct captured data and must not be skipped.
+func isDuplicateView(path string) bool {
+	return strings.Contains(path, "?as=Table")
 }
 
 // parseAPIPath extracts group, version, resource, and namespace from a canonical

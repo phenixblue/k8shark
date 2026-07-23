@@ -78,8 +78,8 @@ func SearchText(store *server.CaptureStore, opts TextOptions) (*TextResult, erro
 			}
 			continue
 		}
-		if strings.Contains(path, "?") {
-			continue // Table/query-param variants of a path already covered plainly
+		if isDuplicateView(path) {
+			continue // ?as=Table / ?as=TableSchema alternate representations of a path already covered plainly
 		}
 		g, v, r, pathNS := parseAPIPath(path)
 		if r == "" {

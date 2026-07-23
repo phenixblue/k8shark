@@ -128,6 +128,35 @@ func TestSearchText_NamespaceFilterAppliesToLogs(t *testing.T) {
 	}
 }
 
+func TestSearchText_IncludesPaginatedListPaths(t *testing.T) {
+	store := buildQueryStore(t, map[string]string{
+		"/api/v1/namespaces?limit=500": `{"kind":"NamespaceList","apiVersion":"v1","items":[{"metadata":{"name":"prod-east"}}]}`,
+	})
+
+	result, err := SearchText(store, TextOptions{Pattern: "prod-east"})
+	if err != nil {
+		t.Fatalf("SearchText: %v", err)
+	}
+	if len(result.Matches) != 1 || result.Matches[0].Resource != "namespaces" {
+		t.Fatalf("expected the paginated namespaces list to be searched, got %+v", result.Matches)
+	}
+}
+
+func TestSearchText_SkipsTableViews(t *testing.T) {
+	store := buildQueryStore(t, map[string]string{
+		"/api/v1/namespaces/prod/pods":          `{"kind":"PodList","apiVersion":"v1","items":[{"metadata":{"name":"needle-pod"}}]}`,
+		"/api/v1/namespaces/prod/pods?as=Table": `{"kind":"Table","rows":[{"cells":["needle-pod"]}]}`,
+	})
+
+	result, err := SearchText(store, TextOptions{Pattern: "needle-pod"})
+	if err != nil {
+		t.Fatalf("SearchText: %v", err)
+	}
+	if len(result.Matches) != 1 {
+		t.Fatalf("expected only the plain pods list to match, got %+v", result.Matches)
+	}
+}
+
 func TestSearchText_NoMatches(t *testing.T) {
 	store := buildQueryStore(t, map[string]string{
 		"/api/v1/namespaces/prod/pods": `{"kind":"PodList","apiVersion":"v1","items":[{"metadata":{"name":"a"}}]}`,

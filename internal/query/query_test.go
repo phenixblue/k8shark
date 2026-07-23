@@ -123,6 +123,40 @@ func TestRun_ClusterWideListResolvesPerItemNamespace(t *testing.T) {
 	}
 }
 
+func TestRun_IncludesPaginatedListPaths(t *testing.T) {
+	// A resource captured via pagination (e.g. the engine's namespace-discovery
+	// fetch, or any list with more than one page) is stored under a query-param
+	// index key like /api/v1/namespaces?limit=500 — a real, distinct capture,
+	// not a duplicate view, and must not be skipped like ?as=Table is.
+	store := buildQueryStore(t, map[string]string{
+		"/api/v1/namespaces?limit=500": `{"kind":"NamespaceList","apiVersion":"v1","items":[{"metadata":{"name":"prod"}}]}`,
+	})
+
+	result, err := Run(store, Options{Expression: "{.metadata.name}"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(result.Matches) != 1 || result.Matches[0].Resource != "namespaces" {
+		t.Fatalf("expected the paginated namespaces list to be queried, got %+v", result.Matches)
+	}
+}
+
+func TestRun_SkipsTableViews(t *testing.T) {
+	store := buildQueryStore(t, map[string]string{
+		"/api/v1/namespaces/prod/pods":          `{"kind":"PodList","apiVersion":"v1","items":[{"metadata":{"name":"a"}}]}`,
+		"/api/v1/namespaces/prod/pods?as=Table": `{"kind":"Table","rows":[{"cells":["a"]}]}`,
+		"/api/v1/pods?as=TableSchema&limit=1":   `{"kind":"Table","columnDefinitions":[]}`,
+	})
+
+	result, err := Run(store, Options{Expression: "{.metadata.name}"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(result.Matches) != 1 {
+		t.Fatalf("expected only the plain pods list to match, got %+v", result.Matches)
+	}
+}
+
 func TestRun_ResourceFilterExcludesOtherTypes(t *testing.T) {
 	store := buildQueryStore(t, map[string]string{
 		"/api/v1/namespaces/prod/pods":     `{"kind":"PodList","apiVersion":"v1","items":[{"metadata":{"name":"a"}}]}`,
