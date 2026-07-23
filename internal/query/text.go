@@ -215,6 +215,9 @@ func joinField(path, key string) string {
 type finder func(s string) (start, end int, ok bool)
 
 func newFinder(pattern string, isRegex bool) (finder, error) {
+	if pattern == "" {
+		return nil, fmt.Errorf("search pattern must not be empty")
+	}
 	if isRegex {
 		re, err := regexp.Compile(pattern)
 		if err != nil {
@@ -227,9 +230,6 @@ func newFinder(pattern string, isRegex bool) (finder, error) {
 			}
 			return loc[0], loc[1], true
 		}, nil
-	}
-	if pattern == "" {
-		return nil, fmt.Errorf("search pattern must not be empty")
 	}
 	return func(s string) (int, int, bool) {
 		idx := strings.Index(s, pattern)

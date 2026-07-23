@@ -67,6 +67,16 @@ func TestSearchText_EmptyPattern(t *testing.T) {
 	}
 }
 
+func TestSearchText_EmptyRegexPattern(t *testing.T) {
+	// regexp.Compile("") succeeds and matches everything at position 0 — an
+	// empty pattern must be rejected before it reaches regexp.Compile, in
+	// both modes, not just substring mode.
+	store := buildQueryStore(t, map[string]string{})
+	if _, err := SearchText(store, TextOptions{Pattern: "", Regex: true}); err == nil {
+		t.Error("expected error for empty regex pattern")
+	}
+}
+
 func TestSearchText_MatchesCurrentAndPreviousLogs(t *testing.T) {
 	store := buildQueryStore(t, map[string]string{
 		"/api/v1/namespaces/crash-demo/pods/flaky-1/log?container=worker": mustJSONString(t,
