@@ -633,12 +633,12 @@ kshrk query capture.kshrk 'connection refused' --text
 ```
 
 ```
-RESOURCE     NAMESPACE   NAME                          LOCATION                                      SNIPPET
-pods         crash-demo  flaky-worker-897c5486c-lfk2f  spec.containers[0].command[2]                 echo starting up; sleep 3; echo 'fatal: connection refused to db:5432'; exit 1
-pods         crash-demo  flaky-worker-897c5486c-lfk2f  log:worker                                     fatal: connection refused to db:5432
-pods         crash-demo  flaky-worker-897c5486c-lfk2f  log:worker (previous)                           fatal: connection refused to db:5432
-deployments  crash-demo  flaky-worker                  metadata.annotations.kubectl.kubernetes.io/last-applied-configuration  …echo starting up; sleep 3; echo 'fatal: connection refused to db:5432'; exit 1"],"image":"busybox:…
-deployments  crash-demo  flaky-worker                  spec.template.spec.containers[0].command[2]   echo starting up; sleep 3; echo 'fatal: connection refused to db:5432'; exit 1
+RESOURCE     NAMESPACE   NAME                          LOCATION                                                                  SNIPPET
+pods         crash-demo  flaky-worker-897c5486c-lfk2f  spec.containers[0].command[2]                                             echo starting up; sleep 3; echo 'fatal: connection refused to db:5432'; exit 1
+pods         crash-demo  flaky-worker-897c5486c-lfk2f  log:worker                                                                fatal: connection refused to db:5432
+pods         crash-demo  flaky-worker-897c5486c-lfk2f  log:worker (previous)                                                     fatal: connection refused to db:5432
+deployments  crash-demo  flaky-worker                  metadata.annotations["kubectl.kubernetes.io/last-applied-configuration"]  …echo starting up; sleep 3; echo 'fatal: connection refused to db:5432'; exit 1"],"image":"busybox:…
+deployments  crash-demo  flaky-worker                  spec.template.spec.containers[0].command[2]                               echo starting up; sleep 3; echo 'fatal: connection refused to db:5432'; exit 1
 
 5 match(es)
 ```
@@ -649,7 +649,7 @@ deployments  crash-demo  flaky-worker                  spec.template.spec.contai
 kshrk query capture.kshrk 'connection (refused|reset)' --regex
 ```
 
-For object matches, `LOCATION` is the dotted JSON field path of the matched string (e.g. `spec.containers[0].command[2]`). For log matches, it's `log:<container>`, with `(previous)` appended for `kubectl logs --previous` content. `--resource`/`--namespace` scope full-text search the same way they scope JSONPath queries; `--resource` values other than `pods` exclude log content entirely, since only pods have logs.
+For object matches, `LOCATION` is the JSON field path of the matched string (e.g. `spec.containers[0].command[2]`). A map key that isn't a simple identifier — common for annotations/labels, which routinely contain `.` and `/` — is bracket-quoted so the path stays unambiguous: `metadata.annotations["kubectl.kubernetes.io/last-applied-configuration"]`, not the misleading `metadata.annotations.kubectl.kubernetes.io/last-applied-configuration`. For log matches, `LOCATION` is `log:<container>`, with `(previous)` appended for `kubectl logs --previous` content. `--resource`/`--namespace` scope full-text search the same way they scope JSONPath queries; `--resource` values other than `pods` exclude log content entirely, since only pods have logs.
 
 ---
 

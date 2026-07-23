@@ -39,6 +39,29 @@ func TestSearchText_SubstringMatchInObjectBody(t *testing.T) {
 	}
 }
 
+func TestSearchText_BracketQuotesNonIdentifierMapKeys(t *testing.T) {
+	// Annotation/label keys routinely contain '.' and '/' (the group prefix
+	// convention), so a plain dotted path would render as if the key were
+	// itself several nested fields. Such keys must be bracket-quoted.
+	store := buildQueryStore(t, map[string]string{
+		"/apis/apps/v1/namespaces/prod/deployments": `{"kind":"DeploymentList","apiVersion":"apps/v1","items":[
+		  {"metadata":{"name":"web","namespace":"prod","annotations":{"kubectl.kubernetes.io/last-applied-configuration":"needle-value"}}}
+		]}`,
+	})
+
+	result, err := SearchText(store, TextOptions{Pattern: "needle-value"})
+	if err != nil {
+		t.Fatalf("SearchText: %v", err)
+	}
+	if len(result.Matches) != 1 {
+		t.Fatalf("expected 1 match, got %+v", result.Matches)
+	}
+	want := `metadata.annotations["kubectl.kubernetes.io/last-applied-configuration"]`
+	if result.Matches[0].Field != want {
+		t.Errorf("expected field path %q, got %q", want, result.Matches[0].Field)
+	}
+}
+
 func TestSearchText_RegexMatch(t *testing.T) {
 	store := buildQueryStore(t, map[string]string{
 		"/api/v1/namespaces/prod/pods": `{"kind":"PodList","apiVersion":"v1","items":[

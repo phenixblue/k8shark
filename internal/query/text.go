@@ -36,8 +36,12 @@ type TextMatch struct {
 	Resource  string `json:"resource,omitempty"`
 	Namespace string `json:"namespace,omitempty"`
 	Name      string `json:"name"`
-	// Field is the dotted JSON field path of the matched string, e.g.
-	// "metadata.annotations.note" or "spec.containers[0].image". Empty for log matches.
+	// Field is the JSON field path of the matched string, e.g.
+	// "metadata.annotations.note" or "spec.containers[0].image". A map key
+	// that isn't a simple identifier (common for annotations/labels, e.g.
+	// "kubectl.kubernetes.io/last-applied-configuration") is bracket-quoted:
+	// metadata.annotations["kubectl.kubernetes.io/last-applied-configuration"].
+	// Empty for log matches.
 	Field string `json:"field,omitempty"`
 	// Container and Previous are set only for matches found in a captured pod log.
 	Container string `json:"container,omitempty"`
@@ -183,8 +187,8 @@ func parseLogPath(path string) (namespace, name, container string, previous, ok 
 }
 
 // walkStrings visits every string leaf in v (a JSON-decoded object graph),
-// calling fn with its dotted field path and value. Map keys are visited in
-// sorted order for deterministic results.
+// calling fn with its field path and value. Map keys are visited in sorted
+// order for deterministic results.
 func walkStrings(v any, path string, fn func(field, s string)) {
 	switch t := v.(type) {
 	case string:
@@ -205,11 +209,40 @@ func walkStrings(v any, path string, fn func(field, s string)) {
 	}
 }
 
+// joinField appends key to path as a JSON field-path segment. Kubernetes
+// annotation/label keys routinely contain '.' and '/' (e.g.
+// "kubectl.kubernetes.io/last-applied-configuration"), so a plain
+// "path.key" would render as if key were itself several nested fields.
+// Simple identifier-like keys use dot notation; anything else is
+// bracket-quoted (path["key"]) so the result is an unambiguous field path.
 func joinField(path, key string) string {
+	if !isSimpleFieldKey(key) {
+		return path + `["` + strings.ReplaceAll(key, `"`, `\"`) + `"]`
+	}
 	if path == "" {
 		return key
 	}
 	return path + "." + key
+}
+
+// isSimpleFieldKey reports whether key can be rendered as a bare dotted
+// path segment: starts with a letter or underscore, and contains only
+// letters, digits, and underscores.
+func isSimpleFieldKey(key string) bool {
+	if key == "" {
+		return false
+	}
+	for i, r := range key {
+		switch {
+		case r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z'):
+			continue
+		case i > 0 && r >= '0' && r <= '9':
+			continue
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // finder reports the [start, end) byte range of the first match in s.
