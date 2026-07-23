@@ -119,6 +119,9 @@ func TestSearchText_MatchesCurrentAndPreviousLogs(t *testing.T) {
 	}
 	sawCurrent, sawPrevious := false, false
 	for _, m := range result.Matches {
+		if !m.Log {
+			t.Errorf("expected Log=true on a log match, got %+v", m)
+		}
 		if m.Container != "worker" || m.Namespace != "crash-demo" || m.Name != "flaky-1" {
 			t.Errorf("unexpected log match identity: %+v", m)
 		}
@@ -130,6 +133,29 @@ func TestSearchText_MatchesCurrentAndPreviousLogs(t *testing.T) {
 	}
 	if !sawCurrent || !sawPrevious {
 		t.Errorf("expected both current and previous log matches, got %+v", result.Matches)
+	}
+}
+
+func TestSearchText_MatchesLegacyLogPathWithNoContainerParam(t *testing.T) {
+	// Legacy archives could store a single log record at the bare path, with
+	// no ?container= query param (see internal/server/handler.go's serveLog
+	// fallback for this same shape). Log must still be true and the match
+	// must not be dropped just because Container is unknown.
+	store := buildQueryStore(t, map[string]string{
+		"/api/v1/namespaces/crash-demo/pods/flaky-1/log": mustJSONString(t,
+			"starting up\nfatal: connection refused to db:5432\n"),
+	})
+
+	result, err := SearchText(store, TextOptions{Pattern: "connection refused"})
+	if err != nil {
+		t.Fatalf("SearchText: %v", err)
+	}
+	if len(result.Matches) != 1 {
+		t.Fatalf("expected 1 match, got %+v", result.Matches)
+	}
+	m := result.Matches[0]
+	if !m.Log || m.Container != "" || m.Namespace != "crash-demo" || m.Name != "flaky-1" {
+		t.Errorf("unexpected legacy log match: %+v", m)
 	}
 }
 

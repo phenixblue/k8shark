@@ -3,12 +3,52 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	archivepkg "github.com/phenixblue/k8shark/internal/archive"
+	"github.com/phenixblue/k8shark/internal/capture"
 	"github.com/phenixblue/k8shark/internal/query"
 	"github.com/spf13/cobra"
 )
+
+// buildMultiPathArchive writes an archive with one record per (path, body)
+// pair, for tests that need more than buildDiffArchive's single fixed path.
+func buildMultiPathArchive(t *testing.T, bodies map[string]string) string {
+	t.Helper()
+	out := filepath.Join(t.TempDir(), "capture.kshrk")
+	now := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	sw, err := archivepkg.NewStreamWriter(out)
+	if err != nil {
+		t.Fatalf("NewStreamWriter: %v", err)
+	}
+	index := capture.Index{}
+	i := 0
+	for path, body := range bodies {
+		rec := &capture.Record{ID: path, CapturedAt: now, APIPath: path, HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(body)}
+		if err := sw.WriteRecord(rec); err != nil {
+			t.Fatalf("WriteRecord: %v", err)
+		}
+		index[path] = &capture.IndexEntry{APIPath: path, Seqs: []int{0}, Times: []time.Time{now}}
+		i++
+	}
+	meta := &capture.CaptureMetadata{CaptureID: "test-capture", CapturedAt: now, CapturedUntil: now, RecordCount: i}
+	if err := sw.Finish(meta, index, nil); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	return out
+}
+
+func mustJSONQueryString(t *testing.T, s string) string {
+	t.Helper()
+	b, err := json.Marshal(s)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	return string(b)
+}
 
 func newTestQueryCommand() *cobra.Command {
 	cmd := &cobra.Command{}
@@ -172,6 +212,29 @@ func TestRunQuery_RegexMode_TableOutput(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "web-1") || !strings.Contains(buf.String(), "2 match(es)") {
 		t.Errorf("expected table output with both matches:\n%s", buf.String())
+	}
+}
+
+func TestRunQuery_TextMode_TableShowsGenericLogLocationWithoutContainer(t *testing.T) {
+	// A legacy log record with no ?container= param must still render as a
+	// log row (LOCATION "log"), not a blank LOCATION.
+	arch := buildMultiPathArchive(t, map[string]string{
+		"/api/v1/namespaces/crash-demo/pods/flaky-1/log": mustJSONQueryString(t, "fatal: connection refused"),
+	})
+	cmd := newTestQueryCommand()
+	_ = cmd.Flags().Set("text", "true")
+	var buf bytes.Buffer
+	cmd.SetOut(&buf)
+
+	if err := runQuery(cmd, []string{arch, "connection refused"}); err != nil {
+		t.Fatalf("runQuery: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "  log  ") {
+		t.Errorf("expected a generic 'log' LOCATION for a container-less log match:\n%s", out)
+	}
+	if strings.Contains(out, "log:") {
+		t.Errorf("did not expect a container suffix when none was captured:\n%s", out)
 	}
 }
 

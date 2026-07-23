@@ -43,7 +43,14 @@ type TextMatch struct {
 	// metadata.annotations["kubectl.kubernetes.io/last-applied-configuration"].
 	// Empty for log matches.
 	Field string `json:"field,omitempty"`
-	// Container and Previous are set only for matches found in a captured pod log.
+	// Log is true when this match came from a captured pod log rather than
+	// an object body. Container may still be empty on a Log match — legacy
+	// archives could store a single log record with no ?container= query
+	// param — so Log, not "Container != \"\"", is the reliable signal that
+	// this is a log match.
+	Log bool `json:"log,omitempty"`
+	// Container and Previous are set only for matches found in a captured pod
+	// log (Log == true); Container may be empty (see Log).
 	Container string `json:"container,omitempty"`
 	Previous  bool   `json:"previous,omitempty"`
 	// Snippet is the matched text with surrounding context.
@@ -150,7 +157,7 @@ func searchLogPath(store *server.CaptureStore, path string, at time.Time, find f
 		}
 		matches = append(matches, TextMatch{
 			Path: path, Resource: "pods", Namespace: ns, Name: name,
-			Container: container, Previous: previous,
+			Log: true, Container: container, Previous: previous,
 			Snippet: snippet(line, start, end),
 		})
 	}

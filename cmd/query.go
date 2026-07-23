@@ -146,8 +146,11 @@ func printTextTable(cmd *cobra.Command, r *query.TextResult) {
 	fmt.Fprintln(tw, "RESOURCE\tNAMESPACE\tNAME\tLOCATION\tSNIPPET")
 	for _, m := range r.Matches {
 		loc := m.Field
-		if m.Container != "" {
-			loc = "log:" + m.Container
+		if m.Log {
+			loc = "log"
+			if m.Container != "" {
+				loc += ":" + m.Container
+			}
 			if m.Previous {
 				loc += " (previous)"
 			}
