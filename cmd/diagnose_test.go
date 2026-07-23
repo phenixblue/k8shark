@@ -89,16 +89,16 @@ func TestRunDiagnose_BadSeverity(t *testing.T) {
 	}
 }
 
-func TestParseDiagnoseAt_Window(t *testing.T) {
+func TestParseAtFlag_Window(t *testing.T) {
 	start := time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC)
 	end := time.Date(2026, 4, 10, 10, 10, 0, 0, time.UTC)
-	if _, err := parseDiagnoseAt("2026-04-10T10:05:00Z", start, end); err != nil {
+	if _, err := parseAtFlag("2026-04-10T10:05:00Z", start, end); err != nil {
 		t.Errorf("in-window time rejected: %v", err)
 	}
-	if _, err := parseDiagnoseAt("-1h", start, end); err == nil {
+	if _, err := parseAtFlag("-1h", start, end); err == nil {
 		t.Error("expected out-of-window (before start) to error")
 	}
-	if _, err := parseDiagnoseAt("2026-04-10T11:00:00Z", start, end); err == nil {
+	if _, err := parseAtFlag("2026-04-10T11:00:00Z", start, end); err == nil {
 		t.Error("expected out-of-window (after end) to error")
 	}
 }

@@ -66,7 +66,7 @@ func runDiagnose(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("loading capture: %w", err)
 	}
 
-	at, err := parseDiagnoseAt(atRaw, store.Metadata.CapturedAt, store.Metadata.CapturedUntil)
+	at, err := parseAtFlag(atRaw, store.Metadata.CapturedAt, store.Metadata.CapturedUntil)
 	if err != nil {
 		return err
 	}
@@ -125,9 +125,9 @@ func printDiagnoseTable(cmd *cobra.Command, r diagnose.Report) {
 		len(r.Findings), r.Summary.Critical, r.Summary.Warning, r.Summary.Info)
 }
 
-// parseDiagnoseAt resolves --at: empty = latest; RFC3339 timestamp; or a
+// parseAtFlag resolves an --at flag: empty = latest; RFC3339 timestamp; or a
 // relative duration like -5m against the capture end.
-func parseDiagnoseAt(raw string, start, end time.Time) (time.Time, error) {
+func parseAtFlag(raw string, start, end time.Time) (time.Time, error) {
 	if raw == "" {
 		return time.Time{}, nil
 	}

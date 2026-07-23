@@ -1,0 +1,227 @@
+package query
+
+import (
+	"encoding/json"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/phenixblue/k8shark/internal/archive"
+	"github.com/phenixblue/k8shark/internal/capture"
+	"github.com/phenixblue/k8shark/internal/server"
+)
+
+func buildQueryStore(t *testing.T, bodies map[string]string) *server.CaptureStore {
+	t.Helper()
+	now := time.Date(2026, 5, 1, 10, 0, 0, 0, time.UTC)
+	out := filepath.Join(t.TempDir(), "query.kshrk")
+	sw, err := archive.NewStreamWriter(out)
+	if err != nil {
+		t.Fatalf("NewStreamWriter: %v", err)
+	}
+	idx := capture.Index{}
+	i := 0
+	for path, body := range bodies {
+		rec := &capture.Record{ID: path, CapturedAt: now, APIPath: path, HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(body)}
+		if err := sw.WriteRecord(rec); err != nil {
+			t.Fatalf("WriteRecord: %v", err)
+		}
+		idx[path] = &capture.IndexEntry{APIPath: path, Seqs: []int{0}, Times: []time.Time{now}}
+		i++
+	}
+	meta := &capture.CaptureMetadata{
+		FormatVersion: capture.CurrentFormatVersion, CaptureID: "query-test",
+		KubernetesVersion: "v1.30.0", CapturedAt: now.Add(-time.Minute), CapturedUntil: now, RecordCount: i,
+	}
+	if err := sw.Finish(meta, idx, nil); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	ar, err := archive.Open(out)
+	if err != nil {
+		t.Fatalf("archive.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = ar.Close() })
+	store, err := server.LoadStore(ar)
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	return store
+}
+
+func TestRun_MatchesAcrossResourceTypes(t *testing.T) {
+	store := buildQueryStore(t, map[string]string{
+		"/api/v1/namespaces/prod/pods": `{"kind":"PodList","apiVersion":"v1","items":[
+		  {"metadata":{"name":"web-1","namespace":"prod"},"spec":{"containers":[{"image":"nginx:alpine"}]}}
+		]}`,
+		"/apis/apps/v1/namespaces/prod/deployments": `{"kind":"DeploymentList","apiVersion":"apps/v1","items":[
+		  {"metadata":{"name":"web","namespace":"prod"},"spec":{"template":{"spec":{"containers":[{"image":"nginx:alpine"}]}}}}
+		]}`,
+	})
+
+	result, err := Run(store, Options{Expression: "{.metadata.name}"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(result.Matches) != 2 {
+		t.Fatalf("expected 2 matches across resource types, got %d: %+v", len(result.Matches), result.Matches)
+	}
+	got := map[string]bool{}
+	for _, m := range result.Matches {
+		got[m.Resource+"/"+m.Name] = true
+	}
+	if !got["pods/web-1"] || !got["deployments/web"] {
+		t.Errorf("missing expected matches: %+v", result.Matches)
+	}
+}
+
+func TestRun_FiltersByResourceAndNamespace(t *testing.T) {
+	store := buildQueryStore(t, map[string]string{
+		"/api/v1/namespaces/prod/pods": `{"kind":"PodList","apiVersion":"v1","items":[{"metadata":{"name":"a","namespace":"prod"}}]}`,
+		"/api/v1/namespaces/dev/pods":  `{"kind":"PodList","apiVersion":"v1","items":[{"metadata":{"name":"b","namespace":"dev"}}]}`,
+	})
+
+	result, err := Run(store, Options{Expression: "{.metadata.name}", Namespace: "dev"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(result.Matches) != 1 || result.Matches[0].Name != "b" {
+		t.Fatalf("expected only dev/b, got %+v", result.Matches)
+	}
+}
+
+func TestRun_ClusterWideListResolvesPerItemNamespace(t *testing.T) {
+	// A namespaced resource captured with no `namespaces:` in its config lands
+	// at the cluster-wide path (e.g. /api/v1/pods), but its items still carry
+	// their own metadata.namespace. --namespace must filter by that, not by
+	// the (empty) path namespace, and Match.Namespace must reflect it.
+	store := buildQueryStore(t, map[string]string{
+		"/api/v1/pods": `{"kind":"PodList","apiVersion":"v1","items":[
+		  {"metadata":{"name":"a","namespace":"prod"}},
+		  {"metadata":{"name":"b","namespace":"dev"}}
+		]}`,
+	})
+
+	all, err := Run(store, Options{Expression: "{.metadata.name}"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(all.Matches) != 2 {
+		t.Fatalf("expected 2 matches from the cluster-wide list, got %+v", all.Matches)
+	}
+	for _, m := range all.Matches {
+		if m.Namespace == "" {
+			t.Errorf("expected per-item namespace to be populated, got %+v", m)
+		}
+	}
+
+	scoped, err := Run(store, Options{Expression: "{.metadata.name}", Namespace: "dev"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(scoped.Matches) != 1 || scoped.Matches[0].Name != "b" || scoped.Matches[0].Namespace != "dev" {
+		t.Fatalf("expected only dev/b, got %+v", scoped.Matches)
+	}
+}
+
+func TestRun_IncludesPaginatedListPaths(t *testing.T) {
+	// A resource captured via pagination (e.g. the engine's namespace-discovery
+	// fetch, or any list with more than one page) is stored under a query-param
+	// index key like /api/v1/namespaces?limit=500 — a real, distinct capture,
+	// not a duplicate view, and must not be skipped like ?as=Table is.
+	store := buildQueryStore(t, map[string]string{
+		"/api/v1/namespaces?limit=500": `{"kind":"NamespaceList","apiVersion":"v1","items":[{"metadata":{"name":"prod"}}]}`,
+	})
+
+	result, err := Run(store, Options{Expression: "{.metadata.name}"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(result.Matches) != 1 || result.Matches[0].Resource != "namespaces" {
+		t.Fatalf("expected the paginated namespaces list to be queried, got %+v", result.Matches)
+	}
+}
+
+func TestRun_SkipsTableViews(t *testing.T) {
+	store := buildQueryStore(t, map[string]string{
+		"/api/v1/namespaces/prod/pods":          `{"kind":"PodList","apiVersion":"v1","items":[{"metadata":{"name":"a"}}]}`,
+		"/api/v1/namespaces/prod/pods?as=Table": `{"kind":"Table","rows":[{"cells":["a"]}]}`,
+		"/api/v1/pods?as=TableSchema&limit=1":   `{"kind":"Table","columnDefinitions":[]}`,
+	})
+
+	result, err := Run(store, Options{Expression: "{.metadata.name}"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(result.Matches) != 1 {
+		t.Fatalf("expected only the plain pods list to match, got %+v", result.Matches)
+	}
+}
+
+func TestRun_DoesNotMisrouteNonPodLogPathsEndingInLog(t *testing.T) {
+	// A resource literally named "log" (e.g. a CRD) under a path that isn't
+	// shaped like the real pod-log subresource must still be queried as a
+	// normal JSON object, not silently skipped as a pod log.
+	store := buildQueryStore(t, map[string]string{
+		"/apis/example.io/v1/namespaces/prod/log": `{"kind":"LogList","apiVersion":"example.io/v1","items":[{"metadata":{"name":"needle"}}]}`,
+	})
+
+	result, err := Run(store, Options{Expression: "{.metadata.name}"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(result.Matches) != 1 || result.Matches[0].Resource != "log" {
+		t.Fatalf("expected the custom 'log' resource to be queried, got %+v", result.Matches)
+	}
+}
+
+func TestRun_ResourceFilterExcludesOtherTypes(t *testing.T) {
+	store := buildQueryStore(t, map[string]string{
+		"/api/v1/namespaces/prod/pods":     `{"kind":"PodList","apiVersion":"v1","items":[{"metadata":{"name":"a"}}]}`,
+		"/api/v1/namespaces/prod/services": `{"kind":"ServiceList","apiVersion":"v1","items":[{"metadata":{"name":"svc"}}]}`,
+	})
+
+	result, err := Run(store, Options{Expression: "{.metadata.name}", Resource: "services"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(result.Matches) != 1 || result.Matches[0].Resource != "services" {
+		t.Fatalf("expected only services, got %+v", result.Matches)
+	}
+}
+
+func TestRun_MissingFieldYieldsNoMatchNotError(t *testing.T) {
+	store := buildQueryStore(t, map[string]string{
+		"/api/v1/namespaces/prod/services": `{"kind":"ServiceList","apiVersion":"v1","items":[{"metadata":{"name":"svc"}}]}`,
+	})
+
+	result, err := Run(store, Options{Expression: "{.spec.containers[*].image}"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(result.Matches) != 0 {
+		t.Fatalf("expected no matches for a field the resource doesn't have, got %+v", result.Matches)
+	}
+}
+
+func TestRun_SkipsDiscoveryAndNonResourcePaths(t *testing.T) {
+	store := buildQueryStore(t, map[string]string{
+		"/api/v1":                      `{"kind":"APIResourceList"}`,
+		"/openapi/v2":                  `{"swagger":"2.0"}`,
+		"/api/v1/namespaces/prod/pods": `{"kind":"PodList","apiVersion":"v1","items":[{"metadata":{"name":"a"}}]}`,
+	})
+
+	result, err := Run(store, Options{Expression: "{.metadata.name}"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(result.Matches) != 1 {
+		t.Fatalf("expected only the pod match, got %+v", result.Matches)
+	}
+}
+
+func TestRun_InvalidExpression(t *testing.T) {
+	store := buildQueryStore(t, map[string]string{})
+	if _, err := Run(store, Options{Expression: "{.spec.["}); err == nil {
+		t.Error("expected error for invalid jsonpath expression")
+	}
+}
