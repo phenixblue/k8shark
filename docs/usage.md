@@ -620,7 +620,7 @@ kshrk query capture.kshrk '{.spec.replicas}' --resource deployments -o json
 | `--resource` | (all) | Limit the query to one resource type, e.g. `pods` |
 | `--namespace` | (all) | Limit the query to one namespace |
 
-Expressions follow the same JSONPath syntax as `kubectl get -o jsonpath=`, including wildcards (`[*]`) and filters (`[?(@.key==value)]`). Only structured JSONPath queries are supported today; full-text search across object bodies and captured logs is planned as a follow-up.
+Expressions follow the same JSONPath syntax as `kubectl get -o jsonpath=`, including wildcards (`[*]`) and filters (`[?(@.key=="value")]`). Only structured JSONPath queries are supported today; full-text search across object bodies and captured logs is planned as a follow-up.
 
 ---
 

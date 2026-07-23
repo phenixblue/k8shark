@@ -44,8 +44,10 @@ type Result struct {
 }
 
 // Run evaluates opts.Expression against every captured object in store at
-// the resolved snapshot, returning one Match per non-empty JSONPath result.
-// Objects that don't have the queried field are skipped, not treated as errors.
+// the resolved snapshot, returning one Match per JSONPath result found on an
+// object — including zero-value results like "" or null, since those mean
+// the field exists. Objects that don't have the queried field at all produce
+// no results (via AllowMissingKeys) and are skipped, not treated as errors.
 func Run(store *server.CaptureStore, opts Options) (*Result, error) {
 	jp := jsonpath.New("query").AllowMissingKeys(true)
 	if err := jp.Parse(opts.Expression); err != nil {
