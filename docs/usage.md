@@ -578,6 +578,52 @@ Exit codes follow the usual diff convention:
 
 ---
 
+## Query
+
+`kshrk query` evaluates a kubectl-style JSONPath expression against **every** object captured in the archive — across all resource types and namespaces at once — instead of one list at a time. Useful for questions like "every container image in this capture" or "every pod's phase" without knowing in advance which resource types to look at.
+
+```sh
+kshrk query capture.kshrk '{.spec.containers[*].image}'
+```
+
+Example table output:
+
+```
+RESOURCE     NAMESPACE  NAME    VALUE
+pods         default    web-1   "nginx:alpine"
+pods         default    web-2   "nginx:alpine"
+deployments  default    web     "nginx:alpine"
+
+3 match(es)
+```
+
+Objects that don't have the queried field are skipped rather than reported as errors, so one expression can safely run across dissimilar resource types.
+
+Scope the query and pin it to a point in time:
+
+```sh
+kshrk query capture.kshrk '{.status.phase}' --resource pods --at -5m
+```
+
+Emit machine-readable JSON instead of a table:
+
+```sh
+kshrk query capture.kshrk '{.spec.replicas}' --resource deployments -o json
+```
+
+### Query flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--output`, `-o` | `table` | Output format: `table` or `json` |
+| `--at` | latest | Query state at a timestamp (RFC3339 or relative duration like `-5m`); must be within the capture window |
+| `--resource` | (all) | Limit the query to one resource type, e.g. `pods` |
+| `--namespace` | (all) | Limit the query to one namespace |
+
+Expressions follow the same JSONPath syntax as `kubectl get -o jsonpath=`, including wildcards (`[*]`) and filters (`[?(@.key==value)]`). Only structured JSONPath queries are supported today; full-text search across object bodies and captured logs is planned as a follow-up.
+
+---
+
 ## Redact
 
 Sensitive values can be removed from a capture archive in two ways.
