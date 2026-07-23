@@ -155,12 +155,12 @@ func searchLogPath(store *server.CaptureStore, path string, at time.Time, find f
 
 // isLogPath reports whether path is a captured pod-log endpoint
 // (/api/v1/namespaces/<ns>/pods/<name>/log[?container=<c>[&previous=true]]).
+// Delegates to parseLogPath's full shape check rather than a bare "/log"
+// suffix match, so an unrelated resource whose name happens to end in "log"
+// isn't misrouted as a pod log.
 func isLogPath(path string) bool {
-	p := path
-	if i := strings.IndexByte(p, '?'); i >= 0 {
-		p = p[:i]
-	}
-	return strings.HasSuffix(p, "/log")
+	_, _, _, _, ok := parseLogPath(path)
+	return ok
 }
 
 // parseLogPath extracts the namespace, pod name, container, and previous-log

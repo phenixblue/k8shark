@@ -157,6 +157,23 @@ func TestRun_SkipsTableViews(t *testing.T) {
 	}
 }
 
+func TestRun_DoesNotMisrouteNonPodLogPathsEndingInLog(t *testing.T) {
+	// A resource literally named "log" (e.g. a CRD) under a path that isn't
+	// shaped like the real pod-log subresource must still be queried as a
+	// normal JSON object, not silently skipped as a pod log.
+	store := buildQueryStore(t, map[string]string{
+		"/apis/example.io/v1/namespaces/prod/log": `{"kind":"LogList","apiVersion":"example.io/v1","items":[{"metadata":{"name":"needle"}}]}`,
+	})
+
+	result, err := Run(store, Options{Expression: "{.metadata.name}"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(result.Matches) != 1 || result.Matches[0].Resource != "log" {
+		t.Fatalf("expected the custom 'log' resource to be queried, got %+v", result.Matches)
+	}
+}
+
 func TestRun_ResourceFilterExcludesOtherTypes(t *testing.T) {
 	store := buildQueryStore(t, map[string]string{
 		"/api/v1/namespaces/prod/pods":     `{"kind":"PodList","apiVersion":"v1","items":[{"metadata":{"name":"a"}}]}`,

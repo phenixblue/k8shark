@@ -183,6 +183,23 @@ func TestSearchText_NoMatches(t *testing.T) {
 	}
 }
 
+func TestSearchText_DoesNotMisrouteNonPodLogPathsEndingInLog(t *testing.T) {
+	// A resource literally named "log" (e.g. a CRD) under a path that isn't
+	// shaped like the real pod-log subresource must be searched as a normal
+	// object, not misdetected as a pod log just because its path ends in "/log".
+	store := buildQueryStore(t, map[string]string{
+		"/apis/example.io/v1/namespaces/prod/log": `{"kind":"LogList","apiVersion":"example.io/v1","items":[{"metadata":{"name":"needle"}}]}`,
+	})
+
+	result, err := SearchText(store, TextOptions{Pattern: "needle"})
+	if err != nil {
+		t.Fatalf("SearchText: %v", err)
+	}
+	if len(result.Matches) != 1 || result.Matches[0].Resource != "log" {
+		t.Fatalf("expected the custom 'log' resource to be searched as a normal object, got %+v", result.Matches)
+	}
+}
+
 func TestSnippet_DoesNotSplitMultiByteRune(t *testing.T) {
 	// "€" is 3 bytes in UTF-8, so a 40-byte radius lands mid-rune (40 isn't a
 	// multiple of 3) unless the cut point is snapped to a rune boundary.
