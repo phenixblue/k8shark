@@ -76,6 +76,20 @@ a { color: inherit; }
 .grow { flex: 1; }
 #capture-meta { font-size: 11px; color: var(--fg-faint); }
 
+/* Global search (topbar) */
+.search-form {
+  display: flex; align-items: center; gap: 6px; margin-right: 8px;
+}
+.search-input {
+  background: var(--bg-row); color: var(--fg); border: 1px solid var(--border-strong);
+  padding: 5px 10px; border-radius: 6px; font-size: 12.5px; outline: none; width: 220px;
+}
+.search-input:focus { border-color: var(--accent); }
+.search-mode {
+  background: var(--bg-row); color: var(--fg); border: 1px solid var(--border-strong);
+  padding: 4px 6px; border-radius: 6px; font-size: 12px; cursor: pointer;
+}
+
 /* Scrubber */
 .scrubber {
   display: flex; align-items: center; gap: 8px; padding: 4px 10px;

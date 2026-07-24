@@ -111,6 +111,7 @@
   //   #/ns/<name>/pod/<pod>   pod drilldown
   //   #/timeline              timeline
   //   #/logs                  logs full-screen
+  //   #/search?q=..&mode=..   global search results (see the topbar search box)
   function parseRoute() {
     let h = (location.hash || '#/overview').replace(/^#/, '');
     // Strip any ?query=... before splitting on slashes; route params live in
@@ -119,7 +120,7 @@
     if (qIdx >= 0) h = h.slice(0, qIdx);
     const parts = h.split('/').filter(Boolean);
     if (parts.length === 0) return { name: 'overview' };
-    if (parts[0] === 'overview' || parts[0] === 'namespaces' || parts[0] === 'pods' || parts[0] === 'workloads' || parts[0] === 'resources' || parts[0] === 'resource' || parts[0] === 'object' || parts[0] === 'timeline' || parts[0] === 'logs' || parts[0] === 'diff' || parts[0] === 'diagnostics') {
+    if (parts[0] === 'overview' || parts[0] === 'namespaces' || parts[0] === 'pods' || parts[0] === 'workloads' || parts[0] === 'resources' || parts[0] === 'resource' || parts[0] === 'object' || parts[0] === 'timeline' || parts[0] === 'logs' || parts[0] === 'diff' || parts[0] === 'diagnostics' || parts[0] === 'search') {
       return { name: parts[0] };
     }
     if (parts[0] === 'ns' && parts[1]) {
@@ -2090,6 +2091,91 @@
     setContent(root);
   }
 
+  // ── Global search ────────────────────────────────────────────────────────
+  // Backed by the same internal/query engine as `kshrk query`. mode is
+  // "jsonpath" (default), "text" (substring), or "regex".
+  async function renderSearch() {
+    const q = hashQuery();
+    const query = q.get('q') || '';
+    const mode = q.get('mode') || 'jsonpath';
+    if (searchEls) {
+      searchEls.input.value = query;
+      searchEls.modeSel.value = mode;
+    }
+    if (!query) {
+      setContent(el('div', { class: 'state', style: 'padding:24px;' }, 'Type a query and press Enter to search — JSONPath by default, or switch the mode to search plain text/regex across every object body and pod log.'));
+      return;
+    }
+    setContent(loadingState('Searching…'));
+    let data;
+    try {
+      data = await getJSON('/v2/api/search?q=' + encodeURIComponent(query) + '&mode=' + encodeURIComponent(mode));
+    } catch (e) {
+      setContent(errorState(e.message));
+      return;
+    }
+    const results = data.results || [];
+    const root = el('div', {});
+    root.appendChild(el('div', { class: 'section-title', style: 'font-size:15px; margin-bottom:2px;' }, 'Search results'));
+    root.appendChild(el('div', { style: 'color:var(--fg-dim); font-size:12px; margin-bottom:14px;' },
+      data.total + ' match' + (data.total === 1 ? '' : 'es') + ' · mode: ' + data.mode +
+      (data.truncated ? ' · showing first ' + results.length : '')));
+
+    if (!results.length) {
+      root.appendChild(el('div', { class: 'state', style: 'padding:24px;' }, 'No matches.'));
+      setContent(root);
+      return;
+    }
+
+    const card = el('div', { class: 'card' });
+    for (const m of results) {
+      const obj = (m.namespace ? m.namespace + '/' : '') + m.name;
+      const link = '#/object?path=' + encodeURIComponent(m.path) + (m.name ? '&name=' + encodeURIComponent(m.name) : '');
+      const loc = m.log ? ('log' + (m.container ? ':' + m.container : '') + (m.previous ? ' (previous)' : '')) : (m.field || '');
+      const detail = m.snippet || m.value || '';
+      // A real <a href> (not a <div onclick>) so results are keyboard-focusable
+      // and activate with Enter, like any other link.
+      const row = el('a', { href: link, style: 'display:flex; gap:12px; padding:10px 4px; border-bottom:1px solid var(--border); text-decoration:none; color:inherit;' });
+      row.appendChild(el('span', { style: 'flex:none; align-self:flex-start; font-size:10.5px; font-weight:600; text-transform:uppercase; color:var(--fg-dim); border:1px solid var(--border-strong); border-radius:5px; padding:1px 6px;' }, m.resource || ''));
+      row.appendChild(el('div', { style: 'min-width:0;' },
+        el('div', { style: 'font-size:13px;' }, obj),
+        loc ? el('div', { style: 'font-size:12px; color:var(--fg-dim);' }, loc) : null,
+        detail ? el('div', { style: 'font-size:12px; color:var(--fg-faint); margin-top:2px; word-break:break-all;' }, detail) : null));
+      card.appendChild(row);
+    }
+    root.appendChild(card);
+    setContent(root);
+  }
+
+  // searchEls caches the topbar search box elements — built once (like
+  // transportEls) so typing doesn't get wiped out by an unrelated re-render.
+  let searchEls = null;
+  function setupSearchBox() {
+    const modeSel = el('select', { class: 'search-mode', title: 'Search mode' },
+      el('option', { value: 'jsonpath' }, 'JSONPath'),
+      el('option', { value: 'text' }, 'Text'),
+      el('option', { value: 'regex' }, 'Regex'));
+    const input = el('input', {
+      type: 'search', class: 'search-input',
+      placeholder: 'Search captured objects & logs…',
+      title: 'Global search across every captured object and pod log (see mode selector)',
+    });
+    const form = el('form', {
+      class: 'search-form',
+      onsubmit: (e) => {
+        e.preventDefault();
+        const val = input.value.trim();
+        if (!val) return;
+        go('#/search?q=' + encodeURIComponent(val) + '&mode=' + encodeURIComponent(modeSel.value));
+      },
+    }, input, modeSel);
+    searchEls = { form, input, modeSel };
+    const bar = $('topbar');
+    const scrub = $('scrubber');
+    if (bar && scrub) bar.insertBefore(form, scrub);
+    else if (bar) bar.appendChild(form);
+  }
+
   async function renderTimeline() {
     setContent(loadingState('Loading timeline…'));
     let data;
@@ -2332,6 +2418,7 @@
     if (r.name === 'timeline') return renderTimeline();
     if (r.name === 'logs') return renderLogs();
     if (r.name === 'diff') return renderDiff();
+    if (r.name === 'search') return renderSearch();
     return setContent(errorState('Unknown route'));
   }
 
@@ -2364,6 +2451,7 @@
   async function init() {
     applyTheme(currentTheme());
     setupThemeToggle();
+    setupSearchBox();
     state.route = parseRoute();
     try {
       const ts = await getJSON('/v2/api/timestamps');
