@@ -2186,11 +2186,17 @@
     let requestSeq = 0;  // guards against a slower, older request clobbering a newer one's results
 
     function setSelected(idx) {
+      // If focus already landed in the results list (e.g. via Tab), move it
+      // along with the highlight so Enter's native anchor activation and the
+      // visual "selected" row never disagree. While typing, focus stays in
+      // the input and only the highlight moves.
+      const focusOnARow = rows.includes(document.activeElement);
       if (rows[selected]) rows[selected].classList.remove('selected');
       selected = idx;
       if (rows[selected]) {
         rows[selected].classList.add('selected');
         rows[selected].scrollIntoView({ block: 'nearest' });
+        if (focusOnARow) rows[selected].focus();
       }
     }
 
