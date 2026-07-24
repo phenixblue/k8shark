@@ -2271,13 +2271,18 @@
       clearTimeout(debounceTimer); // don't let a still-pending debounced search also fire
       runSearch();
     });
-    // Escape is handled on the panel (not just the input) so it dismisses the
-    // palette no matter which element inside it — input, mode select, or a
-    // result row — currently has focus. Tab is trapped the same way, cycling
-    // through input -> mode select -> result rows -> input, so focus can't
-    // leak out to the page behind an aria-modal dialog.
+    // Escape and ↑/↓ are handled on the panel (not just the input) so they
+    // work no matter which focusable element inside it — input, mode select,
+    // or a result row — currently has focus, since Tab (trapped the same
+    // way below) can move focus to any of them. ↑/↓ skip the mode <select>
+    // so its own native up/down value-changing behavior still works.
     panel.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') { e.preventDefault(); close(); return; }
+      if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && document.activeElement !== modeSel) {
+        e.preventDefault();
+        moveSelection(e.key === 'ArrowDown' ? 1 : -1);
+        return;
+      }
       if (e.key === 'Tab') {
         const focusable = [input, modeSel, ...rows];
         if (!focusable.length) return;
@@ -2289,8 +2294,6 @@
       }
     });
     input.addEventListener('keydown', (e) => {
-      if (e.key === 'ArrowDown') { e.preventDefault(); moveSelection(1); return; }
-      if (e.key === 'ArrowUp') { e.preventDefault(); moveSelection(-1); return; }
       if (e.key === 'Enter') {
         e.preventDefault();
         if (selected >= 0 && rows[selected]) { rows[selected].click(); return; }
