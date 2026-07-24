@@ -2290,10 +2290,13 @@
       backdrop.style.display = 'none';
       clearTimeout(debounceTimer);
       requestSeq++; // invalidate any in-flight request so its response is discarded on arrival
+      // Return focus to the trigger rather than leaving it on the now-hidden
+      // input, which would otherwise strand keyboard/AT navigation.
+      trigger.focus();
     }
 
     const trigger = el('button', {
-      class: 'search-trigger', type: 'button', title: 'Search (press / )',
+      class: 'search-trigger', type: 'button', title: 'Search (press /)',
       'aria-label': 'Search', 'aria-keyshortcuts': '/',
       onclick: () => open(),
     }, '🔍');
