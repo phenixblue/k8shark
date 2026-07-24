@@ -2133,7 +2133,9 @@
       const link = '#/object?path=' + encodeURIComponent(m.path) + (m.name ? '&name=' + encodeURIComponent(m.name) : '');
       const loc = m.log ? ('log' + (m.container ? ':' + m.container : '') + (m.previous ? ' (previous)' : '')) : (m.field || '');
       const detail = m.snippet || m.value || '';
-      const row = el('div', { style: 'display:flex; gap:12px; padding:10px 4px; border-bottom:1px solid var(--border); cursor:pointer;', onclick: () => go(link) });
+      // A real <a href> (not a <div onclick>) so results are keyboard-focusable
+      // and activate with Enter, like any other link.
+      const row = el('a', { href: link, style: 'display:flex; gap:12px; padding:10px 4px; border-bottom:1px solid var(--border); text-decoration:none; color:inherit;' });
       row.appendChild(el('span', { style: 'flex:none; align-self:flex-start; font-size:10.5px; font-weight:600; text-transform:uppercase; color:var(--fg-dim); border:1px solid var(--border-strong); border-radius:5px; padding:1px 6px;' }, m.resource || ''));
       row.appendChild(el('div', { style: 'min-width:0;' },
         el('div', { style: 'font-size:13px;' }, obj),
