@@ -136,6 +136,26 @@ shares a chip/token filter bar with type-ahead completion:
 
 ![Chip/token filter in action](images/v2/chip-filter.png)
 
+## Global search
+
+The search box in the top bar searches the **whole capture** at once — every resource type and
+namespace, not just the list you're currently viewing — using the same engine as
+[`kshrk query`](usage.md#query). Type a query and press **Enter**; each result links straight to
+its object view.
+
+The mode dropdown next to the search box selects how the query text is interpreted:
+
+- **JSONPath** (default) — a kubectl-style expression, e.g. `{.spec.containers[*].image}`, evaluated
+  against every captured object. Matches show the resource, object, and the matched value.
+- **Text** — a plain substring, searched across every string field in every object *and* every
+  captured pod log (current and `--previous`). Matches show the field path (or `log:<container>`
+  for a log line) and a snippet of context.
+- **Regex** — same as Text, but the query is a Go regular expression.
+
+This is the tool for "where does this error string appear?" — across annotations, container
+commands, event messages, and logs — without knowing in advance which resource type or namespace
+holds the answer.
+
 ## Timeline and watch events
 
 If the capture was taken with `watch: true` on its resource entries, the **Timeline** plots watch events
