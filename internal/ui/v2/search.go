@@ -63,6 +63,7 @@ func (h *Handler) serveSearch(w http.ResponseWriter, r *http.Request) {
 	at := h.resolveAt(r)
 
 	var rows []SearchResult
+	var total int
 	switch mode {
 	case "jsonpath":
 		result, err := query.Run(h.Store, query.Options{Expression: q, At: at, Resource: resource, Namespace: namespace})
@@ -70,7 +71,12 @@ func (h *Handler) serveSearch(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		total = len(result.Matches)
+		rows = make([]SearchResult, 0, min(total, maxSearchResults))
 		for _, m := range result.Matches {
+			if len(rows) >= maxSearchResults {
+				break
+			}
 			rows = append(rows, SearchResult{
 				Path: m.Path, Group: m.Group, Version: m.Version, Resource: m.Resource,
 				Namespace: m.Namespace, Name: m.Name, Value: string(m.Value),
@@ -84,7 +90,12 @@ func (h *Handler) serveSearch(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		total = len(result.Matches)
+		rows = make([]SearchResult, 0, min(total, maxSearchResults))
 		for _, m := range result.Matches {
+			if len(rows) >= maxSearchResults {
+				break
+			}
 			rows = append(rows, SearchResult{
 				Path: m.Path, Group: m.Group, Version: m.Version, Resource: m.Resource,
 				Namespace: m.Namespace, Name: m.Name, Field: m.Field, Snippet: m.Snippet,
@@ -96,11 +107,7 @@ func (h *Handler) serveSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := SearchResponse{Mode: mode, Query: q, Total: len(rows)}
-	if len(rows) > maxSearchResults {
-		resp.Truncated = true
-		rows = rows[:maxSearchResults]
-	}
-	resp.Results = rows
-	writeJSON(w, http.StatusOK, resp)
+	writeJSON(w, http.StatusOK, SearchResponse{
+		Mode: mode, Query: q, Results: rows, Total: total, Truncated: total > maxSearchResults,
+	})
 }
