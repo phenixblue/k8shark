@@ -2098,9 +2098,9 @@
     const q = hashQuery();
     const query = q.get('q') || '';
     const mode = q.get('mode') || 'jsonpath';
-    if (searchEls) {
-      searchEls.input.value = query;
-      searchEls.modeSel.value = mode;
+    if (searchPalette) {
+      searchPalette.input.value = query;
+      searchPalette.modeSel.value = mode;
     }
     if (!query) {
       setContent(el('div', { class: 'state', style: 'padding:24px;' }, 'Type a query and press Enter to search — JSONPath by default, or switch the mode to search plain text/regex across every object body and pod log.'));
@@ -2147,33 +2147,207 @@
     setContent(root);
   }
 
-  // searchEls caches the topbar search box elements — built once (like
-  // transportEls) so typing doesn't get wiped out by an unrelated re-render.
-  let searchEls = null;
-  function setupSearchBox() {
+  // How many results the palette previews inline before pointing at the
+  // full #/search page (which shows everything /v2/api/search returned, up
+  // to its own server-side cap).
+  const SEARCH_PALETTE_PREVIEW = 8;
+
+  // searchPalette caches the command-palette overlay's elements and state —
+  // built once (like transportEls) and appended to <body> so it renders
+  // above whatever view is on screen without living inside any view's
+  // re-render. The topbar only ever holds the small trigger icon.
+  let searchPalette = null;
+  function setupSearchPalette() {
     const modeSel = el('select', { class: 'search-mode', title: 'Search mode' },
       el('option', { value: 'jsonpath' }, 'JSONPath'),
       el('option', { value: 'text' }, 'Text'),
       el('option', { value: 'regex' }, 'Regex'));
     const input = el('input', {
-      type: 'search', class: 'search-input',
+      type: 'search',
       placeholder: 'Search captured objects & logs…',
-      title: 'Global search across every captured object and pod log (see mode selector)',
+      title: 'Global search across every captured object and pod log',
     });
-    const form = el('form', {
-      class: 'search-form',
-      onsubmit: (e) => {
+    const status = el('div', { class: 'search-palette-status' });
+    const resultsBox = el('div', { class: 'search-palette-results' });
+    const panel = el('div', { class: 'search-palette', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Search captured objects & logs' },
+      el('div', { class: 'search-palette-input-row' }, input, modeSel),
+      status, resultsBox,
+      el('div', { class: 'search-palette-footer' },
+        el('span', {}, el('kbd', {}, '↑'), el('kbd', {}, '↓'), ' navigate'),
+        el('span', {}, el('kbd', {}, '↵'), ' open'),
+        el('span', {}, el('kbd', {}, 'esc'), ' close')));
+    const backdrop = el('div', { class: 'search-palette-backdrop', style: 'display:none;' }, panel);
+    backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
+    document.body.appendChild(backdrop);
+
+    let rows = [];       // rendered result <a> elements, in display order
+    let selected = -1;   // keyboard-selected row index, -1 = none
+    let debounceTimer = null;
+    let requestSeq = 0;  // guards against a slower, older request clobbering a newer one's results
+
+    function setSelected(idx) {
+      // If focus already landed in the results list (e.g. via Tab), move it
+      // along with the highlight so Enter's native anchor activation and the
+      // visual "selected" row never disagree. While typing, focus stays in
+      // the input and only the highlight moves.
+      const focusOnARow = rows.includes(document.activeElement);
+      if (rows[selected]) rows[selected].classList.remove('selected');
+      selected = idx;
+      if (rows[selected]) {
+        rows[selected].classList.add('selected');
+        rows[selected].scrollIntoView({ block: 'nearest' });
+        if (focusOnARow) rows[selected].focus();
+      }
+    }
+
+    function moveSelection(delta) {
+      if (!rows.length) return;
+      let idx = selected + delta;
+      if (idx < 0) idx = rows.length - 1;
+      if (idx >= rows.length) idx = 0;
+      setSelected(idx);
+    }
+
+    function renderRows(matches) {
+      resultsBox.innerHTML = '';
+      rows = [];
+      selected = -1;
+      if (!matches.length) {
+        resultsBox.appendChild(el('div', { class: 'search-palette-empty' }, 'No matches.'));
+        return;
+      }
+      for (const m of matches) {
+        const obj = (m.namespace ? m.namespace + '/' : '') + m.name;
+        const link = '#/object?path=' + encodeURIComponent(m.path) + (m.name ? '&name=' + encodeURIComponent(m.name) : '');
+        const loc = m.log ? ('log' + (m.container ? ':' + m.container : '') + (m.previous ? ' (previous)' : '')) : (m.field || '');
+        const detail = m.snippet || m.value || '';
+        const row = el('a', { href: link, class: 'search-palette-row', onclick: () => close() },
+          el('div', { class: 'top' },
+            el('span', { class: 'kind' }, m.resource || ''),
+            el('span', { class: 'name' }, obj)),
+          loc ? el('div', { class: 'detail' }, loc) : null,
+          detail ? el('div', { class: 'detail' }, detail) : null);
+        rows.push(row);
+        resultsBox.appendChild(row);
+      }
+    }
+
+    async function runSearch() {
+      const seq = ++requestSeq;
+      const val = input.value.trim();
+      if (!val) {
+        status.textContent = '';
+        resultsBox.innerHTML = '';
+        rows = []; selected = -1;
+        return;
+      }
+      let data;
+      try {
+        data = await getJSON('/v2/api/search?q=' + encodeURIComponent(val) + '&mode=' + encodeURIComponent(modeSel.value));
+      } catch (e) {
+        if (seq !== requestSeq) return; // a newer request has since started — discard this stale one
+        rows = []; selected = -1;
+        resultsBox.innerHTML = '';
+        resultsBox.appendChild(el('div', { class: 'search-palette-empty' }, e.message));
+        status.textContent = '';
+        return;
+      }
+      if (seq !== requestSeq) return; // a newer request has since started — discard this stale one
+      const all = data.results || [];
+      const preview = all.slice(0, SEARCH_PALETTE_PREVIEW);
+      renderRows(preview);
+      const total = data.total || 0;
+      if (total <= preview.length) {
+        status.textContent = `${total} match${total === 1 ? '' : 'es'} · mode: ${data.mode}`;
+      } else if (data.truncated) {
+        // /v2/api/search itself caps the response — the "full list" on
+        // #/search is really just the first `all.length` matches, not all
+        // `total` of them, so say so instead of promising a full list.
+        status.textContent = `Showing ${preview.length} of ${total} — press Enter to see the first ${all.length} (results are capped)`;
+      } else {
+        status.textContent = `Showing ${preview.length} of ${total} — press Enter for the full list`;
+      }
+    }
+
+    input.addEventListener('input', () => {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(runSearch, 200);
+    });
+    modeSel.addEventListener('change', () => {
+      clearTimeout(debounceTimer); // don't let a still-pending debounced search also fire
+      runSearch();
+    });
+    // Escape and ↑/↓ are handled on the panel (not just the input) so they
+    // work no matter which focusable element inside it — input, mode select,
+    // or a result row — currently has focus, since Tab (trapped the same
+    // way below) can move focus to any of them. ↑/↓ skip the mode <select>
+    // so its own native up/down value-changing behavior still works.
+    panel.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); close(); return; }
+      if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && document.activeElement !== modeSel) {
         e.preventDefault();
+        moveSelection(e.key === 'ArrowDown' ? 1 : -1);
+        return;
+      }
+      if (e.key === 'Tab') {
+        const focusable = [input, modeSel, ...rows];
+        if (!focusable.length) return;
+        e.preventDefault();
+        const idx = focusable.indexOf(document.activeElement);
+        const step = e.shiftKey ? -1 : 1;
+        const next = ((idx === -1 ? 0 : idx) + step + focusable.length) % focusable.length;
+        focusable[next].focus();
+      }
+    });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        if (selected >= 0 && rows[selected]) { rows[selected].click(); return; }
         const val = input.value.trim();
         if (!val) return;
+        close();
         go('#/search?q=' + encodeURIComponent(val) + '&mode=' + encodeURIComponent(modeSel.value));
-      },
-    }, input, modeSel);
-    searchEls = { form, input, modeSel };
+      }
+    });
+
+    function open() {
+      backdrop.style.display = 'flex';
+      input.focus();
+      input.select();
+      if (input.value.trim()) runSearch();
+    }
+    function close() {
+      backdrop.style.display = 'none';
+      clearTimeout(debounceTimer);
+      requestSeq++; // invalidate any in-flight request so its response is discarded on arrival
+      // Return focus to the trigger rather than leaving it on the now-hidden
+      // input, which would otherwise strand keyboard/AT navigation.
+      trigger.focus();
+    }
+
+    const trigger = el('button', {
+      class: 'search-trigger', type: 'button', title: 'Search (press /)',
+      'aria-label': 'Search', 'aria-keyshortcuts': '/',
+      onclick: () => open(),
+    }, '🔍');
     const bar = $('topbar');
     const scrub = $('scrubber');
-    if (bar && scrub) bar.insertBefore(form, scrub);
-    else if (bar) bar.appendChild(form);
+    if (bar && scrub) bar.insertBefore(trigger, scrub);
+    else if (bar) bar.appendChild(trigger);
+
+    // Global "/" shortcut, ignored while typing in any other field so it
+    // doesn't hijack the per-list filter bars.
+    window.addEventListener('keydown', (e) => {
+      if (e.key !== '/' || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (backdrop.style.display !== 'none') return;
+      const ae = document.activeElement;
+      const tag = ae && ae.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (ae && ae.isContentEditable)) return;
+      e.preventDefault();
+      open();
+    });
+
+    searchPalette = { input, modeSel, open, close };
   }
 
   async function renderTimeline() {
@@ -2451,7 +2625,7 @@
   async function init() {
     applyTheme(currentTheme());
     setupThemeToggle();
-    setupSearchBox();
+    setupSearchPalette();
     state.route = parseRoute();
     try {
       const ts = await getJSON('/v2/api/timestamps');
