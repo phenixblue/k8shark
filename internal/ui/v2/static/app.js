@@ -2251,9 +2251,16 @@
       const preview = all.slice(0, SEARCH_PALETTE_PREVIEW);
       renderRows(preview);
       const total = data.total || 0;
-      status.textContent = total > preview.length
-        ? `Showing ${preview.length} of ${total} — press Enter for the full list`
-        : `${total} match${total === 1 ? '' : 'es'} · mode: ${data.mode}`;
+      if (total <= preview.length) {
+        status.textContent = `${total} match${total === 1 ? '' : 'es'} · mode: ${data.mode}`;
+      } else if (data.truncated) {
+        // /v2/api/search itself caps the response — the "full list" on
+        // #/search is really just the first `all.length` matches, not all
+        // `total` of them, so say so instead of promising a full list.
+        status.textContent = `Showing ${preview.length} of ${total} — press Enter to see the first ${all.length} (results are capped)`;
+      } else {
+        status.textContent = `Showing ${preview.length} of ${total} — press Enter for the full list`;
+      }
     }
 
     input.addEventListener('input', () => {
@@ -2263,9 +2270,20 @@
     modeSel.addEventListener('change', runSearch);
     // Escape is handled on the panel (not just the input) so it dismisses the
     // palette no matter which element inside it — input, mode select, or a
-    // result row — currently has focus.
+    // result row — currently has focus. Tab is trapped the same way, cycling
+    // through input -> mode select -> result rows -> input, so focus can't
+    // leak out to the page behind an aria-modal dialog.
     panel.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') { e.preventDefault(); close(); }
+      if (e.key === 'Escape') { e.preventDefault(); close(); return; }
+      if (e.key === 'Tab') {
+        const focusable = [input, modeSel, ...rows];
+        if (!focusable.length) return;
+        e.preventDefault();
+        const idx = focusable.indexOf(document.activeElement);
+        const step = e.shiftKey ? -1 : 1;
+        const next = ((idx === -1 ? 0 : idx) + step + focusable.length) % focusable.length;
+        focusable[next].focus();
+      }
     });
     input.addEventListener('keydown', (e) => {
       if (e.key === 'ArrowDown') { e.preventDefault(); moveSelection(1); return; }
