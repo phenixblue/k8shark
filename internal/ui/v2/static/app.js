@@ -2229,7 +2229,12 @@
     async function runSearch() {
       const seq = ++requestSeq;
       const val = input.value.trim();
-      if (!val) { status.textContent = ''; renderRows([]); return; }
+      if (!val) {
+        status.textContent = '';
+        resultsBox.innerHTML = '';
+        rows = []; selected = -1;
+        return;
+      }
       let data;
       try {
         data = await getJSON('/v2/api/search?q=' + encodeURIComponent(val) + '&mode=' + encodeURIComponent(modeSel.value));
@@ -2256,8 +2261,13 @@
       debounceTimer = setTimeout(runSearch, 200);
     });
     modeSel.addEventListener('change', runSearch);
+    // Escape is handled on the panel (not just the input) so it dismisses the
+    // palette no matter which element inside it — input, mode select, or a
+    // result row — currently has focus.
+    panel.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { e.preventDefault(); close(); }
+    });
     input.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') { e.preventDefault(); close(); return; }
       if (e.key === 'ArrowDown') { e.preventDefault(); moveSelection(1); return; }
       if (e.key === 'ArrowUp') { e.preventDefault(); moveSelection(-1); return; }
       if (e.key === 'Enter') {
@@ -2282,6 +2292,7 @@
 
     const trigger = el('button', {
       class: 'search-trigger', type: 'button', title: 'Search (press / )',
+      'aria-label': 'Search', 'aria-keyshortcuts': '/',
       onclick: () => open(),
     }, '🔍');
     const bar = $('topbar');
