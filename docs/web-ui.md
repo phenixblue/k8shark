@@ -138,12 +138,13 @@ shares a chip/token filter bar with type-ahead completion:
 
 ## Global search
 
-The search box in the top bar searches the **whole capture** at once — every resource type and
-namespace, not just the list you're currently viewing — using the same engine as
-[`kshrk query`](usage.md#query). Type a query and press **Enter**; each result links straight to
-its object view.
+The 🔍 icon in the top bar opens a command palette that searches the **whole capture** at once —
+every resource type and namespace, not just the list you're currently viewing — using the same
+engine as [`kshrk query`](usage.md#query). Click the icon, or press **/** anywhere the focus isn't
+already in another text field, to open it; **Esc** or clicking outside the palette closes it.
 
-The mode dropdown next to the search box selects how the query text is interpreted:
+Type a query and matches appear inline as you type (a short debounce, not on every keystroke). The
+mode dropdown next to the input selects how the query text is interpreted:
 
 - **JSONPath** (default) — a kubectl-style expression, e.g. `{.spec.containers[*].image}`, evaluated
   against every captured object. Matches show the resource, object, and the matched value.
@@ -151,6 +152,10 @@ The mode dropdown next to the search box selects how the query text is interpret
   captured pod log (current and `--previous`). Matches show the field path (or `log:<container>`
   for a log line) and a snippet of context.
 - **Regex** — same as Text, but the query is a Go regular expression.
+
+The palette previews the first few matches; **↑ / ↓** move the selection and **Enter** opens the
+highlighted result directly. With nothing selected, Enter instead takes you to the full `#/search`
+results page — the same one you'd land on if there are more matches than the palette previews.
 
 This is the tool for "where does this error string appear?" — across annotations, container
 commands, event messages, and logs — without knowing in advance which resource type or namespace

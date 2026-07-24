@@ -76,18 +76,58 @@ a { color: inherit; }
 .grow { flex: 1; }
 #capture-meta { font-size: 11px; color: var(--fg-faint); }
 
-/* Global search (topbar) */
-.search-form {
-  display: flex; align-items: center; gap: 6px; margin-right: 8px;
+/* Global search — topbar trigger + command-palette overlay */
+.search-trigger {
+  background: var(--bg-row); color: var(--fg-dim); border: 1px solid var(--border-strong);
+  border-radius: 6px; width: 30px; height: 30px; display: flex; align-items: center; justify-content: center;
+  font-size: 14px; line-height: 1; cursor: pointer; flex: none; margin-right: 8px;
 }
-.search-input {
-  background: var(--bg-row); color: var(--fg); border: 1px solid var(--border-strong);
-  padding: 5px 10px; border-radius: 6px; font-size: 12.5px; outline: none; width: 220px;
-}
-.search-input:focus { border-color: var(--accent); }
+.search-trigger:hover { color: var(--fg); border-color: var(--accent); }
 .search-mode {
   background: var(--bg-row); color: var(--fg); border: 1px solid var(--border-strong);
   padding: 4px 6px; border-radius: 6px; font-size: 12px; cursor: pointer;
+}
+
+.search-palette-backdrop {
+  position: fixed; inset: 0; z-index: 200; background: rgba(3, 6, 12, .6);
+  display: flex; align-items: flex-start; justify-content: center; padding-top: 12vh;
+}
+.search-palette {
+  width: 560px; max-width: calc(100vw - 32px); max-height: 70vh;
+  background: var(--bg-panel); border: 1px solid var(--border-strong); border-radius: 10px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, .5); overflow: hidden; display: flex; flex-direction: column;
+}
+.search-palette-input-row {
+  display: flex; align-items: center; gap: 8px; padding: 12px 14px; flex: none;
+  border-bottom: 1px solid var(--border);
+}
+.search-palette-input-row input {
+  flex: 1; background: transparent; border: none; outline: none; color: var(--fg); font-size: 15px;
+}
+.search-palette-status {
+  padding: 6px 14px; color: var(--fg-faint); font-size: 11.5px; flex: none;
+}
+.search-palette-results { overflow: auto; flex: 1; }
+.search-palette-row {
+  display: flex; flex-direction: column; gap: 2px; padding: 9px 14px;
+  border-bottom: 1px solid var(--border); text-decoration: none; color: inherit; cursor: pointer;
+}
+.search-palette-row:hover, .search-palette-row.selected { background: var(--bg-row-hover); }
+.search-palette-row .top { display: flex; gap: 8px; align-items: baseline; }
+.search-palette-row .kind {
+  font: 10.5px var(--mono); color: var(--fg-dim); text-transform: uppercase;
+  border: 1px solid var(--border-strong); border-radius: 5px; padding: 1px 6px;
+}
+.search-palette-row .name { font-size: 13px; }
+.search-palette-row .detail { font: 12px var(--mono); color: var(--fg-faint); word-break: break-all; }
+.search-palette-empty { padding: 22px 14px; color: var(--fg-dim); font-size: 13px; text-align: center; }
+.search-palette-footer {
+  display: flex; gap: 14px; padding: 8px 14px; color: var(--fg-faint); font-size: 11px;
+  border-top: 1px solid var(--border); flex: none;
+}
+.search-palette-footer kbd {
+  background: var(--bg-row); border: 1px solid var(--border-strong); border-radius: 4px;
+  padding: 1px 5px; font: 10px var(--mono);
 }
 
 /* Scrubber */
