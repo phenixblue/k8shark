@@ -2267,7 +2267,10 @@
       clearTimeout(debounceTimer);
       debounceTimer = setTimeout(runSearch, 200);
     });
-    modeSel.addEventListener('change', runSearch);
+    modeSel.addEventListener('change', () => {
+      clearTimeout(debounceTimer); // don't let a still-pending debounced search also fire
+      runSearch();
+    });
     // Escape is handled on the panel (not just the input) so it dismisses the
     // palette no matter which element inside it — input, mode select, or a
     // result row — currently has focus. Tab is trapped the same way, cycling
