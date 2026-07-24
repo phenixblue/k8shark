@@ -2169,7 +2169,7 @@
     });
     const status = el('div', { class: 'search-palette-status' });
     const resultsBox = el('div', { class: 'search-palette-results' });
-    const panel = el('div', { class: 'search-palette' },
+    const panel = el('div', { class: 'search-palette', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Search captured objects & logs' },
       el('div', { class: 'search-palette-input-row' }, input, modeSel),
       status, resultsBox,
       el('div', { class: 'search-palette-footer' },
@@ -2288,6 +2288,8 @@
     }
     function close() {
       backdrop.style.display = 'none';
+      clearTimeout(debounceTimer);
+      requestSeq++; // invalidate any in-flight request so its response is discarded on arrival
     }
 
     const trigger = el('button', {
