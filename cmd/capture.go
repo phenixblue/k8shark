@@ -120,6 +120,9 @@ func runCapture(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	willRedact := doRedactSecrets || len(fieldRules) > 0
+	if willRedact && streamingStdout {
+		return fmt.Errorf("redaction (--redact-secrets / --redact-field) cannot be combined with --output - (redaction rewrites the archive file, which NDJSON streaming to stdout does not produce)")
+	}
 
 	// Resolve encryption before the (potentially long) capture starts so a bad
 	// or missing passphrase fails fast rather than after minutes of polling.
