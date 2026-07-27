@@ -229,7 +229,7 @@ func TestCaptureStore_Close_ImmediateWithLargeCapture(t *testing.T) {
 			`"resources":[{"name":"widgets","singularName":"widget","namespaced":true,"kind":"Widget"}]}`, i)
 		now := time.Now().UTC()
 		rec := capture.Record{ID: fmt.Sprintf("rec-%d", i), CapturedAt: now, APIPath: path, HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(body)}
-		if err := sw.WriteRecord(&rec); err != nil {
+		if _, err := sw.WriteRecord(&rec); err != nil {
 			t.Fatalf("WriteRecord: %v", err)
 		}
 		index[path] = &capture.IndexEntry{APIPath: path, Seqs: []int{0}, Times: []time.Time{now}}
