@@ -94,21 +94,28 @@ func createLike(dstPath string, src *os.File) (*os.File, os.FileMode, error) {
 	}
 	mode := srcInfo.Mode().Perm()
 
-	if existing, statErr := os.Stat(dstPath); statErr == nil {
+	// Lstat, not Stat: dstPath must be rejected if IT is a symlink, without
+	// following it first. os.Stat/os.OpenFile both follow symlinks, so an
+	// existing symlink at dstPath (planted by an attacker, or left over from
+	// something else) would otherwise cause EncryptFile/DecryptFile to
+	// truncate and write through it to whatever it points at — and the
+	// deferred cleanup's os.Remove(dstPath) only removes the symlink itself
+	// on failure, not the target, silently leaving partially-written content
+	// behind in a file this function never meant to touch. Rejecting any
+	// non-regular existing path here (symlink, device, fifo, socket) is
+	// simpler and safer than trying to handle each case.
+	if existing, statErr := os.Lstat(dstPath); statErr == nil {
+		if !existing.Mode().IsRegular() {
+			return nil, 0, fmt.Errorf("output %q exists and is not a regular file (mode %s)", dstPath, existing.Mode())
+		}
 		if os.SameFile(srcInfo, existing) {
 			return nil, 0, fmt.Errorf("output %q must not be the same file as the input", dstPath)
 		}
-		// Only touch the mode of a regular file — dstPath could be a
-		// directory or other special file (the caller passed a bad --output),
-		// and chmod'ing that isn't this function's business; let the
-		// OpenFile below report a clear error for it instead. This also
-		// narrows an existing, more-permissive dstPath down to the intended
+		// Narrows an existing, more-permissive dstPath down to the intended
 		// mode *before* opening it, so there is no window where it sits at
 		// looser-than-intended permissions while content is written.
-		if existing.Mode().IsRegular() {
-			if err := os.Chmod(dstPath, mode|0o200); err != nil {
-				return nil, 0, fmt.Errorf("setting permissions on %q: %w", dstPath, err)
-			}
+		if err := os.Chmod(dstPath, mode|0o200); err != nil {
+			return nil, 0, fmt.Errorf("setting permissions on %q: %w", dstPath, err)
 		}
 	}
 	dst, err := os.OpenFile(dstPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode|0o200)

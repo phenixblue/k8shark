@@ -603,6 +603,52 @@ func TestEncryptFile_RejectsSameFileAsOutput(t *testing.T) {
 	}
 }
 
+// TestEncryptFile_RejectsSymlinkOutput guards against a symlink-following
+// arbitrary-file-write: if dstPath is a symlink, os.Stat/os.OpenFile would
+// follow it and truncate/write through to whatever it points at, while the
+// error-path cleanup's os.Remove(dstPath) only removes the symlink itself —
+// not the target — leaving partially-written content behind in a file this
+// function never meant to touch. createLike must reject an existing symlink
+// at dstPath outright (via os.Lstat, which does not follow it), rather than
+// silently writing through it.
+func TestEncryptFile_RejectsSymlinkOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires elevated privileges on Windows")
+	}
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.kshrk")
+	sampleArchive(t, plainPath)
+
+	target := filepath.Join(dir, "target.txt")
+	if err := os.WriteFile(target, []byte("not meant to be touched"), 0o600); err != nil {
+		t.Fatalf("WriteFile(target): %v", err)
+	}
+	linkPath := filepath.Join(dir, "enc.kshrk")
+	if err := os.Symlink(target, linkPath); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	recipients, err := RecipientsFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("RecipientsFromPassphrase: %v", err)
+	}
+	if err := EncryptFile(plainPath, linkPath, recipients); err == nil {
+		t.Fatal("EncryptFile against a symlink output succeeded, want a rejection")
+	} else if !strings.Contains(err.Error(), "not a regular file") {
+		t.Errorf("error = %q, want it to mention the output is not a regular file", err)
+	}
+
+	// The symlink target must be untouched — this is the actual security
+	// property being guarded.
+	after, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("ReadFile(target) after rejected EncryptFile: %v", err)
+	}
+	if string(after) != "not meant to be touched" {
+		t.Error("EncryptFile wrote through the symlink to its target despite being rejected")
+	}
+}
+
 func statMode(t *testing.T, path string) os.FileMode {
 	t.Helper()
 	fi, err := os.Stat(path)

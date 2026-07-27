@@ -86,10 +86,19 @@ func defaultCryptOutput(in, suffix string) string {
 
 // rejectSamePath refuses to let an output path overwrite its input,
 // comparing absolute paths so relative-vs-absolute spellings of the same file
-// are still caught.
+// are still caught. A failure resolving either path is itself an error,
+// rather than silently comparing an unresolved path against a resolved one —
+// which could miss a genuine in==out overwrite (e.g. if only one of the two
+// paths is affected by an unresolvable working directory).
 func rejectSamePath(in, out string) error {
-	inAbs, _ := filepath.Abs(in)
-	outAbs, _ := filepath.Abs(out)
+	inAbs, err := filepath.Abs(in)
+	if err != nil {
+		return fmt.Errorf("resolving input path %q: %w", in, err)
+	}
+	outAbs, err := filepath.Abs(out)
+	if err != nil {
+		return fmt.Errorf("resolving output path %q: %w", out, err)
+	}
 	if inAbs == outAbs {
 		return fmt.Errorf("output path must differ from the input archive")
 	}
