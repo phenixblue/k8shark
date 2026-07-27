@@ -73,11 +73,12 @@ func isNoIdentityMatch(err error) bool {
 // dstPath itself — and returns it along with src's permission bits and a
 // commit function. The caller writes into the returned file, then, once
 // finished, calls commit to fix its permissions to match src exactly and
-// atomically rename it into place as dstPath (or removeTemp to discard it on
-// error). EncryptFile/DecryptFile use this so a source archive stored with
-// restrictive permissions (e.g. 0600) can't silently turn into a more
-// permissive encrypted or plaintext copy — this matters most for DecryptFile,
-// whose output is plaintext.
+// atomically rename it into place as dstPath; on error, the caller instead
+// closes the returned file and os.Remove's its Name() to discard it (dstPath
+// itself is never touched either way). EncryptFile/DecryptFile use this so a
+// source archive stored with restrictive permissions (e.g. 0600) can't
+// silently turn into a more permissive encrypted or plaintext copy — this
+// matters most for DecryptFile, whose output is plaintext.
 //
 // Writing to a same-directory temp file and renaming into place, rather than
 // opening dstPath directly, closes two related gaps a direct-open approach
