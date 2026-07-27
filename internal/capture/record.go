@@ -63,6 +63,12 @@ type CaptureMetadata struct {
 	Redacted          bool     `json:"redacted,omitempty"`
 	SecretsRedacted   int      `json:"secrets_redacted,omitempty"`
 	FieldsRedacted    int      `json:"fields_redacted,omitempty"`
+	// Encrypted records that the archive was written as an encrypted (age)
+	// envelope. It is informational only: encryption is detected structurally
+	// by sniffing the file, not from this field (which lives inside the
+	// ciphertext and so is only readable after decryption). Omitted for
+	// plaintext archives.
+	Encrypted bool `json:"encrypted,omitempty"`
 }
 
 // IndexEntry maps an API path to the ordered list of record sequence numbers.

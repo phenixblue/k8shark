@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"filippo.io/age"
 	"github.com/google/uuid"
 	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/config"
@@ -97,6 +98,10 @@ type Engine struct {
 	index      Index
 	watchIndex WatchIndex
 	sink       archive.RecordSink // set by Run(); exposed for tests
+	// recipients, when non-empty, makes Run() write the output archive as an
+	// age-encrypted envelope. Set via SetEncryption before Run(). Ignored when
+	// output is "-" (NDJSON streaming to stdout is never encrypted).
+	recipients []age.Recipient
 	// pollPasses, when non-zero, makes pollResource fetch exactly this many
 	// times back-to-back instead of waiting on a real time.Ticker paced by
 	// res.Interval and bounded by the capture context's timeout (e.cfg.Duration).
@@ -171,6 +176,14 @@ func NewEngine(cfg *config.Config, verbose bool) (*Engine, error) {
 	}, nil
 }
 
+// SetEncryption makes Run() write the output archive as an age-encrypted
+// envelope to the given recipients. It must be called before Run(). Passing
+// no recipients leaves the archive unencrypted. Has no effect when output is
+// "-" (NDJSON streaming to stdout is never encrypted).
+func (e *Engine) SetEncryption(recipients []age.Recipient) {
+	e.recipients = recipients
+}
+
 // newEngineWith constructs an Engine with a pre-built HTTP client and base URL.
 // Used in tests to inject a fake API server.
 func newEngineWith(cfg *config.Config, client *http.Client, baseURL string, verbose bool) *Engine {
@@ -226,6 +239,11 @@ func (e *Engine) Run() (*CaptureSummary, error) {
 	if e.sink == nil {
 		if e.cfg.Output == "-" {
 			e.sink = archive.NewNDJSONWriter(os.Stdout)
+		} else if len(e.recipients) > 0 {
+			e.sink, err = archive.NewEncryptedStreamWriter(e.cfg.Output, e.recipients)
+			if err != nil {
+				return nil, err
+			}
 		} else {
 			e.sink, err = archive.NewStreamWriter(e.cfg.Output)
 			if err != nil {
@@ -338,6 +356,7 @@ func (e *Engine) Run() (*CaptureSummary, error) {
 		WatchEnabled:      anyWatchEnabled(e.cfg.Resources),
 		Intervals:         distinctIntervals(e.cfg.Resources),
 		UncompressedBytes: e.sink.UncompressedBytes(),
+		Encrypted:         len(e.recipients) > 0,
 	}
 
 	if e.verbose {
