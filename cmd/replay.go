@@ -120,17 +120,18 @@ func runReplay(cmd *cobra.Command, args []string) error {
 			srv.Shutdown()
 			return err
 		}
-		defer kwokCleanup()
 	}
 
 	var controllerManagerCleanup func()
 	if withControllerManager {
 		controllerManagerCleanup, err = startControllerManager(srv.KubeconfigPath(), srv.KubernetesVersion())
 		if err != nil {
+			if kwokCleanup != nil {
+				kwokCleanup()
+			}
 			srv.Shutdown()
 			return err
 		}
-		defer controllerManagerCleanup()
 	}
 
 	clock := srv.Clock()
@@ -143,6 +144,12 @@ func runReplay(cmd *cobra.Command, args []string) error {
 	if uiEnabled {
 		uiSrv, err = ui.Open(ui.OpenOptions{MockServer: srv, ArchivePath: args[0], Port: uiPort, Verbose: verbose, Clock: clock})
 		if err != nil {
+			if controllerManagerCleanup != nil {
+				controllerManagerCleanup()
+			}
+			if kwokCleanup != nil {
+				kwokCleanup()
+			}
 			srv.Shutdown()
 			return fmt.Errorf("starting dashboard: %w", err)
 		}
@@ -193,13 +200,26 @@ func runReplay(cmd *cobra.Command, args []string) error {
 	// Live status line until shutdown.
 	stop := make(chan struct{})
 	go replayStatusLoop(srv, stop)
-	err = srv.Wait()
+	srv.WaitForSignal()
 	close(stop)
+
+	// Tear down in the same order as `kshrk ui` (cmd/ui.go): the UI first (it
+	// reads through the mock server's shared store), then the live processes
+	// driving it, then the mock server and its archive last — so nothing is
+	// still hitting a server or reading an archive that's already gone (#231).
 	if uiSrv != nil {
 		uiSrv.Shutdown()
 	}
+	if controllerManagerCleanup != nil {
+		controllerManagerCleanup()
+	}
+	if kwokCleanup != nil {
+		kwokCleanup()
+	}
+	srv.Shutdown()
+
 	fmt.Println()
-	return err
+	return nil
 }
 
 // replayStatusLoop repaints a single status line showing clock position, speed,

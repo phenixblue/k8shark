@@ -37,12 +37,35 @@ manual bumps. Pin any new CI tool the same way.
 `server.LoadStore` needs the archive to stay open for the store's lifetime.
 Therefore:
 
-- **Long-lived holders** (`internal/ui`, the `internal/server` mock API server)
-  MUST close the archive on `Shutdown`/`Wait` — otherwise the file descriptor
-  leaks for the life of the process (this leak was fixed in #91; the mock server
-  is the reference implementation, closing in both `Shutdown` and `Wait`).
+- **`internal/server`** (the mock API server) is the only long-lived holder
+  that owns an archive. It MUST close it on `Shutdown`/`Wait` — otherwise the
+  file descriptor leaks for the life of the process (this leak was fixed in
+  #91). `internal/ui` does **not** open its own archive: it reuses the mock
+  server's `CaptureStore` via `MockServer.Store()`, so its `Shutdown`/`Wait`
+  only stop its own HTTP server and must NOT close the archive (double-close).
+  `kshrk replay --ui` and `kshrk ui` therefore always start a mock server
+  first and tear the UI down *before* it (see cmd/ui.go, cmd/replay.go) — the
+  UI reads through the same store, so shutting the mock server down first
+  would leave the UI serving from an archive it doesn't own.
+- **`LoadStore` starts a background discovery-enrichment goroutine** that
+  keeps reading from the archive after `LoadStore` returns (the store is
+  documented as usable before it completes). Every holder of a `CaptureStore`
+  MUST call `store.Close()` (which waits for that goroutine) before closing
+  the underlying archive, or a fast command can close the zip out from under
+  it (#232). `defer store.Close()` immediately after a successful
+  `LoadStore`, ordered so it fires before `defer ar.Close()`.
+- **`internal/server`'s watch endpoints hold the archive open indefinitely**
+  (they block on the request context until the client disconnects or
+  `?timeoutSeconds` fires). Its `Server.Shutdown`/`Wait` cancel a shared
+  `BaseContext` before calling `httpServer.Shutdown` (so those handlers wake
+  up and return promptly) and then wait on a request-tracking `WaitGroup` as a
+  hard guarantee that none is still reading before the archive is closed
+  (#230). Don't reintroduce a bare `httpServer.Shutdown()` + immediate
+  `ar.Close()` without both of those.
 - **One-shot CLIs** (`inspect`, `redact`, `transitions`, `diff`) use
-  `defer ar.Close()` immediately after opening.
+  `defer ar.Close()` immediately after opening; the ones that go through
+  `server.LoadStore` (`query`, `diagnose`, `diff`) also need `defer
+  store.Close()` per above.
 
 ## Orientation
 

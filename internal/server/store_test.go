@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -200,6 +201,70 @@ func buildTestStore(t *testing.T, records map[string][]byte) *CaptureStore {
 		t.Fatalf("LoadStore: %v", err)
 	}
 	return store
+}
+
+// TestCaptureStore_Close_ImmediateWithLargeCapture is a regression test for
+// #232: LoadStore's background enrichResourceInfoFromDiscovery scan keeps
+// reading from the archive after LoadStore returns, so a caller that closes
+// the archive right away (as every real call site does) used to race it.
+// This builds a capture with enough discovery documents that the scan has
+// real work still in flight, then closes immediately with no explicit wait —
+// relying entirely on store.Close() to block until the scan finishes before
+// the archive underneath it goes away. Run with -race: without that wait,
+// the scan's archive reads would race the concurrent Close.
+func TestCaptureStore_Close_ImmediateWithLargeCapture(t *testing.T) {
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "large.kshrk")
+
+	sw, err := archive.NewStreamWriter(outPath)
+	if err != nil {
+		t.Fatalf("NewStreamWriter: %v", err)
+	}
+
+	const numGroups = 300
+	index := make(capture.Index)
+	for i := 0; i < numGroups; i++ {
+		path := fmt.Sprintf("/apis/group%d.example.com/v1", i)
+		body := fmt.Sprintf(`{"kind":"APIResourceList","apiVersion":"v1","groupVersion":"group%d.example.com/v1",`+
+			`"resources":[{"name":"widgets","singularName":"widget","namespaced":true,"kind":"Widget"}]}`, i)
+		now := time.Now().UTC()
+		rec := capture.Record{ID: fmt.Sprintf("rec-%d", i), CapturedAt: now, APIPath: path, HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(body)}
+		if err := sw.WriteRecord(&rec); err != nil {
+			t.Fatalf("WriteRecord: %v", err)
+		}
+		index[path] = &capture.IndexEntry{APIPath: path, Seqs: []int{0}, Times: []time.Time{now}}
+	}
+	meta := capture.CaptureMetadata{
+		CaptureID: "large-test", KubernetesVersion: "v1.29.0",
+		CapturedAt: time.Now().UTC().Add(-time.Minute), CapturedUntil: time.Now().UTC(), RecordCount: numGroups,
+	}
+	if err := sw.Finish(&meta, index, nil); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	ar, err := archive.Open(outPath)
+	if err != nil {
+		t.Fatalf("archive.Open: %v", err)
+	}
+	// Belt-and-suspenders for the LoadStore-fails-before-the-real-Close-below
+	// case; harmless (and its error ignored) on the happy path, where ar is
+	// already closed by then.
+	t.Cleanup(func() { _ = ar.Close() })
+	store, err := LoadStore(ar)
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+
+	// Immediate close, no explicit discoveryEnrichmentDone.Wait() — store.Close
+	// must provide that wait itself.
+	store.Close()
+	if err := ar.Close(); err != nil {
+		t.Fatalf("ar.Close() after store.Close(): %v", err)
+	}
+
+	if got := len(store.Resources()); got < numGroups {
+		t.Errorf("Resources() = %d entries, want >= %d (enrichment should have completed before store.Close returned)", got, numGroups)
+	}
 }
 
 // TestStore_NamespaceItemCountsAt verifies that NamespaceItemCountsAt reads

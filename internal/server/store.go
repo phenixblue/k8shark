@@ -25,10 +25,10 @@ type CaptureStore struct {
 
 	resourceInfoMu sync.RWMutex
 	resourceInfo   map[string]*ResourceInfo
-	// discoveryEnrichmentDone lets tests deterministically wait for
-	// enrichResourceInfoFromDiscovery's background pass (see LoadStore) instead
-	// of racing it. Production code intentionally does not wait — the store is
-	// documented as usable before this completes.
+	// discoveryEnrichmentDone tracks enrichResourceInfoFromDiscovery's
+	// background pass (see LoadStore). The store is usable before it
+	// completes, but it still reads records from the archive, so Close must
+	// wait for it before the caller closes the archive out from under it.
 	discoveryEnrichmentDone sync.WaitGroup
 
 	// Record LRU cache (bounded by recordCacheMaxBytes total body bytes).
@@ -89,7 +89,9 @@ type ResourceInfo struct {
 
 // LoadStore reads metadata and index from the archive and returns a ready
 // CaptureStore. The archive must remain open for the lifetime of the store;
-// call ar.Close() when done (the server's Shutdown does this).
+// call store.Close() before ar.Close() so the background enrichment pass
+// below can't still be reading from the archive when it's closed (the
+// server's teardown does this).
 func LoadStore(ar *archive.Archive) (*CaptureStore, error) {
 	var meta capture.CaptureMetadata
 	if err := ar.ReadMetadata(&meta); err != nil {
@@ -195,6 +197,14 @@ func (s *CaptureStore) mergeResourceInfo(group, version, resource string, namesp
 	if len(shortNames) > 0 {
 		ri.ShortNames = shortNames
 	}
+}
+
+// Close blocks until the background discovery-enrichment pass started by
+// LoadStore has finished reading from the archive. Callers must call this
+// before closing the archive the store was loaded from — otherwise a fast
+// command can close the zip while enrichment is still mid-scan.
+func (s *CaptureStore) Close() {
+	s.discoveryEnrichmentDone.Wait()
 }
 
 // enrichResourceInfoFromDiscovery reads captured APIResourceList bodies from
