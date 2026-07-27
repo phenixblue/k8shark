@@ -131,10 +131,18 @@ func TestRunDiff_EncryptedBeforeOnly(t *testing.T) {
 	}
 
 	cmd := newTestDiffCommand()
-	_ = cmd.Flags().Set("before", before)
-	_ = cmd.Flags().Set("after", after)
-	_ = cmd.Flags().Set("output", "json")
-	_ = cmd.Flags().Set("decrypt-passphrase-file", passFile)
+	if err := cmd.Flags().Set("before", before); err != nil {
+		t.Fatalf("set before flag: %v", err)
+	}
+	if err := cmd.Flags().Set("after", after); err != nil {
+		t.Fatalf("set after flag: %v", err)
+	}
+	if err := cmd.Flags().Set("output", "json"); err != nil {
+		t.Fatalf("set output flag: %v", err)
+	}
+	if err := cmd.Flags().Set("decrypt-passphrase-file", passFile); err != nil {
+		t.Fatalf("set decrypt-passphrase-file flag: %v", err)
+	}
 	buf := &bytes.Buffer{}
 	cmd.SetOut(buf)
 

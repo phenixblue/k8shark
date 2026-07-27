@@ -2,10 +2,12 @@ package server
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -60,6 +62,21 @@ func buildEncryptedTestArchive(t *testing.T) string {
 	return outPath
 }
 
+// pinnedClient builds an http.Client that verifies srv's self-signed
+// certificate via its RootCAs pool, rather than skipping TLS verification.
+func pinnedClient(t *testing.T, srv *Server) *http.Client {
+	t.Helper()
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(srv.CertPEM()) {
+		t.Fatal("failed to parse server cert PEM into a pool")
+	}
+	return &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{RootCAs: pool},
+		},
+	}
+}
+
 // TestServer_Open_EncryptedArchive mirrors TestServer_Open_EndToEnd but against
 // an encrypted archive: this is the long-lived-holder path (open/ui hold the
 // archive for the whole server lifetime), so it's worth a full HTTP round trip
@@ -82,11 +99,7 @@ func TestServer_Open_EncryptedArchive(t *testing.T) {
 	}
 	defer srv.Shutdown()
 
-	client := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // #nosec G402 — test only
-		},
-	}
+	client := pinnedClient(t, srv)
 
 	url := fmt.Sprintf("%s/api/v1/namespaces/default/pods", srv.Address())
 	resp, err := client.Get(url)
@@ -105,8 +118,14 @@ func TestServer_Open_EncryptedArchive(t *testing.T) {
 	if !ok || len(items) == 0 {
 		t.Fatal("expected at least one pod in items")
 	}
-	item := items[0].(map[string]any)
-	meta := item["metadata"].(map[string]any)
+	item, ok := items[0].(map[string]any)
+	if !ok {
+		t.Fatalf("items[0] is not an object: %#v", items[0])
+	}
+	meta, ok := item["metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("metadata is not an object: %#v", item["metadata"])
+	}
 	if meta["name"] != "nginx" {
 		t.Errorf("expected pod name=nginx, got %v", meta["name"])
 	}
@@ -121,6 +140,9 @@ func TestServer_Open_EncryptedArchiveNoIdentities(t *testing.T) {
 	_, err := Open(OpenOptions{ArchivePath: archivePath})
 	if err == nil {
 		t.Fatal("server.Open on encrypted archive with no identities succeeded, want error")
+	}
+	if !strings.Contains(err.Error(), "is encrypted") {
+		t.Errorf("error = %q, want it to mention the archive is encrypted", err)
 	}
 }
 
@@ -143,11 +165,7 @@ func TestServer_Replay_EncryptedArchive(t *testing.T) {
 	}
 	defer srv.Shutdown()
 
-	client := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // #nosec G402 — test only
-		},
-	}
+	client := pinnedClient(t, srv)
 	resp, err := client.Get(srv.Address() + "/api/v1/namespaces/default/pods")
 	if err != nil {
 		t.Fatalf("GET pods: %v", err)
