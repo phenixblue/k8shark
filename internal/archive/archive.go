@@ -110,7 +110,7 @@ func NewStreamWriter(outputPath string) (*StreamWriter, error) {
 // types.
 func NewEncryptedStreamWriter(outputPath string, recipients []age.Recipient) (*StreamWriter, error) {
 	if len(recipients) == 0 {
-		return nil, fmt.Errorf("NewEncryptedStreamWriter: at least one recipient is required")
+		return nil, fmt.Errorf("archive encryption requires at least one recipient")
 	}
 	return newStreamWriter(outputPath, recipients)
 }
@@ -125,7 +125,11 @@ func newStreamWriter(outputPath string, recipients []age.Recipient) (*StreamWrit
 	if len(recipients) > 0 {
 		ageW, err := age.Encrypt(f, recipients...)
 		if err != nil {
+			// age.Encrypt failed before any archive bytes were written, so
+			// remove the just-created empty file rather than leaving a bogus
+			// zero-length archive behind for callers to trip over.
 			f.Close()
+			_ = os.Remove(outputPath)
 			return nil, fmt.Errorf("setting up archive encryption: %w", err)
 		}
 		sw.ageW = ageW
