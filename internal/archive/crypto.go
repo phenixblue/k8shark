@@ -159,7 +159,9 @@ func createLike(dstPath string, src *os.File) (dst *os.File, mode os.FileMode, c
 // encrypts while writing a brand-new archive), this is a whole-file transform
 // for encrypting an archive that already exists on disk — used by
 // `kshrk encrypt`. It refuses to run if srcPath is already an age-encrypted
-// file, and removes a partially-written dstPath on any failure.
+// file. Writing happens via createLike's temp-file-then-rename, so dstPath is
+// never partially written: on any failure the discarded temp file is removed
+// and dstPath (whether or not it already existed) is left untouched.
 func EncryptFile(srcPath, dstPath string, recipients []age.Recipient) (err error) {
 	encrypted, err := IsEncrypted(srcPath)
 	if err != nil {
@@ -213,8 +215,10 @@ func EncryptFile(srcPath, dstPath string, recipients []age.Recipient) (err error
 // DecryptFile writes a plaintext copy of the age-encrypted file at srcPath to
 // dstPath, decrypting with identities. It is the inverse whole-file transform
 // of EncryptFile, used by `kshrk decrypt`. It refuses to run if srcPath is not
-// an age-encrypted file, and removes a partially-written dstPath on any
-// failure.
+// an age-encrypted file. Writing happens via createLike's
+// temp-file-then-rename, so dstPath is never partially written: on any
+// failure the discarded temp file is removed and dstPath (whether or not it
+// already existed) is left untouched.
 func DecryptFile(srcPath, dstPath string, identities []age.Identity) (err error) {
 	encrypted, err := IsEncrypted(srcPath)
 	if err != nil {
