@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bufio"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
@@ -215,6 +216,93 @@ func TestServer_Open_ClosesArchiveOnShutdown(t *testing.T) {
 	}
 
 	srv.Shutdown()
+
+	if err := srv.ar.Close(); err == nil {
+		t.Error("archive still open after Shutdown; expected it to be closed (file-handle leak)")
+	}
+}
+
+// TestServer_Shutdown_WithActiveWatch_ReturnsPromptlyAndClosesCleanly is a
+// regression test for #230: with no BaseContext, Shutdown had no way to wake
+// up a watch handler blocked on <-r.Context().Done() (it only fires on client
+// disconnect or ?timeoutSeconds), so Shutdown stalled for its full 5s grace
+// period and then closed the archive while that handler could still be
+// reading it. The fix cancels a shared BaseContext before calling
+// httpServer.Shutdown, and Shutdown additionally waits on a request-tracking
+// WaitGroup as a hard guarantee that ServeHTTP has returned — for every
+// request, not just watches — before the archive is closed.
+//
+// This asserts Shutdown returns quickly (proving the watch woke up promptly
+// rather than Shutdown timing out) and that the watch's response stream has
+// already terminated by the time Shutdown returns (proving no handler can
+// still be running, let alone reading the archive, once Shutdown hands back
+// control to the caller).
+func TestServer_Shutdown_WithActiveWatch_ReturnsPromptlyAndClosesCleanly(t *testing.T) {
+	archivePath := buildTestArchive(t)
+	srv, err := Open(OpenOptions{ArchivePath: archivePath, KubeconfigOut: filepath.Join(t.TempDir(), "kubeconfig.yaml")})
+	if err != nil {
+		t.Fatalf("server.Open: %v", err)
+	}
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // #nosec G402 — test only
+		},
+	}
+	req, err := http.NewRequest(http.MethodGet, srv.Address()+"/api/v1/namespaces/default/pods?watch=1", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("starting watch: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Read the initial ADDED/BOOKMARK burst so the watch is confirmed
+	// established (and the handler is now blocked in the long-held select)
+	// before shutdown races it.
+	scanner := bufio.NewScanner(resp.Body)
+	sawBookmark := false
+	for scanner.Scan() {
+		var frame struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(scanner.Bytes(), &frame) == nil && frame.Type == "BOOKMARK" {
+			sawBookmark = true
+			break
+		}
+	}
+	if !sawBookmark {
+		t.Fatalf("watch never reached BOOKMARK; scanner err: %v", scanner.Err())
+	}
+
+	// Drain the rest of the stream in the background; it must reach EOF once
+	// Shutdown cancels the watch's context.
+	streamDone := make(chan struct{})
+	go func() {
+		defer close(streamDone)
+		for scanner.Scan() {
+		}
+	}()
+
+	start := time.Now()
+	srv.Shutdown()
+	elapsed := time.Since(start)
+
+	// Shutdown's own 5s grace period would make a stalled-watch regression
+	// pass this check too slowly to be useful as a signal by itself, so this
+	// is a generous ceiling — the real assertion is streamDone below, which
+	// can only close if the handler actually returned.
+	if elapsed > 4*time.Second {
+		t.Errorf("Shutdown took %s; expected it to return promptly once the watch's context is canceled, not stall for its grace period", elapsed)
+	}
+
+	select {
+	case <-streamDone:
+	default:
+		t.Error("watch stream still open immediately after Shutdown returned; a handler could still be reading the archive Shutdown is about to close")
+	}
 
 	if err := srv.ar.Close(); err == nil {
 		t.Error("archive still open after Shutdown; expected it to be closed (file-handle leak)")

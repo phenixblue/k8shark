@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -59,17 +60,36 @@ type ReplayOptions struct {
 
 // Server represents a running mock API server.
 type Server struct {
-	address           string
-	kubeconfigPath    string
-	certPEM           []byte // this run's self-signed TLS cert, for callers that need to pin it
-	ar                *archive.Archive
-	handler           *handler // shared with other in-process readers, e.g. the web UI (see overlay_export.go)
-	httpServer        *http.Server
-	done              chan struct{}
+	address        string
+	kubeconfigPath string
+	certPEM        []byte // this run's self-signed TLS cert, for callers that need to pin it
+	ar             *archive.Archive
+	handler        *handler // shared with other in-process readers, e.g. the web UI (see overlay_export.go)
+	httpServer     *http.Server
+	done           chan struct{}
+	closeOnce      sync.Once
+	// cancelBase cancels the context every request's r.Context() derives from
+	// (see BaseContext below). It must run before httpServer.Shutdown so a
+	// long-held watch stream — which only unblocks on r.Context().Done() or
+	// ?timeoutSeconds — returns promptly instead of stalling Shutdown for its
+	// full deadline while still holding a reference into the archive.
+	cancelBase        context.CancelFunc
 	clock             *ReplayClock // non-nil in replay mode
 	writable          bool         // overlay enabled
 	hasWatch          bool         // capture contains watch events
 	kubernetesVersion string       // capture's /version gitVersion, e.g. "v1.36.1"
+}
+
+// closeStoreAndArchive waits for store's background enrichment pass to finish
+// (store may be nil when LoadStore itself failed) before closing ar. Every
+// early-return error path below runs after LoadStore has succeeded and its
+// background goroutine is already reading from ar, so skipping the wait would
+// race a close against that read (#232).
+func closeStoreAndArchive(store *CaptureStore, ar *archive.Archive) {
+	if store != nil {
+		store.Close()
+	}
+	_ = ar.Close()
 }
 
 // Open opens a capture archive, starts the mock HTTPS server, and writes
@@ -81,12 +101,12 @@ func Open(opts OpenOptions) (*Server, error) {
 	}
 	store, err := LoadStore(ar)
 	if err != nil {
-		_ = ar.Close()
+		closeStoreAndArchive(nil, ar)
 		return nil, fmt.Errorf("loading capture: %w", err)
 	}
 	at, err := parseReplayAt(store.Metadata, opts.At)
 	if err != nil {
-		_ = ar.Close()
+		closeStoreAndArchive(store, ar)
 		return nil, err
 	}
 	return serve(ar, store, at, nil, false, false, opts.Port, opts.KubeconfigOut, opts.Verbose)
@@ -102,17 +122,17 @@ func Replay(opts ReplayOptions) (*Server, error) {
 	}
 	store, err := LoadStore(ar)
 	if err != nil {
-		_ = ar.Close()
+		closeStoreAndArchive(nil, ar)
 		return nil, fmt.Errorf("loading capture: %w", err)
 	}
 	speed, err := parseSpeed(opts.Speed)
 	if err != nil {
-		_ = ar.Close()
+		closeStoreAndArchive(store, ar)
 		return nil, err
 	}
 	from, to, err := parseReplayWindow(store.Metadata, opts.From, opts.To)
 	if err != nil {
-		_ = ar.Close()
+		closeStoreAndArchive(store, ar)
 		return nil, err
 	}
 	clock := NewReplayClock(from, to, speed, opts.Loop, opts.StartPaused)
@@ -128,12 +148,12 @@ func Replay(opts ReplayOptions) (*Server, error) {
 func serve(ar *archive.Archive, store *CaptureStore, at time.Time, clock *ReplayClock, writable, schedulePods bool, port, kubeconfigOut string, verbose bool) (*Server, error) {
 	certPEM, keyPEM, err := generateSelfSignedCert()
 	if err != nil {
-		_ = ar.Close()
+		closeStoreAndArchive(store, ar)
 		return nil, fmt.Errorf("generating TLS cert: %w", err)
 	}
 	tlsCert, err := tls.X509KeyPair(certPEM, keyPEM)
 	if err != nil {
-		_ = ar.Close()
+		closeStoreAndArchive(store, ar)
 		return nil, fmt.Errorf("loading TLS cert: %w", err)
 	}
 
@@ -142,7 +162,7 @@ func serve(ar *archive.Archive, store *CaptureStore, at time.Time, clock *Replay
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:"+port)
 	if err != nil {
-		_ = ar.Close()
+		closeStoreAndArchive(store, ar)
 		return nil, fmt.Errorf("listening: %w", err)
 	}
 
@@ -154,7 +174,7 @@ func serve(ar *archive.Archive, store *CaptureStore, at time.Time, clock *Replay
 		kubeconfigPath = filepath.Join(home, ".kube", "k8shark-"+store.Metadata.CaptureID+".yaml")
 	}
 	if err := writeKubeconfig(addr, kubeconfigPath); err != nil {
-		_ = ar.Close()
+		closeStoreAndArchive(store, ar)
 		_ = ln.Close()
 		return nil, fmt.Errorf("writing kubeconfig: %w", err)
 	}
@@ -175,7 +195,15 @@ func serve(ar *archive.Archive, store *CaptureStore, at time.Time, clock *Replay
 			h.ensureSchedulableNode()
 		}
 	}
-	httpSrv := &http.Server{Handler: h}
+	// BaseContext gives every request a context tied to baseCtx rather than the
+	// connection's own (which Shutdown alone doesn't cancel — see cancelBase's
+	// doc comment). Canceling it before Shutdown is what makes a long-held
+	// watch stream's `<-r.Context().Done()` fire promptly on shutdown.
+	baseCtx, cancelBase := context.WithCancel(context.Background())
+	httpSrv := &http.Server{
+		Handler:     h,
+		BaseContext: func(net.Listener) context.Context { return baseCtx },
+	}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -190,6 +218,7 @@ func serve(ar *archive.Archive, store *CaptureStore, at time.Time, clock *Replay
 		handler:           h,
 		httpServer:        httpSrv,
 		done:              done,
+		cancelBase:        cancelBase,
 		clock:             clock,
 		writable:          h.overlay != nil,
 		hasWatch:          len(store.WatchIndex) > 0,
@@ -233,31 +262,63 @@ func (s *Server) HasWatchEvents() bool { return s.hasWatch }
 // Shutdown immediately stops the server and closes the archive.
 // Useful in tests and programmatic usage; Wait() is preferred for CLI use.
 func (s *Server) Shutdown() {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_ = s.httpServer.Shutdown(ctx)
-	<-s.done
-	if s.ar != nil {
-		_ = s.ar.Close()
-	}
+	s.teardown()
 }
 
-// Wait blocks until Ctrl+C / SIGTERM, then shuts the server down and closes the archive.
-func (s *Server) Wait() error {
+// WaitForSignal blocks until Ctrl+C / SIGTERM (or the server stops on its
+// own) but does NOT shut the server down or close the archive — it returns
+// control to the caller, who may own other resources (a companion UI server,
+// kwok, kube-controller-manager) that must be torn down in a specific order
+// relative to this one. Call Shutdown afterward. Callers that don't own any
+// such resources can use Wait instead.
+func (s *Server) WaitForSignal() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	select {
 	case <-s.done:
 	case <-sigCh:
+	}
+}
+
+// Wait blocks until Ctrl+C / SIGTERM (or the server stops on its own), then
+// tears it down and closes the archive. Prefer WaitForSignal + Shutdown when
+// the caller has other resources that must be torn down in a specific order
+// relative to this server (see cmd/ui.go, cmd/replay.go).
+func (s *Server) Wait() error {
+	s.WaitForSignal()
+	s.teardown()
+	return nil
+}
+
+// teardown cancels the shared request context (so any in-flight watch
+// stream's `<-r.Context().Done()` fires), gracefully stops the HTTP server,
+// waits for Serve to return, waits for every in-flight handler to actually
+// return from ServeHTTP (a hard guarantee that none is still reading from the
+// archive — Shutdown returning doesn't by itself prove this; see cancelBase's
+// doc comment), and only then closes the archive. closeOnce makes this safe
+// to call from both Shutdown and Wait without double-closing the archive.
+func (s *Server) teardown() {
+	s.closeOnce.Do(func() {
+		if s.cancelBase != nil {
+			s.cancelBase()
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = s.httpServer.Shutdown(ctx)
 		<-s.done
-	}
-	if s.ar != nil {
-		_ = s.ar.Close()
-	}
-	return nil
+		if s.handler != nil {
+			s.handler.waitForRequests()
+			if s.handler.store != nil {
+				// Also waits for the background discovery-enrichment pass,
+				// which reads from the archive independently of any HTTP
+				// request (see #232) — waitForRequests above doesn't cover it.
+				s.handler.store.Close()
+			}
+		}
+		if s.ar != nil {
+			_ = s.ar.Close()
+		}
+	})
 }
 
 func parseReplayAt(meta capture.CaptureMetadata, raw string) (time.Time, error) {

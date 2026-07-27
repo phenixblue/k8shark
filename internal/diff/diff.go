@@ -131,6 +131,7 @@ func RenderText(result *Result, color bool) (string, error) {
 
 type archiveSnapshot struct {
 	ar       *archivepkg.Archive
+	store    *server.CaptureStore
 	meta     capture.CaptureMetadata
 	snapshot map[string]json.RawMessage
 }
@@ -138,6 +139,12 @@ type archiveSnapshot struct {
 func (s *archiveSnapshot) cleanup() {
 	if s == nil || s.ar == nil {
 		return
+	}
+	// store.Close waits for LoadStore's background enrichment pass, which
+	// reads from the archive independently of the snapshot loop below — it
+	// must finish before ar.Close() runs (#232).
+	if s.store != nil {
+		s.store.Close()
 	}
 	_ = s.ar.Close()
 }
@@ -209,6 +216,7 @@ func loadArchiveSnapshot(archivePath string, at time.Time, identities []age.Iden
 	}
 	shot := &archiveSnapshot{
 		ar:       ar,
+		store:    store,
 		meta:     store.Metadata,
 		snapshot: make(map[string]json.RawMessage, len(store.Index)),
 	}

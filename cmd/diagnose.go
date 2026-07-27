@@ -69,6 +69,7 @@ func runDiagnose(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("loading capture: %w", err)
 	}
+	defer store.Close()
 
 	at, err := parseAtFlag(atRaw, store.Metadata.CapturedAt, store.Metadata.CapturedUntil)
 	if err != nil {

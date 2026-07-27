@@ -46,6 +46,17 @@ type handler struct {
 	// otherwise defeat that cache). Negative results are cached too. Trade-off: a
 	// CRD created/changed mid-replay isn't reflected — acceptable for a mock.
 	crdColsCache sync.Map // map["group/version/resource"] -> []tableCol (may be nil)
+
+	// wg tracks in-flight ServeHTTP calls. Server.teardown waits on it after
+	// httpServer.Shutdown returns, as a hard guarantee that no handler —
+	// including a long-held watch stream — is still reading from the store
+	// when the archive is closed (see #230).
+	wg sync.WaitGroup
+}
+
+// waitForRequests blocks until every in-flight ServeHTTP call has returned.
+func (h *handler) waitForRequests() {
+	h.wg.Wait()
 }
 
 func newHandler(store *CaptureStore, at time.Time, verbose bool) *handler {
@@ -86,6 +97,9 @@ func (h *handler) timelineFor(watchPath string) []replayEvent {
 }
 
 func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.wg.Add(1)
+	defer h.wg.Done()
+
 	// In replay mode the effective time is the clock's current position;
 	// otherwise it's the server's fixed --at.
 	replayAt := h.at
