@@ -1836,6 +1836,13 @@ func (e *Engine) storeRecord(indexKey string, body []byte, statusCode int, dedup
 		if e.captureErr == nil {
 			e.captureErr = fmt.Errorf("writing record %s: %w", indexKey, err)
 		}
+		if dedupEnabled {
+			// The write never landed, so nothing was actually deduplicated
+			// against — clear the hash so a later poll of the same
+			// (unwritten) body isn't wrongly skipped as "unchanged" and a
+			// transient write error can be retried on the next interval.
+			delete(e.lastHash, indexKey)
+		}
 		e.mu.Unlock()
 		return
 	}
@@ -2112,13 +2119,12 @@ func (e *Engine) fetchOnePodLog(ctx context.Context, namespace, podName, contain
 		ResponseCode: http.StatusOK,
 		ResponseBody: json.RawMessage(jsonBody),
 	}
-	var seq int
-	if e.sink != nil {
-		var err error
-		seq, err = e.sink.WriteRecord(rec)
-		if err != nil {
-			return failure(fmt.Sprintf("writing record: %v", err))
-		}
+	if e.sink == nil {
+		return failure("no output sink configured")
+	}
+	seq, err := e.sink.WriteRecord(rec)
+	if err != nil {
+		return failure(fmt.Sprintf("writing record: %v", err))
 	}
 
 	e.mu.Lock()

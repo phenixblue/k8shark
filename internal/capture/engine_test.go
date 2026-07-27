@@ -1824,6 +1824,35 @@ func TestStoreRecord_WriteFailure_NoIndexEntryAndSticky(t *testing.T) {
 	}
 }
 
+// TestStoreRecord_WriteFailure_ClearsDedupHash verifies that a failed write
+// under --dedup doesn't poison the dedup hash for that path: storeRecord sets
+// lastHash before attempting the write, and if the write then fails, a
+// following poll of the exact same (never-written) body must not be silently
+// dedup-skipped — it needs to actually retry the write, not stay stuck behind
+// a hash for a record that was never persisted.
+func TestStoreRecord_WriteFailure_ClearsDedupHash(t *testing.T) {
+	eng := newEngineWith(&config.Config{}, nil, "", false)
+	failing := &failingSink{err: fmt.Errorf("boom")}
+	eng.sink = failing
+
+	const apiPath = "/api/v1/namespaces/default/pods"
+	body := []byte(`{"kind":"PodList","items":[]}`)
+
+	eng.storeRecord(apiPath, body, 200, true)
+	if _, ok := eng.lastHash[apiPath]; ok {
+		t.Fatal("lastHash still set for a path whose write failed; a retry of the same body would be wrongly dedup-skipped")
+	}
+
+	// Swap in a working sink and retry the identical body: it must be written
+	// (not skipped as "unchanged"), because nothing was ever actually stored.
+	ss := &sliceSink{}
+	eng.sink = ss
+	eng.storeRecord(apiPath, body, 200, true)
+	if got := ss.RecordCount(); got != 1 {
+		t.Fatalf("RecordCount() = %d, want 1 (retry of a never-written body must not be dedup-skipped)", got)
+	}
+}
+
 // TestConcurrentPollAndWatch_NoIndexSeqCollision reproduces the #210 race: a
 // polled resource and a watched one demux to the same api_path, so
 // storeRecord (the poll path) and the watch event loop's inline write both
