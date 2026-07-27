@@ -83,7 +83,7 @@ func EncryptFile(srcPath, dstPath string, recipients []age.Recipient) (err error
 		return fmt.Errorf("%q is already encrypted", srcPath)
 	}
 	if len(recipients) == 0 {
-		return fmt.Errorf("EncryptFile: at least one recipient is required")
+		return fmt.Errorf("archive encryption requires at least one recipient")
 	}
 
 	src, err := os.Open(srcPath)
@@ -137,7 +137,7 @@ func DecryptFile(srcPath, dstPath string, identities []age.Identity) (err error)
 		return fmt.Errorf("%q is not encrypted", srcPath)
 	}
 	if len(identities) == 0 {
-		return fmt.Errorf("DecryptFile: at least one identity is required")
+		return fmt.Errorf("archive decryption requires at least one identity")
 	}
 
 	src, err := os.Open(srcPath)

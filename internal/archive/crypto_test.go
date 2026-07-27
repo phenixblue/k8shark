@@ -421,7 +421,7 @@ func TestEncryptFile_RejectsAlreadyEncrypted(t *testing.T) {
 
 // TestDecryptFile_RejectsNotEncrypted guards against silently passing a
 // plaintext archive through unchanged (or failing with a confusing
-// "at least one identity is required" error) when given to DecryptFile.
+// "requires at least one identity" error) when given to DecryptFile.
 func TestDecryptFile_RejectsNotEncrypted(t *testing.T) {
 	dir := t.TempDir()
 	plainPath := filepath.Join(dir, "plain.kshrk")
