@@ -322,7 +322,6 @@ func (w *NDJSONWriter) WriteRecord(rec any) (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("marshalling record: %w", err)
 	}
-	w.bytes += int64(len(b))
 
 	var hdr struct {
 		APIPath string `json:"api_path"`
@@ -335,6 +334,10 @@ func (w *NDJSONWriter) WriteRecord(rec any) (int, error) {
 	if err := w.enc.Encode(rec); err != nil {
 		return 0, err
 	}
+	// Only advance state once Encode has actually succeeded — mirrors seq's
+	// own only-meaningful-on-success rule, so a broken pipe mid-stream can't
+	// over-report bytes for a record that was never written.
+	w.bytes += int64(len(b))
 	if hdr.APIPath != "" {
 		w.pathSeq[hdr.APIPath] = seq + 1
 	}
