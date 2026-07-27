@@ -246,6 +246,10 @@ func TestCaptureStore_Close_ImmediateWithLargeCapture(t *testing.T) {
 	if err != nil {
 		t.Fatalf("archive.Open: %v", err)
 	}
+	// Belt-and-suspenders for the LoadStore-fails-before-the-real-Close-below
+	// case; harmless (and its error ignored) on the happy path, where ar is
+	// already closed by then.
+	t.Cleanup(func() { _ = ar.Close() })
 	store, err := LoadStore(ar)
 	if err != nil {
 		t.Fatalf("LoadStore: %v", err)

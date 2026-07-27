@@ -80,11 +80,12 @@ type Server struct {
 	kubernetesVersion string       // capture's /version gitVersion, e.g. "v1.36.1"
 }
 
-// closeStoreAndArchive waits for store's background enrichment pass to finish
-// (store may be nil when LoadStore itself failed) before closing ar. Every
-// early-return error path below runs after LoadStore has succeeded and its
-// background goroutine is already reading from ar, so skipping the wait would
-// race a close against that read (#232).
+// closeStoreAndArchive closes ar, waiting first for store's background
+// enrichment pass to finish if store is non-nil. Pass nil only when LoadStore
+// itself failed (there is no store yet to wait on); every other early-return
+// path below runs after LoadStore has succeeded, meaning its background
+// goroutine is already reading from ar — closing ar without this wait would
+// race that read (#232).
 func closeStoreAndArchive(store *CaptureStore, ar *archive.Archive) {
 	if store != nil {
 		store.Close()

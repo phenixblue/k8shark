@@ -243,6 +243,9 @@ func TestServer_Shutdown_WithActiveWatch_ReturnsPromptlyAndClosesCleanly(t *test
 	if err != nil {
 		t.Fatalf("server.Open: %v", err)
 	}
+	// teardown's closeOnce makes this safe alongside the explicit Shutdown
+	// call below; it only does anything if the test fails/returns early.
+	defer srv.Shutdown()
 
 	client := &http.Client{
 		Transport: &http.Transport{
