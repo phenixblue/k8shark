@@ -225,15 +225,22 @@ func (w *StreamWriter) Finish(meta, index, watchIndex any) error {
 			return err
 		}
 	}
-	if err := w.zw.Close(); err != nil {
-		return fmt.Errorf("closing zip: %w", err)
+	// Close the layers from outermost to innermost, but always attempt every
+	// close so a failure partway through can't leak the file descriptor: zw
+	// wraps ageW (when encrypting) which wraps f. Return the first error.
+	var firstErr error
+	if err := w.zw.Close(); err != nil && firstErr == nil {
+		firstErr = fmt.Errorf("closing zip: %w", err)
 	}
 	if w.ageW != nil {
-		if err := w.ageW.Close(); err != nil {
-			return fmt.Errorf("closing archive encryption stream: %w", err)
+		if err := w.ageW.Close(); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("closing archive encryption stream: %w", err)
 		}
 	}
-	return w.f.Close()
+	if err := w.f.Close(); err != nil && firstErr == nil {
+		firstErr = fmt.Errorf("closing output file: %w", err)
+	}
+	return firstErr
 }
 
 // RecordCount returns the number of records written so far.

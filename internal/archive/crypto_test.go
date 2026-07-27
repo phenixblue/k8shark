@@ -3,6 +3,7 @@ package archive
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -48,9 +49,14 @@ func TestEncryptedArchiveRoundTrip_Passphrase(t *testing.T) {
 	}
 	sampleEncryptedArchive(t, path, recipients)
 
-	// A plain Open must fail clearly rather than misreading ciphertext as a zip.
-	if _, err := Open(path); err == nil {
+	// A plain Open must fail with a clear "encrypted" message rather than
+	// misreading the ciphertext as a corrupt zip.
+	_, err = Open(path)
+	if err == nil {
 		t.Fatal("Open on encrypted archive succeeded without a key, want error")
+	}
+	if !strings.Contains(err.Error(), "is encrypted") {
+		t.Errorf("Open error = %q, want it to mention the archive is encrypted", err)
 	}
 
 	identities, err := IdentitiesFromPassphrase(testPassphrase)
@@ -118,8 +124,10 @@ func TestEncryptedArchiveWrongPassphrase(t *testing.T) {
 	if err == nil {
 		t.Fatal("OpenWithIdentities with wrong passphrase succeeded, want error")
 	}
-	if got := err.Error(); got == "" {
-		t.Error("expected a non-empty, clean error message")
+	// Assert the stable user-facing message so a regression back to a raw age
+	// error (e.g. "no identity matched any of the recipients") is caught.
+	if !strings.Contains(err.Error(), "incorrect passphrase or key") {
+		t.Errorf("wrong-passphrase error = %q, want a clean 'incorrect passphrase or key' message", err)
 	}
 }
 
@@ -131,8 +139,12 @@ func TestEncryptedArchiveNoIdentities(t *testing.T) {
 	}
 	sampleEncryptedArchive(t, path, recipients)
 
-	if _, err := OpenWithIdentities(path, nil); err == nil {
+	_, err = OpenWithIdentities(path, nil)
+	if err == nil {
 		t.Fatal("OpenWithIdentities with no identities succeeded, want error")
+	}
+	if !strings.Contains(err.Error(), "is encrypted") {
+		t.Errorf("no-identities error = %q, want it to mention the archive is encrypted", err)
 	}
 }
 
