@@ -747,8 +747,9 @@ See [config.md](config.md#redaction) for the full `redaction:` config block refe
 Captures can contain Secret values and other sensitive cluster data.
 `kshrk capture` (and `kshrk redact`) can write the archive as a single
 encrypted [age](https://age-encryption.org/v1) envelope, and every command
-that reads a `.kshrk` archive — `inspect`, `open`, `ui`, `diff`, `query`,
-`transitions`, `diagnose`, `redact` — decrypts it transparently given a key.
+that reads a `.kshrk` archive — `inspect`, `open`, `ui`, `replay`, `diff`,
+`query`, `transitions`, `diagnose`, `redact` — decrypts it transparently
+given a key.
 See [encryption-threat-model.md](encryption-threat-model.md) for what this
 does and doesn't protect against, and
 [archive-format.md#encryption](archive-format.md#encryption) for how the
