@@ -63,7 +63,11 @@ func runQuery(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--text and --regex are mutually exclusive")
 	}
 
-	ar, err := archive.Open(args[0])
+	identities, err := resolveDecryptIdentities(cmd, args[0])
+	if err != nil {
+		return err
+	}
+	ar, err := archive.OpenWithIdentities(args[0], identities)
 	if err != nil {
 		return fmt.Errorf("opening archive: %w", err)
 	}

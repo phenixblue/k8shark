@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"filippo.io/age"
 	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/capture"
 )
@@ -37,8 +38,10 @@ type ResourceSummary struct {
 }
 
 // Run opens archivePath and returns a Report without extracting to disk.
-func Run(archivePath string) (*Report, error) {
-	ar, err := archive.Open(archivePath)
+// identities decrypts an encrypted archive; it is ignored for plaintext
+// archives, so callers may pass nil.
+func Run(archivePath string, identities []age.Identity) (*Report, error) {
+	ar, err := archive.OpenWithIdentities(archivePath, identities)
 	if err != nil {
 		return nil, fmt.Errorf("opening archive: %w", err)
 	}

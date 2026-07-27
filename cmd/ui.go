@@ -104,17 +104,22 @@ func runUI(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("--at cannot be combined with replay flags (--speed/--from/--to/--loop/--start-paused/--writable/--with-kwok/--with-controller-manager); use --from/--to to set the replay window")
 	}
 
+	identities, err := resolveDecryptIdentities(cmd, archivePath)
+	if err != nil {
+		return err
+	}
+
 	var mockSrv *server.Server
-	var err error
 	if replayMode {
 		mockSrv, err = server.Replay(server.ReplayOptions{
 			ArchivePath: archivePath, Port: apiPort, KubeconfigOut: kubeconfigOut,
 			Speed: speed, From: from, To: to, Loop: loop, StartPaused: startPaused, PauseAtWindowEnd: true,
-			Writable: writable, Verbose: verbose,
+			Writable: writable, Verbose: verbose, Identities: identities,
 		})
 	} else {
 		mockSrv, err = server.Open(server.OpenOptions{
 			ArchivePath: archivePath, Port: apiPort, KubeconfigOut: kubeconfigOut, At: at, Verbose: verbose,
+			Identities: identities,
 		})
 	}
 	if err != nil {

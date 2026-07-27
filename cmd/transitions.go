@@ -81,7 +81,11 @@ func runTransitions(cmd *cobra.Command, args []string) error {
 		opts.Until = t
 	}
 
-	ts, err := transitions.LoadTransitions(args[0], opts)
+	identities, err := resolveDecryptIdentities(cmd, args[0])
+	if err != nil {
+		return err
+	}
+	ts, err := transitions.LoadTransitions(args[0], opts, identities)
 	if err != nil {
 		return err
 	}

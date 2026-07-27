@@ -13,7 +13,7 @@ func TestRun_ReportsFormatVersion_LegacyNormalizedToOne(t *testing.T) {
 	// buildArchive writes no format_version (pre-versioning archive); inspect
 	// should report it as version 1.
 	path := buildArchive(t, []*capture.Record{rec("r1", "/api/v1/namespaces/default/pods")})
-	report, err := Run(path)
+	report, err := Run(path, nil)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -24,7 +24,7 @@ func TestRun_ReportsFormatVersion_LegacyNormalizedToOne(t *testing.T) {
 
 func TestRun_RejectsFutureFormatVersion(t *testing.T) {
 	path := buildArchiveWithVersion(t, capture.CurrentFormatVersion+1)
-	if _, err := Run(path); err == nil {
+	if _, err := Run(path, nil); err == nil {
 		t.Fatal("expected Run to reject an archive with a newer format version")
 	}
 }

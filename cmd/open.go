@@ -42,12 +42,18 @@ func runOpen(cmd *cobra.Command, args []string) error {
 	at, _ := cmd.Flags().GetString("at")
 	verbose, _ := cmd.Root().PersistentFlags().GetBool("verbose")
 
+	identities, err := resolveDecryptIdentities(cmd, archivePath)
+	if err != nil {
+		return err
+	}
+
 	opts := server.OpenOptions{
 		ArchivePath:   archivePath,
 		Port:          port,
 		KubeconfigOut: kubeconfigOut,
 		At:            at,
 		Verbose:       verbose,
+		Identities:    identities,
 	}
 
 	srv, err := server.Open(opts)

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"filippo.io/age"
 	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/capture"
 )
@@ -43,8 +44,11 @@ type FilterOpts struct {
 //     (ADDED/MODIFIED/DELETED labels captured at watch-stream time).
 //   - Poll-only paths: consecutive snapshot pairs are diff'd by object identity
 //     to detect additions, modifications, and deletions.
-func LoadTransitions(archivePath string, opts FilterOpts) ([]Transition, error) {
-	ar, err := archive.Open(archivePath)
+//
+// identities decrypts an encrypted archive; it is ignored for plaintext
+// archives, so callers may pass nil.
+func LoadTransitions(archivePath string, opts FilterOpts, identities []age.Identity) ([]Transition, error) {
+	ar, err := archive.OpenWithIdentities(archivePath, identities)
 	if err != nil {
 		return nil, fmt.Errorf("opening archive: %w", err)
 	}
