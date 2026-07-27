@@ -691,10 +691,10 @@ func itemDedupeKey(raw json.RawMessage) string {
 // aggregateItemCap is a safety cap: resources like packagemanifests return the
 // full cluster list for every namespace (OLM behavior). Aggregating across all
 // namespaces would multiply the item count by the number of namespaces and
-// materialise hundreds of millions of items. Cap the aggregate at this many
+// materialize hundreds of millions of items. Cap the aggregate at this many
 // unique items (keyed by uid or name) to prevent unbounded memory use. A var
 // (not const) so tests can lower it to exercise the cap without building a
-// 10 000-item fixture.
+// 10,000-item fixture.
 var aggregateItemCap = 10_000
 
 // AggregateAcrossNamespaces aggregates list items from all namespaced paths.
