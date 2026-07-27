@@ -208,6 +208,15 @@ func recipientsFromFlags(cmd *cobra.Command) ([]age.Recipient, error) {
 		if err != nil {
 			return nil, fmt.Errorf("parsing recipients file %q: %w", file, err)
 		}
+		// age.ParseRecipients also accepts post-quantum "age1pq1..." (Hybrid)
+		// keys, but --encrypt-recipient parses X25519 (age1...) only. Keep the
+		// two flag variants consistent — and interoperable with age-keygen — by
+		// rejecting non-X25519 recipients here too.
+		for _, r := range fileRecips {
+			if _, ok := r.(*age.X25519Recipient); !ok {
+				return nil, fmt.Errorf("recipients file %q contains a non-X25519 recipient; only age1... public keys are supported", file)
+			}
+		}
 		recips = append(recips, fileRecips...)
 	}
 

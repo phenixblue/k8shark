@@ -71,6 +71,32 @@ func TestResolveEncryption_RecipientsFile(t *testing.T) {
 	}
 }
 
+// TestResolveEncryption_RecipientsFileRejectsNonX25519 keeps the two recipient
+// flag variants consistent: age.ParseRecipients accepts post-quantum Hybrid
+// (age1pq1...) keys, but --encrypt-recipient is X25519-only, so the file
+// variant must reject non-X25519 recipients too.
+func TestResolveEncryption_RecipientsFileRejectsNonX25519(t *testing.T) {
+	hybrid, err := age.GenerateHybridIdentity()
+	if err != nil {
+		t.Fatalf("GenerateHybridIdentity: %v", err)
+	}
+	dir := t.TempDir()
+	recipFile := filepath.Join(dir, "recipients.txt")
+	if err := os.WriteFile(recipFile, []byte(hybrid.Recipient().String()+"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	cmd := newTestEncryptCommand()
+	_ = cmd.Flags().Set("encrypt-recipients-file", recipFile)
+
+	_, err = resolveEncryption(cmd)
+	if err == nil {
+		t.Fatal("expected an error for a non-X25519 (Hybrid) recipient in the file")
+	}
+	if !strings.Contains(err.Error(), "non-X25519") {
+		t.Errorf("error = %q, want it to mention a non-X25519 recipient", err)
+	}
+}
+
 func TestResolveEncryption_PassphraseAndRecipientConflict(t *testing.T) {
 	id, err := age.GenerateX25519Identity()
 	if err != nil {
