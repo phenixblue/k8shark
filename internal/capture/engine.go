@@ -369,7 +369,13 @@ func (e *Engine) Run() (*CaptureSummary, error) {
 	}
 
 	if e.verbose {
-		fmt.Fprintf(os.Stdout, "  captured %d records\n", e.sink.RecordCount())
+		// When records stream to stdout as NDJSON, keep stdout pure and send
+		// this diagnostic to stderr instead.
+		w := os.Stdout
+		if e.cfg.Output == "-" {
+			w = os.Stderr
+		}
+		fmt.Fprintf(w, "  captured %d records\n", e.sink.RecordCount())
 	}
 
 	if err := e.sink.Finish(meta, e.index, e.watchIndex); err != nil {

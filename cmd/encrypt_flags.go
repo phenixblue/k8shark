@@ -34,13 +34,21 @@ func addEncryptFlags(cmd *cobra.Command) {
 //
 // It returns (passphrase, enabled, error). passphrase is empty when enabled
 // is false.
-func resolveEncryptPassphrase(cmd *cobra.Command) (string, bool, error) {
+// encryptRequested reports whether the user asked for output encryption
+// (via --encrypt or --encrypt-passphrase-file), without resolving or
+// prompting for the passphrase. Callers use it to reject incompatible flag
+// combinations before any interactive prompt runs.
+func encryptRequested(cmd *cobra.Command) bool {
 	encrypt, _ := cmd.Flags().GetBool("encrypt")
 	passphraseFile, _ := cmd.Flags().GetString("encrypt-passphrase-file")
-	enabled := encrypt || passphraseFile != ""
-	if !enabled {
+	return encrypt || passphraseFile != ""
+}
+
+func resolveEncryptPassphrase(cmd *cobra.Command) (string, bool, error) {
+	if !encryptRequested(cmd) {
 		return "", false, nil
 	}
+	passphraseFile, _ := cmd.Flags().GetString("encrypt-passphrase-file")
 
 	if passphraseFile != "" {
 		pass, err := readPassphraseFile(passphraseFile)
