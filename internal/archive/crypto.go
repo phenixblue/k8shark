@@ -75,17 +75,18 @@ func isNoIdentityMatch(err error) bool {
 // permissive than the original — this matters most for DecryptFile, whose
 // output is plaintext.
 //
-// The file is opened for writing with the owner-write bit guaranteed
-// regardless of src's mode, covering two cases where a restrictive source
-// mode (e.g. read-only 0400/0444) could otherwise deny the write this
-// function needs to perform: as defense in depth for the create-a-new-file
-// path, and, concretely, when dstPath already exists — OpenFile's mode
-// argument is ignored for an existing file, so only its current on-disk mode
-// governs the access check, and re-running against the same
-// restrictively-permissioned output (which this very mode-preservation logic
-// can produce) would otherwise fail. Callers must restore the exact source
-// mode (via (*os.File).Chmod, using the returned FileMode) once they're done
-// writing, before the final Close.
+// The file is opened write-only (callers never read back from it) with the
+// owner-write bit guaranteed regardless of src's mode, covering two cases
+// where a restrictive source mode (e.g. read-only 0400/0444, or write-only
+// 0200 which O_RDWR would reject despite not needing read access) could
+// otherwise deny the write this function needs to perform: as defense in
+// depth for the create-a-new-file path, and, concretely, when dstPath
+// already exists — OpenFile's mode argument is ignored for an existing file,
+// so only its current on-disk mode governs the access check, and re-running
+// against the same restrictively-permissioned output (which this very
+// mode-preservation logic can produce) would otherwise fail. Callers must
+// restore the exact source mode (via (*os.File).Chmod, using the returned
+// FileMode) once they're done writing, before the final Close.
 func createLike(dstPath string, src *os.File) (*os.File, os.FileMode, error) {
 	srcInfo, err := src.Stat()
 	if err != nil {
@@ -94,9 +95,18 @@ func createLike(dstPath string, src *os.File) (*os.File, os.FileMode, error) {
 	mode := srcInfo.Mode().Perm()
 
 	if existing, statErr := os.Stat(dstPath); statErr == nil {
-		_ = os.Chmod(dstPath, existing.Mode().Perm()|0o200) // best-effort; OpenFile below reports any real failure
+		if os.SameFile(srcInfo, existing) {
+			return nil, 0, fmt.Errorf("output %q must not be the same file as the input", dstPath)
+		}
+		// Only touch the mode of a regular file — dstPath could be a
+		// directory or other special file (the caller passed a bad --output),
+		// and chmod'ing that isn't this function's business; let the
+		// OpenFile below report a clear error for it instead.
+		if existing.Mode().IsRegular() {
+			_ = os.Chmod(dstPath, existing.Mode().Perm()|0o200) // best-effort; OpenFile below reports any real failure
+		}
 	}
-	dst, err := os.OpenFile(dstPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, mode|0o200)
+	dst, err := os.OpenFile(dstPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode|0o200)
 	if err != nil {
 		return nil, 0, fmt.Errorf("creating %q: %w", dstPath, err)
 	}

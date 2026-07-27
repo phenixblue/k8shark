@@ -507,6 +507,56 @@ func TestEncryptFile_ExistingReadOnlyOutput(t *testing.T) {
 	_ = ar.Close()
 }
 
+// TestEncryptFile_ExistingWriteOnlyOutput confirms createLike opens the
+// destination O_WRONLY, not O_RDWR: an existing output file with a
+// write-only (0200) mode has no read bit, which O_RDWR would reject even
+// though EncryptFile never actually reads back from dst. This mirrors
+// TestEncryptFile_ExistingReadOnlyOutput, but for the destination's mode
+// rather than the source's (a 0200 *source* can never be processed at all,
+// independent of this fix, since encrypting it requires reading it).
+func TestEncryptFile_ExistingWriteOnlyOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits don't apply on Windows")
+	}
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.kshrk")
+	sampleArchive(t, plainPath)
+
+	encPath := filepath.Join(dir, "enc.kshrk")
+	if err := os.WriteFile(encPath, []byte("stale output from a prior run"), 0o200); err != nil {
+		t.Fatalf("WriteFile(stale output, 0200): %v", err)
+	}
+
+	recipients, err := RecipientsFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("RecipientsFromPassphrase: %v", err)
+	}
+	if err := EncryptFile(plainPath, encPath, recipients); err != nil {
+		t.Fatalf("EncryptFile overwriting a pre-existing 0200 (write-only) output: %v", err)
+	}
+}
+
+// TestEncryptFile_RejectsSameFileAsOutput guards createLike's os.SameFile
+// check: encrypting a file onto itself (as opposed to the CLI-level
+// absolute-path comparison in cmd/encrypt.go, which a caller of this
+// exported library function directly wouldn't get for free) must be
+// rejected, not silently truncate the source while reading from it.
+func TestEncryptFile_RejectsSameFileAsOutput(t *testing.T) {
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.kshrk")
+	sampleArchive(t, plainPath)
+
+	recipients, err := RecipientsFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("RecipientsFromPassphrase: %v", err)
+	}
+	if err := EncryptFile(plainPath, plainPath, recipients); err == nil {
+		t.Fatal("EncryptFile(path, path, ...) succeeded, want a same-file error")
+	} else if !strings.Contains(err.Error(), "same file") {
+		t.Errorf("error = %q, want it to mention the same-file conflict", err)
+	}
+}
+
 func statMode(t *testing.T, path string) os.FileMode {
 	t.Helper()
 	fi, err := os.Stat(path)
