@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"filippo.io/age"
+	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/config"
 	"github.com/phenixblue/k8shark/internal/redact"
 	"github.com/spf13/cobra"
@@ -45,6 +47,9 @@ func init() {
 	_ = redactCmd.MarkFlagFilename("in", captureExt)
 	_ = redactCmd.MarkFlagFilename("out", captureExt)
 	_ = redactCmd.MarkFlagFilename("config", configExts...)
+	// Write-side encryption for the redacted output (read-side --decrypt-* are
+	// persistent flags from the root command).
+	addEncryptFlags(redactCmd)
 }
 
 // parseRedactField parses a --redact-field flag value of the form:
@@ -118,10 +123,37 @@ func runRedact(cmd *cobra.Command, _ []string) error {
 		rules = append(rules, rule)
 	}
 
+	// Read-side: decrypt an encrypted source archive if a key was supplied.
+	identities, err := resolveDecryptIdentities(cmd, in)
+	if err != nil {
+		return err
+	}
+
+	// Write-side: optionally re-encrypt the redacted output.
+	passphrase, encrypt, err := resolveEncryptPassphrase(cmd)
+	if err != nil {
+		return err
+	}
+	var recipients []age.Recipient
+	if encrypt {
+		recipients, err = archive.RecipientsFromPassphrase(passphrase)
+		if err != nil {
+			return err
+		}
+	} else if srcEncrypted, _ := archive.IsEncrypted(in); srcEncrypted {
+		// The source is encrypted but no output encryption was requested — warn
+		// that the redacted copy will be written in plaintext so an encrypted
+		// capture isn't silently downgraded.
+		fmt.Fprintf(cmd.ErrOrStderr(),
+			"warning: source archive is encrypted but the redacted output %q will be written in plaintext; pass --encrypt to keep it encrypted\n", out)
+	}
+
 	result, err := redact.Archive(in, out, redact.Options{
 		RedactSecrets: doRedactSecrets,
 		AllowList:     allowList,
 		Rules:         rules,
+		Identities:    identities,
+		Recipients:    recipients,
 	})
 	if err != nil {
 		return err

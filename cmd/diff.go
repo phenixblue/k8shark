@@ -65,6 +65,14 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 	namespace, _ := cmd.Flags().GetString("namespace")
 	output, _ := cmd.Flags().GetString("output")
 
+	// A single key source is shared across both archives (documented v1.0
+	// limitation). Pass every candidate path so an encrypted archive on either
+	// side triggers the prompt, even if the other side is plaintext.
+	identities, err := resolveDecryptIdentities(cmd, archivePath, beforeArchive, afterArchive)
+	if err != nil {
+		return err
+	}
+
 	result, err := diffpkg.Run(diffpkg.Options{
 		BeforeArchive: beforeArchive,
 		AfterArchive:  afterArchive,
@@ -73,6 +81,7 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 		AfterAt:       afterAt,
 		Resource:      resource,
 		Namespace:     namespace,
+		Identities:    identities,
 	})
 	if err != nil {
 		return err

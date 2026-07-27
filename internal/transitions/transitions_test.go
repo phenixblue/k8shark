@@ -147,7 +147,7 @@ func TestPollTransitions_Added(t *testing.T) {
 	snap2 := `{"items":[{"metadata":{"name":"nginx","namespace":"default"}}]}`
 	archivePath := buildPollArchive(t, "/api/v1/namespaces/default/pods", []string{snap1, snap2})
 
-	ts, err := LoadTransitions(archivePath, FilterOpts{})
+	ts, err := LoadTransitions(archivePath, FilterOpts{}, nil)
 	if err != nil {
 		t.Fatalf("LoadTransitions: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestPollTransitions_Modified(t *testing.T) {
 	snap2 := `{"items":[{"metadata":{"name":"nginx","namespace":"default"},"status":{"phase":"Running"}}]}`
 	archivePath := buildPollArchive(t, "/api/v1/namespaces/default/pods", []string{snap1, snap2})
 
-	ts, err := LoadTransitions(archivePath, FilterOpts{})
+	ts, err := LoadTransitions(archivePath, FilterOpts{}, nil)
 	if err != nil {
 		t.Fatalf("LoadTransitions: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestPollTransitions_Deleted(t *testing.T) {
 	snap2 := `{"items":[]}`
 	archivePath := buildPollArchive(t, "/api/v1/namespaces/default/pods", []string{snap1, snap2})
 
-	ts, err := LoadTransitions(archivePath, FilterOpts{})
+	ts, err := LoadTransitions(archivePath, FilterOpts{}, nil)
 	if err != nil {
 		t.Fatalf("LoadTransitions: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestPollTransitions_NoChange(t *testing.T) {
 	body := `{"items":[{"metadata":{"name":"nginx","namespace":"default"}}]}`
 	archivePath := buildPollArchive(t, "/api/v1/namespaces/default/pods", []string{body, body})
 
-	ts, err := LoadTransitions(archivePath, FilterOpts{})
+	ts, err := LoadTransitions(archivePath, FilterOpts{}, nil)
 	if err != nil {
 		t.Fatalf("LoadTransitions: %v", err)
 	}
@@ -227,7 +227,7 @@ func TestWatchTransitions_Direct(t *testing.T) {
 	}
 	archivePath := buildWatchArchive(t, "/api/v1/namespaces/default/pods", snap, events)
 
-	ts, err := LoadTransitions(archivePath, FilterOpts{})
+	ts, err := LoadTransitions(archivePath, FilterOpts{}, nil)
 	if err != nil {
 		t.Fatalf("LoadTransitions: %v", err)
 	}
@@ -254,7 +254,7 @@ func TestFilterByName(t *testing.T) {
 	snap2 := `{"items":[{"metadata":{"name":"nginx","namespace":"default"}},{"metadata":{"name":"redis","namespace":"default"}}]}`
 	archivePath := buildPollArchive(t, "/api/v1/namespaces/default/pods", []string{snap1, snap2})
 
-	ts, err := LoadTransitions(archivePath, FilterOpts{Name: "nginx"})
+	ts, err := LoadTransitions(archivePath, FilterOpts{Name: "nginx"}, nil)
 	if err != nil {
 		t.Fatalf("LoadTransitions: %v", err)
 	}
@@ -272,7 +272,7 @@ func TestFilterByResource(t *testing.T) {
 	archive1 := buildPollArchive(t, "/api/v1/namespaces/default/pods", []string{snap1, snap2})
 
 	// Only match pods, not services.
-	ts, err := LoadTransitions(archive1, FilterOpts{Resource: "pods"})
+	ts, err := LoadTransitions(archive1, FilterOpts{Resource: "pods"}, nil)
 	if err != nil {
 		t.Fatalf("LoadTransitions: %v", err)
 	}
@@ -280,7 +280,7 @@ func TestFilterByResource(t *testing.T) {
 		t.Errorf("expected 1 pod transition, got %d: %+v", len(ts), ts)
 	}
 
-	ts2, err := LoadTransitions(archive1, FilterOpts{Resource: "services"})
+	ts2, err := LoadTransitions(archive1, FilterOpts{Resource: "services"}, nil)
 	if err != nil {
 		t.Fatalf("LoadTransitions (services): %v", err)
 	}
@@ -300,7 +300,7 @@ func TestFilterByTimeWindow(t *testing.T) {
 	// Use --since after snap2 timestamp → only snap3 change (redis ADDED) visible.
 	since := t0.Add(90 * time.Second)
 
-	ts, err := LoadTransitions(archivePath, FilterOpts{Since: since})
+	ts, err := LoadTransitions(archivePath, FilterOpts{Since: since}, nil)
 	if err != nil {
 		t.Fatalf("LoadTransitions: %v", err)
 	}
@@ -344,7 +344,7 @@ func TestLoadTransitions_OldArchiveNoWatchIndex(t *testing.T) {
 	body := `{"items":[{"metadata":{"name":"nginx","namespace":"default"}}]}`
 	archivePath := buildPollArchive(t, "/api/v1/namespaces/default/pods", []string{body})
 
-	ts, err := LoadTransitions(archivePath, FilterOpts{})
+	ts, err := LoadTransitions(archivePath, FilterOpts{}, nil)
 	if err != nil {
 		t.Fatalf("LoadTransitions: %v", err)
 	}

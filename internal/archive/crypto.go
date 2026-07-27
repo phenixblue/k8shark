@@ -26,6 +26,19 @@ func isAgeEncrypted(f *os.File) (bool, error) {
 	return n == len(buf) && string(buf) == ageIntro, nil
 }
 
+// IsEncrypted reports whether the archive at path is an age-encrypted k8shark
+// archive (as written by NewEncryptedStreamWriter), reading only the file
+// header. A plaintext ZIP archive returns false. Callers use it to decide
+// whether a decryption key is needed before opening.
+func IsEncrypted(path string) (bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	return isAgeEncrypted(f)
+}
+
 // RecipientsFromPassphrase returns a recipient set for passphrase-based
 // archive encryption. Per the age spec a ScryptRecipient must be the only
 // recipient for a file, so this is always a single-element slice.

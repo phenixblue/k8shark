@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"filippo.io/age"
 	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/capture"
 )
@@ -23,6 +24,8 @@ type OpenOptions struct {
 	KubeconfigOut string
 	At            string
 	Verbose       bool
+	// Identities decrypts an encrypted archive; ignored for plaintext archives.
+	Identities []age.Identity
 }
 
 // ReplayOptions holds parameters for replaying a capture forward through time.
@@ -35,6 +38,8 @@ type ReplayOptions struct {
 	To            string // window end: RFC3339 or relative like -1m (empty = capture end)
 	Loop          bool
 	StartPaused   bool
+	// Identities decrypts an encrypted archive; ignored for plaintext archives.
+	Identities []age.Identity
 	// PauseAtWindowEnd, when StartPaused is set, parks the clock at the window
 	// end (the most complete captured state) instead of the window start. The
 	// Web UI sets this: a capture's opening moments are typically sparse
@@ -70,7 +75,7 @@ type Server struct {
 // Open opens a capture archive, starts the mock HTTPS server, and writes
 // a kubeconfig pointing at it.
 func Open(opts OpenOptions) (*Server, error) {
-	ar, err := archive.Open(opts.ArchivePath)
+	ar, err := archive.OpenWithIdentities(opts.ArchivePath, opts.Identities)
 	if err != nil {
 		return nil, fmt.Errorf("opening archive: %w", err)
 	}
@@ -91,7 +96,7 @@ func Open(opts OpenOptions) (*Server, error) {
 // clock advances through the [from, to] window at the given speed, streaming
 // captured watch events over time. LIST/GET return state as-of the clock.
 func Replay(opts ReplayOptions) (*Server, error) {
-	ar, err := archive.Open(opts.ArchivePath)
+	ar, err := archive.OpenWithIdentities(opts.ArchivePath, opts.Identities)
 	if err != nil {
 		return nil, fmt.Errorf("opening archive: %w", err)
 	}

@@ -41,6 +41,9 @@ func init() {
 	_ = rootCmd.MarkPersistentFlagFilename("config", configExts...)
 	rootCmd.PersistentFlags().BoolP("verbose", "v", false, "enable verbose output")
 	_ = viper.BindPFlag("verbose", rootCmd.PersistentFlags().Lookup("verbose"))
+	// Read-side decryption flags. Deliberately NOT viper-bound: passphrase
+	// material is read via os.Getenv / files only, never from config.yaml.
+	addDecryptFlags(rootCmd)
 }
 
 func initConfig() {

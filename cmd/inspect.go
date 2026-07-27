@@ -41,7 +41,11 @@ func init() {
 func runInspect(cmd *cobra.Command, args []string) error {
 	output, _ := cmd.Flags().GetString("output")
 
-	report, err := inspect.Run(args[0])
+	identities, err := resolveDecryptIdentities(cmd, args[0])
+	if err != nil {
+		return err
+	}
+	report, err := inspect.Run(args[0], identities)
 	if err != nil {
 		return err
 	}

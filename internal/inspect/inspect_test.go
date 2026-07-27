@@ -93,7 +93,7 @@ func TestRun_BasicSummary(t *testing.T) {
 		secretRec("r5", "default", "my-secret"),
 	})
 
-	report, err := Run(archivePath)
+	report, err := Run(archivePath, nil)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestRun_ArchiveSize(t *testing.T) {
 	archivePath := buildArchive(t, []*capture.Record{
 		rec("r1", "/api/v1/namespaces/default/pods"),
 	})
-	report, err := Run(archivePath)
+	report, err := Run(archivePath, nil)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestRun_SortedOutput(t *testing.T) {
 		rec("r2", "/api/v1/namespaces/default/pods"),
 		rec("r3", "/api/v1/nodes"),
 	})
-	report, err := Run(archivePath)
+	report, err := Run(archivePath, nil)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}

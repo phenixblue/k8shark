@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"filippo.io/age"
 	archivepkg "github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/capture"
 	"github.com/phenixblue/k8shark/internal/server"
@@ -22,6 +23,10 @@ type Options struct {
 	AfterAt       string
 	Resource      string
 	Namespace     string
+	// Identities decrypts encrypted archive(s); ignored for plaintext ones.
+	// A single key source is shared across both archives in the two-archive
+	// mode (a documented v1.0 limitation).
+	Identities []age.Identity
 }
 
 type Result struct {
@@ -146,11 +151,11 @@ func loadSnapshots(opts Options) (*archiveSnapshot, *archiveSnapshot, error) {
 		if opts.Archive != "" || opts.BeforeAt != "" || opts.AfterAt != "" {
 			return nil, nil, fmt.Errorf("use either --before/--after or --archive with --before-at/--after-at")
 		}
-		before, err := loadArchiveSnapshot(opts.BeforeArchive, time.Time{})
+		before, err := loadArchiveSnapshot(opts.BeforeArchive, time.Time{}, opts.Identities)
 		if err != nil {
 			return nil, nil, err
 		}
-		after, err := loadArchiveSnapshot(opts.AfterArchive, time.Time{})
+		after, err := loadArchiveSnapshot(opts.AfterArchive, time.Time{}, opts.Identities)
 		if err != nil {
 			before.cleanup()
 			return nil, nil, err
@@ -160,7 +165,7 @@ func loadSnapshots(opts Options) (*archiveSnapshot, *archiveSnapshot, error) {
 		if opts.BeforeAt == "" || opts.AfterAt == "" {
 			return nil, nil, fmt.Errorf("--before-at and --after-at are required with --archive")
 		}
-		base, err := loadArchiveSnapshot(opts.Archive, time.Time{})
+		base, err := loadArchiveSnapshot(opts.Archive, time.Time{}, opts.Identities)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -174,12 +179,12 @@ func loadSnapshots(opts Options) (*archiveSnapshot, *archiveSnapshot, error) {
 			base.cleanup()
 			return nil, nil, err
 		}
-		before, err := loadArchiveSnapshot(opts.Archive, beforeAt)
+		before, err := loadArchiveSnapshot(opts.Archive, beforeAt, opts.Identities)
 		if err != nil {
 			base.cleanup()
 			return nil, nil, err
 		}
-		after, err := loadArchiveSnapshot(opts.Archive, afterAt)
+		after, err := loadArchiveSnapshot(opts.Archive, afterAt, opts.Identities)
 		if err != nil {
 			base.cleanup()
 			before.cleanup()
@@ -192,8 +197,8 @@ func loadSnapshots(opts Options) (*archiveSnapshot, *archiveSnapshot, error) {
 	}
 }
 
-func loadArchiveSnapshot(archivePath string, at time.Time) (*archiveSnapshot, error) {
-	ar, err := archivepkg.Open(archivePath)
+func loadArchiveSnapshot(archivePath string, at time.Time, identities []age.Identity) (*archiveSnapshot, error) {
+	ar, err := archivepkg.OpenWithIdentities(archivePath, identities)
 	if err != nil {
 		return nil, fmt.Errorf("opening archive %q: %w", archivePath, err)
 	}
