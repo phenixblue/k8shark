@@ -33,7 +33,7 @@ func BenchmarkStreamWriter_WriteRecord(b *testing.B) {
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if err := w.WriteRecord(sampleRecord(i)); err != nil {
+		if _, err := w.WriteRecord(sampleRecord(i)); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -55,7 +55,7 @@ func BenchmarkStreamWriter_RoundTrip(b *testing.B) {
 					b.Fatal(err)
 				}
 				for j := 0; j < n; j++ {
-					if err := w.WriteRecord(sampleRecord(j)); err != nil {
+					if _, err := w.WriteRecord(sampleRecord(j)); err != nil {
 						b.Fatal(err)
 					}
 				}
@@ -77,7 +77,7 @@ func BenchmarkNDJSONWriter_WriteRecord(b *testing.B) {
 	w := NewNDJSONWriter(&bytes.Buffer{})
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if err := w.WriteRecord(sampleRecord(i)); err != nil {
+		if _, err := w.WriteRecord(sampleRecord(i)); err != nil {
 			b.Fatal(err)
 		}
 	}

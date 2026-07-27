@@ -113,9 +113,12 @@ type Engine struct {
 	lastHash       map[string][32]byte
 	dedupSkipped   int
 	warnedFallback map[string]bool // dedup set for allNotFound cluster-scoped fallback warnings
-	pathSeq        map[string]int  // per-path record sequence counter (matches archive on-disk seq)
 	fetchSem       chan struct{}   // semaphore bounding concurrent body reads
 	fetchTimeout   time.Duration   // per-fetch cap (request + body read); 0 means perFetchTimeout
+	// captureErr is set by storeRecord on the first record-write failure and
+	// surfaced by Run() so the process exits non-zero instead of silently
+	// producing an archive with a dangling index reference. Guarded by mu.
+	captureErr error
 	// clusterListNamespacesSeen tracks, per wildcard-namespaced resource path,
 	// the set of namespaces that have produced items in any prior cluster-wide
 	// LIST response. Used by the demux so a namespace that empties out between
@@ -169,7 +172,6 @@ func NewEngine(cfg *config.Config, verbose bool) (*Engine, error) {
 		discoveryCache:            make(map[string][]byte),
 		lastHash:                  make(map[string][32]byte),
 		warnedFallback:            make(map[string]bool),
-		pathSeq:                   make(map[string]int),
 		fetchSem:                  make(chan struct{}, maxConcurrentFetches),
 		fetchTimeout:              perFetchTimeout,
 		clusterListNamespacesSeen: make(map[string]map[string]bool),
@@ -203,7 +205,6 @@ func newEngineWith(cfg *config.Config, client *http.Client, baseURL string, verb
 		discoveryCache:            make(map[string][]byte),
 		lastHash:                  make(map[string][32]byte),
 		warnedFallback:            make(map[string]bool),
-		pathSeq:                   make(map[string]int),
 		fetchSem:                  make(chan struct{}, maxConcurrentFetches),
 		fetchTimeout:              perFetchTimeout,
 		clusterListNamespacesSeen: make(map[string]map[string]bool),
@@ -380,6 +381,17 @@ func (e *Engine) Run() (*CaptureSummary, error) {
 
 	if err := e.sink.Finish(meta, e.index, e.watchIndex); err != nil {
 		return nil, err
+	}
+
+	// A record-write failure doesn't abort the capture — everything else that
+	// succeeded is still worth keeping in the archive — but it must not exit
+	// 0: the archive is missing data the user asked for and, absent this,
+	// would have no way of knowing.
+	e.mu.Lock()
+	captureErr := e.captureErr
+	e.mu.Unlock()
+	if captureErr != nil {
+		return nil, captureErr
 	}
 
 	var outputSize int64
@@ -636,21 +648,24 @@ func (e *Engine) streamWatch(ctx context.Context, res config.Resource, apiPath, 
 				ResponseBody: body,
 			}
 
-			if e.sink != nil {
-				if err := e.sink.WriteRecord(rec); err != nil {
-					if e.verbose {
-						fmt.Fprintf(os.Stderr, "  [warn] writing watch record %s: %v\n", recordPath, err)
-					}
-					continue
+			if e.sink == nil {
+				continue
+			}
+			seq, err := e.sink.WriteRecord(rec)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "  [warn] writing watch record %s: %v\n", recordPath, err)
+				e.mu.Lock()
+				if e.captureErr == nil {
+					e.captureErr = fmt.Errorf("writing watch record %s: %w", recordPath, err)
 				}
+				e.mu.Unlock()
+				continue
 			}
 
 			e.mu.Lock()
 			if _, ok := e.watchIndex[recordPath]; !ok {
 				e.watchIndex[recordPath] = &WatchIndexEntry{APIPath: recordPath}
 			}
-			seq := e.pathSeq[recordPath]
-			e.pathSeq[recordPath] = seq + 1
 			e.watchIndex[recordPath].Seqs = append(e.watchIndex[recordPath].Seqs, seq)
 			e.watchIndex[recordPath].Times = append(e.watchIndex[recordPath].Times, rec.CapturedAt)
 			e.watchIndex[recordPath].EventTypes = append(e.watchIndex[recordPath].EventTypes, rec.EventType)
@@ -1762,6 +1777,16 @@ func (e *Engine) rawFetch(ctx context.Context, apiPath, tableKeySuffix string) (
 		return nil, resp.StatusCode
 	}
 
+	// Skip non-JSON bodies — a proxying error page (HTML 502, a plaintext
+	// error from an aggregated APIService) is a non-empty body that would
+	// otherwise reach storeRecord and fail to marshal as a record.
+	if !json.Valid(body) {
+		if e.verbose {
+			fmt.Fprintf(os.Stderr, "  [warn] non-JSON body %s (status %d)\n", apiPath, resp.StatusCode)
+		}
+		return nil, resp.StatusCode
+	}
+
 	if e.verbose {
 		label := apiPath
 		if tableKeySuffix != "" {
@@ -1804,18 +1829,31 @@ func (e *Engine) storeRecord(indexKey string, body []byte, statusCode int, dedup
 		ResponseCode: statusCode,
 		ResponseBody: json.RawMessage(body),
 	}
-	if e.sink != nil {
-		if err := e.sink.WriteRecord(rec); err != nil && e.verbose {
-			fmt.Fprintf(os.Stderr, "  [warn] writing record %s: %v\n", indexKey, err)
+	if e.sink == nil {
+		return
+	}
+	seq, err := e.sink.WriteRecord(rec)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "  [warn] writing record %s: %v\n", indexKey, err)
+		e.mu.Lock()
+		if e.captureErr == nil {
+			e.captureErr = fmt.Errorf("writing record %s: %w", indexKey, err)
 		}
+		if dedupEnabled {
+			// The write never landed, so nothing was actually deduplicated
+			// against — clear the hash so a later poll of the same
+			// (unwritten) body isn't wrongly skipped as "unchanged" and a
+			// transient write error can be retried on the next interval.
+			delete(e.lastHash, indexKey)
+		}
+		e.mu.Unlock()
+		return
 	}
 	itemCount := countListItems(body)
 	e.mu.Lock()
 	if _, ok := e.index[indexKey]; !ok {
 		e.index[indexKey] = &IndexEntry{APIPath: indexKey}
 	}
-	seq := e.pathSeq[indexKey]
-	e.pathSeq[indexKey] = seq + 1
 	e.index[indexKey].Seqs = append(e.index[indexKey].Seqs, seq)
 	e.index[indexKey].Times = append(e.index[indexKey].Times, rec.CapturedAt)
 	e.index[indexKey].Counts = append(e.index[indexKey].Counts, itemCount)
@@ -2084,18 +2122,18 @@ func (e *Engine) fetchOnePodLog(ctx context.Context, namespace, podName, contain
 		ResponseCode: http.StatusOK,
 		ResponseBody: json.RawMessage(jsonBody),
 	}
-	if e.sink != nil {
-		if err := e.sink.WriteRecord(rec); err != nil {
-			return failure(fmt.Sprintf("writing record: %v", err))
-		}
+	if e.sink == nil {
+		return failure("no output sink configured")
+	}
+	seq, err := e.sink.WriteRecord(rec)
+	if err != nil {
+		return failure(fmt.Sprintf("writing record: %v", err))
 	}
 
 	e.mu.Lock()
 	if _, ok := e.index[indexKey]; !ok {
 		e.index[indexKey] = &IndexEntry{APIPath: indexKey}
 	}
-	seq := e.pathSeq[indexKey]
-	e.pathSeq[indexKey] = seq + 1
 	e.index[indexKey].Seqs = append(e.index[indexKey].Seqs, seq)
 	e.index[indexKey].Times = append(e.index[indexKey].Times, rec.CapturedAt)
 	e.mu.Unlock()

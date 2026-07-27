@@ -633,7 +633,7 @@ func TestHandler_ReplayAtTimestamp(t *testing.T) {
 	}
 	for _, rec := range records {
 		rcopy := rec
-		if err := sw.WriteRecord(&rcopy); err != nil {
+		if _, err := sw.WriteRecord(&rcopy); err != nil {
 			t.Fatal(err)
 		}
 	}

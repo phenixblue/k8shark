@@ -90,7 +90,7 @@ func writeLargeArchive(tb testing.TB, path string, namespaces, snapshots, pods i
 					ID: fmt.Sprintf("%s-%s-%d", ns, res, s), CapturedAt: ts,
 					APIPath: apiPath, HTTPMethod: "GET", ResponseCode: 200, ResponseBody: body,
 				}
-				if err := sw.WriteRecord(&rec); err != nil {
+				if _, err := sw.WriteRecord(&rec); err != nil {
 					tb.Fatal(err)
 				}
 				entry.Seqs = append(entry.Seqs, s)

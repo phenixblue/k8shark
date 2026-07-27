@@ -35,7 +35,7 @@ func writeEncryptedArchive(t *testing.T, path, passphrase string) {
 		t.Fatalf("NewEncryptedStreamWriter: %v", err)
 	}
 	rec := map[string]any{"id": "r1", "api_path": "/api/v1/nodes"}
-	if err := sw.WriteRecord(rec); err != nil {
+	if _, err := sw.WriteRecord(rec); err != nil {
 		t.Fatalf("WriteRecord: %v", err)
 	}
 	if err := sw.Finish(map[string]any{"capture_id": "enc"}, map[string]any{}, nil); err != nil {
@@ -50,7 +50,7 @@ func writePlaintextArchive(t *testing.T, path string) {
 		t.Fatalf("NewStreamWriter: %v", err)
 	}
 	rec := map[string]any{"id": "r1", "api_path": "/api/v1/nodes"}
-	if err := sw.WriteRecord(rec); err != nil {
+	if _, err := sw.WriteRecord(rec); err != nil {
 		t.Fatalf("WriteRecord: %v", err)
 	}
 	if err := sw.Finish(map[string]any{"capture_id": "plain"}, map[string]any{}, nil); err != nil {
@@ -148,7 +148,7 @@ func TestResolveDecryptIdentities_IdentityFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewEncryptedStreamWriter: %v", err)
 	}
-	if err := sw.WriteRecord(map[string]any{"id": "r1", "api_path": "/api/v1/nodes"}); err != nil {
+	if _, err := sw.WriteRecord(map[string]any{"id": "r1", "api_path": "/api/v1/nodes"}); err != nil {
 		t.Fatalf("WriteRecord: %v", err)
 	}
 	if err := sw.Finish(map[string]any{"capture_id": "x25519"}, map[string]any{}, nil); err != nil {

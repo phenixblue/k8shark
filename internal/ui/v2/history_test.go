@@ -36,7 +36,7 @@ func buildV2WatchStore(t *testing.T, events []v2WatchEvent, captureStart time.Ti
 			ID: ev.id, CapturedAt: ev.at, APIPath: ev.apiPath, EventType: ev.eventType,
 			HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(ev.body),
 		}
-		if err := sw.WriteRecord(&rec); err != nil {
+		if _, err := sw.WriteRecord(&rec); err != nil {
 			t.Fatalf("WriteRecord(%s): %v", ev.id, err)
 		}
 		wi := watchIndex[ev.apiPath]

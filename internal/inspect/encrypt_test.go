@@ -26,7 +26,7 @@ func TestRun_Encrypted(t *testing.T) {
 	}
 	rec := map[string]any{"id": "r1", "api_path": "/api/v1/nodes", "response_code": 200,
 		"response_body": map[string]any{"apiVersion": "v1", "kind": "NodeList", "items": []any{}}}
-	if err := sw.WriteRecord(rec); err != nil {
+	if _, err := sw.WriteRecord(rec); err != nil {
 		t.Fatalf("WriteRecord: %v", err)
 	}
 	meta := map[string]any{"format_version": 1, "capture_id": "enc", "record_count": 1}

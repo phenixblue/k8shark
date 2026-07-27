@@ -54,7 +54,7 @@ func buildEncryptedArchive(t *testing.T, records []*capture.Record, recipients [
 	// after a successful Finish.
 	defer func() { _ = sw.Abort() }()
 	for _, r := range records {
-		if err := sw.WriteRecord(r); err != nil {
+		if _, err := sw.WriteRecord(r); err != nil {
 			t.Fatalf("buildEncryptedArchive WriteRecord: %v", err)
 		}
 	}

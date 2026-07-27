@@ -48,7 +48,7 @@ func buildTestArchive(t *testing.T, records []*capture.Record) string {
 		t.Fatalf("buildTestArchive NewStreamWriter: %v", err)
 	}
 	for _, r := range records {
-		if err := sw.WriteRecord(r); err != nil {
+		if _, err := sw.WriteRecord(r); err != nil {
 			t.Fatalf("buildTestArchive WriteRecord: %v", err)
 		}
 	}

@@ -30,7 +30,7 @@ func sampleEncryptedArchive(t *testing.T, path string, recipients []age.Recipien
 		"http_method": "GET", "response_code": 200,
 		"response_body": map[string]any{"apiVersion": "v1", "kind": "PodList", "items": []any{}},
 	}
-	if err := sw.WriteRecord(rec); err != nil {
+	if _, err := sw.WriteRecord(rec); err != nil {
 		t.Fatalf("WriteRecord: %v", err)
 	}
 	meta := map[string]any{"format_version": 1, "capture_id": "encrypted-v1", "record_count": 1}
@@ -209,7 +209,7 @@ func TestEncryptedArchiveConcurrentReads(t *testing.T) {
 	seqs := make([]int, 0, n)
 	for i := 0; i < n; i++ {
 		rec := map[string]any{"id": "rec", "api_path": "/api/v1/pods", "n": i}
-		if err := sw.WriteRecord(rec); err != nil {
+		if _, err := sw.WriteRecord(rec); err != nil {
 			t.Fatalf("WriteRecord: %v", err)
 		}
 		seqs = append(seqs, i)

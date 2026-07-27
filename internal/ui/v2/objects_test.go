@@ -265,7 +265,7 @@ func buildV2TestStore(t *testing.T, recs []*capture.Record, idx capture.Index, m
 		t.Fatalf("NewStreamWriter: %v", err)
 	}
 	for _, r := range recs {
-		if err := sw.WriteRecord(r); err != nil {
+		if _, err := sw.WriteRecord(r); err != nil {
 			t.Fatalf("WriteRecord: %v", err)
 		}
 	}

@@ -42,7 +42,7 @@ func loadStoreWithVersion(t *testing.T, version int) (*CaptureStore, error) {
 	if err != nil {
 		t.Fatalf("NewStreamWriter: %v", err)
 	}
-	if err := sw.WriteRecord(r); err != nil {
+	if _, err := sw.WriteRecord(r); err != nil {
 		t.Fatalf("WriteRecord: %v", err)
 	}
 	if err := sw.Finish(meta, idx, nil); err != nil {
