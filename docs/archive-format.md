@@ -3,9 +3,9 @@
 A k8shark capture is a `.kshrk` file: a ZIP container whose entries are
 individually Zstandard-compressed JSON (except `metadata.json`, which is stored
 uncompressed for fast header reads). It can be listed with any ZIP tool —
-unless it was written with any of `capture`'s encryption flags
-(`--encrypt`, `--encrypt-passphrase-file`, `--encrypt-recipient`, or
-`--encrypt-recipients-file`), in which case the whole file is a single
+unless it was written with any of the `--encrypt`, `--encrypt-passphrase-file`,
+`--encrypt-recipient`, or `--encrypt-recipients-file` flags (available on both
+`kshrk capture` and `kshrk redact`), in which case the whole file is a single
 [age](https://age-encryption.org/v1) envelope around this same ZIP layout; see
 [Encryption](#encryption) below.
 

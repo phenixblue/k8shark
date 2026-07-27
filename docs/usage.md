@@ -810,7 +810,7 @@ key`), not a raw crypto failure.
 ### Combining with redaction
 
 `kshrk redact` reads an encrypted source with the flags above and can
-re-encrypt the output with `--encrypt*`:
+re-encrypt the output with `--encrypt-*`:
 
 ```sh
 kshrk redact --in capture.kshrk --redact-secrets \
@@ -822,7 +822,7 @@ kshrk redact --in capture.kshrk --redact-secrets \
 capture) works the same way and keeps the archive encrypted end to end — no
 plaintext copy is ever written to disk in between.
 
-If a source archive is encrypted but `redact` isn't given any `--encrypt*`
+If a source archive is encrypted but `redact` isn't given any `--encrypt-*`
 flags, it warns and writes the redacted output in plaintext rather than
 silently downgrading it without telling you.
 

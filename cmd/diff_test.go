@@ -107,6 +107,10 @@ func buildEncryptedDiffArchive(t *testing.T, body, passphrase string) string {
 	if err != nil {
 		t.Fatalf("NewEncryptedStreamWriter: %v", err)
 	}
+	// Release the file handle even if WriteRecord/Finish below t.Fatalf's, so
+	// TempDir cleanup can't be blocked by an open file. Abort is a no-op after
+	// a successful Finish.
+	defer func() { _ = sw.Abort() }()
 	if err := sw.WriteRecord(rec); err != nil {
 		t.Fatalf("WriteRecord: %v", err)
 	}
