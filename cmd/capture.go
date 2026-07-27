@@ -215,10 +215,14 @@ func runCapture(cmd *cobra.Command, args []string) error {
 		redactResult = result
 	}
 
-	// Re-stat: redaction rewrites the archive, so report the final size.
+	// Re-stat: redaction rewrites the archive, so report the final size. Skip
+	// in streaming mode, where OutputPath is "-" (no file) and a stray file
+	// named "-" would otherwise report a misleading size.
 	outputSize := sum.OutputSize
-	if fi, serr := os.Stat(sum.OutputPath); serr == nil {
-		outputSize = fi.Size()
+	if !streamingStdout {
+		if fi, serr := os.Stat(sum.OutputPath); serr == nil {
+			outputSize = fi.Size()
+		}
 	}
 
 	fmt.Fprintf(msgOut, "\nCapture complete\n")
