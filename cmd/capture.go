@@ -101,7 +101,7 @@ func runCapture(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	if encrypt && cfg.Output == "-" {
-		return fmt.Errorf("--encrypt cannot be combined with --output - (NDJSON streaming to stdout is not encrypted)")
+		return fmt.Errorf("archive encryption (--encrypt / --encrypt-passphrase-file) cannot be combined with --output - (NDJSON streaming to stdout is not encrypted)")
 	}
 	var encRecipients []age.Recipient
 	var encIdentities []age.Identity

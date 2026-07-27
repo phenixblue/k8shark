@@ -49,6 +49,10 @@ func buildEncryptedArchive(t *testing.T, records []*capture.Record, recipients [
 	if err != nil {
 		t.Fatalf("buildEncryptedArchive NewEncryptedStreamWriter: %v", err)
 	}
+	// Release the file handle even if a WriteRecord/Finish below t.Fatalf's,
+	// so TempDir cleanup can't be blocked by an open file. Abort is a no-op
+	// after a successful Finish.
+	defer func() { _ = sw.Abort() }()
 	for _, r := range records {
 		if err := sw.WriteRecord(r); err != nil {
 			t.Fatalf("buildEncryptedArchive WriteRecord: %v", err)

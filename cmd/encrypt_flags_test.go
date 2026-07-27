@@ -83,15 +83,30 @@ func TestResolveEncryptPassphrase_FromEnv(t *testing.T) {
 }
 
 // TestResolveEncryptPassphrase_NonTTYNoSource verifies the loud-failure path:
-// encryption requested, no file and no env, and stdin is not a terminal (as
-// in `go test`), so it must return an error rather than block on a prompt.
+// encryption requested, no file and no env, and stdin is not a terminal, so
+// it must return an error rather than block on a prompt.
 func TestResolveEncryptPassphrase_NonTTYNoSource(t *testing.T) {
 	// Ensure the env var is unset for this test regardless of the outer env.
 	t.Setenv(encryptPassphraseEnv, "")
+
+	// Force stdin to a pipe (never a TTY) so the test is deterministic even
+	// when `go test` is run from an interactive terminal — otherwise
+	// term.IsTerminal could be true and the resolver would block on the
+	// interactive prompt.
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer r.Close()
+	defer w.Close()
+	origStdin := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = origStdin }()
+
 	cmd := newTestEncryptCommand()
 	_ = cmd.Flags().Set("encrypt", "true")
 
-	_, _, err := resolveEncryptPassphrase(cmd)
+	_, _, err = resolveEncryptPassphrase(cmd)
 	if err == nil {
 		t.Fatal("expected an error when no passphrase source and no TTY, got nil")
 	}
