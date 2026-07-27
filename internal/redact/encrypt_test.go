@@ -127,9 +127,13 @@ func TestRedact_EncryptedRoundTrip(t *testing.T) {
 		t.Fatalf("parsing record: %v", err)
 	}
 	var obj map[string]json.RawMessage
-	_ = json.Unmarshal(rec.ResponseBody, &obj)
+	if err := json.Unmarshal(rec.ResponseBody, &obj); err != nil {
+		t.Fatalf("parsing response body: %v", err)
+	}
 	var dataMap map[string]string
-	_ = json.Unmarshal(obj["data"], &dataMap)
+	if err := json.Unmarshal(obj["data"], &dataMap); err != nil {
+		t.Fatalf("parsing secret data: %v", err)
+	}
 	want := base64.StdEncoding.EncodeToString([]byte("REDACTED"))
 	if dataMap["password"] != want {
 		t.Errorf("data[password] = %q, want %q", dataMap["password"], want)

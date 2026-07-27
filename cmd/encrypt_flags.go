@@ -88,7 +88,9 @@ func readPassphraseFile(path string) (string, error) {
 // echoed.
 func promptNewPassphrase(cmd *cobra.Command) (string, error) {
 	fd := int(os.Stdin.Fd())
-	out := cmd.OutOrStdout()
+	// Prompts go to stderr so they never corrupt machine-readable output on
+	// stdout (or a stdout redirect).
+	out := cmd.ErrOrStderr()
 
 	fmt.Fprint(out, "Enter passphrase for archive encryption: ")
 	first, err := term.ReadPassword(fd)

@@ -356,7 +356,10 @@ func (e *Engine) Run() (*CaptureSummary, error) {
 		WatchEnabled:      anyWatchEnabled(e.cfg.Resources),
 		Intervals:         distinctIntervals(e.cfg.Resources),
 		UncompressedBytes: e.sink.UncompressedBytes(),
-		Encrypted:         len(e.recipients) > 0,
+		// Mirror the sink-selection condition: recipients are ignored for
+		// "-" (NDJSON to stdout), so the archive is only actually encrypted
+		// when writing to a file.
+		Encrypted: len(e.recipients) > 0 && e.cfg.Output != "-",
 	}
 
 	if e.verbose {
