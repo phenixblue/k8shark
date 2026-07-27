@@ -419,15 +419,12 @@ func TestEncryptFile_DecryptFile_PreservesSourceMode(t *testing.T) {
 	}
 }
 
-// TestEncryptFile_DecryptFile_ReadOnlySourceMode is a regression guard for a
-// bug in an earlier version of createLike: creating the destination file
-// directly with the source's exact mode fails outright when that mode has no
-// owner-write bit (e.g. 0400/0444, a read-only source) — Unix applies the
-// create mode immediately, and the very open() call that's meant to write the
-// file is then denied write access to what it just created. createLike must
-// force the owner-write bit on while writing and chmod to the exact source
-// mode only once done, so a read-only source round-trips successfully with
-// its mode preserved rather than erroring.
+// TestEncryptFile_DecryptFile_ReadOnlySourceMode confirms a read-only source
+// (0400/0444 — no owner-write bit at all) round-trips successfully with its
+// mode preserved in the output: createLike's temp file is writable while
+// being populated regardless of the source's mode, and commit narrows it to
+// the exact source mode (dropping the extra write bit) only once done, via
+// the rename.
 func TestEncryptFile_DecryptFile_ReadOnlySourceMode(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix permission bits don't apply on Windows")
@@ -467,16 +464,14 @@ func TestEncryptFile_DecryptFile_ReadOnlySourceMode(t *testing.T) {
 	}
 }
 
-// TestCreateLike_NarrowsExistingLoosePermissionsBeforeWriting is a regression
-// guard for a gap in an earlier version of createLike: a pre-existing
-// dstPath that's MORE permissive than the source (e.g. a stale 0644 file
-// where the source is 0600) was only narrowed by the caller's final Chmod,
-// after all content had already been written — meaning plaintext/ciphertext
-// sat under the loose permissions for the entire write. createLike must
-// narrow dstPath to the source's mode *before* returning the open file, so
-// there is no window where content is written under looser-than-intended
-// permissions.
-func TestCreateLike_NarrowsExistingLoosePermissionsBeforeWriting(t *testing.T) {
+// TestCreateLike_DoesNotTouchDstPathUntilCommit confirms the core guarantee
+// of the temp-file+rename design: while the returned file is being written
+// to, a pre-existing dstPath (regardless of its permissions or content) is
+// completely untouched — no partial content, no permission change — right up
+// until commit() is called. This is what makes the design immune to both the
+// "loose permissions during write" and "symlink-following" issues an
+// earlier, direct-open version of createLike had to work around individually.
+func TestCreateLike_DoesNotTouchDstPathUntilCommit(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix permission bits don't apply on Windows")
 	}
@@ -492,35 +487,52 @@ func TestCreateLike_NarrowsExistingLoosePermissionsBeforeWriting(t *testing.T) {
 	defer src.Close()
 
 	dstPath := filepath.Join(dir, "dst.kshrk")
-	if err := os.WriteFile(dstPath, []byte("stale, loosely-permissioned prior output"), 0o644); err != nil {
+	const staleContent = "stale, loosely-permissioned prior output"
+	if err := os.WriteFile(dstPath, []byte(staleContent), 0o644); err != nil {
 		t.Fatalf("WriteFile(stale dst, 0644): %v", err)
 	}
 
-	dst, mode, err := createLike(dstPath, src)
+	dst, mode, commit, err := createLike(dstPath, src)
 	if err != nil {
 		t.Fatalf("createLike: %v", err)
 	}
-	defer dst.Close()
-
 	if mode != 0o600 {
 		t.Errorf("returned mode = %o, want 0600 (the source's mode)", mode)
 	}
-	// The critical assertion: by the time createLike returns — before any
-	// caller has written a single byte — dstPath must already be narrowed to
-	// the source's mode, not left at its old, looser 0644.
+	if dst.Name() == dstPath {
+		t.Fatalf("createLike returned a file at dstPath itself (%q); it must be a separate temp file", dstPath)
+	}
+
+	// Write into the returned file and confirm dstPath is still exactly the
+	// stale content/permissions from before — commit hasn't run yet.
+	if _, err := dst.WriteString("new content"); err != nil {
+		t.Fatalf("WriteString: %v", err)
+	}
+	if got := statMode(t, dstPath); got != 0o644 {
+		t.Errorf("dstPath mode before commit = %o, want unchanged 0644", got)
+	}
+	if content, err := os.ReadFile(dstPath); err != nil || string(content) != staleContent {
+		t.Errorf("dstPath content before commit = %q, %v; want unchanged %q", content, err, staleContent)
+	}
+
+	if err := commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
 	if got := statMode(t, dstPath); got != 0o600 {
-		t.Errorf("dstPath mode immediately after createLike = %o, want 0600 (narrowed before any write, not left at the stale 0644)", got)
+		t.Errorf("dstPath mode after commit = %o, want 0600 (the source's mode)", got)
+	}
+	if content, err := os.ReadFile(dstPath); err != nil || string(content) != "new content" {
+		t.Errorf("dstPath content after commit = %q, %v; want %q", content, err, "new content")
 	}
 }
 
-// TestEncryptFile_ExistingReadOnlyOutput covers the case createLike's
-// pre-chmod exists for: dstPath already exists with a restrictive mode (e.g.
-// left behind, with a read-only mode, by an earlier run of this very
-// mode-preservation logic). os.OpenFile's mode argument is ignored for a
-// file that already exists — only its current on-disk mode governs the
-// access check — so re-running EncryptFile against the same output path
-// must still succeed rather than failing with a permission error caused by
-// its own past output.
+// TestEncryptFile_ExistingReadOnlyOutput confirms overwriting an existing,
+// restrictively-permissioned output succeeds: createLike writes to a fresh
+// temp file and renames it into place, so the pre-existing dstPath's own
+// permissions (here, read-only 0400 — e.g. left behind by an earlier run of
+// this same mode-preservation logic) never block the operation. Unlike an
+// open()-based approach, a rename only needs write access to the *directory*
+// to replace the name, not to the file it's replacing.
 func TestEncryptFile_ExistingReadOnlyOutput(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix permission bits don't apply on Windows")
@@ -551,35 +563,6 @@ func TestEncryptFile_ExistingReadOnlyOutput(t *testing.T) {
 		t.Fatalf("OpenWithIdentities: %v", err)
 	}
 	_ = ar.Close()
-}
-
-// TestEncryptFile_ExistingWriteOnlyOutput confirms createLike opens the
-// destination O_WRONLY, not O_RDWR: an existing output file with a
-// write-only (0200) mode has no read bit, which O_RDWR would reject even
-// though EncryptFile never actually reads back from dst. This mirrors
-// TestEncryptFile_ExistingReadOnlyOutput, but for the destination's mode
-// rather than the source's (a 0200 *source* can never be processed at all,
-// independent of this fix, since encrypting it requires reading it).
-func TestEncryptFile_ExistingWriteOnlyOutput(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Unix permission bits don't apply on Windows")
-	}
-	dir := t.TempDir()
-	plainPath := filepath.Join(dir, "plain.kshrk")
-	sampleArchive(t, plainPath)
-
-	encPath := filepath.Join(dir, "enc.kshrk")
-	if err := os.WriteFile(encPath, []byte("stale output from a prior run"), 0o200); err != nil {
-		t.Fatalf("WriteFile(stale output, 0200): %v", err)
-	}
-
-	recipients, err := RecipientsFromPassphrase(testPassphrase)
-	if err != nil {
-		t.Fatalf("RecipientsFromPassphrase: %v", err)
-	}
-	if err := EncryptFile(plainPath, encPath, recipients); err != nil {
-		t.Fatalf("EncryptFile overwriting a pre-existing 0200 (write-only) output: %v", err)
-	}
 }
 
 // TestEncryptFile_RejectsSameFileAsOutput guards createLike's os.SameFile

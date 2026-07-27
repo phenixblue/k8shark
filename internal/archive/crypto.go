@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"filippo.io/age"
 )
@@ -68,73 +69,78 @@ func isNoIdentityMatch(err error) bool {
 	return errors.As(err, &noMatch)
 }
 
-// createLike creates dstPath and returns it along with src's permission bits,
-// instead of os.Create's fixed 0666&umask. EncryptFile/DecryptFile can turn a
-// source archive stored with restrictive permissions (e.g. 0600) into an
-// encrypted or plaintext copy, so the copy shouldn't silently end up more
-// permissive than the original — this matters most for DecryptFile, whose
-// output is plaintext.
+// createLike creates a fresh temporary file in dstPath's directory — never
+// dstPath itself — and returns it along with src's permission bits and a
+// commit function. The caller writes into the returned file, then, once
+// finished, calls commit to fix its permissions to match src exactly and
+// atomically rename it into place as dstPath (or removeTemp to discard it on
+// error). EncryptFile/DecryptFile use this so a source archive stored with
+// restrictive permissions (e.g. 0600) can't silently turn into a more
+// permissive encrypted or plaintext copy — this matters most for DecryptFile,
+// whose output is plaintext.
 //
-// dstPath is locked to mode|0o200 (the source's permission bits, plus the
-// owner-write needed to populate it) before this function returns — never to
-// whatever an existing dstPath's own mode happened to be. That matters when
-// dstPath already exists more permissively than the source (e.g. a stale
-// 0644 file where the source is 0600): narrowing it only via a final Chmod
-// after writing (as an earlier version of this function did) would leave
-// plaintext sitting under the loose permissions for the entire duration of
-// the write. Permission failures here are fatal, not best-effort — if the
-// intended mode can't be set, no content is written under the wrong
-// permissions in the first place. Callers still restore the exact source
-// mode (dropping the extra owner-write bit, via (*os.File).Chmod using the
-// returned FileMode) once they're done writing, before the final Close.
-func createLike(dstPath string, src *os.File) (*os.File, os.FileMode, error) {
+// Writing to a same-directory temp file and renaming into place, rather than
+// opening dstPath directly, closes two related gaps a direct-open approach
+// (an earlier version of this function used one) can't avoid:
+//   - Partially-written output is never observable at dstPath: on any
+//     failure the temp file is simply discarded, never having touched
+//     whatever (if anything) previously existed at dstPath.
+//   - Symlink-following, safely, even under a TOCTOU race: an Lstat-then-Open
+//     check on dstPath (what an earlier version of this function did) can
+//     still be raced — dstPath can be swapped for a symlink after the check
+//     and before the open, causing a direct write to follow the link and
+//     corrupt an unintended target. os.Rename doesn't have this problem:
+//     POSIX rename(2) atomically replaces whatever is *named* dstPath — if
+//     that's a symlink, the symlink itself is replaced, never its target —
+//     no matter when dstPath started (or stopped) being a symlink relative
+//     to this function's checks.
+//
+// An existing symlink or other non-regular file at dstPath is still rejected
+// up front with a clear error, rather than silently replacing it.
+func createLike(dstPath string, src *os.File) (dst *os.File, mode os.FileMode, commit func() error, err error) {
 	srcInfo, err := src.Stat()
 	if err != nil {
-		return nil, 0, fmt.Errorf("stat %q: %w", src.Name(), err)
+		return nil, 0, nil, fmt.Errorf("stat %q: %w", src.Name(), err)
 	}
-	mode := srcInfo.Mode().Perm()
+	mode = srcInfo.Mode().Perm()
 
-	// Lstat, not Stat: dstPath must be rejected if IT is a symlink, without
-	// following it first. os.Stat/os.OpenFile both follow symlinks, so an
-	// existing symlink at dstPath (planted by an attacker, or left over from
-	// something else) would otherwise cause EncryptFile/DecryptFile to
-	// truncate and write through it to whatever it points at — and the
-	// deferred cleanup's os.Remove(dstPath) only removes the symlink itself
-	// on failure, not the target, silently leaving partially-written content
-	// behind in a file this function never meant to touch. Rejecting any
-	// non-regular existing path here (symlink, device, fifo, socket) is
-	// simpler and safer than trying to handle each case.
 	if existing, statErr := os.Lstat(dstPath); statErr == nil {
 		if !existing.Mode().IsRegular() {
-			return nil, 0, fmt.Errorf("output %q exists and is not a regular file (mode %s)", dstPath, existing.Mode())
+			return nil, 0, nil, fmt.Errorf("output %q exists and is not a regular file (mode %s)", dstPath, existing.Mode())
 		}
 		if os.SameFile(srcInfo, existing) {
-			return nil, 0, fmt.Errorf("output %q must not be the same file as the input", dstPath)
-		}
-		// Narrows an existing, more-permissive dstPath down to the intended
-		// mode *before* opening it, so there is no window where it sits at
-		// looser-than-intended permissions while content is written.
-		if err := os.Chmod(dstPath, mode|0o200); err != nil {
-			return nil, 0, fmt.Errorf("setting permissions on %q: %w", dstPath, err)
+			return nil, 0, nil, fmt.Errorf("output %q must not be the same file as the input", dstPath)
 		}
 	}
-	dst, err := os.OpenFile(dstPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode|0o200)
+
+	tmp, err := os.CreateTemp(filepath.Dir(dstPath), "."+filepath.Base(dstPath)+".tmp-*")
 	if err != nil {
-		return nil, 0, fmt.Errorf("creating %q: %w", dstPath, err)
+		return nil, 0, nil, fmt.Errorf("creating temporary file for %q: %w", dstPath, err)
 	}
-	// This is the call that actually closes the loose-permission window: an
-	// existing dstPath that was open()-able because it already had the
-	// owner-write bit (e.g. a stale, more-permissive 0644 where the source is
-	// 0600) is narrowed here, before any content is written — not left at its
-	// old, looser mode until the caller's chmod after writing finishes. It
-	// also covers OpenFile's create mode being subject to umask, for a
-	// freshly-created dstPath.
-	if err := dst.Chmod(mode | 0o200); err != nil {
-		dst.Close()
-		os.Remove(dstPath)
-		return nil, 0, fmt.Errorf("setting permissions on %q: %w", dstPath, err)
+	tmpPath := tmp.Name()
+	// os.CreateTemp always uses 0600 regardless of src's mode; add the
+	// owner-write bit for good measure (0600 already has it) while we
+	// populate the file. commit narrows this to the exact source mode
+	// before the rename.
+	if err := tmp.Chmod(mode | 0o200); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return nil, 0, nil, fmt.Errorf("setting permissions on temporary file: %w", err)
 	}
-	return dst, mode, nil
+
+	commit = func() error {
+		if err := tmp.Chmod(mode); err != nil {
+			return fmt.Errorf("setting permissions on %q: %w", tmpPath, err)
+		}
+		if err := tmp.Close(); err != nil {
+			return fmt.Errorf("closing %q: %w", tmpPath, err)
+		}
+		if err := os.Rename(tmpPath, dstPath); err != nil {
+			return fmt.Errorf("renaming temporary file into place as %q: %w", dstPath, err)
+		}
+		return nil
+	}
+	return tmp, mode, commit, nil
 }
 
 // EncryptFile writes an age-encrypted copy of the plaintext file at srcPath to
@@ -161,17 +167,18 @@ func EncryptFile(srcPath, dstPath string, recipients []age.Recipient) (err error
 	}
 	defer src.Close()
 
-	dst, mode, err := createLike(dstPath, src)
+	dst, _, commit, err := createLike(dstPath, src)
 	if err != nil {
 		return err
 	}
-	// Every failure from here on removes the partially-written output, so
-	// each branch below only needs to set err and return — no repeated
-	// close/remove boilerplate to keep in sync.
+	tmpPath := dst.Name()
+	// Every failure from here on discards the temporary file, which never
+	// touched dstPath — so each branch below only needs to set err and
+	// return. Once commit succeeds this is a no-op (err is nil).
 	defer func() {
 		if err != nil {
 			dst.Close()
-			os.Remove(dstPath)
+			os.Remove(tmpPath)
 		}
 	}()
 
@@ -180,19 +187,14 @@ func EncryptFile(srcPath, dstPath string, recipients []age.Recipient) (err error
 		return fmt.Errorf("setting up encryption: %w", err)
 	}
 	if _, err = io.Copy(w, src); err != nil {
-		_ = w.Close() // best-effort: attempt to finalize before the deferred cleanup removes dstPath
+		_ = w.Close() // best-effort: attempt to finalize before the deferred cleanup discards the temp file
 		return fmt.Errorf("encrypting %q: %w", srcPath, err)
 	}
 	if err = w.Close(); err != nil {
 		return fmt.Errorf("finishing encryption of %q: %w", srcPath, err)
 	}
-	// Restore the source's exact mode now that writing is done — createLike
-	// forced the owner-write bit on so the writes above could happen at all.
-	if err = dst.Chmod(mode); err != nil {
-		return fmt.Errorf("setting permissions on %q: %w", dstPath, err)
-	}
-	if err = dst.Close(); err != nil {
-		return fmt.Errorf("closing %q: %w", dstPath, err)
+	if err = commit(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -228,17 +230,18 @@ func DecryptFile(srcPath, dstPath string, identities []age.Identity) (err error)
 		return fmt.Errorf("decrypting %q: %w", srcPath, err)
 	}
 
-	dst, mode, err := createLike(dstPath, src)
+	dst, _, commit, err := createLike(dstPath, src)
 	if err != nil {
 		return err
 	}
-	// Every failure from here on removes the partially-written output, so
-	// each branch below only needs to set err and return — no repeated
-	// close/remove boilerplate to keep in sync.
+	tmpPath := dst.Name()
+	// Every failure from here on discards the temporary file, which never
+	// touched dstPath — so each branch below only needs to set err and
+	// return. Once commit succeeds this is a no-op (err is nil).
 	defer func() {
 		if err != nil {
 			dst.Close()
-			os.Remove(dstPath)
+			os.Remove(tmpPath)
 		}
 	}()
 
@@ -248,13 +251,8 @@ func DecryptFile(srcPath, dstPath string, identities []age.Identity) (err error)
 		// STREAM authentication rejected tampered or corrupt ciphertext.
 		return fmt.Errorf("decrypting %q: tampered or corrupt archive: %w", srcPath, err)
 	}
-	// Restore the source's exact mode now that writing is done — createLike
-	// forced the owner-write bit on so the write above could happen at all.
-	if err = dst.Chmod(mode); err != nil {
-		return fmt.Errorf("setting permissions on %q: %w", dstPath, err)
-	}
-	if err = dst.Close(); err != nil {
-		return fmt.Errorf("closing %q: %w", dstPath, err)
+	if err = commit(); err != nil {
+		return err
 	}
 	return nil
 }
