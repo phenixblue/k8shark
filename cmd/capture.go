@@ -170,13 +170,65 @@ func runCapture(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("capture failed: %w", err)
 	}
 
+	// Post-capture redaction runs before the summary so the summary reflects
+	// the final on-disk archive. While redaction is pending, the archive at
+	// sum.OutputPath is only the ephemerally-encrypted intermediate — not yet
+	// decryptable by the user's key — so we must not report it as encrypted
+	// until this completes.
+	var redactResult redact.Result
+	if willRedact {
+		tmpPath := sum.OutputPath + ".redacting"
+		result, rerr := redact.Archive(sum.OutputPath, tmpPath, redact.Options{
+			RedactSecrets: doRedactSecrets,
+			AllowList:     allowList,
+			Rules:         fieldRules,
+			// Decrypt the (ephemerally-encrypted) intermediate and re-encrypt to
+			// the real recipients so the redacted archive stays encrypted end to
+			// end; both are nil for a plaintext capture.
+			Identities: redactIdentities,
+			Recipients: redactRecipients,
+		})
+		if rerr != nil {
+			_ = os.Remove(tmpPath)
+			// When the intermediate was encrypted to the ephemeral in-memory key
+			// (redactIdentities is set), sum.OutputPath can't be decrypted by any
+			// user key — remove it rather than leave an unrecoverable file where
+			// the user expects their capture.
+			if len(redactIdentities) > 0 {
+				_ = os.Remove(sum.OutputPath)
+			}
+			return fmt.Errorf("redacting archive: %w", rerr)
+		}
+		if err := os.Rename(tmpPath, sum.OutputPath); err != nil {
+			// The fully-redacted archive is at tmpPath; keep it for recovery
+			// rather than destroying the only good copy. Remove the ephemerally-
+			// encrypted intermediate still sitting at sum.OutputPath, since no
+			// user key can decrypt it.
+			if len(redactIdentities) > 0 {
+				_ = os.Remove(sum.OutputPath)
+			}
+			return fmt.Errorf("replacing archive with redacted version (redacted output left at %s): %w", tmpPath, err)
+		}
+		redactResult = result
+	}
+
+	// Re-stat: redaction rewrites the archive, so report the final size.
+	outputSize := sum.OutputSize
+	if fi, serr := os.Stat(sum.OutputPath); serr == nil {
+		outputSize = fi.Size()
+	}
+
 	fmt.Fprintf(msgOut, "\nCapture complete\n")
-	fmt.Fprintf(msgOut, "  Output:    %s (%s)\n", sum.OutputPath, formatBytes(sum.OutputSize))
+	fmt.Fprintf(msgOut, "  Output:    %s (%s)\n", sum.OutputPath, formatBytes(outputSize))
 	if enc.enabled {
 		fmt.Fprintf(msgOut, "  Encrypted: yes (age %s)\n", enc.mode)
 	}
 	fmt.Fprintf(msgOut, "  Records:   %d across %d resource path(s)\n", sum.RecordCount, sum.ResourceCount)
 	fmt.Fprintf(msgOut, "  Duration:  %s\n", sum.Duration)
+	if redactResult.SecretsRedacted > 0 || redactResult.FieldsRedacted > 0 {
+		fmt.Fprintf(msgOut, "  Redacted:  %d secret(s), %d record(s) with field rules applied\n",
+			redactResult.SecretsRedacted, redactResult.FieldsRedacted)
+	}
 	if sum.PodLogs.Attempted > 0 {
 		fmt.Fprintf(msgOut, "  Pod logs:  %d/%d captured", sum.PodLogs.Captured, sum.PodLogs.Attempted)
 		if sum.PodLogs.Skipped > 0 {
@@ -196,41 +248,6 @@ func runCapture(cmd *cobra.Command, args []string) error {
 				fmt.Fprintf(msgOut, "    ... and %d more (run with --verbose for full list)\n",
 					sum.PodLogs.Skipped-len(sum.PodLogs.Failures))
 			}
-		}
-	}
-
-	// Post-capture redaction (inputs resolved before the capture started).
-	if willRedact {
-		tmpPath := sum.OutputPath + ".redacting"
-		result, err := redact.Archive(sum.OutputPath, tmpPath, redact.Options{
-			RedactSecrets: doRedactSecrets,
-			AllowList:     allowList,
-			Rules:         fieldRules,
-			// Decrypt the (ephemerally-encrypted) intermediate and re-encrypt to
-			// the real recipients so the redacted archive stays encrypted end to
-			// end; both are nil for a plaintext capture.
-			Identities: redactIdentities,
-			Recipients: redactRecipients,
-		})
-		if err != nil {
-			_ = os.Remove(tmpPath)
-			// When the intermediate was encrypted to the ephemeral in-memory key
-			// (redactIdentities is set), sum.OutputPath can't be decrypted by any
-			// user key — remove it rather than leave an unrecoverable file where
-			// the user expects their capture.
-			if len(redactIdentities) > 0 {
-				_ = os.Remove(sum.OutputPath)
-			}
-			return fmt.Errorf("redacting archive: %w", err)
-		}
-		if err := os.Rename(tmpPath, sum.OutputPath); err != nil {
-			// Don't delete tmpPath: it holds the fully-redacted archive, so leave
-			// it for manual recovery instead of destroying the only good copy.
-			return fmt.Errorf("replacing archive with redacted version (redacted output left at %s): %w", tmpPath, err)
-		}
-		if result.SecretsRedacted > 0 || result.FieldsRedacted > 0 {
-			fmt.Fprintf(msgOut, "  Redacted:  %d secret(s), %d record(s) with field rules applied\n",
-				result.SecretsRedacted, result.FieldsRedacted)
 		}
 	}
 
