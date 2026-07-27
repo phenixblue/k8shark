@@ -1,0 +1,304 @@
+package archive
+
+import (
+	"os"
+	"path/filepath"
+	"sync"
+	"testing"
+
+	"filippo.io/age"
+)
+
+// testPassphrase is a fixed, documented test-only passphrase. It must never
+// change without regenerating testdata/golden-v1-passphrase.kshrk.
+const testPassphrase = "correct-horse-battery-staple-test-only" //nolint:gosec // test fixture, not a real secret
+
+// sampleEncryptedArchive mirrors sampleArchive but encrypts the output to
+// recipients using the production StreamWriter path.
+func sampleEncryptedArchive(t *testing.T, path string, recipients []age.Recipient) {
+	t.Helper()
+	sw, err := NewEncryptedStreamWriter(path, recipients)
+	if err != nil {
+		t.Fatalf("NewEncryptedStreamWriter: %v", err)
+	}
+	rec := map[string]any{
+		"id": "rec-1", "api_path": "/api/v1/namespaces/default/pods",
+		"http_method": "GET", "response_code": 200,
+		"response_body": map[string]any{"apiVersion": "v1", "kind": "PodList", "items": []any{}},
+	}
+	if err := sw.WriteRecord(rec); err != nil {
+		t.Fatalf("WriteRecord: %v", err)
+	}
+	meta := map[string]any{"format_version": 1, "capture_id": "encrypted-v1", "record_count": 1}
+	idx := map[string]any{
+		"/api/v1/namespaces/default/pods": map[string]any{
+			"api_path": "/api/v1/namespaces/default/pods", "seqs": []int{0},
+		},
+	}
+	if err := sw.Finish(meta, idx, nil); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+}
+
+func TestEncryptedArchiveRoundTrip_Passphrase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "encrypted.kshrk")
+	recipients, err := RecipientsFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("RecipientsFromPassphrase: %v", err)
+	}
+	sampleEncryptedArchive(t, path, recipients)
+
+	// A plain Open must fail clearly rather than misreading ciphertext as a zip.
+	if _, err := Open(path); err == nil {
+		t.Fatal("Open on encrypted archive succeeded without a key, want error")
+	}
+
+	identities, err := IdentitiesFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("IdentitiesFromPassphrase: %v", err)
+	}
+	ar, err := OpenWithIdentities(path, identities)
+	if err != nil {
+		t.Fatalf("OpenWithIdentities: %v", err)
+	}
+	defer ar.Close()
+
+	var meta map[string]any
+	if err := ar.ReadMetadata(&meta); err != nil {
+		t.Fatalf("ReadMetadata: %v", err)
+	}
+	if meta["capture_id"] != "encrypted-v1" {
+		t.Errorf("metadata.capture_id = %v", meta["capture_id"])
+	}
+	data, err := ar.ReadRecord("/api/v1/namespaces/default/pods", 0)
+	if err != nil {
+		t.Fatalf("ReadRecord: %v", err)
+	}
+	if len(data) == 0 {
+		t.Error("ReadRecord returned empty data")
+	}
+}
+
+func TestEncryptedArchiveRoundTrip_X25519(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "encrypted-x25519.kshrk")
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatalf("GenerateX25519Identity: %v", err)
+	}
+	sampleEncryptedArchive(t, path, []age.Recipient{id.Recipient()})
+
+	ar, err := OpenWithIdentities(path, []age.Identity{id})
+	if err != nil {
+		t.Fatalf("OpenWithIdentities: %v", err)
+	}
+	defer ar.Close()
+
+	var meta map[string]any
+	if err := ar.ReadMetadata(&meta); err != nil {
+		t.Fatalf("ReadMetadata: %v", err)
+	}
+	if meta["capture_id"] != "encrypted-v1" {
+		t.Errorf("metadata.capture_id = %v", meta["capture_id"])
+	}
+}
+
+func TestEncryptedArchiveWrongPassphrase(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "encrypted.kshrk")
+	recipients, err := RecipientsFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("RecipientsFromPassphrase: %v", err)
+	}
+	sampleEncryptedArchive(t, path, recipients)
+
+	identities, err := IdentitiesFromPassphrase("wrong-passphrase")
+	if err != nil {
+		t.Fatalf("IdentitiesFromPassphrase: %v", err)
+	}
+	_, err = OpenWithIdentities(path, identities)
+	if err == nil {
+		t.Fatal("OpenWithIdentities with wrong passphrase succeeded, want error")
+	}
+	if got := err.Error(); got == "" {
+		t.Error("expected a non-empty, clean error message")
+	}
+}
+
+func TestEncryptedArchiveNoIdentities(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "encrypted.kshrk")
+	recipients, err := RecipientsFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("RecipientsFromPassphrase: %v", err)
+	}
+	sampleEncryptedArchive(t, path, recipients)
+
+	if _, err := OpenWithIdentities(path, nil); err == nil {
+		t.Fatal("OpenWithIdentities with no identities succeeded, want error")
+	}
+}
+
+// TestEncryptedArchiveTamperDetection flips a byte in the ciphertext and
+// confirms age's AEAD authentication rejects it instead of silently
+// returning corrupted plaintext.
+func TestEncryptedArchiveTamperDetection(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "encrypted.kshrk")
+	recipients, err := RecipientsFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("RecipientsFromPassphrase: %v", err)
+	}
+	sampleEncryptedArchive(t, path, recipients)
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	// Flip a byte well past the age header/recipient stanzas, inside the
+	// STREAM ciphertext, so this exercises payload authentication rather
+	// than header parsing.
+	tamperIdx := len(data) - 10
+	data[tamperIdx] ^= 0xFF
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	identities, err := IdentitiesFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("IdentitiesFromPassphrase: %v", err)
+	}
+	ar, err := OpenWithIdentities(path, identities)
+	if err != nil {
+		// Failing at Open time (during the final-chunk authentication
+		// DecryptReaderAt performs eagerly) is an acceptable place to catch this.
+		return
+	}
+	defer ar.Close()
+	if _, err := ar.ReadRecord("/api/v1/namespaces/default/pods", 0); err == nil {
+		t.Fatal("ReadRecord succeeded against tampered ciphertext, want error")
+	}
+}
+
+// TestEncryptedArchiveConcurrentReads pins age.DecryptReaderAt's documented
+// promise that its ReaderAt is safe for concurrent ReadAt calls, since
+// internal/server and internal/ui hold a single *Archive across goroutines.
+func TestEncryptedArchiveConcurrentReads(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "encrypted.kshrk")
+	recipients, err := RecipientsFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("RecipientsFromPassphrase: %v", err)
+	}
+	sw, err := NewEncryptedStreamWriter(path, recipients)
+	if err != nil {
+		t.Fatalf("NewEncryptedStreamWriter: %v", err)
+	}
+	const n = 20
+	idx := map[string]any{}
+	seqs := make([]int, 0, n)
+	for i := 0; i < n; i++ {
+		rec := map[string]any{"id": "rec", "api_path": "/api/v1/pods", "n": i}
+		if err := sw.WriteRecord(rec); err != nil {
+			t.Fatalf("WriteRecord: %v", err)
+		}
+		seqs = append(seqs, i)
+	}
+	idx["/api/v1/pods"] = map[string]any{"api_path": "/api/v1/pods", "seqs": seqs}
+	if err := sw.Finish(map[string]any{"capture_id": "concurrent"}, idx, nil); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	identities, err := IdentitiesFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("IdentitiesFromPassphrase: %v", err)
+	}
+	ar, err := OpenWithIdentities(path, identities)
+	if err != nil {
+		t.Fatalf("OpenWithIdentities: %v", err)
+	}
+	defer ar.Close()
+
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(seq int) {
+			defer wg.Done()
+			if _, err := ar.ReadRecord("/api/v1/pods", seq); err != nil {
+				errs <- err
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("concurrent ReadRecord failed: %v", err)
+	}
+}
+
+// TestGoldenV1Passphrase opens a checked-in passphrase-encrypted fixture to
+// catch any future age-library upgrade or kshrk change that breaks reading
+// already-written encrypted archives. Regenerate with:
+// go test ./internal/archive -run TestGoldenV1Passphrase -update
+func TestGoldenV1Passphrase(t *testing.T) {
+	golden := filepath.Join("testdata", "golden-v1-passphrase.kshrk")
+	if *update {
+		if err := os.MkdirAll("testdata", 0o755); err != nil {
+			t.Fatalf("mkdir testdata: %v", err)
+		}
+		recipients, err := RecipientsFromPassphrase(testPassphrase)
+		if err != nil {
+			t.Fatalf("RecipientsFromPassphrase: %v", err)
+		}
+		sampleEncryptedArchive(t, golden, recipients)
+		t.Logf("regenerated %s", golden)
+	}
+	if _, err := os.Stat(golden); err != nil {
+		t.Skipf("golden fixture missing (run with -update): %v", err)
+	}
+
+	identities, err := IdentitiesFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("IdentitiesFromPassphrase: %v", err)
+	}
+	ar, err := OpenWithIdentities(golden, identities)
+	if err != nil {
+		t.Fatalf("OpenWithIdentities(golden): %v", err)
+	}
+	defer ar.Close()
+	var meta struct {
+		CaptureID string `json:"capture_id"`
+	}
+	if err := ar.ReadMetadata(&meta); err != nil {
+		t.Fatalf("ReadMetadata(golden): %v", err)
+	}
+	if meta.CaptureID != "encrypted-v1" {
+		t.Errorf("golden capture_id = %q, want encrypted-v1", meta.CaptureID)
+	}
+	if _, err := ar.ReadRecord("/api/v1/namespaces/default/pods", 0); err != nil {
+		t.Fatalf("ReadRecord(golden): %v", err)
+	}
+}
+
+// TestPlaintextArchiveStillOpens is a regression guard: adding encryption
+// support must not change how existing plaintext archives are opened.
+func TestPlaintextArchiveStillOpens(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "plain.kshrk")
+	sampleArchive(t, path)
+
+	ar, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open(plaintext): %v", err)
+	}
+	defer ar.Close()
+	var meta map[string]any
+	if err := ar.ReadMetadata(&meta); err != nil {
+		t.Fatalf("ReadMetadata: %v", err)
+	}
+	if meta["capture_id"] != "golden-v1" {
+		t.Errorf("metadata.capture_id = %v", meta["capture_id"])
+	}
+
+	// OpenWithIdentities must also work transparently on a plaintext archive.
+	ar2, err := OpenWithIdentities(path, nil)
+	if err != nil {
+		t.Fatalf("OpenWithIdentities(plaintext, nil): %v", err)
+	}
+	defer ar2.Close()
+}
