@@ -183,10 +183,13 @@ func TestRedact_ReKeyAcrossIdentities(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenWithIdentities(B): %v", err)
 	}
-	_ = arB.Close()
+	if err := arB.Close(); err != nil {
+		t.Errorf("closing B-decrypted archive: %v", err)
+	}
 
 	// A must NOT decrypt the re-keyed output.
-	if _, err := archive.OpenWithIdentities(dst, []age.Identity{idA}); err == nil {
+	if arA, err := archive.OpenWithIdentities(dst, []age.Identity{idA}); err == nil {
+		_ = arA.Close()
 		t.Fatal("OpenWithIdentities(A) on re-keyed archive succeeded, want failure")
 	}
 }
