@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"filippo.io/age"
 	"github.com/spf13/cobra"
 )
 
@@ -15,6 +16,130 @@ func newTestEncryptCommand() *cobra.Command {
 	cmd := &cobra.Command{}
 	addEncryptFlags(cmd)
 	return cmd
+}
+
+func TestResolveEncryption_Disabled(t *testing.T) {
+	cmd := newTestEncryptCommand()
+	enc, err := resolveEncryption(cmd)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if enc.enabled {
+		t.Error("enabled = true with no flags, want false")
+	}
+}
+
+func TestResolveEncryption_RecipientInline(t *testing.T) {
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatalf("GenerateX25519Identity: %v", err)
+	}
+	cmd := newTestEncryptCommand()
+	_ = cmd.Flags().Set("encrypt-recipient", id.Recipient().String())
+
+	enc, err := resolveEncryption(cmd)
+	if err != nil {
+		t.Fatalf("resolveEncryption: %v", err)
+	}
+	if !enc.enabled || enc.mode != "recipients" {
+		t.Errorf("enc = %+v, want enabled recipients", enc)
+	}
+	if len(enc.recipients) != 1 {
+		t.Errorf("recipients len = %d, want 1", len(enc.recipients))
+	}
+}
+
+func TestResolveEncryption_RecipientsFile(t *testing.T) {
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatalf("GenerateX25519Identity: %v", err)
+	}
+	dir := t.TempDir()
+	recipFile := filepath.Join(dir, "recipients.txt")
+	if err := os.WriteFile(recipFile, []byte("# a recipient\n"+id.Recipient().String()+"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	cmd := newTestEncryptCommand()
+	_ = cmd.Flags().Set("encrypt-recipients-file", recipFile)
+
+	enc, err := resolveEncryption(cmd)
+	if err != nil {
+		t.Fatalf("resolveEncryption: %v", err)
+	}
+	if !enc.enabled || len(enc.recipients) != 1 {
+		t.Errorf("enc = %+v, want enabled with 1 recipient", enc)
+	}
+}
+
+// TestResolveEncryption_RecipientsFileRejectsNonX25519 keeps the two recipient
+// flag variants consistent: age.ParseRecipients accepts post-quantum Hybrid
+// (age1pq1...) keys, but --encrypt-recipient is X25519-only, so the file
+// variant must reject non-X25519 recipients too.
+func TestResolveEncryption_RecipientsFileRejectsNonX25519(t *testing.T) {
+	hybrid, err := age.GenerateHybridIdentity()
+	if err != nil {
+		t.Fatalf("GenerateHybridIdentity: %v", err)
+	}
+	dir := t.TempDir()
+	recipFile := filepath.Join(dir, "recipients.txt")
+	if err := os.WriteFile(recipFile, []byte(hybrid.Recipient().String()+"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	cmd := newTestEncryptCommand()
+	_ = cmd.Flags().Set("encrypt-recipients-file", recipFile)
+
+	_, err = resolveEncryption(cmd)
+	if err == nil {
+		t.Fatal("expected an error for a non-X25519 (Hybrid) recipient in the file")
+	}
+	if !strings.Contains(err.Error(), "non-X25519") {
+		t.Errorf("error = %q, want it to mention a non-X25519 recipient", err)
+	}
+}
+
+func TestResolveEncryption_PassphraseAndRecipientConflict(t *testing.T) {
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatalf("GenerateX25519Identity: %v", err)
+	}
+	cmd := newTestEncryptCommand()
+	_ = cmd.Flags().Set("encrypt", "true")
+	_ = cmd.Flags().Set("encrypt-recipient", id.Recipient().String())
+
+	_, err = resolveEncryption(cmd)
+	if err == nil {
+		t.Fatal("expected an error combining passphrase and recipient encryption")
+	}
+	if !strings.Contains(err.Error(), "cannot be combined") {
+		t.Errorf("error = %q, want it to mention the combination is disallowed", err)
+	}
+}
+
+func TestResolveEncryption_InvalidRecipient(t *testing.T) {
+	cmd := newTestEncryptCommand()
+	_ = cmd.Flags().Set("encrypt-recipient", "not-a-valid-age-key")
+
+	if _, err := resolveEncryption(cmd); err == nil {
+		t.Fatal("expected an error for an invalid --encrypt-recipient")
+	}
+}
+
+func TestResolveEncrypt_PassphraseMode(t *testing.T) {
+	dir := t.TempDir()
+	passFile := filepath.Join(dir, "pass.txt")
+	if err := os.WriteFile(passFile, []byte("hunter2\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	cmd := newTestEncryptCommand()
+	_ = cmd.Flags().Set("encrypt-passphrase-file", passFile)
+
+	enc, err := resolveEncryption(cmd)
+	if err != nil {
+		t.Fatalf("resolveEncryption: %v", err)
+	}
+	if !enc.enabled || enc.mode != "passphrase" || len(enc.recipients) != 1 {
+		t.Errorf("enc = %+v, want enabled passphrase with 1 recipient", enc)
+	}
 }
 
 func TestResolveEncryptPassphrase_Disabled(t *testing.T) {
