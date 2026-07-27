@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,9 @@ func newTestEncryptCmdCommand() *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.Flags().StringP("output", "o", "", "")
 	addEncryptFlags(cmd)
+	// These tests assert on disk state and returned errors, not the printed
+	// summary, so discard stdout rather than letting it leak to os.Stdout.
+	cmd.SetOut(io.Discard)
 	return cmd
 }
 

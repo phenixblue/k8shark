@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,9 @@ func newTestDecryptCmdCommand() *cobra.Command {
 	// execution via cmd.Execute(); tests call runDecrypt directly, so merge
 	// them explicitly (matches the pattern used elsewhere in this package).
 	cmd.Flags().AddFlagSet(cmd.PersistentFlags())
+	// These tests assert on disk state and returned errors, not the printed
+	// summary, so discard stdout rather than letting it leak to os.Stdout.
+	cmd.SetOut(io.Discard)
 	return cmd
 }
 

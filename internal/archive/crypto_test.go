@@ -341,8 +341,12 @@ func TestEncryptFile_DecryptFile_RoundTrip_Passphrase(t *testing.T) {
 		t.Fatalf("IsEncrypted(encrypted output) = %v, %v; want true, nil", enc, err)
 	}
 	// The source file must be untouched.
-	if unchanged, err := os.ReadFile(plainPath); err != nil || string(unchanged) != string(original) {
-		t.Fatalf("EncryptFile modified its source file")
+	unchanged, err := os.ReadFile(plainPath)
+	if err != nil {
+		t.Fatalf("ReadFile(plain) after EncryptFile: %v", err)
+	}
+	if string(unchanged) != string(original) {
+		t.Fatal("EncryptFile modified its source file")
 	}
 
 	identities, err := IdentitiesFromPassphrase(testPassphrase)
