@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"filippo.io/age"
 	"github.com/phenixblue/k8shark/internal/capture"
 	"github.com/phenixblue/k8shark/internal/config"
 	"github.com/phenixblue/k8shark/internal/redact"
@@ -22,8 +23,9 @@ single .kshrk capture file for later replay.
 
 Resources, namespaces, and intervals come from the --config file. Use
 --auto-discover to capture every available API resource without listing them,
---output - to stream records as NDJSON to stdout, and --redact-secrets to
-scrub Secret values from the archive after capture.`,
+--output - to stream records as NDJSON to stdout, --redact-secrets to scrub
+Secret values from the archive after capture, and --encrypt to write the
+archive as an encrypted (age) envelope.`,
 	Example: `  # Capture using a config file
   kshrk capture --config k8shark.yaml
 
@@ -34,7 +36,13 @@ scrub Secret values from the archive after capture.`,
   kshrk capture --config k8shark.yaml --output -
 
   # Capture, then redact Secret values from the archive
-  kshrk capture --config k8shark.yaml --redact-secrets`,
+  kshrk capture --config k8shark.yaml --redact-secrets
+
+  # Capture and encrypt the archive, prompting for a passphrase
+  kshrk capture --config k8shark.yaml --encrypt
+
+  # Encrypt using a passphrase read from a file (no prompt)
+  kshrk capture --config k8shark.yaml --encrypt-passphrase-file ./pass.txt`,
 	RunE: runCapture,
 }
 
@@ -47,6 +55,7 @@ func init() {
 	captureCmd.Flags().Bool("redact-secrets", false, "redact Secret data and stringData values from the archive after capture")
 	captureCmd.Flags().StringArray("allow-secret", nil, "namespace/name of secret to preserve when --redact-secrets is set (repeatable)")
 	captureCmd.Flags().StringArray("redact-field", nil, "field redaction rule applied after capture: <fieldPath>:<Kind>:<replacement>[:<valueType>] (repeatable)")
+	addEncryptFlags(captureCmd)
 	_ = viper.BindPFlag("output", captureCmd.Flags().Lookup("output"))
 	_ = viper.BindPFlag("kubeconfig", captureCmd.Flags().Lookup("kubeconfig"))
 	_ = viper.BindPFlag("duration", captureCmd.Flags().Lookup("duration"))
@@ -85,17 +94,48 @@ func runCapture(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("invalid config: %w", err)
 	}
 
+	// When streaming NDJSON to stdout, stdout must carry only records, so all
+	// human-oriented output (spinner, status, summary) goes to stderr instead.
+	streamingStdout := cfg.Output == "-"
+	msgOut := os.Stdout
+	if streamingStdout {
+		msgOut = os.Stderr
+	}
+
+	// Reject incompatible flag combinations before any interactive passphrase
+	// prompt so users aren't asked for a secret only to be told it can't be
+	// used. encryptRequested checks the flags without prompting.
+	if encryptRequested(cmd) && streamingStdout {
+		return fmt.Errorf("archive encryption (--encrypt / --encrypt-passphrase-file) cannot be combined with --output - (NDJSON streaming to stdout is not encrypted)")
+	}
+
+	// Resolve encryption before the (potentially long) capture starts so a bad
+	// or missing passphrase fails fast rather than after minutes of polling.
+	passphrase, encrypt, err := resolveEncryptPassphrase(cmd)
+	if err != nil {
+		return err
+	}
+	var encRecipients []age.Recipient
+	var encIdentities []age.Identity
+	if encrypt {
+		encRecipients, encIdentities, err = encryptOptionsFromPassphrase(passphrase)
+		if err != nil {
+			return err
+		}
+	}
+
 	verbose, _ := cmd.Root().PersistentFlags().GetBool("verbose")
 
 	engine, err := capture.NewEngine(cfg, verbose)
 	if err != nil {
 		return fmt.Errorf("initializing capture engine: %w", err)
 	}
+	engine.SetEncryption(encRecipients)
 
-	fmt.Fprintf(os.Stdout, "Starting capture -> %s\n", cfg.Output)
+	fmt.Fprintf(msgOut, "Starting capture -> %s\n", cfg.Output)
 
 	// Spinner runs until capture finishes.
-	stopSpinner := startSpinner(os.Stdout)
+	stopSpinner := startSpinner(msgOut)
 	sum, err := engine.Run()
 	stopSpinner()
 
@@ -103,27 +143,30 @@ func runCapture(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("capture failed: %w", err)
 	}
 
-	fmt.Fprintf(os.Stdout, "\nCapture complete\n")
-	fmt.Fprintf(os.Stdout, "  Output:    %s (%s)\n", sum.OutputPath, formatBytes(sum.OutputSize))
-	fmt.Fprintf(os.Stdout, "  Records:   %d across %d resource path(s)\n", sum.RecordCount, sum.ResourceCount)
-	fmt.Fprintf(os.Stdout, "  Duration:  %s\n", sum.Duration)
+	fmt.Fprintf(msgOut, "\nCapture complete\n")
+	fmt.Fprintf(msgOut, "  Output:    %s (%s)\n", sum.OutputPath, formatBytes(sum.OutputSize))
+	if encrypt {
+		fmt.Fprintf(msgOut, "  Encrypted: yes (age passphrase)\n")
+	}
+	fmt.Fprintf(msgOut, "  Records:   %d across %d resource path(s)\n", sum.RecordCount, sum.ResourceCount)
+	fmt.Fprintf(msgOut, "  Duration:  %s\n", sum.Duration)
 	if sum.PodLogs.Attempted > 0 {
-		fmt.Fprintf(os.Stdout, "  Pod logs:  %d/%d captured", sum.PodLogs.Captured, sum.PodLogs.Attempted)
+		fmt.Fprintf(msgOut, "  Pod logs:  %d/%d captured", sum.PodLogs.Captured, sum.PodLogs.Attempted)
 		if sum.PodLogs.Skipped > 0 {
-			fmt.Fprintf(os.Stdout, " (%d skipped)", sum.PodLogs.Skipped)
+			fmt.Fprintf(msgOut, " (%d skipped)", sum.PodLogs.Skipped)
 		}
 		if sum.PodLogs.CapturedPrevious > 0 {
-			fmt.Fprintf(os.Stdout, ", %d previous", sum.PodLogs.CapturedPrevious)
+			fmt.Fprintf(msgOut, ", %d previous", sum.PodLogs.CapturedPrevious)
 		}
-		fmt.Fprintln(os.Stdout)
+		fmt.Fprintln(msgOut)
 		if len(sum.PodLogs.Failures) > 0 {
-			fmt.Fprintln(os.Stdout, "  Skipped (sample):")
+			fmt.Fprintln(msgOut, "  Skipped (sample):")
 			for _, f := range sum.PodLogs.Failures {
-				fmt.Fprintf(os.Stdout, "    - %s/%s [container=%s]: %s\n",
+				fmt.Fprintf(msgOut, "    - %s/%s [container=%s]: %s\n",
 					f.Namespace, f.Pod, f.Container, f.Reason)
 			}
 			if sum.PodLogs.Skipped > len(sum.PodLogs.Failures) {
-				fmt.Fprintf(os.Stdout, "    ... and %d more (run with --verbose for full list)\n",
+				fmt.Fprintf(msgOut, "    ... and %d more (run with --verbose for full list)\n",
 					sum.PodLogs.Skipped-len(sum.PodLogs.Failures))
 			}
 		}
@@ -160,6 +203,10 @@ func runCapture(cmd *cobra.Command, args []string) error {
 			RedactSecrets: doRedactSecrets,
 			AllowList:     allowList,
 			Rules:         fieldRules,
+			// When the capture was encrypted, decrypt it to redact and re-encrypt
+			// the result so the redacted archive stays encrypted end to end.
+			Identities: encIdentities,
+			Recipients: encRecipients,
 		})
 		if err != nil {
 			_ = os.Remove(tmpPath)
@@ -170,7 +217,7 @@ func runCapture(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("replacing archive with redacted version: %w", err)
 		}
 		if result.SecretsRedacted > 0 || result.FieldsRedacted > 0 {
-			fmt.Fprintf(os.Stdout, "  Redacted:  %d secret(s), %d record(s) with field rules applied\n",
+			fmt.Fprintf(msgOut, "  Redacted:  %d secret(s), %d record(s) with field rules applied\n",
 				result.SecretsRedacted, result.FieldsRedacted)
 		}
 	}

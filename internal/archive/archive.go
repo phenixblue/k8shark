@@ -93,6 +93,7 @@ type StreamWriter struct {
 	n       int
 	bytes   int64          // running total of uncompressed record JSON bytes
 	pathSeq map[string]int // apiPath → next seq number for that path's directory
+	closed  bool           // set once Finish or Abort has run the close sequence
 }
 
 // NewStreamWriter creates a new StreamWriter writing to outputPath.
@@ -209,6 +210,10 @@ func (w *StreamWriter) Finish(meta, index, watchIndex any) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	if w.closed {
+		return fmt.Errorf("archive writer already closed")
+	}
+
 	// metadata.json stored uncompressed for fast header reads.
 	if meta != nil {
 		b, err := json.MarshalIndent(meta, "", "  ")
@@ -229,6 +234,7 @@ func (w *StreamWriter) Finish(meta, index, watchIndex any) error {
 			return err
 		}
 	}
+	w.closed = true
 	// Close the layers from outermost to innermost, but always attempt every
 	// close so a failure partway through can't leak the file descriptor: zw
 	// wraps ageW (when encrypting) which wraps f. Return the first error.
@@ -245,6 +251,30 @@ func (w *StreamWriter) Finish(meta, index, watchIndex any) error {
 		firstErr = fmt.Errorf("closing output file: %w", err)
 	}
 	return firstErr
+}
+
+// Abort releases the writer's underlying handles without finalizing the
+// archive. It is a no-op once Finish (or a prior Abort) has run, so it is safe
+// to defer as error-path cleanup alongside a normal Finish. Closing the file
+// handle also lets the caller remove or rename a partially-written output
+// (e.g. capture's ".redacting" temp) on platforms where an open handle blocks
+// that (Windows).
+func (w *StreamWriter) Abort() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.closed {
+		return nil
+	}
+	w.closed = true
+	// Best-effort close of each layer. zw.Close may error (e.g. nothing
+	// written yet); we still close the remaining layers and only surface the
+	// file-close error, which is the one that matters for handle release.
+	_ = w.zw.Close()
+	if w.ageW != nil {
+		_ = w.ageW.Close()
+	}
+	return w.f.Close()
 }
 
 // RecordCount returns the number of records written so far.

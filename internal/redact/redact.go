@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"filippo.io/age"
 	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/capture"
 	"github.com/phenixblue/k8shark/internal/config"
@@ -25,6 +26,14 @@ type Options struct {
 	AllowList map[string]bool
 	// Rules is the list of field-level redaction rules to apply to every record.
 	Rules []config.RedactionRule
+	// Identities, when non-empty, are used to decrypt an encrypted source
+	// archive before redacting. Required when srcPath is an encrypted archive.
+	Identities []age.Identity
+	// Recipients, when non-empty, cause the redacted output archive to be
+	// written as an age-encrypted envelope. Typically the caller supplies both
+	// Identities and Recipients derived from the same passphrase so a redacted
+	// encrypted archive stays encrypted.
+	Recipients []age.Recipient
 }
 
 // Result reports how many redactions were performed.
@@ -36,7 +45,7 @@ type Result struct {
 // Archive reads srcPath, applies redaction options, and writes to dstPath.
 // The original archive is not modified.
 func Archive(srcPath, dstPath string, opts Options) (Result, error) {
-	ar, err := archive.Open(srcPath)
+	ar, err := archive.OpenWithIdentities(srcPath, opts.Identities)
 	if err != nil {
 		return Result{}, fmt.Errorf("opening archive: %w", err)
 	}
@@ -63,10 +72,19 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 
 	result := Result{}
 
-	sw, err := archive.NewStreamWriter(dstPath)
+	var sw *archive.StreamWriter
+	if len(opts.Recipients) > 0 {
+		sw, err = archive.NewEncryptedStreamWriter(dstPath, opts.Recipients)
+	} else {
+		sw, err = archive.NewStreamWriter(dstPath)
+	}
 	if err != nil {
 		return Result{}, fmt.Errorf("creating output archive: %w", err)
 	}
+	// Ensure the output writer's file handle is released if we return early
+	// (e.g. a malformed record) before Finish. Abort is a no-op once Finish
+	// has run, so the success path is unaffected.
+	defer func() { _ = sw.Abort() }()
 
 	// newIdx / newWI will be built with corrected seq numbers as we write.
 	newIdx := make(capture.Index, len(idx))
@@ -163,6 +181,7 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 	meta.Redacted = true
 	meta.SecretsRedacted = result.SecretsRedacted
 	meta.FieldsRedacted = result.FieldsRedacted
+	meta.Encrypted = len(opts.Recipients) > 0
 
 	if err := sw.Finish(&meta, newIdx, newWI); err != nil {
 		return Result{}, fmt.Errorf("finishing output archive: %w", err)

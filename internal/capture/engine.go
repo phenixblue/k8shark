@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"filippo.io/age"
 	"github.com/google/uuid"
 	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/config"
@@ -97,6 +98,10 @@ type Engine struct {
 	index      Index
 	watchIndex WatchIndex
 	sink       archive.RecordSink // set by Run(); exposed for tests
+	// recipients, when non-empty, makes Run() write the output archive as an
+	// age-encrypted envelope. Set via SetEncryption before Run(). Ignored when
+	// output is "-" (NDJSON streaming to stdout is never encrypted).
+	recipients []age.Recipient
 	// pollPasses, when non-zero, makes pollResource fetch exactly this many
 	// times back-to-back instead of waiting on a real time.Ticker paced by
 	// res.Interval and bounded by the capture context's timeout (e.cfg.Duration).
@@ -171,6 +176,14 @@ func NewEngine(cfg *config.Config, verbose bool) (*Engine, error) {
 	}, nil
 }
 
+// SetEncryption makes Run() write the output archive as an age-encrypted
+// envelope to the given recipients. It must be called before Run(). Passing
+// no recipients leaves the archive unencrypted. Has no effect when output is
+// "-" (NDJSON streaming to stdout is never encrypted).
+func (e *Engine) SetEncryption(recipients []age.Recipient) {
+	e.recipients = recipients
+}
+
 // newEngineWith constructs an Engine with a pre-built HTTP client and base URL.
 // Used in tests to inject a fake API server.
 func newEngineWith(cfg *config.Config, client *http.Client, baseURL string, verbose bool) *Engine {
@@ -227,10 +240,21 @@ func (e *Engine) Run() (*CaptureSummary, error) {
 		if e.cfg.Output == "-" {
 			e.sink = archive.NewNDJSONWriter(os.Stdout)
 		} else {
-			e.sink, err = archive.NewStreamWriter(e.cfg.Output)
+			var sw *archive.StreamWriter
+			if len(e.recipients) > 0 {
+				sw, err = archive.NewEncryptedStreamWriter(e.cfg.Output, e.recipients)
+			} else {
+				sw, err = archive.NewStreamWriter(e.cfg.Output)
+			}
 			if err != nil {
 				return nil, err
 			}
+			e.sink = sw
+			// Release the writer's file handle on any early-return error path
+			// between here and Finish (e.g. namespace expansion or watch
+			// validation below). Abort is a no-op once Finish has run, so the
+			// success path is unaffected.
+			defer func() { _ = sw.Abort() }()
 		}
 	}
 
@@ -338,10 +362,20 @@ func (e *Engine) Run() (*CaptureSummary, error) {
 		WatchEnabled:      anyWatchEnabled(e.cfg.Resources),
 		Intervals:         distinctIntervals(e.cfg.Resources),
 		UncompressedBytes: e.sink.UncompressedBytes(),
+		// Mirror the sink-selection condition: recipients are ignored for
+		// "-" (NDJSON to stdout), so the archive is only actually encrypted
+		// when writing to a file.
+		Encrypted: len(e.recipients) > 0 && e.cfg.Output != "-",
 	}
 
 	if e.verbose {
-		fmt.Fprintf(os.Stdout, "  captured %d records\n", e.sink.RecordCount())
+		// When records stream to stdout as NDJSON, keep stdout pure and send
+		// this diagnostic to stderr instead.
+		w := os.Stdout
+		if e.cfg.Output == "-" {
+			w = os.Stderr
+		}
+		fmt.Fprintf(w, "  captured %d records\n", e.sink.RecordCount())
 	}
 
 	if err := e.sink.Finish(meta, e.index, e.watchIndex); err != nil {
