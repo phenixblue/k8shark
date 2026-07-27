@@ -204,6 +204,38 @@ func TestResolveDecryptIdentities_EncryptedNonTTY(t *testing.T) {
 	}
 }
 
+// TestResolveDecryptIdentities_MultiPathEncryptedSecond guards the diff
+// two-archive case: when the first path is plaintext but a later one is
+// encrypted, the resolver must still detect the need for a key (here, error
+// on a non-TTY) rather than returning nil because only the first was checked.
+func TestResolveDecryptIdentities_MultiPathEncryptedSecond(t *testing.T) {
+	dir := t.TempDir()
+	plain := filepath.Join(dir, "plain.kshrk")
+	writePlaintextArchive(t, plain)
+	enc := filepath.Join(dir, "enc.kshrk")
+	writeEncryptedArchive(t, enc, "whatever")
+
+	t.Setenv(decryptPassphraseEnv, "")
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer r.Close()
+	defer w.Close()
+	origStdin := os.Stdin
+	os.Stdin = r
+	defer func() { os.Stdin = origStdin }()
+
+	cmd := newTestDecryptCommand()
+	_, err = resolveDecryptIdentities(cmd, plain, enc)
+	if err == nil {
+		t.Fatal("expected an error: second path is encrypted, no key, no TTY")
+	}
+	if !strings.Contains(err.Error(), "enc.kshrk") || !strings.Contains(err.Error(), "is encrypted") {
+		t.Errorf("error = %q, want it to name the encrypted (second) archive", err)
+	}
+}
+
 // TestResolveDecryptIdentities_WrongPassphrase confirms the resolver succeeds
 // (it can't know the key is wrong) but the subsequent open fails cleanly.
 func TestResolveDecryptIdentities_WrongPassphrase(t *testing.T) {

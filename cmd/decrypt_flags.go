@@ -25,16 +25,18 @@ func addDecryptFlags(cmd *cobra.Command) {
 	_ = cmd.MarkPersistentFlagFilename("decrypt-identity-file")
 }
 
-// resolveDecryptIdentities returns the age identities needed to open the
-// archive at path, or nil when no key is required. Key material is gathered
+// resolveDecryptIdentities returns the age identities needed to open the given
+// archive path(s), or nil when no key is required. Key material is gathered
 // from --decrypt-identity-file, --decrypt-passphrase-file, and
 // $KSHRK_DECRYPT_PASSPHRASE (all optional and combinable — age tries each
-// identity until one succeeds). When none is supplied, it peeks whether path
-// is encrypted: a plaintext archive needs no key (returns nil, so plaintext
-// archives open with zero interaction), while an encrypted one triggers an
-// interactive passphrase prompt on a TTY, or a clear error when stdin is not a
-// terminal (rather than hanging on an unanswerable prompt).
-func resolveDecryptIdentities(cmd *cobra.Command, path string) ([]age.Identity, error) {
+// identity until one succeeds). When none is supplied, it peeks whether any
+// path is encrypted: if none are, no key is needed (returns nil, so plaintext
+// archives open with zero interaction); if any is, it triggers an interactive
+// passphrase prompt on a TTY, or a clear error when stdin is not a terminal
+// (rather than hanging on an unanswerable prompt). Multiple paths matter for
+// diff, where a single shared key covers both archives and either side may be
+// the encrypted one.
+func resolveDecryptIdentities(cmd *cobra.Command, paths ...string) ([]age.Identity, error) {
 	passphraseFile, _ := cmd.Flags().GetString("decrypt-passphrase-file")
 	identityFile, _ := cmd.Flags().GetString("decrypt-identity-file")
 
@@ -70,22 +72,30 @@ func resolveDecryptIdentities(cmd *cobra.Command, path string) ([]age.Identity, 
 		return identities, nil
 	}
 
-	// No explicit key was given: only prompt if the archive actually needs
-	// one, so plaintext archives (the common case) open untouched.
-	encrypted, err := archive.IsEncrypted(path)
-	if err != nil {
-		// A stat/read failure here (e.g. missing file) is better surfaced by
-		// the subsequent open with its own clear message; don't preempt it.
-		return nil, nil //nolint:nilerr // intentional: defer the error to Open
+	// No explicit key was given: only prompt if some archive actually needs
+	// one, so plaintext archives (the common case) open untouched. In
+	// two-archive diff mode either side may be the encrypted one, so check
+	// them all and prompt against the first encrypted path.
+	encPath := ""
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		// A stat/read failure here (e.g. a missing file) is better surfaced by
+		// the subsequent open with its own clear message; skip it.
+		if enc, err := archive.IsEncrypted(p); err == nil && enc {
+			encPath = p
+			break
+		}
 	}
-	if !encrypted {
+	if encPath == "" {
 		return nil, nil
 	}
 
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
-		return nil, fmt.Errorf("archive %q is encrypted: provide --decrypt-passphrase-file, --decrypt-identity-file, or $%s (an interactive prompt requires a terminal)", path, decryptPassphraseEnv)
+		return nil, fmt.Errorf("archive %q is encrypted: provide --decrypt-passphrase-file, --decrypt-identity-file, or $%s (an interactive prompt requires a terminal)", encPath, decryptPassphraseEnv)
 	}
-	pass, err := promptDecryptPassphrase(cmd, path)
+	pass, err := promptDecryptPassphrase(cmd, encPath)
 	if err != nil {
 		return nil, err
 	}

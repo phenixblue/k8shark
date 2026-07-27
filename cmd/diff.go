@@ -66,12 +66,9 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 	output, _ := cmd.Flags().GetString("output")
 
 	// A single key source is shared across both archives (documented v1.0
-	// limitation). Peek/prompt against whichever archive path is set.
-	keyPath := archivePath
-	if keyPath == "" {
-		keyPath = beforeArchive
-	}
-	identities, err := resolveDecryptIdentities(cmd, keyPath)
+	// limitation). Pass every candidate path so an encrypted archive on either
+	// side triggers the prompt, even if the other side is plaintext.
+	identities, err := resolveDecryptIdentities(cmd, archivePath, beforeArchive, afterArchive)
 	if err != nil {
 		return err
 	}
