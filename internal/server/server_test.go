@@ -298,10 +298,16 @@ func TestServer_Shutdown_WithActiveWatch_ReturnsPromptlyAndClosesCleanly(t *test
 		t.Errorf("Shutdown took %s; expected it to return promptly once the watch's context is canceled, not stall for its grace period", elapsed)
 	}
 
+	// By the time Shutdown returns, the server has already closed the
+	// connection (that's what waitForRequests guarantees) — but the client's
+	// own goroutine still needs a scheduler turn to observe EOF, so this
+	// allows a short window rather than asserting immediately. The
+	// server-side guarantee under test is Shutdown itself blocking on
+	// waitForRequests, not how fast the client notices.
 	select {
 	case <-streamDone:
-	default:
-		t.Error("watch stream still open immediately after Shutdown returned; a handler could still be reading the archive Shutdown is about to close")
+	case <-time.After(2 * time.Second):
+		t.Error("watch stream still open 2s after Shutdown returned; a handler could still be reading the archive Shutdown is about to close")
 	}
 
 	if err := srv.ar.Close(); err == nil {

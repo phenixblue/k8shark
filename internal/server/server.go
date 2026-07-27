@@ -274,6 +274,7 @@ func (s *Server) Shutdown() {
 func (s *Server) WaitForSignal() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
 	select {
 	case <-s.done:
 	case <-sigCh:
