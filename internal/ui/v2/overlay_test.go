@@ -44,7 +44,7 @@ func newOverlayTestHandler(t *testing.T) (*Handler, *server.Server) {
 		t.Fatalf("NewStreamWriter: %v", err)
 	}
 	for _, r := range recs {
-		if err := sw.WriteRecord(r); err != nil {
+		if _, err := sw.WriteRecord(r); err != nil {
 			t.Fatalf("WriteRecord: %v", err)
 		}
 	}
@@ -390,7 +390,7 @@ func TestServeObject_WholeListView_IgnoresNonListCapturedBody(t *testing.T) {
 		t.Fatalf("NewStreamWriter: %v", err)
 	}
 	for _, r := range recs {
-		if err := sw.WriteRecord(r); err != nil {
+		if _, err := sw.WriteRecord(r); err != nil {
 			t.Fatalf("WriteRecord: %v", err)
 		}
 	}

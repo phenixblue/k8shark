@@ -23,17 +23,23 @@ import (
 type sliceSink struct {
 	mu      sync.Mutex
 	records []*Record
+	pathSeq map[string]int
 }
 
-func (s *sliceSink) WriteRecord(rec any) error {
+func (s *sliceSink) WriteRecord(rec any) (int, error) {
 	r, ok := rec.(*Record)
 	if !ok {
-		return nil
+		return 0, nil
 	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.records = append(s.records, r)
-	s.mu.Unlock()
-	return nil
+	if s.pathSeq == nil {
+		s.pathSeq = make(map[string]int)
+	}
+	seq := s.pathSeq[r.APIPath]
+	s.pathSeq[r.APIPath] = seq + 1
+	return seq, nil
 }
 func (s *sliceSink) Finish(_, _, _ any) error { return nil }
 func (s *sliceSink) RecordCount() int {
@@ -42,6 +48,16 @@ func (s *sliceSink) RecordCount() int {
 	return len(s.records)
 }
 func (s *sliceSink) UncompressedBytes() int64 { return 0 }
+
+// failingSink is a RecordSink whose WriteRecord always fails, for exercising
+// the #211 write-failure path: a failed write must not produce an index
+// entry, and must not be silent.
+type failingSink struct{ err error }
+
+func (s *failingSink) WriteRecord(any) (int, error) { return 0, s.err }
+func (s *failingSink) Finish(_, _, _ any) error     { return nil }
+func (s *failingSink) RecordCount() int             { return 0 }
+func (s *failingSink) UncompressedBytes() int64     { return 0 }
 
 // fakeK8sServer returns an httptest.TLSServer that responds to the paths used by
 // a minimal capture config (pods in default, nodes cluster-scoped).
@@ -1743,6 +1759,202 @@ func TestStoreRecord_PopulatesItemCounts(t *testing.T) {
 	single := eng.index["/api/v1/namespaces/default/pods/foo"]
 	if got := single.Counts; len(got) != 1 || got[0] != 0 {
 		t.Errorf("single-object Counts = %v, want [0]", got)
+	}
+}
+
+// TestRun_RecordWriteFailure_ExitsNonZero verifies the other half of #211's
+// acceptance criteria: when every record write fails, Run() itself — not
+// just storeRecord in isolation — returns a non-nil error naming the failing
+// path, so the CLI exits non-zero instead of reporting a clean capture.
+func TestRun_RecordWriteFailure_ExitsNonZero(t *testing.T) {
+	fake := fakeK8sServer(t)
+	defer fake.Close()
+
+	cfg := &config.Config{
+		DurationRaw: "2s",
+		Duration:    2 * time.Second,
+		Output:      filepath.Join(t.TempDir(), "capture.kshrk"),
+		Resources: []config.Resource{
+			{Version: "v1", Resource: "pods", Namespaces: []string{"default"}, IntervalRaw: "500ms", Interval: 500 * time.Millisecond},
+		},
+	}
+
+	eng := newEngineWith(cfg, fake.Client(), fake.URL, false)
+	eng.pollPasses = 1
+	eng.sink = &failingSink{err: fmt.Errorf("disk full")}
+
+	_, err := eng.Run()
+	if err == nil {
+		t.Fatal("Run() returned nil error despite every record write failing")
+	}
+	if !strings.Contains(err.Error(), "disk full") {
+		t.Errorf("Run() error = %v, want it to name the underlying write failure", err)
+	}
+	if !strings.Contains(err.Error(), "writing record /") {
+		t.Errorf("Run() error = %v, want it to name the failing path", err)
+	}
+}
+
+// TestStoreRecord_WriteFailure_NoIndexEntryAndSticky verifies the #211 fix:
+// a record whose sink write fails must not be added to the index (previously
+// storeRecord fell through and appended regardless, producing a dangling
+// index reference and a permanent off-by-one for every later record on that
+// path), and the engine must remember the failure so Run() can exit non-zero
+// instead of silently succeeding.
+func TestStoreRecord_WriteFailure_NoIndexEntryAndSticky(t *testing.T) {
+	wantErr := fmt.Errorf("boom")
+	eng := newEngineWith(&config.Config{}, nil, "", false)
+	eng.sink = &failingSink{err: wantErr}
+
+	const apiPath = "/api/v1/namespaces/default/pods"
+	eng.storeRecord(apiPath, []byte(`{"kind":"PodList","items":[]}`), 200, false)
+
+	if entry, ok := eng.index[apiPath]; ok {
+		t.Fatalf("index entry created for a failed write: %+v", entry)
+	}
+	if eng.captureErr == nil {
+		t.Fatal("captureErr not set after a failed record write")
+	}
+
+	// A second failure must not overwrite the first — Run() reports the
+	// original cause, not whichever failure happened to land last.
+	eng.storeRecord(apiPath, []byte(`{"kind":"PodList","items":[]}`), 200, false)
+	if !strings.Contains(eng.captureErr.Error(), wantErr.Error()) {
+		t.Fatalf("captureErr = %v, want it to wrap %v", eng.captureErr, wantErr)
+	}
+}
+
+// TestConcurrentPollAndWatch_NoIndexSeqCollision reproduces the #210 race: a
+// polled resource and a watched one demux to the same api_path, so
+// storeRecord (the poll path) and the watch event loop's inline write both
+// assign seq numbers for that path concurrently, from different goroutines.
+// Before the fix, each side kept its own independent pathSeq counter under a
+// different mutex, so nothing kept the archive's on-disk seq (assigned by
+// StreamWriter under sw.mu) in agreement with the index's seq (assigned by
+// Engine under e.mu) — some index entries pointed at the wrong record body.
+// The fix deletes Engine.pathSeq entirely; both call sites now use the seq
+// StreamWriter.WriteRecord returns, so there is exactly one counter and it is
+// assigned atomically with the write. This test writes real, distinguishable
+// bodies through both code paths against a real archive.StreamWriter and
+// verifies every index/watch-index seq resolves to the exact body that call
+// wrote — not a body written by the other goroutine.
+func TestConcurrentPollAndWatch_NoIndexSeqCollision(t *testing.T) {
+	outPath := filepath.Join(t.TempDir(), "capture.kshrk")
+	sw, err := archive.NewStreamWriter(outPath)
+	if err != nil {
+		t.Fatalf("NewStreamWriter: %v", err)
+	}
+
+	eng := newEngineWith(&config.Config{}, nil, "", false)
+	eng.sink = sw
+
+	const apiPath = "/api/v1/namespaces/default/pods"
+	const n = 3000
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// Poll side: the exact storeRecord code path fixed by #211/#210.
+	go func() {
+		defer wg.Done()
+		for i := 0; i < n; i++ {
+			body := fmt.Sprintf(`{"kind":"PodList","poll":%d}`, i)
+			eng.storeRecord(apiPath, []byte(body), 200, false)
+		}
+	}()
+
+	// Watch side: mirrors the inline write-then-index-update block in
+	// streamWatch's event loop (engine.go, the watchIndex update following
+	// e.sink.WriteRecord), writing to the SAME api path concurrently.
+	go func() {
+		defer wg.Done()
+		for i := 0; i < n; i++ {
+			rec := &Record{
+				ID:           fmt.Sprintf("watch-%d", i),
+				CapturedAt:   time.Now().UTC(),
+				APIPath:      apiPath,
+				EventType:    "MODIFIED",
+				HTTPMethod:   http.MethodGet,
+				ResponseCode: http.StatusOK,
+				ResponseBody: json.RawMessage(fmt.Sprintf(`{"kind":"Pod","watch":%d}`, i)),
+			}
+			seq, err := eng.sink.WriteRecord(rec)
+			if err != nil {
+				t.Errorf("watch WriteRecord(%d): %v", i, err)
+				return
+			}
+			eng.mu.Lock()
+			if _, ok := eng.watchIndex[apiPath]; !ok {
+				eng.watchIndex[apiPath] = &WatchIndexEntry{APIPath: apiPath}
+			}
+			eng.watchIndex[apiPath].Seqs = append(eng.watchIndex[apiPath].Seqs, seq)
+			eng.watchIndex[apiPath].Times = append(eng.watchIndex[apiPath].Times, rec.CapturedAt)
+			eng.watchIndex[apiPath].EventTypes = append(eng.watchIndex[apiPath].EventTypes, rec.EventType)
+			eng.mu.Unlock()
+		}
+	}()
+
+	wg.Wait()
+
+	if err := sw.Finish(nil, eng.index, eng.watchIndex); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	ar, err := archive.Open(outPath)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer ar.Close()
+
+	pollEntry := eng.index[apiPath]
+	watchEntry := eng.watchIndex[apiPath]
+	if len(pollEntry.Seqs) != n || len(watchEntry.Seqs) != n {
+		t.Fatalf("expected %d poll seqs and %d watch seqs, got %d and %d", n, n, len(pollEntry.Seqs), len(watchEntry.Seqs))
+	}
+
+	seen := make(map[int]string) // seq -> which side claimed it
+	checkUnique := func(side string, seq int) {
+		t.Helper()
+		if prior, ok := seen[seq]; ok {
+			t.Fatalf("seq %d claimed by both %s and %s — the two counters collided", seq, prior, side)
+		}
+		seen[seq] = side
+	}
+
+	type probeBody struct {
+		Poll  *int `json:"poll"`
+		Watch *int `json:"watch"`
+	}
+	var probe struct {
+		ResponseBody probeBody `json:"response_body"`
+	}
+	for _, seq := range pollEntry.Seqs {
+		checkUnique("poll", seq)
+		data, err := ar.ReadRecord(apiPath, seq)
+		if err != nil {
+			t.Fatalf("ReadRecord(poll seq=%d): %v", seq, err)
+		}
+		probe.ResponseBody = probeBody{}
+		if err := json.Unmarshal(data, &probe); err != nil {
+			t.Fatalf("unmarshal record body at seq=%d: %v", seq, err)
+		}
+		if probe.ResponseBody.Poll == nil {
+			t.Fatalf("index says seq=%d is a poll record, but the archive body at that seq is: %s", seq, data)
+		}
+	}
+	for _, seq := range watchEntry.Seqs {
+		checkUnique("watch", seq)
+		data, err := ar.ReadRecord(apiPath, seq)
+		if err != nil {
+			t.Fatalf("ReadRecord(watch seq=%d): %v", seq, err)
+		}
+		probe.ResponseBody = probeBody{}
+		if err := json.Unmarshal(data, &probe); err != nil {
+			t.Fatalf("unmarshal record body at seq=%d: %v", seq, err)
+		}
+		if probe.ResponseBody.Watch == nil {
+			t.Fatalf("watch-index says seq=%d is a watch record, but the archive body at that seq is: %s", seq, data)
+		}
 	}
 }
 

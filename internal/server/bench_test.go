@@ -40,7 +40,7 @@ func buildBenchStore(b *testing.B, n int) *CaptureStore {
 			ResponseCode: 200,
 			ResponseBody: body,
 		}
-		if err := sw.WriteRecord(&rec); err != nil {
+		if _, err := sw.WriteRecord(&rec); err != nil {
 			b.Fatal(err)
 		}
 		index[apiPath] = &capture.IndexEntry{

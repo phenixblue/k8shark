@@ -143,7 +143,7 @@ func buildArchive(t *testing.T, entries map[string][]capture.Record) string {
 				capturedUntil = rec.CapturedAt
 			}
 			rcopy := rec
-			if err := sw.WriteRecord(&rcopy); err != nil {
+			if _, err := sw.WriteRecord(&rcopy); err != nil {
 				t.Fatalf("WriteRecord: %v", err)
 			}
 			entry.Seqs = append(entry.Seqs, i)

@@ -29,7 +29,7 @@ func buildPollStore(t *testing.T, apiPath string, snaps []struct {
 	entry := &capture.IndexEntry{APIPath: apiPath}
 	for i, s := range snaps {
 		rec := &capture.Record{ID: apiPath, CapturedAt: s.at, APIPath: apiPath, HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(s.body)}
-		if err := sw.WriteRecord(rec); err != nil {
+		if _, err := sw.WriteRecord(rec); err != nil {
 			t.Fatalf("WriteRecord: %v", err)
 		}
 		entry.Seqs = append(entry.Seqs, i)

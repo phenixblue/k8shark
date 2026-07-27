@@ -28,7 +28,7 @@ func buildMultiPathArchive(t *testing.T, bodies map[string]string) string {
 	i := 0
 	for path, body := range bodies {
 		rec := &capture.Record{ID: path, CapturedAt: now, APIPath: path, HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(body)}
-		if err := sw.WriteRecord(rec); err != nil {
+		if _, err := sw.WriteRecord(rec); err != nil {
 			t.Fatalf("WriteRecord: %v", err)
 		}
 		index[path] = &capture.IndexEntry{APIPath: path, Seqs: []int{0}, Times: []time.Time{now}}

@@ -24,7 +24,7 @@ func sampleArchive(t *testing.T, path string) {
 		"http_method": "GET", "response_code": 200,
 		"response_body": map[string]any{"apiVersion": "v1", "kind": "PodList", "items": []any{}},
 	}
-	if err := sw.WriteRecord(rec); err != nil {
+	if _, err := sw.WriteRecord(rec); err != nil {
 		t.Fatalf("WriteRecord: %v", err)
 	}
 	meta := map[string]any{"format_version": 1, "capture_id": "golden-v1", "record_count": 1}

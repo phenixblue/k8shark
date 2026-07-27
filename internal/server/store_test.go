@@ -168,7 +168,7 @@ func buildTestStore(t *testing.T, records map[string][]byte) *CaptureStore {
 			ResponseCode: 200,
 			ResponseBody: json.RawMessage(body),
 		}
-		if err := sw.WriteRecord(&rec); err != nil {
+		if _, err := sw.WriteRecord(&rec); err != nil {
 			t.Fatalf("WriteRecord: %v", err)
 		}
 		index[apiPath] = &capture.IndexEntry{
@@ -338,7 +338,7 @@ func TestStore_Latest_AtTimestamp(t *testing.T) {
 	}
 	for _, rec := range records {
 		rcopy := rec
-		if err := sw.WriteRecord(&rcopy); err != nil {
+		if _, err := sw.WriteRecord(&rcopy); err != nil {
 			t.Fatalf("WriteRecord: %v", err)
 		}
 	}
@@ -427,7 +427,7 @@ func buildTestStoreWithWatch(t *testing.T, snapshots map[string]watchTestRecord,
 			ResponseCode: 200,
 			ResponseBody: json.RawMessage(s.body),
 		}
-		if err := sw.WriteRecord(&rec); err != nil {
+		if _, err := sw.WriteRecord(&rec); err != nil {
 			t.Fatalf("WriteRecord(snap): %v", err)
 		}
 		index[apiPath] = &capture.IndexEntry{
@@ -452,7 +452,7 @@ func buildTestStoreWithWatch(t *testing.T, snapshots map[string]watchTestRecord,
 			ResponseCode: 200,
 			ResponseBody: json.RawMessage(ev.objectBody),
 		}
-		if err := sw.WriteRecord(&rec); err != nil {
+		if _, err := sw.WriteRecord(&rec); err != nil {
 			t.Fatalf("WriteRecord(watch %s): %v", ev.id, err)
 		}
 		wi := watchIndex[ev.apiPath]

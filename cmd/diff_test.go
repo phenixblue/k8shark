@@ -111,7 +111,7 @@ func buildEncryptedDiffArchive(t *testing.T, body, passphrase string) string {
 	// TempDir cleanup can't be blocked by an open file. Abort is a no-op after
 	// a successful Finish.
 	defer func() { _ = sw.Abort() }()
-	if err := sw.WriteRecord(rec); err != nil {
+	if _, err := sw.WriteRecord(rec); err != nil {
 		t.Fatalf("WriteRecord: %v", err)
 	}
 	if err := sw.Finish(meta, index, nil); err != nil {
@@ -172,7 +172,7 @@ func buildDiffArchive(t *testing.T, body string) string {
 	if err != nil {
 		t.Fatalf("NewStreamWriter: %v", err)
 	}
-	if err := sw.WriteRecord(rec); err != nil {
+	if _, err := sw.WriteRecord(rec); err != nil {
 		t.Fatalf("WriteRecord: %v", err)
 	}
 	if err := sw.Finish(meta, index, nil); err != nil {

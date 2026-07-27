@@ -40,7 +40,7 @@ func buildPollArchive(t *testing.T, apiPath string, bodies []string) string {
 			ResponseCode: 200,
 			ResponseBody: json.RawMessage(body),
 		}
-		if err := w.WriteRecord(rec); err != nil {
+		if _, err := w.WriteRecord(rec); err != nil {
 			t.Fatalf("WriteRecord: %v", err)
 		}
 
@@ -99,7 +99,7 @@ func buildWatchArchive(t *testing.T, apiPath, snapBody string, events []watchEve
 	if err != nil {
 		t.Fatalf("NewStreamWriter: %v", err)
 	}
-	if err := w.WriteRecord(snapRec); err != nil {
+	if _, err := w.WriteRecord(snapRec); err != nil {
 		t.Fatalf("WriteRecord(snap): %v", err)
 	}
 
@@ -115,7 +115,7 @@ func buildWatchArchive(t *testing.T, apiPath, snapBody string, events []watchEve
 			ResponseCode: 200,
 			ResponseBody: json.RawMessage(ev.body),
 		}
-		if err := w.WriteRecord(rec); err != nil {
+		if _, err := w.WriteRecord(rec); err != nil {
 			t.Fatalf("WriteRecord(watch %d): %v", i, err)
 		}
 		wiEntry.Seqs = append(wiEntry.Seqs, i+1) // seq continues after snap (seq 0)

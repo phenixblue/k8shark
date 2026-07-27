@@ -26,7 +26,11 @@ var epochModTime = time.Date(1980, 1, 1, 12, 0, 0, 0, time.UTC)
 
 // RecordSink accepts individual capture records as they arrive.
 type RecordSink interface {
-	WriteRecord(rec any) error
+	// WriteRecord writes rec and returns the sequence number assigned to it
+	// within its record's api_path — the same numbering readers use to
+	// address it later (see Archive.ReadRecord). The seq is only meaningful
+	// on success; callers must not use it when err is non-nil.
+	WriteRecord(rec any) (int, error)
 	// Finish writes metadata.json, index.json, and (when watchIndex is non-nil)
 	// watch-index.json, then closes the archive.
 	Finish(meta, index, watchIndex any) error
@@ -142,23 +146,24 @@ func newStreamWriter(outputPath string, recipients []age.Recipient) (*StreamWrit
 
 // WriteRecord marshals rec to JSON, Zstd-compresses it, and appends it
 // to the ZIP archive under records/<pathDir(apiPath)>/<seq>.json.zst.
-// The record must have both "id" and "api_path" fields.
-func (w *StreamWriter) WriteRecord(rec any) error {
+// The record must have both "id" and "api_path" fields. It returns the seq
+// assigned to the record, which is only valid when err is nil.
+func (w *StreamWriter) WriteRecord(rec any) (int, error) {
 	data, err := json.Marshal(rec)
 	if err != nil {
-		return fmt.Errorf("marshalling record: %w", err)
+		return 0, fmt.Errorf("marshalling record: %w", err)
 	}
 	var hdr struct {
 		ID      string `json:"id"`
 		APIPath string `json:"api_path"`
 	}
 	if err := json.Unmarshal(data, &hdr); err != nil || hdr.ID == "" || hdr.APIPath == "" {
-		return fmt.Errorf("record missing id or api_path field")
+		return 0, fmt.Errorf("record missing id or api_path field")
 	}
 
 	compressed, err := zstdCompress(data)
 	if err != nil {
-		return fmt.Errorf("compressing record %s: %w", hdr.ID, err)
+		return 0, fmt.Errorf("compressing record %s: %w", hdr.ID, err)
 	}
 
 	dir := pathDir(hdr.APIPath)
@@ -167,15 +172,15 @@ func (w *StreamWriter) WriteRecord(rec any) error {
 	defer w.mu.Unlock()
 
 	seq := w.pathSeq[hdr.APIPath]
-	w.pathSeq[hdr.APIPath] = seq + 1
 	entryName := filepath.Join("k8shark-capture", "records", dir, fmt.Sprintf("%d.json.zst", seq))
 
 	if err := writeBytes(w.zw, entryName, compressed); err != nil {
-		return err
+		return 0, err
 	}
+	w.pathSeq[hdr.APIPath] = seq + 1
 	w.n++
 	w.bytes += int64(len(data))
-	return nil
+	return seq, nil
 }
 
 // WriteRecordRaw compresses data and writes it to the archive for the given
@@ -294,30 +299,47 @@ func (w *StreamWriter) UncompressedBytes() int64 {
 // NDJSONWriter writes each record as a newline-delimited JSON object to an
 // io.Writer (typically os.Stdout). Finish is a no-op. Thread-safe.
 type NDJSONWriter struct {
-	mu    sync.Mutex
-	w     io.Writer
-	enc   *json.Encoder
-	n     int
-	bytes int64
+	mu      sync.Mutex
+	w       io.Writer
+	enc     *json.Encoder
+	n       int
+	bytes   int64
+	pathSeq map[string]int // apiPath → next seq, mirrors StreamWriter's numbering
 }
 
 // NewNDJSONWriter creates an NDJSONWriter writing to w.
 func NewNDJSONWriter(w io.Writer) *NDJSONWriter {
-	return &NDJSONWriter{w: w, enc: json.NewEncoder(w)}
+	return &NDJSONWriter{w: w, enc: json.NewEncoder(w), pathSeq: make(map[string]int)}
 }
 
-// WriteRecord encodes rec as a single JSON line.
-func (w *NDJSONWriter) WriteRecord(rec any) error {
+// WriteRecord encodes rec as a single JSON line and returns the seq assigned
+// to it within its api_path, matching StreamWriter's numbering even though
+// NDJSON output has no index to look it up by later.
+func (w *NDJSONWriter) WriteRecord(rec any) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if b, err := json.Marshal(rec); err == nil {
-		w.bytes += int64(len(b))
+	b, err := json.Marshal(rec)
+	if err != nil {
+		return 0, fmt.Errorf("marshalling record: %w", err)
 	}
+	w.bytes += int64(len(b))
+
+	var hdr struct {
+		APIPath string `json:"api_path"`
+	}
+	var seq int
+	if json.Unmarshal(b, &hdr) == nil && hdr.APIPath != "" {
+		seq = w.pathSeq[hdr.APIPath]
+	}
+
 	if err := w.enc.Encode(rec); err != nil {
-		return err
+		return 0, err
+	}
+	if hdr.APIPath != "" {
+		w.pathSeq[hdr.APIPath] = seq + 1
 	}
 	w.n++
-	return nil
+	return seq, nil
 }
 
 // Finish is a no-op for NDJSONWriter.
