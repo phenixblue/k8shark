@@ -419,6 +419,94 @@ func TestEncryptFile_DecryptFile_PreservesSourceMode(t *testing.T) {
 	}
 }
 
+// TestEncryptFile_DecryptFile_ReadOnlySourceMode is a regression guard for a
+// bug in an earlier version of createLike: creating the destination file
+// directly with the source's exact mode fails outright when that mode has no
+// owner-write bit (e.g. 0400/0444, a read-only source) — Unix applies the
+// create mode immediately, and the very open() call that's meant to write the
+// file is then denied write access to what it just created. createLike must
+// force the owner-write bit on while writing and chmod to the exact source
+// mode only once done, so a read-only source round-trips successfully with
+// its mode preserved rather than erroring.
+func TestEncryptFile_DecryptFile_ReadOnlySourceMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits don't apply on Windows")
+	}
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.kshrk")
+	sampleArchive(t, plainPath)
+	if err := os.Chmod(plainPath, 0o400); err != nil {
+		t.Fatalf("Chmod(plain, 0400): %v", err)
+	}
+
+	recipients, err := RecipientsFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("RecipientsFromPassphrase: %v", err)
+	}
+	encPath := filepath.Join(dir, "enc.kshrk")
+	if err := EncryptFile(plainPath, encPath, recipients); err != nil {
+		t.Fatalf("EncryptFile against a 0400 (read-only) source: %v", err)
+	}
+	if mode := statMode(t, encPath); mode != 0o400 {
+		t.Errorf("encrypted output mode = %o, want 0400 (matching the read-only source)", mode)
+	}
+	if err := os.Chmod(encPath, 0o444); err != nil {
+		t.Fatalf("Chmod(enc, 0444): %v", err)
+	}
+
+	identities, err := IdentitiesFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("IdentitiesFromPassphrase: %v", err)
+	}
+	decPath := filepath.Join(dir, "dec.kshrk")
+	if err := DecryptFile(encPath, decPath, identities); err != nil {
+		t.Fatalf("DecryptFile against a 0444 (read-only) source: %v", err)
+	}
+	if mode := statMode(t, decPath); mode != 0o444 {
+		t.Errorf("decrypted output mode = %o, want 0444 (matching the read-only source)", mode)
+	}
+}
+
+// TestEncryptFile_ExistingReadOnlyOutput covers the case createLike's
+// pre-chmod exists for: dstPath already exists with a restrictive mode (e.g.
+// left behind, with a read-only mode, by an earlier run of this very
+// mode-preservation logic). os.OpenFile's mode argument is ignored for a
+// file that already exists — only its current on-disk mode governs the
+// access check — so re-running EncryptFile against the same output path
+// must still succeed rather than failing with a permission error caused by
+// its own past output.
+func TestEncryptFile_ExistingReadOnlyOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits don't apply on Windows")
+	}
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.kshrk")
+	sampleArchive(t, plainPath)
+
+	encPath := filepath.Join(dir, "enc.kshrk")
+	if err := os.WriteFile(encPath, []byte("stale output from a prior run"), 0o400); err != nil {
+		t.Fatalf("WriteFile(stale output, 0400): %v", err)
+	}
+
+	recipients, err := RecipientsFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("RecipientsFromPassphrase: %v", err)
+	}
+	if err := EncryptFile(plainPath, encPath, recipients); err != nil {
+		t.Fatalf("EncryptFile overwriting a pre-existing 0400 output: %v", err)
+	}
+
+	identities, err := IdentitiesFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("IdentitiesFromPassphrase: %v", err)
+	}
+	ar, err := OpenWithIdentities(encPath, identities)
+	if err != nil {
+		t.Fatalf("OpenWithIdentities: %v", err)
+	}
+	_ = ar.Close()
+}
+
 func statMode(t *testing.T, path string) os.FileMode {
 	t.Helper()
 	fi, err := os.Stat(path)

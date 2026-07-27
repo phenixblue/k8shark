@@ -68,22 +68,39 @@ func isNoIdentityMatch(err error) bool {
 	return errors.As(err, &noMatch)
 }
 
-// createLike creates dstPath with src's permission bits, instead of
-// os.Create's fixed 0666&umask. EncryptFile/DecryptFile can turn a source
-// archive stored with restrictive permissions (e.g. 0600) into an encrypted
-// or plaintext copy, so the copy shouldn't silently end up more permissive
-// than the original — this matters most for DecryptFile, whose output is
-// plaintext.
-func createLike(dstPath string, src *os.File) (*os.File, error) {
+// createLike creates dstPath and returns it along with src's permission bits,
+// instead of os.Create's fixed 0666&umask. EncryptFile/DecryptFile can turn a
+// source archive stored with restrictive permissions (e.g. 0600) into an
+// encrypted or plaintext copy, so the copy shouldn't silently end up more
+// permissive than the original — this matters most for DecryptFile, whose
+// output is plaintext.
+//
+// The file is opened for writing with the owner-write bit guaranteed
+// regardless of src's mode, covering two cases where a restrictive source
+// mode (e.g. read-only 0400/0444) could otherwise deny the write this
+// function needs to perform: as defense in depth for the create-a-new-file
+// path, and, concretely, when dstPath already exists — OpenFile's mode
+// argument is ignored for an existing file, so only its current on-disk mode
+// governs the access check, and re-running against the same
+// restrictively-permissioned output (which this very mode-preservation logic
+// can produce) would otherwise fail. Callers must restore the exact source
+// mode (via (*os.File).Chmod, using the returned FileMode) once they're done
+// writing, before the final Close.
+func createLike(dstPath string, src *os.File) (*os.File, os.FileMode, error) {
 	srcInfo, err := src.Stat()
 	if err != nil {
-		return nil, fmt.Errorf("stat %q: %w", src.Name(), err)
+		return nil, 0, fmt.Errorf("stat %q: %w", src.Name(), err)
 	}
-	dst, err := os.OpenFile(dstPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, srcInfo.Mode().Perm())
+	mode := srcInfo.Mode().Perm()
+
+	if existing, statErr := os.Stat(dstPath); statErr == nil {
+		_ = os.Chmod(dstPath, existing.Mode().Perm()|0o200) // best-effort; OpenFile below reports any real failure
+	}
+	dst, err := os.OpenFile(dstPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, mode|0o200)
 	if err != nil {
-		return nil, fmt.Errorf("creating %q: %w", dstPath, err)
+		return nil, 0, fmt.Errorf("creating %q: %w", dstPath, err)
 	}
-	return dst, nil
+	return dst, mode, nil
 }
 
 // EncryptFile writes an age-encrypted copy of the plaintext file at srcPath to
@@ -110,7 +127,7 @@ func EncryptFile(srcPath, dstPath string, recipients []age.Recipient) (err error
 	}
 	defer src.Close()
 
-	dst, err := createLike(dstPath, src)
+	dst, mode, err := createLike(dstPath, src)
 	if err != nil {
 		return err
 	}
@@ -134,6 +151,11 @@ func EncryptFile(srcPath, dstPath string, recipients []age.Recipient) (err error
 	}
 	if err = w.Close(); err != nil {
 		return fmt.Errorf("finishing encryption of %q: %w", srcPath, err)
+	}
+	// Restore the source's exact mode now that writing is done — createLike
+	// forced the owner-write bit on so the writes above could happen at all.
+	if err = dst.Chmod(mode); err != nil {
+		return fmt.Errorf("setting permissions on %q: %w", dstPath, err)
 	}
 	if err = dst.Close(); err != nil {
 		return fmt.Errorf("closing %q: %w", dstPath, err)
@@ -172,7 +194,7 @@ func DecryptFile(srcPath, dstPath string, identities []age.Identity) (err error)
 		return fmt.Errorf("decrypting %q: %w", srcPath, err)
 	}
 
-	dst, err := createLike(dstPath, src)
+	dst, mode, err := createLike(dstPath, src)
 	if err != nil {
 		return err
 	}
@@ -191,6 +213,11 @@ func DecryptFile(srcPath, dstPath string, identities []age.Identity) (err error)
 		// age.Decrypt's header parsing. A failure here means age's per-chunk
 		// STREAM authentication rejected tampered or corrupt ciphertext.
 		return fmt.Errorf("decrypting %q: tampered or corrupt archive: %w", srcPath, err)
+	}
+	// Restore the source's exact mode now that writing is done — createLike
+	// forced the owner-write bit on so the write above could happen at all.
+	if err = dst.Chmod(mode); err != nil {
+		return fmt.Errorf("setting permissions on %q: %w", dstPath, err)
 	}
 	if err = dst.Close(); err != nil {
 		return fmt.Errorf("closing %q: %w", dstPath, err)
