@@ -3,9 +3,11 @@
 A k8shark capture is a `.kshrk` file: a ZIP container whose entries are
 individually Zstandard-compressed JSON (except `metadata.json`, which is stored
 uncompressed for fast header reads). It can be listed with any ZIP tool —
-unless it was written with `--encrypt`/`--encrypt-recipient`, in which case the
-whole file is a single [age](https://age-encryption.org/v1) envelope around
-this same ZIP layout; see [Encryption](#encryption) below.
+unless it was written with any of `capture`'s encryption flags
+(`--encrypt`, `--encrypt-passphrase-file`, `--encrypt-recipient`, or
+`--encrypt-recipients-file`), in which case the whole file is a single
+[age](https://age-encryption.org/v1) envelope around this same ZIP layout; see
+[Encryption](#encryption) below.
 
 ```sh
 unzip -l capture.kshrk
@@ -229,8 +231,9 @@ kshrk redact --in capture.kshrk --out capture-redacted.kshrk
 
 ## Encryption
 
-`kshrk capture --encrypt` / `--encrypt-recipient` (and the equivalent flags on
-`kshrk redact`) can write a `.kshrk` file as a single
+`kshrk capture`'s encryption flags (`--encrypt`, `--encrypt-passphrase-file`,
+`--encrypt-recipient`, `--encrypt-recipients-file` — and the equivalent flags
+on `kshrk redact`) write a `.kshrk` file as a single
 [age](https://age-encryption.org/v1) envelope wrapping the entire ZIP
 container described above — not per-entry encryption. On write, the ZIP
 writer streams into `age.Encrypt`'s writer instead of directly into the

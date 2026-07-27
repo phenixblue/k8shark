@@ -1,10 +1,12 @@
 # Encryption threat model
 
 `.kshrk` captures can contain Kubernetes Secret values, tokens, and other
-cluster PII. `kshrk capture --encrypt` / `--encrypt-recipient` (and the
-equivalent `kshrk redact` flags) let you write an archive as a single
-[age](https://age-encryption.org/v1) envelope. This page states plainly what
-that protects, what it doesn't, and the key-handling rules the CLI enforces.
+cluster PII. `kshrk capture`'s encryption flags (`--encrypt`,
+`--encrypt-passphrase-file`, `--encrypt-recipient`,
+`--encrypt-recipients-file` — and the equivalent `kshrk redact` flags) let you
+write an archive as a single [age](https://age-encryption.org/v1) envelope.
+This page states plainly what that protects, what it doesn't, and the
+key-handling rules the CLI enforces.
 See [archive-format.md](archive-format.md#encryption) for how the envelope is
 built; see [usage.md](usage.md#encryption) for command examples.
 
