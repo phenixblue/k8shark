@@ -14,6 +14,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"filippo.io/age"
 	"github.com/klauspost/compress/zstd"
 )
 
@@ -87,6 +88,7 @@ func zstdDecompress(data []byte) ([]byte, error) {
 type StreamWriter struct {
 	mu      sync.Mutex
 	f       *os.File
+	ageW    io.WriteCloser // non-nil when encrypting; wraps f, must close before f
 	zw      *zip.Writer
 	n       int
 	bytes   int64          // running total of uncompressed record JSON bytes
@@ -95,15 +97,46 @@ type StreamWriter struct {
 
 // NewStreamWriter creates a new StreamWriter writing to outputPath.
 func NewStreamWriter(outputPath string) (*StreamWriter, error) {
+	return newStreamWriter(outputPath, nil)
+}
+
+// NewEncryptedStreamWriter creates a new StreamWriter that encrypts
+// outputPath as a single age envelope around the ZIP archive: the ZIP writer
+// writes into age.Encrypt's stream instead of directly into the file, so
+// WriteRecord/WriteRecordRaw/Finish are unchanged and nothing is buffered in
+// memory or spilled to a plaintext temp file. recipients must be non-empty;
+// per the age spec, a passphrase (ScryptRecipient) recipient must be the only
+// recipient for the file — callers must not mix it with other recipient
+// types.
+func NewEncryptedStreamWriter(outputPath string, recipients []age.Recipient) (*StreamWriter, error) {
+	if len(recipients) == 0 {
+		return nil, fmt.Errorf("archive encryption requires at least one recipient")
+	}
+	return newStreamWriter(outputPath, recipients)
+}
+
+func newStreamWriter(outputPath string, recipients []age.Recipient) (*StreamWriter, error) {
 	f, err := os.Create(outputPath)
 	if err != nil {
 		return nil, fmt.Errorf("creating output file %q: %w", outputPath, err)
 	}
-	return &StreamWriter{
-		f:       f,
-		zw:      zip.NewWriter(f),
-		pathSeq: make(map[string]int),
-	}, nil
+	sw := &StreamWriter{f: f, pathSeq: make(map[string]int)}
+	var dst io.Writer = f
+	if len(recipients) > 0 {
+		ageW, err := age.Encrypt(f, recipients...)
+		if err != nil {
+			// age.Encrypt failed before any archive bytes were written, so
+			// remove the just-created empty file rather than leaving a bogus
+			// zero-length archive behind for callers to trip over.
+			f.Close()
+			_ = os.Remove(outputPath)
+			return nil, fmt.Errorf("setting up archive encryption: %w", err)
+		}
+		sw.ageW = ageW
+		dst = ageW
+	}
+	sw.zw = zip.NewWriter(dst)
+	return sw, nil
 }
 
 // WriteRecord marshals rec to JSON, Zstd-compresses it, and appends it
@@ -196,10 +229,22 @@ func (w *StreamWriter) Finish(meta, index, watchIndex any) error {
 			return err
 		}
 	}
-	if err := w.zw.Close(); err != nil {
-		return fmt.Errorf("closing zip: %w", err)
+	// Close the layers from outermost to innermost, but always attempt every
+	// close so a failure partway through can't leak the file descriptor: zw
+	// wraps ageW (when encrypting) which wraps f. Return the first error.
+	var firstErr error
+	if err := w.zw.Close(); err != nil && firstErr == nil {
+		firstErr = fmt.Errorf("closing zip: %w", err)
 	}
-	return w.f.Close()
+	if w.ageW != nil {
+		if err := w.ageW.Close(); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("closing archive encryption stream: %w", err)
+		}
+	}
+	if err := w.f.Close(); err != nil && firstErr == nil {
+		firstErr = fmt.Errorf("closing output file: %w", err)
+	}
+	return firstErr
 }
 
 // RecordCount returns the number of records written so far.
@@ -263,34 +308,88 @@ func (w *NDJSONWriter) UncompressedBytes() int64 {
 }
 
 // Archive provides random-access reads into a k8shark ZIP+Zstd capture archive.
-// It does NOT require extraction to disk.
+// It does NOT require extraction to disk. The archive may itself be wrapped
+// in a single age encryption envelope (see NewEncryptedStreamWriter); in that
+// case age.DecryptReaderAt supplies the io.ReaderAt that zip.NewReader reads
+// from directly, so an encrypted archive gets the same random-access reads
+// as a plaintext one, with nothing ever decrypted to a temp file.
 type Archive struct {
-	zr     *zip.ReadCloser
+	zr     *zip.Reader
+	closer io.Closer
 	byName map[string]*zip.File // ZIP entry name → file handle
 	size   int64
 	path   string
 	readN  atomic.Int64 // for diagnostics
 }
 
-// Open opens a k8shark archive for reading. The caller must call Close() when done.
+// Open opens a k8shark archive for reading. The caller must call Close() when
+// done. If the archive is age-encrypted, Open returns a clear error instead
+// of a raw "not a valid zip file" failure; use OpenWithIdentities with key
+// material to open it.
 func Open(archivePath string) (*Archive, error) {
+	return openArchive(archivePath, nil)
+}
+
+// OpenWithIdentities opens a k8shark archive for reading, decrypting it first
+// if it is age-encrypted. identities is ignored for a plaintext archive, so
+// callers can use this unconditionally regardless of whether the archive
+// turns out to be encrypted.
+func OpenWithIdentities(archivePath string, identities []age.Identity) (*Archive, error) {
+	return openArchive(archivePath, identities)
+}
+
+func openArchive(archivePath string, identities []age.Identity) (*Archive, error) {
 	fi, err := os.Stat(archivePath)
 	if err != nil {
 		return nil, fmt.Errorf("stat %q: %w", archivePath, err)
 	}
-	zr, err := zip.OpenReader(archivePath)
+	f, err := os.Open(archivePath)
 	if err != nil {
-		return nil, fmt.Errorf("opening zip archive %q: %w", archivePath, err)
+		return nil, fmt.Errorf("opening archive %q: %w", archivePath, err)
 	}
+
+	encrypted, err := isAgeEncrypted(f)
+	if err != nil {
+		f.Close()
+		return nil, fmt.Errorf("reading %q: %w", archivePath, err)
+	}
+
+	var zr *zip.Reader
+	if !encrypted {
+		zr, err = zip.NewReader(f, fi.Size())
+		if err != nil {
+			f.Close()
+			return nil, fmt.Errorf("opening zip archive %q: %w", archivePath, err)
+		}
+	} else {
+		if len(identities) == 0 {
+			f.Close()
+			return nil, fmt.Errorf("archive %q is encrypted: supply a decryption key", archivePath)
+		}
+		ra, plainSize, err := age.DecryptReaderAt(f, fi.Size(), identities...)
+		if err != nil {
+			f.Close()
+			if isNoIdentityMatch(err) {
+				return nil, fmt.Errorf("failed to decrypt archive %q: incorrect passphrase or key", archivePath)
+			}
+			return nil, fmt.Errorf("decrypting archive %q: %w", archivePath, err)
+		}
+		zr, err = zip.NewReader(ra, plainSize)
+		if err != nil {
+			f.Close()
+			return nil, fmt.Errorf("opening decrypted archive %q: %w", archivePath, err)
+		}
+	}
+
 	byName := make(map[string]*zip.File, len(zr.File))
-	for _, f := range zr.File {
-		byName[f.Name] = f
+	for _, zf := range zr.File {
+		byName[zf.Name] = zf
 	}
-	return &Archive{zr: zr, byName: byName, size: fi.Size(), path: archivePath}, nil
+	return &Archive{zr: zr, closer: f, byName: byName, size: fi.Size(), path: archivePath}, nil
 }
 
 // Close releases the underlying file handle.
-func (a *Archive) Close() error { return a.zr.Close() }
+func (a *Archive) Close() error { return a.closer.Close() }
 
 // Path returns the archive file path.
 func (a *Archive) Path() string { return a.path }
