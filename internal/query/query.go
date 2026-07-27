@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/phenixblue/k8shark/internal/k8spath"
 	"github.com/phenixblue/k8shark/internal/server"
 	"k8s.io/client-go/util/jsonpath"
 )
@@ -180,30 +181,5 @@ func isDuplicateView(path string) bool {
 // parseAPIPath extracts group, version, resource, and namespace from a canonical
 // API list path. Cluster-scoped paths return an empty namespace.
 func parseAPIPath(path string) (group, version, resource, namespace string) {
-	p := path
-	if i := strings.IndexByte(p, '?'); i >= 0 {
-		p = p[:i]
-	}
-	parts := strings.Split(strings.TrimPrefix(p, "/"), "/")
-	switch {
-	case len(parts) >= 3 && parts[0] == "api": // /api/v1/...
-		version = parts[1]
-		rest := parts[2:]
-		if len(rest) >= 3 && rest[0] == "namespaces" {
-			namespace = rest[1]
-			resource = rest[2]
-		} else if len(rest) >= 1 {
-			resource = rest[0]
-		}
-	case len(parts) >= 4 && parts[0] == "apis": // /apis/<group>/<version>/...
-		group, version = parts[1], parts[2]
-		rest := parts[3:]
-		if len(rest) >= 3 && rest[0] == "namespaces" {
-			namespace = rest[1]
-			resource = rest[2]
-		} else if len(rest) >= 1 {
-			resource = rest[0]
-		}
-	}
-	return
+	return k8spath.Parse(path)
 }

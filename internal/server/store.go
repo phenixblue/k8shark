@@ -874,7 +874,16 @@ func (s *CaptureStore) AggregateTableAcrossNamespaces(clusterPath string, at tim
 	return out, 200, nil
 }
 
-// parseAPIPath extracts (group, version, resource, namespace) from a REST path.
+// parseAPIPath extracts (group, version, resource, namespace) from a REST
+// path. Deliberately NOT internal/k8spath.Parse (see #235): this rigid,
+// exact-segment-count form doubles as handler.go's "is this a list-level
+// path, or something with more segments (an item GET)?" sentinel — an
+// item-level path returns resource="" here on purpose, which several call
+// sites (handler.go's 404 handling, the cluster-scoped fallback) branch on to
+// fall through to parseWritePath instead, which is built to parse item-level
+// paths (including the object name). Unifying this with k8spath.Parse's
+// looser, subresource-tolerant matching changes that sentinel and breaks
+// item-level GET 404 handling — see the regression this caused when tried.
 func parseAPIPath(path string) (group, version, resource, namespace string) {
 	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
 	switch {
