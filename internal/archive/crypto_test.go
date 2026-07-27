@@ -632,6 +632,41 @@ func TestEncryptFile_RejectsSymlinkOutput(t *testing.T) {
 	}
 }
 
+// TestEncryptFile_SurfacesUnexpectedLstatError guards createLike's Lstat
+// error handling: only "does not exist" should be treated as "no output to
+// check" and let the operation proceed. Any other Lstat failure (here, a
+// non-directory path component — a real, reproducible ENOTDIR, not ENOENT)
+// must be surfaced as a clear error, not silently swallowed and treated the
+// same as a fresh output path.
+func TestEncryptFile_SurfacesUnexpectedLstatError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("path-component-is-a-file produces different errors on Windows")
+	}
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.kshrk")
+	sampleArchive(t, plainPath)
+
+	notADir := filepath.Join(dir, "notadir")
+	if err := os.WriteFile(notADir, []byte("x"), 0o600); err != nil {
+		t.Fatalf("WriteFile(notADir): %v", err)
+	}
+	// dstPath treats notADir (a regular file) as a directory component, so
+	// Lstat on it fails with ENOTDIR, not ENOENT.
+	dstPath := filepath.Join(notADir, "out.kshrk")
+
+	recipients, err := RecipientsFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("RecipientsFromPassphrase: %v", err)
+	}
+	err = EncryptFile(plainPath, dstPath, recipients)
+	if err == nil {
+		t.Fatal("EncryptFile with an unstatable output path succeeded, want error")
+	}
+	if !strings.Contains(err.Error(), "checking existing output") {
+		t.Errorf("error = %q, want it to mention checking the existing output, not a generic/silent failure", err)
+	}
+}
+
 func statMode(t *testing.T, path string) os.FileMode {
 	t.Helper()
 	fi, err := os.Stat(path)

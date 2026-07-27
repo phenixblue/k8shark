@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 
@@ -105,13 +106,22 @@ func createLike(dstPath string, src *os.File) (dst *os.File, mode os.FileMode, c
 	}
 	mode = srcInfo.Mode().Perm()
 
-	if existing, statErr := os.Lstat(dstPath); statErr == nil {
+	switch existing, statErr := os.Lstat(dstPath); {
+	case statErr == nil:
 		if !existing.Mode().IsRegular() {
 			return nil, 0, nil, fmt.Errorf("output %q exists and is not a regular file (mode %s)", dstPath, existing.Mode())
 		}
 		if os.SameFile(srcInfo, existing) {
 			return nil, 0, nil, fmt.Errorf("output %q must not be the same file as the input", dstPath)
 		}
+	case errors.Is(statErr, fs.ErrNotExist):
+		// The common case: no output exists yet, nothing to check.
+	default:
+		// Anything else (permission denied traversing a parent directory, an
+		// I/O error, ...) is a real failure — don't silently treat it the
+		// same as "doesn't exist" and proceed without having enforced the
+		// non-regular/same-file checks above.
+		return nil, 0, nil, fmt.Errorf("checking existing output %q: %w", dstPath, statErr)
 	}
 
 	tmp, err := os.CreateTemp(filepath.Dir(dstPath), "."+filepath.Base(dstPath)+".tmp-*")
