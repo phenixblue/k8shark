@@ -3,6 +3,7 @@ package archive
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -370,6 +371,61 @@ func TestEncryptFile_DecryptFile_RoundTrip_Passphrase(t *testing.T) {
 	if string(decrypted) != string(original) {
 		t.Error("DecryptFile output does not match the original plaintext archive byte-for-byte")
 	}
+}
+
+// TestEncryptFile_DecryptFile_PreservesSourceMode confirms EncryptFile and
+// DecryptFile create their output with the source file's permission bits,
+// not os.Create's fixed 0666&umask — a restrictively-permissioned source
+// (e.g. 0600) must not silently become more permissive in the copy, which
+// matters most for DecryptFile since its output is plaintext.
+func TestEncryptFile_DecryptFile_PreservesSourceMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits don't apply on Windows")
+	}
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.kshrk")
+	sampleArchive(t, plainPath)
+	if err := os.Chmod(plainPath, 0o600); err != nil {
+		t.Fatalf("Chmod(plain, 0600): %v", err)
+	}
+
+	recipients, err := RecipientsFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("RecipientsFromPassphrase: %v", err)
+	}
+	encPath := filepath.Join(dir, "enc.kshrk")
+	if err := EncryptFile(plainPath, encPath, recipients); err != nil {
+		t.Fatalf("EncryptFile: %v", err)
+	}
+	if mode := statMode(t, encPath); mode != 0o600 {
+		t.Errorf("encrypted output mode = %o, want 0600 (matching the source)", mode)
+	}
+
+	// Re-permission the encrypted file differently to confirm DecryptFile
+	// independently preserves *its* source's mode, not a hardcoded default.
+	if err := os.Chmod(encPath, 0o640); err != nil {
+		t.Fatalf("Chmod(enc, 0640): %v", err)
+	}
+	identities, err := IdentitiesFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("IdentitiesFromPassphrase: %v", err)
+	}
+	decPath := filepath.Join(dir, "dec.kshrk")
+	if err := DecryptFile(encPath, decPath, identities); err != nil {
+		t.Fatalf("DecryptFile: %v", err)
+	}
+	if mode := statMode(t, decPath); mode != 0o640 {
+		t.Errorf("decrypted output mode = %o, want 0640 (matching the source)", mode)
+	}
+}
+
+func statMode(t *testing.T, path string) os.FileMode {
+	t.Helper()
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat(%q): %v", path, err)
+	}
+	return fi.Mode().Perm()
 }
 
 // TestEncryptFile_DecryptFile_RoundTrip_X25519 is the recipient-mode

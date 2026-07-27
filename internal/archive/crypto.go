@@ -68,6 +68,24 @@ func isNoIdentityMatch(err error) bool {
 	return errors.As(err, &noMatch)
 }
 
+// createLike creates dstPath with src's permission bits, instead of
+// os.Create's fixed 0666&umask. EncryptFile/DecryptFile can turn a source
+// archive stored with restrictive permissions (e.g. 0600) into an encrypted
+// or plaintext copy, so the copy shouldn't silently end up more permissive
+// than the original — this matters most for DecryptFile, whose output is
+// plaintext.
+func createLike(dstPath string, src *os.File) (*os.File, error) {
+	srcInfo, err := src.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat %q: %w", src.Name(), err)
+	}
+	dst, err := os.OpenFile(dstPath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, srcInfo.Mode().Perm())
+	if err != nil {
+		return nil, fmt.Errorf("creating %q: %w", dstPath, err)
+	}
+	return dst, nil
+}
+
 // EncryptFile writes an age-encrypted copy of the plaintext file at srcPath to
 // dstPath, encrypting to recipients. Unlike NewEncryptedStreamWriter (which
 // encrypts while writing a brand-new archive), this is a whole-file transform
@@ -92,9 +110,9 @@ func EncryptFile(srcPath, dstPath string, recipients []age.Recipient) (err error
 	}
 	defer src.Close()
 
-	dst, err := os.Create(dstPath)
+	dst, err := createLike(dstPath, src)
 	if err != nil {
-		return fmt.Errorf("creating %q: %w", dstPath, err)
+		return err
 	}
 	// Every failure from here on removes the partially-written output, so
 	// each branch below only needs to set err and return — no repeated
@@ -154,9 +172,9 @@ func DecryptFile(srcPath, dstPath string, identities []age.Identity) (err error)
 		return fmt.Errorf("decrypting %q: %w", srcPath, err)
 	}
 
-	dst, err := os.Create(dstPath)
+	dst, err := createLike(dstPath, src)
 	if err != nil {
-		return fmt.Errorf("creating %q: %w", dstPath, err)
+		return err
 	}
 	// Every failure from here on removes the partially-written output, so
 	// each branch below only needs to set err and return — no repeated
