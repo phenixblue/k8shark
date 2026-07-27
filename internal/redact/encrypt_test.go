@@ -147,3 +147,46 @@ func TestRedact_EncryptedRoundTrip(t *testing.T) {
 		t.Errorf("data[password] = %q, want %q", dataMap["password"], want)
 	}
 }
+
+// TestRedact_ReKeyAcrossIdentities exercises the asymmetric read/write key path
+// that capture's ephemeral-identity redaction relies on: read an archive
+// encrypted to identity A, write the redacted result encrypted to a *different*
+// recipient B. The output must be decryptable only by B, not A.
+func TestRedact_ReKeyAcrossIdentities(t *testing.T) {
+	idA, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatalf("GenerateX25519Identity A: %v", err)
+	}
+	idB, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatalf("GenerateX25519Identity B: %v", err)
+	}
+
+	encoded := base64.StdEncoding.EncodeToString([]byte("my-password"))
+	records := []*capture.Record{
+		secretRecord("r1", "default", "db-creds", map[string]string{"password": encoded}, nil),
+	}
+	src := buildEncryptedArchive(t, records, []age.Recipient{idA.Recipient()})
+	dst := src + "-rekeyed.kshrk"
+	t.Cleanup(func() { os.Remove(dst) })
+
+	if _, err := Archive(src, dst, Options{
+		RedactSecrets: true,
+		Identities:    []age.Identity{idA},              // read with A
+		Recipients:    []age.Recipient{idB.Recipient()}, // write to B
+	}); err != nil {
+		t.Fatalf("Archive re-key: %v", err)
+	}
+
+	// B decrypts.
+	arB, err := archive.OpenWithIdentities(dst, []age.Identity{idB})
+	if err != nil {
+		t.Fatalf("OpenWithIdentities(B): %v", err)
+	}
+	_ = arB.Close()
+
+	// A must NOT decrypt the re-keyed output.
+	if _, err := archive.OpenWithIdentities(dst, []age.Identity{idA}); err == nil {
+		t.Fatal("OpenWithIdentities(A) on re-keyed archive succeeded, want failure")
+	}
+}

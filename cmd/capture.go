@@ -24,8 +24,9 @@ single .kshrk capture file for later replay.
 Resources, namespaces, and intervals come from the --config file. Use
 --auto-discover to capture every available API resource without listing them,
 --output - to stream records as NDJSON to stdout, --redact-secrets to scrub
-Secret values from the archive after capture, and --encrypt to write the
-archive as an encrypted (age) envelope.`,
+Secret values from the archive after capture, and --encrypt (passphrase) or
+--encrypt-recipient (age public keys) to write the archive as an encrypted
+(age) envelope.`,
 	Example: `  # Capture using a config file
   kshrk capture --config k8shark.yaml
 
@@ -42,7 +43,10 @@ archive as an encrypted (age) envelope.`,
   kshrk capture --config k8shark.yaml --encrypt
 
   # Encrypt using a passphrase read from a file (no prompt)
-  kshrk capture --config k8shark.yaml --encrypt-passphrase-file ./pass.txt`,
+  kshrk capture --config k8shark.yaml --encrypt-passphrase-file ./pass.txt
+
+  # Encrypt to one or more age recipient public keys (shareable)
+  kshrk capture --config k8shark.yaml --encrypt-recipient age1abc... --encrypt-recipient age1def...`,
 	RunE: runCapture,
 }
 
@@ -104,23 +108,46 @@ func runCapture(cmd *cobra.Command, args []string) error {
 
 	// Reject incompatible flag combinations before any interactive passphrase
 	// prompt so users aren't asked for a secret only to be told it can't be
-	// used. encryptRequested checks the flags without prompting.
-	if encryptRequested(cmd) && streamingStdout {
-		return fmt.Errorf("archive encryption (--encrypt / --encrypt-passphrase-file) cannot be combined with --output - (NDJSON streaming to stdout is not encrypted)")
+	// used. These helpers check the flags without prompting.
+	if (encryptRequested(cmd) || recipientsRequested(cmd)) && streamingStdout {
+		return fmt.Errorf("archive encryption cannot be combined with --output - (NDJSON streaming to stdout is not encrypted)")
 	}
 
-	// Resolve encryption before the (potentially long) capture starts so a bad
-	// or missing passphrase fails fast rather than after minutes of polling.
-	passphrase, encrypt, err := resolveEncryptPassphrase(cmd)
+	// Resolve redaction inputs up front: whether the capture will be redacted
+	// determines how the archive is encrypted (see below).
+	doRedactSecrets, allowList, fieldRules, err := resolveRedaction(cmd, cfg)
 	if err != nil {
 		return err
 	}
-	var encRecipients []age.Recipient
-	var encIdentities []age.Identity
-	if encrypt {
-		encRecipients, encIdentities, err = encryptOptionsFromPassphrase(passphrase)
-		if err != nil {
-			return err
+	willRedact := doRedactSecrets || len(fieldRules) > 0
+
+	// Resolve encryption before the (potentially long) capture starts so a bad
+	// or missing passphrase fails fast rather than after minutes of polling.
+	enc, err := resolveEncryption(cmd)
+	if err != nil {
+		return err
+	}
+
+	// Decide what the engine encrypts the on-disk archive to. When the capture
+	// will be redacted afterwards, the engine encrypts the intermediate to an
+	// ephemeral key so the redact pass can decrypt it in memory and re-encrypt
+	// to the real recipients — without ever writing plaintext to disk and
+	// without needing the recipients' private keys (which we don't have in
+	// recipient mode). Otherwise the engine encrypts directly to the final
+	// recipients.
+	var engineRecipients, redactRecipients []age.Recipient
+	var redactIdentities []age.Identity
+	if enc.enabled {
+		redactRecipients = enc.recipients
+		if willRedact {
+			eph, gerr := age.GenerateX25519Identity()
+			if gerr != nil {
+				return fmt.Errorf("generating ephemeral encryption key: %w", gerr)
+			}
+			engineRecipients = []age.Recipient{eph.Recipient()}
+			redactIdentities = []age.Identity{eph}
+		} else {
+			engineRecipients = enc.recipients
 		}
 	}
 
@@ -130,7 +157,7 @@ func runCapture(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("initializing capture engine: %w", err)
 	}
-	engine.SetEncryption(encRecipients)
+	engine.SetEncryption(engineRecipients)
 
 	fmt.Fprintf(msgOut, "Starting capture -> %s\n", cfg.Output)
 
@@ -145,8 +172,8 @@ func runCapture(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintf(msgOut, "\nCapture complete\n")
 	fmt.Fprintf(msgOut, "  Output:    %s (%s)\n", sum.OutputPath, formatBytes(sum.OutputSize))
-	if encrypt {
-		fmt.Fprintf(msgOut, "  Encrypted: yes (age passphrase)\n")
+	if enc.enabled {
+		fmt.Fprintf(msgOut, "  Encrypted: yes (age %s)\n", enc.mode)
 	}
 	fmt.Fprintf(msgOut, "  Records:   %d across %d resource path(s)\n", sum.RecordCount, sum.ResourceCount)
 	fmt.Fprintf(msgOut, "  Duration:  %s\n", sum.Duration)
@@ -172,41 +199,18 @@ func runCapture(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Post-capture redaction: merge --redact-secrets / --redact-field CLI flags
-	// with any redaction.rules defined in the config file.
-	doRedactSecrets, _ := cmd.Flags().GetBool("redact-secrets")
-	if cfg.Redaction.RedactSecrets {
-		doRedactSecrets = true
-	}
-	allows, _ := cmd.Flags().GetStringArray("allow-secret")
-	allowList := make(map[string]bool, len(allows))
-	for _, a := range allows {
-		allowList[a] = true
-	}
-	for _, a := range cfg.Redaction.AllowSecrets {
-		allowList[a] = true
-	}
-	redactFields, _ := cmd.Flags().GetStringArray("redact-field")
-	var fieldRules []config.RedactionRule
-	fieldRules = append(fieldRules, cfg.Redaction.Rules...)
-	for _, rf := range redactFields {
-		rule, err := parseRedactField(rf)
-		if err != nil {
-			return err
-		}
-		fieldRules = append(fieldRules, rule)
-	}
-
-	if doRedactSecrets || len(fieldRules) > 0 {
+	// Post-capture redaction (inputs resolved before the capture started).
+	if willRedact {
 		tmpPath := sum.OutputPath + ".redacting"
 		result, err := redact.Archive(sum.OutputPath, tmpPath, redact.Options{
 			RedactSecrets: doRedactSecrets,
 			AllowList:     allowList,
 			Rules:         fieldRules,
-			// When the capture was encrypted, decrypt it to redact and re-encrypt
-			// the result so the redacted archive stays encrypted end to end.
-			Identities: encIdentities,
-			Recipients: encRecipients,
+			// Decrypt the (ephemerally-encrypted) intermediate and re-encrypt to
+			// the real recipients so the redacted archive stays encrypted end to
+			// end; both are nil for a plaintext capture.
+			Identities: redactIdentities,
+			Recipients: redactRecipients,
 		})
 		if err != nil {
 			_ = os.Remove(tmpPath)
@@ -223,6 +227,36 @@ func runCapture(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+// resolveRedaction merges the --redact-secrets / --allow-secret / --redact-field
+// CLI flags with any redaction block in the config file into the effective
+// redaction inputs for a capture.
+func resolveRedaction(cmd *cobra.Command, cfg *config.Config) (doRedactSecrets bool, allowList map[string]bool, fieldRules []config.RedactionRule, err error) {
+	doRedactSecrets, _ = cmd.Flags().GetBool("redact-secrets")
+	if cfg.Redaction.RedactSecrets {
+		doRedactSecrets = true
+	}
+
+	allows, _ := cmd.Flags().GetStringArray("allow-secret")
+	allowList = make(map[string]bool, len(allows))
+	for _, a := range allows {
+		allowList[a] = true
+	}
+	for _, a := range cfg.Redaction.AllowSecrets {
+		allowList[a] = true
+	}
+
+	fieldRules = append(fieldRules, cfg.Redaction.Rules...)
+	redactFields, _ := cmd.Flags().GetStringArray("redact-field")
+	for _, rf := range redactFields {
+		rule, perr := parseRedactField(rf)
+		if perr != nil {
+			return false, nil, nil, perr
+		}
+		fieldRules = append(fieldRules, rule)
+	}
+	return doRedactSecrets, allowList, fieldRules, nil
 }
 
 // startSpinner prints a rotating spinner on w until the returned stop function

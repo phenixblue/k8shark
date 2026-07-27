@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"filippo.io/age"
 	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/config"
 	"github.com/phenixblue/k8shark/internal/redact"
@@ -31,7 +30,11 @@ Rules may also be loaded from a config file's redaction.rules block via --config
   kshrk redact --in capture.kshrk --redact-field "data.api-key:ConfigMap:REDACTED"
 
   # Use redaction.rules from a config file, writing to a chosen path
-  kshrk redact --in capture.kshrk --out safe.kshrk --config k8shark.yaml`,
+  kshrk redact --in capture.kshrk --out safe.kshrk --config k8shark.yaml
+
+  # Redact and encrypt the output to an age recipient (decrypt an encrypted
+  # source with --decrypt-passphrase-file / --decrypt-identity-file)
+  kshrk redact --in capture.kshrk --redact-secrets --encrypt-recipient age1abc...`,
 	RunE: runRedact,
 }
 
@@ -129,23 +132,20 @@ func runRedact(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	// Write-side: optionally re-encrypt the redacted output.
-	passphrase, encrypt, err := resolveEncryptPassphrase(cmd)
+	// Write-side: optionally re-encrypt the redacted output (passphrase or
+	// recipient keys).
+	enc, err := resolveEncryption(cmd)
 	if err != nil {
 		return err
 	}
-	var recipients []age.Recipient
-	if encrypt {
-		recipients, err = archive.RecipientsFromPassphrase(passphrase)
-		if err != nil {
-			return err
+	if !enc.enabled {
+		if srcEncrypted, _ := archive.IsEncrypted(in); srcEncrypted {
+			// The source is encrypted but no output encryption was requested —
+			// warn that the redacted copy will be written in plaintext so an
+			// encrypted capture isn't silently downgraded.
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"warning: source archive is encrypted but the redacted output %q will be written in plaintext; pass --encrypt or --encrypt-recipient to keep it encrypted\n", out)
 		}
-	} else if srcEncrypted, _ := archive.IsEncrypted(in); srcEncrypted {
-		// The source is encrypted but no output encryption was requested — warn
-		// that the redacted copy will be written in plaintext so an encrypted
-		// capture isn't silently downgraded.
-		fmt.Fprintf(cmd.ErrOrStderr(),
-			"warning: source archive is encrypted but the redacted output %q will be written in plaintext; pass --encrypt to keep it encrypted\n", out)
 	}
 
 	result, err := redact.Archive(in, out, redact.Options{
@@ -153,7 +153,7 @@ func runRedact(cmd *cobra.Command, _ []string) error {
 		AllowList:     allowList,
 		Rules:         rules,
 		Identities:    identities,
-		Recipients:    recipients,
+		Recipients:    enc.recipients,
 	})
 	if err != nil {
 		return err

@@ -19,9 +19,21 @@ const encryptPassphraseEnv = "KSHRK_ENCRYPT_PASSPHRASE"
 
 // addEncryptFlags registers the write-side encryption flags on cmd.
 func addEncryptFlags(cmd *cobra.Command) {
-	cmd.Flags().Bool("encrypt", false, "encrypt the output archive (age); passphrase from --encrypt-passphrase-file, $"+encryptPassphraseEnv+", or an interactive prompt")
+	cmd.Flags().Bool("encrypt", false, "encrypt the output archive with a passphrase (age); from --encrypt-passphrase-file, $"+encryptPassphraseEnv+", or an interactive prompt")
 	cmd.Flags().String("encrypt-passphrase-file", "", "read the encryption passphrase from this file (first line) instead of prompting")
+	cmd.Flags().StringArray("encrypt-recipient", nil, "age recipient public key (age1...) to encrypt to (repeatable); mutually exclusive with passphrase encryption")
+	cmd.Flags().String("encrypt-recipients-file", "", "file of age recipient public keys (one per line) to encrypt to")
 	_ = cmd.MarkFlagFilename("encrypt-passphrase-file")
+	_ = cmd.MarkFlagFilename("encrypt-recipients-file")
+}
+
+// recipientsRequested reports whether the user asked for public-key (recipient)
+// encryption, without parsing the keys. Used to detect the passphrase/recipient
+// conflict before any interactive prompt runs.
+func recipientsRequested(cmd *cobra.Command) bool {
+	inline, _ := cmd.Flags().GetStringArray("encrypt-recipient")
+	file, _ := cmd.Flags().GetString("encrypt-recipients-file")
+	return len(inline) > 0 || file != ""
 }
 
 // resolveEncryptPassphrase determines whether the command should encrypt its
@@ -123,17 +135,78 @@ func promptNewPassphrase(cmd *cobra.Command) (string, error) {
 	return string(first), nil
 }
 
-// encryptOptionsFromPassphrase builds the age recipients and identities for a
-// passphrase. Recipients encrypt the output; identities decrypt an existing
-// encrypted archive (needed when redacting an encrypted capture in place).
-func encryptOptionsFromPassphrase(passphrase string) (recipients []age.Recipient, identities []age.Identity, err error) {
-	recipients, err = archive.RecipientsFromPassphrase(passphrase)
-	if err != nil {
-		return nil, nil, err
+// encryptConfig is the resolved write-side encryption for a command.
+type encryptConfig struct {
+	enabled    bool
+	mode       string // "passphrase" or "recipients" (for display); empty when disabled
+	recipients []age.Recipient
+}
+
+// resolveEncryption determines how (if at all) a command should encrypt its
+// output. Passphrase mode (--encrypt / --encrypt-passphrase-file / env / prompt)
+// and recipient mode (--encrypt-recipient / --encrypt-recipients-file) are
+// mutually exclusive: age requires a passphrase (scrypt) recipient to be the
+// file's only recipient. The conflict is reported before any interactive
+// passphrase prompt so the user isn't asked for a secret that can't be used.
+func resolveEncryption(cmd *cobra.Command) (encryptConfig, error) {
+	passphraseMode := encryptRequested(cmd)
+	recipientMode := recipientsRequested(cmd)
+
+	if passphraseMode && recipientMode {
+		return encryptConfig{}, fmt.Errorf("passphrase encryption (--encrypt / --encrypt-passphrase-file) cannot be combined with recipient encryption (--encrypt-recipient / --encrypt-recipients-file): age requires a passphrase to be the only recipient")
 	}
-	identities, err = archive.IdentitiesFromPassphrase(passphrase)
-	if err != nil {
-		return nil, nil, err
+
+	switch {
+	case recipientMode:
+		recips, err := recipientsFromFlags(cmd)
+		if err != nil {
+			return encryptConfig{}, err
+		}
+		if len(recips) == 0 {
+			return encryptConfig{}, fmt.Errorf("no age recipients found in --encrypt-recipient / --encrypt-recipients-file")
+		}
+		return encryptConfig{enabled: true, mode: "recipients", recipients: recips}, nil
+	case passphraseMode:
+		passphrase, _, err := resolveEncryptPassphrase(cmd)
+		if err != nil {
+			return encryptConfig{}, err
+		}
+		recips, err := archive.RecipientsFromPassphrase(passphrase)
+		if err != nil {
+			return encryptConfig{}, err
+		}
+		return encryptConfig{enabled: true, mode: "passphrase", recipients: recips}, nil
+	default:
+		return encryptConfig{}, nil
 	}
-	return recipients, identities, nil
+}
+
+// recipientsFromFlags parses all age recipients from --encrypt-recipient
+// (inline age1... keys) and --encrypt-recipients-file (a recipients file).
+func recipientsFromFlags(cmd *cobra.Command) ([]age.Recipient, error) {
+	var recips []age.Recipient
+
+	inline, _ := cmd.Flags().GetStringArray("encrypt-recipient")
+	for _, s := range inline {
+		r, err := age.ParseX25519Recipient(s)
+		if err != nil {
+			return nil, fmt.Errorf("invalid --encrypt-recipient %q: %w", s, err)
+		}
+		recips = append(recips, r)
+	}
+
+	if file, _ := cmd.Flags().GetString("encrypt-recipients-file"); file != "" {
+		f, err := os.Open(file)
+		if err != nil {
+			return nil, fmt.Errorf("opening recipients file %q: %w", file, err)
+		}
+		defer f.Close()
+		fileRecips, err := age.ParseRecipients(f)
+		if err != nil {
+			return nil, fmt.Errorf("parsing recipients file %q: %w", file, err)
+		}
+		recips = append(recips, fileRecips...)
+	}
+
+	return recips, nil
 }
