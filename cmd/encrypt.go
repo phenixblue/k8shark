@@ -21,7 +21,7 @@ This is a whole-file transform, not a new capture: use it to encrypt an
 archive you already have (e.g. before sharing it), as an alternative to
 'kshrk capture --encrypt' at capture time.`,
 	Example: `  # Encrypt with a passphrase, prompting for it
-  kshrk encrypt capture.kshrk
+  kshrk encrypt capture.kshrk --encrypt
 
   # Encrypt using a passphrase read from a file (no prompt)
   kshrk encrypt capture.kshrk --encrypt-passphrase-file ./pass.txt

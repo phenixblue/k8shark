@@ -74,7 +74,7 @@ func isNoIdentityMatch(err error) bool {
 // for encrypting an archive that already exists on disk — used by
 // `kshrk encrypt`. It refuses to run if srcPath is already an age-encrypted
 // file, and removes a partially-written dstPath on any failure.
-func EncryptFile(srcPath, dstPath string, recipients []age.Recipient) error {
+func EncryptFile(srcPath, dstPath string, recipients []age.Recipient) (err error) {
 	encrypted, err := IsEncrypted(srcPath)
 	if err != nil {
 		return fmt.Errorf("reading %q: %w", srcPath, err)
@@ -96,23 +96,28 @@ func EncryptFile(srcPath, dstPath string, recipients []age.Recipient) error {
 	if err != nil {
 		return fmt.Errorf("creating %q: %w", dstPath, err)
 	}
+	// Every failure from here on removes the partially-written output, so
+	// each branch below only needs to set err and return — no repeated
+	// close/remove boilerplate to keep in sync.
+	defer func() {
+		if err != nil {
+			dst.Close()
+			os.Remove(dstPath)
+		}
+	}()
+
 	w, err := age.Encrypt(dst, recipients...)
 	if err != nil {
-		dst.Close()
-		os.Remove(dstPath)
 		return fmt.Errorf("setting up encryption: %w", err)
 	}
-	if _, err := io.Copy(w, src); err != nil {
-		dst.Close()
-		os.Remove(dstPath)
+	if _, err = io.Copy(w, src); err != nil {
+		_ = w.Close() // best-effort: attempt to finalize before the deferred cleanup removes dstPath
 		return fmt.Errorf("encrypting %q: %w", srcPath, err)
 	}
-	if err := w.Close(); err != nil {
-		dst.Close()
-		os.Remove(dstPath)
+	if err = w.Close(); err != nil {
 		return fmt.Errorf("finishing encryption of %q: %w", srcPath, err)
 	}
-	if err := dst.Close(); err != nil {
+	if err = dst.Close(); err != nil {
 		return fmt.Errorf("closing %q: %w", dstPath, err)
 	}
 	return nil
@@ -123,7 +128,7 @@ func EncryptFile(srcPath, dstPath string, recipients []age.Recipient) error {
 // of EncryptFile, used by `kshrk decrypt`. It refuses to run if srcPath is not
 // an age-encrypted file, and removes a partially-written dstPath on any
 // failure.
-func DecryptFile(srcPath, dstPath string, identities []age.Identity) error {
+func DecryptFile(srcPath, dstPath string, identities []age.Identity) (err error) {
 	encrypted, err := IsEncrypted(srcPath)
 	if err != nil {
 		return fmt.Errorf("reading %q: %w", srcPath, err)
@@ -153,15 +158,23 @@ func DecryptFile(srcPath, dstPath string, identities []age.Identity) error {
 	if err != nil {
 		return fmt.Errorf("creating %q: %w", dstPath, err)
 	}
-	if _, err := io.Copy(dst, r); err != nil {
-		dst.Close()
-		os.Remove(dstPath)
+	// Every failure from here on removes the partially-written output, so
+	// each branch below only needs to set err and return — no repeated
+	// close/remove boilerplate to keep in sync.
+	defer func() {
+		if err != nil {
+			dst.Close()
+			os.Remove(dstPath)
+		}
+	}()
+
+	if _, err = io.Copy(dst, r); err != nil {
 		// A wrong identity/passphrase is always caught above, synchronously in
 		// age.Decrypt's header parsing. A failure here means age's per-chunk
 		// STREAM authentication rejected tampered or corrupt ciphertext.
 		return fmt.Errorf("decrypting %q: tampered or corrupt archive: %w", srcPath, err)
 	}
-	if err := dst.Close(); err != nil {
+	if err = dst.Close(); err != nil {
 		return fmt.Errorf("closing %q: %w", dstPath, err)
 	}
 	return nil
