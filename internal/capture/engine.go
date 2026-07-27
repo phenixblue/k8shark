@@ -653,9 +653,12 @@ func (e *Engine) streamWatch(ctx context.Context, res config.Resource, apiPath, 
 			}
 			seq, err := e.sink.WriteRecord(rec)
 			if err != nil {
-				if e.verbose {
-					fmt.Fprintf(os.Stderr, "  [warn] writing watch record %s: %v\n", recordPath, err)
+				fmt.Fprintf(os.Stderr, "  [warn] writing watch record %s: %v\n", recordPath, err)
+				e.mu.Lock()
+				if e.captureErr == nil {
+					e.captureErr = fmt.Errorf("writing watch record %s: %w", recordPath, err)
 				}
+				e.mu.Unlock()
 				continue
 			}
 

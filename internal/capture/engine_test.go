@@ -2213,6 +2213,61 @@ func TestEngine_DedupPerResourceOptOut(t *testing.T) {
 	}
 }
 
+// TestStreamWatch_WriteFailure_SetsStickyCaptureErr verifies a write failure
+// on the watch path (not just the poll path storeRecord covers) sets the
+// sticky Engine.captureErr, so a capture that only ever fails on its watch
+// writes still exits non-zero via Run() rather than reporting a clean
+// capture that silently dropped events.
+func TestStreamWatch_WriteFailure_SetsStickyCaptureErr(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/api/v1/namespaces/default/pods" && r.URL.Query().Get("watch") != "" {
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"type":"ADDED","object":{"apiVersion":"v1","kind":"Pod","metadata":{"name":"p1"}}}`+"\n")
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			return
+		}
+		fmt.Fprint(w, `{"kind":"PodList","metadata":{"resourceVersion":"10"},"items":[]}`)
+	}))
+	defer srv.Close()
+
+	eng := newEngineWith(&config.Config{}, srv.Client(), srv.URL, false)
+	wantErr := fmt.Errorf("boom")
+	eng.sink = &failingSink{err: wantErr}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	res := config.Resource{Version: "v1", Resource: "pods", Namespaces: []string{"default"}, Watch: true}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		eng.watchResource(ctx, res)
+	}()
+
+	deadline := time.Now().Add(1500 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		eng.mu.Lock()
+		set := eng.captureErr != nil
+		eng.mu.Unlock()
+		if set {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	if eng.captureErr == nil {
+		t.Fatal("captureErr not set after a failed watch record write")
+	}
+	if !strings.Contains(eng.captureErr.Error(), wantErr.Error()) {
+		t.Errorf("captureErr = %v, want it to wrap %v", eng.captureErr, wantErr)
+	}
+}
+
 func TestWatchResource_RecordsEvents(t *testing.T) {
 	var watchHits int32
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
