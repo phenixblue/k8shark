@@ -1,8 +1,11 @@
 package archive
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -313,4 +316,509 @@ func TestPlaintextArchiveStillOpens(t *testing.T) {
 		t.Fatalf("OpenWithIdentities(plaintext, nil): %v", err)
 	}
 	defer ar2.Close()
+}
+
+// TestEncryptFile_DecryptFile_RoundTrip_Passphrase encrypts an existing
+// plaintext archive after the fact, confirms the result is an age-encrypted
+// file readable by OpenWithIdentities, then decrypts it back and confirms the
+// bytes are byte-for-byte identical to the original plaintext archive.
+func TestEncryptFile_DecryptFile_RoundTrip_Passphrase(t *testing.T) {
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.kshrk")
+	sampleArchive(t, plainPath)
+	original, err := os.ReadFile(plainPath)
+	if err != nil {
+		t.Fatalf("ReadFile(plain): %v", err)
+	}
+
+	recipients, err := RecipientsFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("RecipientsFromPassphrase: %v", err)
+	}
+	encPath := filepath.Join(dir, "enc.kshrk")
+	if err := EncryptFile(plainPath, encPath, recipients); err != nil {
+		t.Fatalf("EncryptFile: %v", err)
+	}
+
+	if enc, err := IsEncrypted(encPath); err != nil || !enc {
+		t.Fatalf("IsEncrypted(encrypted output) = %v, %v; want true, nil", enc, err)
+	}
+	// The source file must be untouched.
+	unchanged, err := os.ReadFile(plainPath)
+	if err != nil {
+		t.Fatalf("ReadFile(plain) after EncryptFile: %v", err)
+	}
+	if string(unchanged) != string(original) {
+		t.Fatal("EncryptFile modified its source file")
+	}
+
+	identities, err := IdentitiesFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("IdentitiesFromPassphrase: %v", err)
+	}
+	ar, err := OpenWithIdentities(encPath, identities)
+	if err != nil {
+		t.Fatalf("OpenWithIdentities(encrypted output): %v", err)
+	}
+	_ = ar.Close()
+
+	decPath := filepath.Join(dir, "dec.kshrk")
+	if err := DecryptFile(encPath, decPath, identities); err != nil {
+		t.Fatalf("DecryptFile: %v", err)
+	}
+	decrypted, err := os.ReadFile(decPath)
+	if err != nil {
+		t.Fatalf("ReadFile(decrypted): %v", err)
+	}
+	if string(decrypted) != string(original) {
+		t.Error("DecryptFile output does not match the original plaintext archive byte-for-byte")
+	}
+}
+
+// TestEncryptFile_DecryptFile_PreservesSourceMode confirms EncryptFile and
+// DecryptFile create their output with the source file's permission bits,
+// not os.Create's fixed 0666&umask — a restrictively-permissioned source
+// (e.g. 0600) must not silently become more permissive in the copy, which
+// matters most for DecryptFile since its output is plaintext.
+func TestEncryptFile_DecryptFile_PreservesSourceMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits don't apply on Windows")
+	}
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.kshrk")
+	sampleArchive(t, plainPath)
+	if err := os.Chmod(plainPath, 0o600); err != nil {
+		t.Fatalf("Chmod(plain, 0600): %v", err)
+	}
+
+	recipients, err := RecipientsFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("RecipientsFromPassphrase: %v", err)
+	}
+	encPath := filepath.Join(dir, "enc.kshrk")
+	if err := EncryptFile(plainPath, encPath, recipients); err != nil {
+		t.Fatalf("EncryptFile: %v", err)
+	}
+	if mode := statMode(t, encPath); mode != 0o600 {
+		t.Errorf("encrypted output mode = %o, want 0600 (matching the source)", mode)
+	}
+
+	// Re-permission the encrypted file differently to confirm DecryptFile
+	// independently preserves *its* source's mode, not a hardcoded default.
+	if err := os.Chmod(encPath, 0o640); err != nil {
+		t.Fatalf("Chmod(enc, 0640): %v", err)
+	}
+	identities, err := IdentitiesFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("IdentitiesFromPassphrase: %v", err)
+	}
+	decPath := filepath.Join(dir, "dec.kshrk")
+	if err := DecryptFile(encPath, decPath, identities); err != nil {
+		t.Fatalf("DecryptFile: %v", err)
+	}
+	if mode := statMode(t, decPath); mode != 0o640 {
+		t.Errorf("decrypted output mode = %o, want 0640 (matching the source)", mode)
+	}
+}
+
+// TestEncryptFile_DecryptFile_ReadOnlySourceMode confirms a read-only source
+// (0400/0444 — no owner-write bit at all) round-trips successfully with its
+// mode preserved in the output: createLike's temp file is writable while
+// being populated regardless of the source's mode, and commit narrows it to
+// the exact source mode (dropping the extra write bit) only once done, via
+// the rename.
+func TestEncryptFile_DecryptFile_ReadOnlySourceMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits don't apply on Windows")
+	}
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.kshrk")
+	sampleArchive(t, plainPath)
+	if err := os.Chmod(plainPath, 0o400); err != nil {
+		t.Fatalf("Chmod(plain, 0400): %v", err)
+	}
+
+	recipients, err := RecipientsFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("RecipientsFromPassphrase: %v", err)
+	}
+	encPath := filepath.Join(dir, "enc.kshrk")
+	if err := EncryptFile(plainPath, encPath, recipients); err != nil {
+		t.Fatalf("EncryptFile against a 0400 (read-only) source: %v", err)
+	}
+	if mode := statMode(t, encPath); mode != 0o400 {
+		t.Errorf("encrypted output mode = %o, want 0400 (matching the read-only source)", mode)
+	}
+	if err := os.Chmod(encPath, 0o444); err != nil {
+		t.Fatalf("Chmod(enc, 0444): %v", err)
+	}
+
+	identities, err := IdentitiesFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("IdentitiesFromPassphrase: %v", err)
+	}
+	decPath := filepath.Join(dir, "dec.kshrk")
+	if err := DecryptFile(encPath, decPath, identities); err != nil {
+		t.Fatalf("DecryptFile against a 0444 (read-only) source: %v", err)
+	}
+	if mode := statMode(t, decPath); mode != 0o444 {
+		t.Errorf("decrypted output mode = %o, want 0444 (matching the read-only source)", mode)
+	}
+}
+
+// TestCreateLike_DoesNotTouchDstPathUntilCommit confirms the core guarantee
+// of the temp-file+rename design: while the returned file is being written
+// to, a pre-existing dstPath (regardless of its permissions or content) is
+// completely untouched — no partial content, no permission change — right up
+// until commit() is called. This is what makes the design immune to both the
+// "loose permissions during write" and "symlink-following" issues an
+// earlier, direct-open version of createLike had to work around individually.
+func TestCreateLike_DoesNotTouchDstPathUntilCommit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits don't apply on Windows")
+	}
+	dir := t.TempDir()
+	srcPath := filepath.Join(dir, "src.kshrk")
+	if err := os.WriteFile(srcPath, []byte("source"), 0o600); err != nil {
+		t.Fatalf("WriteFile(src, 0600): %v", err)
+	}
+	src, err := os.Open(srcPath)
+	if err != nil {
+		t.Fatalf("Open(src): %v", err)
+	}
+	defer src.Close()
+
+	dstPath := filepath.Join(dir, "dst.kshrk")
+	const staleContent = "stale, loosely-permissioned prior output"
+	if err := os.WriteFile(dstPath, []byte(staleContent), 0o644); err != nil {
+		t.Fatalf("WriteFile(stale dst, 0644): %v", err)
+	}
+
+	dst, mode, commit, err := createLike(dstPath, src)
+	if err != nil {
+		t.Fatalf("createLike: %v", err)
+	}
+	if mode != 0o600 {
+		t.Errorf("returned mode = %o, want 0600 (the source's mode)", mode)
+	}
+	if dst.Name() == dstPath {
+		t.Fatalf("createLike returned a file at dstPath itself (%q); it must be a separate temp file", dstPath)
+	}
+
+	// Write into the returned file and confirm dstPath is still exactly the
+	// stale content/permissions from before — commit hasn't run yet.
+	if _, err := dst.WriteString("new content"); err != nil {
+		t.Fatalf("WriteString: %v", err)
+	}
+	if got := statMode(t, dstPath); got != 0o644 {
+		t.Errorf("dstPath mode before commit = %o, want unchanged 0644", got)
+	}
+	if content, err := os.ReadFile(dstPath); err != nil || string(content) != staleContent {
+		t.Errorf("dstPath content before commit = %q, %v; want unchanged %q", content, err, staleContent)
+	}
+
+	if err := commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if got := statMode(t, dstPath); got != 0o600 {
+		t.Errorf("dstPath mode after commit = %o, want 0600 (the source's mode)", got)
+	}
+	if content, err := os.ReadFile(dstPath); err != nil || string(content) != "new content" {
+		t.Errorf("dstPath content after commit = %q, %v; want %q", content, err, "new content")
+	}
+}
+
+// TestEncryptFile_ExistingReadOnlyOutput confirms overwriting an existing,
+// restrictively-permissioned output succeeds: createLike writes to a fresh
+// temp file and renames it into place, so the pre-existing dstPath's own
+// permissions (here, read-only 0400 — e.g. left behind by an earlier run of
+// this same mode-preservation logic) never block the operation. Unlike an
+// open()-based approach, a rename only needs write access to the *directory*
+// to replace the name, not to the file it's replacing.
+func TestEncryptFile_ExistingReadOnlyOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits don't apply on Windows")
+	}
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.kshrk")
+	sampleArchive(t, plainPath)
+
+	encPath := filepath.Join(dir, "enc.kshrk")
+	if err := os.WriteFile(encPath, []byte("stale output from a prior run"), 0o400); err != nil {
+		t.Fatalf("WriteFile(stale output, 0400): %v", err)
+	}
+
+	recipients, err := RecipientsFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("RecipientsFromPassphrase: %v", err)
+	}
+	if err := EncryptFile(plainPath, encPath, recipients); err != nil {
+		t.Fatalf("EncryptFile overwriting a pre-existing 0400 output: %v", err)
+	}
+
+	identities, err := IdentitiesFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("IdentitiesFromPassphrase: %v", err)
+	}
+	ar, err := OpenWithIdentities(encPath, identities)
+	if err != nil {
+		t.Fatalf("OpenWithIdentities: %v", err)
+	}
+	_ = ar.Close()
+}
+
+// TestEncryptFile_RejectsSameFileAsOutput guards createLike's os.SameFile
+// check: encrypting a file onto itself (as opposed to the CLI-level
+// absolute-path comparison in cmd/encrypt.go, which a caller of this
+// exported library function directly wouldn't get for free) must be
+// rejected, not silently truncate the source while reading from it.
+func TestEncryptFile_RejectsSameFileAsOutput(t *testing.T) {
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.kshrk")
+	sampleArchive(t, plainPath)
+
+	recipients, err := RecipientsFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("RecipientsFromPassphrase: %v", err)
+	}
+	if err := EncryptFile(plainPath, plainPath, recipients); err == nil {
+		t.Fatal("EncryptFile(path, path, ...) succeeded, want a same-file error")
+	} else if !strings.Contains(err.Error(), "same file") {
+		t.Errorf("error = %q, want it to mention the same-file conflict", err)
+	}
+}
+
+// TestEncryptFile_RejectsSymlinkOutput guards against a symlink-following
+// arbitrary-file-write: if dstPath is a symlink, os.Stat/os.OpenFile would
+// follow it and truncate/write through to whatever it points at, while the
+// error-path cleanup's os.Remove(dstPath) only removes the symlink itself —
+// not the target — leaving partially-written content behind in a file this
+// function never meant to touch. createLike must reject an existing symlink
+// at dstPath outright (via os.Lstat, which does not follow it), rather than
+// silently writing through it.
+func TestEncryptFile_RejectsSymlinkOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires elevated privileges on Windows")
+	}
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.kshrk")
+	sampleArchive(t, plainPath)
+
+	target := filepath.Join(dir, "target.txt")
+	if err := os.WriteFile(target, []byte("not meant to be touched"), 0o600); err != nil {
+		t.Fatalf("WriteFile(target): %v", err)
+	}
+	linkPath := filepath.Join(dir, "enc.kshrk")
+	if err := os.Symlink(target, linkPath); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	recipients, err := RecipientsFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("RecipientsFromPassphrase: %v", err)
+	}
+	if err := EncryptFile(plainPath, linkPath, recipients); err == nil {
+		t.Fatal("EncryptFile against a symlink output succeeded, want a rejection")
+	} else if !strings.Contains(err.Error(), "not a regular file") {
+		t.Errorf("error = %q, want it to mention the output is not a regular file", err)
+	}
+
+	// The symlink target must be untouched — this is the actual security
+	// property being guarded.
+	after, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("ReadFile(target) after rejected EncryptFile: %v", err)
+	}
+	if string(after) != "not meant to be touched" {
+		t.Error("EncryptFile wrote through the symlink to its target despite being rejected")
+	}
+}
+
+// TestEncryptFile_SurfacesUnexpectedLstatError guards createLike's Lstat
+// error handling: only "does not exist" should be treated as "no output to
+// check" and let the operation proceed. Any other Lstat failure (here, a
+// non-directory path component — a real, reproducible ENOTDIR, not ENOENT)
+// must be surfaced as a clear error, not silently swallowed and treated the
+// same as a fresh output path.
+func TestEncryptFile_SurfacesUnexpectedLstatError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("path-component-is-a-file produces different errors on Windows")
+	}
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.kshrk")
+	sampleArchive(t, plainPath)
+
+	notADir := filepath.Join(dir, "notadir")
+	if err := os.WriteFile(notADir, []byte("x"), 0o600); err != nil {
+		t.Fatalf("WriteFile(notADir): %v", err)
+	}
+	// dstPath treats notADir (a regular file) as a directory component, so
+	// Lstat on it fails with ENOTDIR, not ENOENT.
+	dstPath := filepath.Join(notADir, "out.kshrk")
+
+	recipients, err := RecipientsFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("RecipientsFromPassphrase: %v", err)
+	}
+	err = EncryptFile(plainPath, dstPath, recipients)
+	if err == nil {
+		t.Fatal("EncryptFile with an unstatable output path succeeded, want error")
+	}
+	if !strings.Contains(err.Error(), "checking existing output") {
+		t.Errorf("error = %q, want it to mention checking the existing output, not a generic/silent failure", err)
+	}
+}
+
+func statMode(t *testing.T, path string) os.FileMode {
+	t.Helper()
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat(%q): %v", path, err)
+	}
+	return fi.Mode().Perm()
+}
+
+// TestEncryptFile_DecryptFile_RoundTrip_X25519 is the recipient-mode
+// equivalent of the passphrase round trip.
+func TestEncryptFile_DecryptFile_RoundTrip_X25519(t *testing.T) {
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.kshrk")
+	sampleArchive(t, plainPath)
+
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatalf("GenerateX25519Identity: %v", err)
+	}
+	encPath := filepath.Join(dir, "enc.kshrk")
+	if err := EncryptFile(plainPath, encPath, []age.Recipient{id.Recipient()}); err != nil {
+		t.Fatalf("EncryptFile: %v", err)
+	}
+
+	decPath := filepath.Join(dir, "dec.kshrk")
+	if err := DecryptFile(encPath, decPath, []age.Identity{id}); err != nil {
+		t.Fatalf("DecryptFile: %v", err)
+	}
+	original, err := os.ReadFile(plainPath)
+	if err != nil {
+		t.Fatalf("ReadFile(plain): %v", err)
+	}
+	decrypted, err := os.ReadFile(decPath)
+	if err != nil {
+		t.Fatalf("ReadFile(decrypted): %v", err)
+	}
+	if string(decrypted) != string(original) {
+		t.Error("DecryptFile output does not match the original plaintext archive byte-for-byte")
+	}
+}
+
+// TestEncryptFile_RejectsAlreadyEncrypted guards against silently
+// double-wrapping an already-encrypted archive.
+func TestEncryptFile_RejectsAlreadyEncrypted(t *testing.T) {
+	dir := t.TempDir()
+	recipients, err := RecipientsFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("RecipientsFromPassphrase: %v", err)
+	}
+	encPath := filepath.Join(dir, "enc.kshrk")
+	sampleEncryptedArchive(t, encPath, recipients)
+
+	if err := EncryptFile(encPath, filepath.Join(dir, "double.kshrk"), recipients); err == nil {
+		t.Fatal("EncryptFile on an already-encrypted archive succeeded, want error")
+	} else if !strings.Contains(err.Error(), "already encrypted") {
+		t.Errorf("error = %q, want it to mention the archive is already encrypted", err)
+	}
+}
+
+// TestDecryptFile_RejectsNotEncrypted guards against silently passing a
+// plaintext archive through unchanged (or failing with a confusing
+// "requires at least one identity" error) when given to DecryptFile.
+func TestDecryptFile_RejectsNotEncrypted(t *testing.T) {
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.kshrk")
+	sampleArchive(t, plainPath)
+
+	identities, err := IdentitiesFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("IdentitiesFromPassphrase: %v", err)
+	}
+	err = DecryptFile(plainPath, filepath.Join(dir, "out.kshrk"), identities)
+	if err == nil {
+		t.Fatal("DecryptFile on a plaintext archive succeeded, want error")
+	}
+	if !strings.Contains(err.Error(), "not encrypted") {
+		t.Errorf("error = %q, want it to mention the archive is not encrypted", err)
+	}
+}
+
+// TestDecryptFile_WrongPassphrase confirms the clean, stable error message.
+func TestDecryptFile_WrongPassphrase(t *testing.T) {
+	dir := t.TempDir()
+	recipients, err := RecipientsFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("RecipientsFromPassphrase: %v", err)
+	}
+	encPath := filepath.Join(dir, "enc.kshrk")
+	sampleEncryptedArchive(t, encPath, recipients)
+
+	wrong, err := IdentitiesFromPassphrase("wrong-passphrase")
+	if err != nil {
+		t.Fatalf("IdentitiesFromPassphrase: %v", err)
+	}
+	err = DecryptFile(encPath, filepath.Join(dir, "out.kshrk"), wrong)
+	if err == nil {
+		t.Fatal("DecryptFile with wrong passphrase succeeded, want error")
+	}
+	if !strings.Contains(err.Error(), "incorrect passphrase or key") {
+		t.Errorf("error = %q, want a clean 'incorrect passphrase or key' message", err)
+	}
+}
+
+// TestDecryptFile_TamperedCiphertext confirms a real, end-to-end tamper (a
+// flipped byte in the ciphertext payload, past the header) is classified as
+// "tampered or corrupt", not a generic decryption failure.
+func TestDecryptFile_TamperedCiphertext(t *testing.T) {
+	dir := t.TempDir()
+	recipients, err := RecipientsFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("RecipientsFromPassphrase: %v", err)
+	}
+	encPath := filepath.Join(dir, "enc.kshrk")
+	sampleEncryptedArchive(t, encPath, recipients)
+
+	data, err := os.ReadFile(encPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	data[len(data)-10] ^= 0xFF
+	if err := os.WriteFile(encPath, data, 0o600); err != nil {
+		t.Fatalf("WriteFile(tampered): %v", err)
+	}
+
+	identities, err := IdentitiesFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("IdentitiesFromPassphrase: %v", err)
+	}
+	err = DecryptFile(encPath, filepath.Join(dir, "out.kshrk"), identities)
+	if err == nil {
+		t.Fatal("DecryptFile against tampered ciphertext succeeded, want error")
+	}
+	if !strings.Contains(err.Error(), "tampered or corrupt") {
+		t.Errorf("error = %q, want it to mention tampered or corrupt content", err)
+	}
+}
+
+// TestClassifyDecryptCopyError unit-tests the I/O-vs-tamper distinction
+// directly with synthetic errors, since reliably forcing a genuine mid-copy
+// OS-level I/O failure (disk full, a permission error on an already-open fd)
+// isn't practical to reproduce deterministically and portably in a test.
+func TestClassifyDecryptCopyError(t *testing.T) {
+	ioErr := &fs.PathError{Op: "write", Path: "/tmp/whatever", Err: errors.New("no space left on device")}
+	if got := classifyDecryptCopyError("src.kshrk", ioErr).Error(); strings.Contains(got, "tampered or corrupt") {
+		t.Errorf("classifyDecryptCopyError(*fs.PathError) = %q, want it to NOT claim tampering for a plain I/O error", got)
+	}
+
+	otherErr := errors.New("chunk authentication failed")
+	if got := classifyDecryptCopyError("src.kshrk", otherErr).Error(); !strings.Contains(got, "tampered or corrupt") {
+		t.Errorf("classifyDecryptCopyError(non-PathError) = %q, want it to mention tampered or corrupt content", got)
+	}
 }

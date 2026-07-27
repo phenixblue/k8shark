@@ -749,7 +749,10 @@ Captures can contain Secret values and other sensitive cluster data.
 encrypted [age](https://age-encryption.org/v1) envelope, and every command
 that reads a `.kshrk` archive — `inspect`, `open`, `ui`, `replay`, `diff`,
 `query`, `transitions`, `diagnose`, `redact` — decrypts it transparently
-given a key.
+given a key. `kshrk encrypt`/`kshrk decrypt` also let you encrypt or decrypt
+an existing archive standalone, after the fact (see
+[Encrypting or decrypting after the fact](#encrypting-or-decrypting-after-the-fact)
+below).
 See [encryption-threat-model.md](encryption-threat-model.md) for what this
 does and doesn't protect against, and
 [archive-format.md#encryption](archive-format.md#encryption) for how the
@@ -825,6 +828,35 @@ plaintext copy is ever written to disk in between.
 If a source archive is encrypted but `redact` isn't given any `--encrypt-*`
 flags, it warns and writes the redacted output in plaintext rather than
 silently downgrading it without telling you.
+
+### Encrypting or decrypting after the fact
+
+`kshrk encrypt` and `kshrk decrypt` are standalone whole-file commands for an
+archive you already have — no new capture, no redaction. Use them to encrypt
+an existing plaintext archive before sharing it, produce a plaintext copy for
+a tool that can't decrypt, or rotate keys (decrypt, then re-encrypt to a new
+passphrase or recipient set). Both take the same encrypt/decrypt flags shown
+above, and default their output to `<in>-encrypted.kshrk` /
+`<in>-decrypted.kshrk` — the original archive is never modified.
+
+```sh
+# Encrypt an archive you already captured
+kshrk encrypt capture.kshrk --encrypt-recipient age1abc...
+
+# Decrypt back to plaintext
+kshrk decrypt capture-encrypted.kshrk --decrypt-passphrase-file ./pass.txt
+
+# Rotate from a passphrase to a recipient key
+kshrk decrypt old.kshrk --decrypt-passphrase-file old-pass.txt --output plain.kshrk
+kshrk encrypt plain.kshrk --encrypt-recipient age1new... --output new.kshrk
+```
+
+`kshrk encrypt` refuses to run against an archive that's already encrypted,
+and `kshrk decrypt` refuses to run against one that isn't — both fail with a
+clear error rather than silently double-wrapping or no-op copying. See
+[encryption-threat-model.md#rotating-keys](encryption-threat-model.md#rotating-keys)
+for the trade-offs of this two-step rotation versus `redact`'s
+plaintext-free re-encrypt path.
 
 ---
 
