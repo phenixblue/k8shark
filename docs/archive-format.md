@@ -2,7 +2,10 @@
 
 A k8shark capture is a `.kshrk` file: a ZIP container whose entries are
 individually Zstandard-compressed JSON (except `metadata.json`, which is stored
-uncompressed for fast header reads). It can be listed with any ZIP tool.
+uncompressed for fast header reads). It can be listed with any ZIP tool —
+unless it was written with `--encrypt`/`--encrypt-recipient`, in which case the
+whole file is a single [age](https://age-encryption.org/v1) envelope around
+this same ZIP layout; see [Encryption](#encryption) below.
 
 ```sh
 unzip -l capture.kshrk
@@ -223,6 +226,54 @@ types, but all values will be `REDACTED`.
 ```sh
 kshrk redact --in capture.kshrk --out capture-redacted.kshrk
 ```
+
+## Encryption
+
+`kshrk capture --encrypt` / `--encrypt-recipient` (and the equivalent flags on
+`kshrk redact`) can write a `.kshrk` file as a single
+[age](https://age-encryption.org/v1) envelope wrapping the entire ZIP
+container described above — not per-entry encryption. On write, the ZIP
+writer streams into `age.Encrypt`'s writer instead of directly into the
+output file. On read, `age.DecryptReaderAt` gives back a seekable
+`io.ReaderAt` over the decrypted plaintext, which `zip.NewReader` reads from
+directly — so an encrypted archive gets the same random-access reads as a
+plaintext one (used by `open`/`ui`), with nothing ever decrypted to a
+plaintext temp file or fully buffered in memory. `DecryptReaderAt`'s `ReadAt`
+is safe for concurrent use and internally caches only the most-recently
+decrypted chunk.
+
+**Detection, not a metadata field.** An encrypted archive is recognized by
+sniffing the file's first bytes for the literal, public age spec header
+(`age-encryption.org/v1\n`) — not by a flag inside `metadata.json`, since
+metadata.json is itself inside the ciphertext and unreadable without a key.
+This also means `format_version` is untouched by encryption: it's a
+transparent outer envelope, and `CheckFormatVersion` keeps governing only the
+*decrypted* payload structure exactly as documented above. A pre-encryption
+`kshrk` build has no way to recognize an age-wrapped file and will fail with a
+raw, unhelpful zip-parsing error rather than a clear message — there's no way
+to retrofit that for binaries already in the wild.
+
+**What's hidden vs. what leaks.** Because the whole ZIP is inside one
+ciphertext, entry names (the SHA-256-derived `pathDir` directories), the ZIP
+central directory, and per-entry sizes/counts are all hidden — not just
+record payloads. The residual leak is the ciphertext's approximate total size
+(rounded to the age STREAM chunk boundary) and the fact that it's an
+age-encrypted file at all (the header is a public part of the spec, not a
+secret). See [encryption-threat-model.md](encryption-threat-model.md) for the
+full threat model, key-handling rules, and what's explicitly out of scope.
+
+Key modes: a passphrase (age `ScryptRecipient`/`ScryptIdentity`) or one or
+more X25519 recipient public keys — never both for the same archive (age
+requires a passphrase recipient to be the file's only recipient).
+Passphrase/identity material is read from files, `$KSHRK_ENCRYPT_PASSPHRASE`
+/ `$KSHRK_DECRYPT_PASSPHRASE`, or an interactive prompt — never through Viper
+or the YAML config file.
+
+Since an encrypted archive can't be listed with a plain ZIP tool (unlike the
+plaintext archives described above), use `kshrk inspect` with the appropriate
+`--decrypt-*` flag to summarize one, or age-decrypt it first
+(`age --decrypt -i key.txt capture.kshrk > capture-plain.kshrk`) to poke at it
+with the manual ZIP/Zstd commands shown below.
 
 ## Streaming mode (NDJSON stdout)
 

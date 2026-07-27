@@ -3,10 +3,12 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"filippo.io/age"
 	archivepkg "github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/capture"
 	"github.com/spf13/cobra"
@@ -77,7 +79,72 @@ func newTestDiffCommand() *cobra.Command {
 	cmd.Flags().String("resource", "", "")
 	cmd.Flags().String("namespace", "", "")
 	cmd.Flags().StringP("output", "o", "text", "")
+	addDecryptFlags(cmd)
+	// PersistentFlags on a standalone command aren't merged into Flags() until
+	// execution via cmd.Execute(); since tests call runDiff directly, merge
+	// them explicitly so resolveDecryptIdentities can read them.
+	cmd.Flags().AddFlagSet(cmd.PersistentFlags())
 	return cmd
+}
+
+// buildEncryptedDiffArchive mirrors buildDiffArchive but writes an
+// age-encrypted archive using a low-work-factor passphrase recipient.
+func buildEncryptedDiffArchive(t *testing.T, body, passphrase string) string {
+	t.Helper()
+	out := filepath.Join(t.TempDir(), "capture.kshrk")
+	now := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	rec := &capture.Record{ID: "rec-1", CapturedAt: now, APIPath: "/api/v1/namespaces/default/pods", HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(body)}
+	meta := &capture.CaptureMetadata{CaptureID: "test-capture", CapturedAt: now, CapturedUntil: now, RecordCount: 1, Encrypted: true}
+	index := capture.Index{
+		"/api/v1/namespaces/default/pods": {APIPath: "/api/v1/namespaces/default/pods", Seqs: []int{0}, Times: []time.Time{now}},
+	}
+	r, err := age.NewScryptRecipient(passphrase)
+	if err != nil {
+		t.Fatalf("NewScryptRecipient: %v", err)
+	}
+	r.SetWorkFactor(10)
+	sw, err := archivepkg.NewEncryptedStreamWriter(out, []age.Recipient{r})
+	if err != nil {
+		t.Fatalf("NewEncryptedStreamWriter: %v", err)
+	}
+	if err := sw.WriteRecord(rec); err != nil {
+		t.Fatalf("WriteRecord: %v", err)
+	}
+	if err := sw.Finish(meta, index, nil); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	return out
+}
+
+// TestRunDiff_EncryptedBeforeOnly exercises the M3 fix where only one side of
+// a two-archive diff is encrypted: --before is encrypted, --after is
+// plaintext. The shared --decrypt-passphrase-file must still be tried against
+// the encrypted side and the diff must run end to end.
+func TestRunDiff_EncryptedBeforeOnly(t *testing.T) {
+	const passphrase = "diff-encrypt-test-passphrase"
+	before := buildEncryptedDiffArchive(t, `{"kind":"PodList","items":[{"metadata":{"name":"before"}}]}`, passphrase)
+	after := buildDiffArchive(t, `{"kind":"PodList","items":[{"metadata":{"name":"after"}}]}`)
+
+	passFile := filepath.Join(t.TempDir(), "pass.txt")
+	if err := os.WriteFile(passFile, []byte(passphrase), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cmd := newTestDiffCommand()
+	_ = cmd.Flags().Set("before", before)
+	_ = cmd.Flags().Set("after", after)
+	_ = cmd.Flags().Set("output", "json")
+	_ = cmd.Flags().Set("decrypt-passphrase-file", passFile)
+	buf := &bytes.Buffer{}
+	cmd.SetOut(buf)
+
+	err := runDiff(cmd, nil)
+	if err == nil {
+		t.Fatal("expected a diff (exit error) between before/after pod names")
+	}
+	if _, ok := err.(exitError); !ok {
+		t.Fatalf("expected exitError (a real diff was found), got %T: %v", err, err)
+	}
 }
 
 func buildDiffArchive(t *testing.T, body string) string {
