@@ -114,6 +114,12 @@ Capture complete
 | `--redact-secrets` | | false | Redact Secret `data`/`stringData` values from the archive after capture |
 | `--allow-secret` | | | `namespace/name` of secret to preserve when `--redact-secrets` is set (repeatable) |
 | `--redact-field` | | | Field redaction rule applied after capture: `<path>:<Kind>:<replacement>[:<type>]` (repeatable) |
+| `--encrypt` | | false | Encrypt the output archive with a passphrase (prompts if no source is given) |
+| `--encrypt-passphrase-file` | | | Read the encryption passphrase from this file instead of prompting |
+| `--encrypt-recipient` | | | age recipient public key (`age1...`) to encrypt to (repeatable) |
+| `--encrypt-recipients-file` | | | File of age recipient public keys, one per line |
+
+See [Encryption](#encryption) below for the full picture, including decrypting on read and combining with redaction.
 
 If `--config` is not specified, k8shark looks for `./config.yaml` in the current directory first, then falls back to `~/.config/kshrk/config.yaml`.
 
@@ -727,10 +733,98 @@ Examples:
 | `--allow-secret` | both | | `namespace/name` of secret to preserve (repeatable) |
 | `--redact-field` | both | | Field redaction rule (repeatable). Format: `<path>:<Kind>:<replacement>[:<type>]` |
 | `--config` | `redact` | | Capture config file — applies `redaction.rules` and `redaction.redactSecrets` |
+| `--encrypt`, `--encrypt-passphrase-file`, `--encrypt-recipient`, `--encrypt-recipients-file` | `redact` | | Encrypt the output archive — see [Encryption](#encryption) |
+| `--decrypt-passphrase-file`, `--decrypt-identity-file` | `redact` | | Decrypt an encrypted `--in` archive — see [Encryption](#encryption) |
 
 Secret metadata (name, namespace, labels, annotations, type) is always preserved so you can still count and identify secrets by kind.
 
 See [config.md](config.md#redaction) for the full `redaction:` config block reference with type-aware examples.
+
+---
+
+## Encryption
+
+Captures can contain Secret values and other sensitive cluster data.
+`kshrk capture` (and `kshrk redact`) can write the archive as a single
+encrypted [age](https://age-encryption.org/v1) envelope, and every command
+that reads a `.kshrk` archive — `inspect`, `open`, `ui`, `replay`, `diff`,
+`query`, `transitions`, `diagnose`, `redact` — decrypts it transparently
+given a key.
+See [encryption-threat-model.md](encryption-threat-model.md) for what this
+does and doesn't protect against, and
+[archive-format.md#encryption](archive-format.md#encryption) for how the
+envelope is built.
+
+### Encrypting at capture time
+
+Two key modes, mutually exclusive per archive:
+
+```sh
+# Passphrase — prompts interactively (with confirmation) if no source is given
+kshrk capture --config k8shark.yaml --encrypt
+
+# Passphrase from a file, for scripts/CI (no prompt)
+kshrk capture --config k8shark.yaml --encrypt-passphrase-file ./pass.txt
+
+# Or via environment variable
+KSHRK_ENCRYPT_PASSPHRASE=hunter2 kshrk capture --config k8shark.yaml --encrypt
+
+# Recipient public keys — encrypt to one or more age keypairs
+age-keygen -o key.txt          # generates a private key; prints the public key
+kshrk capture --config k8shark.yaml --encrypt-recipient age1abc...
+
+# Or a file of recipients (one per line, '#' comments allowed)
+kshrk capture --config k8shark.yaml --encrypt-recipients-file recipients.txt
+```
+
+There is deliberately no `--encrypt-passphrase <string>` flag — passing a
+passphrase as a bare CLI argument would leak it into shell history and `ps`
+output. Use `--encrypt-passphrase-file`, the environment variable, or the
+interactive prompt instead.
+
+### Decrypting on read
+
+Every read command accepts the same decrypt flags:
+
+| Flag | Description |
+|------|-------------|
+| `--decrypt-passphrase-file` | Read the passphrase from this file (first line) |
+| `--decrypt-identity-file` | An age identity (private key) file, e.g. from `age-keygen` |
+| `$KSHRK_DECRYPT_PASSPHRASE` | Passphrase via environment variable |
+
+If none of these are given and the archive turns out to be encrypted, `kshrk`
+prompts for a passphrase on a terminal, or fails with a clear error instead of
+hanging if stdin isn't a terminal. A plaintext archive is unaffected either
+way — no key is ever required to open one.
+
+```sh
+kshrk inspect capture.kshrk --decrypt-passphrase-file ./pass.txt
+kshrk ui capture.kshrk --decrypt-passphrase-file ./pass.txt
+kshrk open capture.kshrk --decrypt-identity-file ./key.txt
+kshrk diff --before a.kshrk --after b.kshrk --decrypt-passphrase-file ./pass.txt
+```
+
+A wrong passphrase or key produces a clean error (`incorrect passphrase or
+key`), not a raw crypto failure.
+
+### Combining with redaction
+
+`kshrk redact` reads an encrypted source with the flags above and can
+re-encrypt the output with `--encrypt-*`:
+
+```sh
+kshrk redact --in capture.kshrk --redact-secrets \
+  --decrypt-passphrase-file old-pass.txt \
+  --encrypt-recipient age1abc...
+```
+
+`kshrk capture --encrypt --redact-secrets` (redacting inline right after
+capture) works the same way and keeps the archive encrypted end to end — no
+plaintext copy is ever written to disk in between.
+
+If a source archive is encrypted but `redact` isn't given any `--encrypt-*`
+flags, it warns and writes the redacted output in plaintext rather than
+silently downgrading it without telling you.
 
 ---
 

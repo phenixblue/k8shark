@@ -79,6 +79,11 @@ func runReplay(cmd *cobra.Command, args []string) error {
 		writable = true
 	}
 
+	identities, err := resolveDecryptIdentities(cmd, args[0])
+	if err != nil {
+		return err
+	}
+
 	srv, err := server.Replay(server.ReplayOptions{
 		ArchivePath:       args[0],
 		Port:              port,
@@ -91,6 +96,7 @@ func runReplay(cmd *cobra.Command, args []string) error {
 		Writable:          writable,
 		DisableScheduling: !schedulePods,
 		Verbose:           verbose,
+		Identities:        identities,
 	})
 	if err != nil {
 		return fmt.Errorf("starting replay: %w", err)
