@@ -239,16 +239,22 @@ func (e *Engine) Run() (*CaptureSummary, error) {
 	if e.sink == nil {
 		if e.cfg.Output == "-" {
 			e.sink = archive.NewNDJSONWriter(os.Stdout)
-		} else if len(e.recipients) > 0 {
-			e.sink, err = archive.NewEncryptedStreamWriter(e.cfg.Output, e.recipients)
-			if err != nil {
-				return nil, err
-			}
 		} else {
-			e.sink, err = archive.NewStreamWriter(e.cfg.Output)
+			var sw *archive.StreamWriter
+			if len(e.recipients) > 0 {
+				sw, err = archive.NewEncryptedStreamWriter(e.cfg.Output, e.recipients)
+			} else {
+				sw, err = archive.NewStreamWriter(e.cfg.Output)
+			}
 			if err != nil {
 				return nil, err
 			}
+			e.sink = sw
+			// Release the writer's file handle on any early-return error path
+			// between here and Finish (e.g. namespace expansion or watch
+			// validation below). Abort is a no-op once Finish has run, so the
+			// success path is unaffected.
+			defer func() { _ = sw.Abort() }()
 		}
 	}
 
