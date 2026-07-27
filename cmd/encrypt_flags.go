@@ -143,11 +143,14 @@ type encryptConfig struct {
 }
 
 // resolveEncryption determines how (if at all) a command should encrypt its
-// output. Passphrase mode (--encrypt / --encrypt-passphrase-file / env / prompt)
-// and recipient mode (--encrypt-recipient / --encrypt-recipients-file) are
-// mutually exclusive: age requires a passphrase (scrypt) recipient to be the
-// file's only recipient. The conflict is reported before any interactive
-// passphrase prompt so the user isn't asked for a secret that can't be used.
+// output. Passphrase mode is enabled only by --encrypt or
+// --encrypt-passphrase-file; once enabled, the passphrase itself comes from the
+// file, $KSHRK_ENCRYPT_PASSPHRASE, or an interactive prompt (none of those
+// sources enable encryption on their own). Recipient mode is enabled by
+// --encrypt-recipient / --encrypt-recipients-file. The two modes are mutually
+// exclusive: age requires a passphrase (scrypt) recipient to be the file's only
+// recipient. The conflict is reported before any interactive passphrase prompt
+// so the user isn't asked for a secret that can't be used.
 func resolveEncryption(cmd *cobra.Command) (encryptConfig, error) {
 	passphraseMode := encryptRequested(cmd)
 	recipientMode := recipientsRequested(cmd)
