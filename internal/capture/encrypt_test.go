@@ -6,12 +6,30 @@ import (
 	"testing"
 	"time"
 
+	"filippo.io/age"
 	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/config"
 )
 
 // encryptTestPassphrase is a fixed test-only passphrase; not a real secret.
 const encryptTestPassphrase = "capture-encrypt-test-passphrase" //nolint:gosec // test fixture
+
+// fastScryptRecipients builds a passphrase recipient with a deliberately low
+// scrypt work factor. The production default (logN=18) is CPU-heavy and, when
+// several package test binaries run in parallel under CI, can starve the
+// capture goroutines enough that the short poll window elapses with no
+// records — making an otherwise-correct round-trip test flaky. Decryption
+// reads the work factor from the file header, so the standard passphrase
+// identity still decrypts these archives.
+func fastScryptRecipients(t *testing.T, passphrase string) []age.Recipient {
+	t.Helper()
+	r, err := age.NewScryptRecipient(passphrase)
+	if err != nil {
+		t.Fatalf("NewScryptRecipient: %v", err)
+	}
+	r.SetWorkFactor(10)
+	return []age.Recipient{r}
+}
 
 // TestEngine_CaptureEncrypted verifies that a capture run with encryption
 // recipients writes an age-encrypted archive: a plain Open must fail because
@@ -31,13 +49,8 @@ func TestEngine_CaptureEncrypted(t *testing.T) {
 		},
 	}
 
-	recipients, err := archive.RecipientsFromPassphrase(encryptTestPassphrase)
-	if err != nil {
-		t.Fatalf("RecipientsFromPassphrase: %v", err)
-	}
-
 	eng := newEngineWith(cfg, fake.Client(), fake.URL, false)
-	eng.SetEncryption(recipients)
+	eng.SetEncryption(fastScryptRecipients(t, encryptTestPassphrase))
 	if _, err := eng.Run(); err != nil {
 		t.Fatalf("engine.Run() error: %v", err)
 	}
@@ -92,12 +105,8 @@ func TestEngine_CaptureEncrypted_WrongPassphrase(t *testing.T) {
 			{Version: "v1", Resource: "pods", Namespaces: []string{"default"}, IntervalRaw: "500ms", Interval: 500 * time.Millisecond},
 		},
 	}
-	recipients, err := archive.RecipientsFromPassphrase(encryptTestPassphrase)
-	if err != nil {
-		t.Fatalf("RecipientsFromPassphrase: %v", err)
-	}
 	eng := newEngineWith(cfg, fake.Client(), fake.URL, false)
-	eng.SetEncryption(recipients)
+	eng.SetEncryption(fastScryptRecipients(t, encryptTestPassphrase))
 	if _, err := eng.Run(); err != nil {
 		t.Fatalf("engine.Run() error: %v", err)
 	}

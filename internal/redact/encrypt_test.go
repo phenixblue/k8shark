@@ -71,10 +71,14 @@ func TestRedact_EncryptedRoundTrip(t *testing.T) {
 		secretRecord("r1", "default", "db-creds", map[string]string{"password": encoded}, nil),
 	}
 
-	recipients, err := archive.RecipientsFromPassphrase(redactEncryptTestPassphrase)
+	// Low scrypt work factor keeps the test fast; decryption reads the factor
+	// from the file header, so the standard passphrase identity still works.
+	scryptR, err := age.NewScryptRecipient(redactEncryptTestPassphrase)
 	if err != nil {
-		t.Fatalf("RecipientsFromPassphrase: %v", err)
+		t.Fatalf("NewScryptRecipient: %v", err)
 	}
+	scryptR.SetWorkFactor(10)
+	recipients := []age.Recipient{scryptR}
 	identities, err := archive.IdentitiesFromPassphrase(redactEncryptTestPassphrase)
 	if err != nil {
 		t.Fatalf("IdentitiesFromPassphrase: %v", err)

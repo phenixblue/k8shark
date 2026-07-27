@@ -81,6 +81,10 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("creating output archive: %w", err)
 	}
+	// Ensure the output writer's file handle is released if we return early
+	// (e.g. a malformed record) before Finish. Abort is a no-op once Finish
+	// has run, so the success path is unaffected.
+	defer func() { _ = sw.Abort() }()
 
 	// newIdx / newWI will be built with corrected seq numbers as we write.
 	newIdx := make(capture.Index, len(idx))
