@@ -467,6 +467,52 @@ func TestEncryptFile_DecryptFile_ReadOnlySourceMode(t *testing.T) {
 	}
 }
 
+// TestCreateLike_NarrowsExistingLoosePermissionsBeforeWriting is a regression
+// guard for a gap in an earlier version of createLike: a pre-existing
+// dstPath that's MORE permissive than the source (e.g. a stale 0644 file
+// where the source is 0600) was only narrowed by the caller's final Chmod,
+// after all content had already been written — meaning plaintext/ciphertext
+// sat under the loose permissions for the entire write. createLike must
+// narrow dstPath to the source's mode *before* returning the open file, so
+// there is no window where content is written under looser-than-intended
+// permissions.
+func TestCreateLike_NarrowsExistingLoosePermissionsBeforeWriting(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits don't apply on Windows")
+	}
+	dir := t.TempDir()
+	srcPath := filepath.Join(dir, "src.kshrk")
+	if err := os.WriteFile(srcPath, []byte("source"), 0o600); err != nil {
+		t.Fatalf("WriteFile(src, 0600): %v", err)
+	}
+	src, err := os.Open(srcPath)
+	if err != nil {
+		t.Fatalf("Open(src): %v", err)
+	}
+	defer src.Close()
+
+	dstPath := filepath.Join(dir, "dst.kshrk")
+	if err := os.WriteFile(dstPath, []byte("stale, loosely-permissioned prior output"), 0o644); err != nil {
+		t.Fatalf("WriteFile(stale dst, 0644): %v", err)
+	}
+
+	dst, mode, err := createLike(dstPath, src)
+	if err != nil {
+		t.Fatalf("createLike: %v", err)
+	}
+	defer dst.Close()
+
+	if mode != 0o600 {
+		t.Errorf("returned mode = %o, want 0600 (the source's mode)", mode)
+	}
+	// The critical assertion: by the time createLike returns — before any
+	// caller has written a single byte — dstPath must already be narrowed to
+	// the source's mode, not left at its old, looser 0644.
+	if got := statMode(t, dstPath); got != 0o600 {
+		t.Errorf("dstPath mode immediately after createLike = %o, want 0600 (narrowed before any write, not left at the stale 0644)", got)
+	}
+}
+
 // TestEncryptFile_ExistingReadOnlyOutput covers the case createLike's
 // pre-chmod exists for: dstPath already exists with a restrictive mode (e.g.
 // left behind, with a read-only mode, by an earlier run of this very

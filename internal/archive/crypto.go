@@ -75,18 +75,18 @@ func isNoIdentityMatch(err error) bool {
 // permissive than the original — this matters most for DecryptFile, whose
 // output is plaintext.
 //
-// The file is opened write-only (callers never read back from it) with the
-// owner-write bit guaranteed regardless of src's mode, covering two cases
-// where a restrictive source mode (e.g. read-only 0400/0444, or write-only
-// 0200 which O_RDWR would reject despite not needing read access) could
-// otherwise deny the write this function needs to perform: as defense in
-// depth for the create-a-new-file path, and, concretely, when dstPath
-// already exists — OpenFile's mode argument is ignored for an existing file,
-// so only its current on-disk mode governs the access check, and re-running
-// against the same restrictively-permissioned output (which this very
-// mode-preservation logic can produce) would otherwise fail. Callers must
-// restore the exact source mode (via (*os.File).Chmod, using the returned
-// FileMode) once they're done writing, before the final Close.
+// dstPath is locked to mode|0o200 (the source's permission bits, plus the
+// owner-write needed to populate it) before this function returns — never to
+// whatever an existing dstPath's own mode happened to be. That matters when
+// dstPath already exists more permissively than the source (e.g. a stale
+// 0644 file where the source is 0600): narrowing it only via a final Chmod
+// after writing (as an earlier version of this function did) would leave
+// plaintext sitting under the loose permissions for the entire duration of
+// the write. Permission failures here are fatal, not best-effort — if the
+// intended mode can't be set, no content is written under the wrong
+// permissions in the first place. Callers still restore the exact source
+// mode (dropping the extra owner-write bit, via (*os.File).Chmod using the
+// returned FileMode) once they're done writing, before the final Close.
 func createLike(dstPath string, src *os.File) (*os.File, os.FileMode, error) {
 	srcInfo, err := src.Stat()
 	if err != nil {
@@ -101,14 +101,31 @@ func createLike(dstPath string, src *os.File) (*os.File, os.FileMode, error) {
 		// Only touch the mode of a regular file — dstPath could be a
 		// directory or other special file (the caller passed a bad --output),
 		// and chmod'ing that isn't this function's business; let the
-		// OpenFile below report a clear error for it instead.
+		// OpenFile below report a clear error for it instead. This also
+		// narrows an existing, more-permissive dstPath down to the intended
+		// mode *before* opening it, so there is no window where it sits at
+		// looser-than-intended permissions while content is written.
 		if existing.Mode().IsRegular() {
-			_ = os.Chmod(dstPath, existing.Mode().Perm()|0o200) // best-effort; OpenFile below reports any real failure
+			if err := os.Chmod(dstPath, mode|0o200); err != nil {
+				return nil, 0, fmt.Errorf("setting permissions on %q: %w", dstPath, err)
+			}
 		}
 	}
 	dst, err := os.OpenFile(dstPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode|0o200)
 	if err != nil {
 		return nil, 0, fmt.Errorf("creating %q: %w", dstPath, err)
+	}
+	// This is the call that actually closes the loose-permission window: an
+	// existing dstPath that was open()-able because it already had the
+	// owner-write bit (e.g. a stale, more-permissive 0644 where the source is
+	// 0600) is narrowed here, before any content is written — not left at its
+	// old, looser mode until the caller's chmod after writing finishes. It
+	// also covers OpenFile's create mode being subject to umask, for a
+	// freshly-created dstPath.
+	if err := dst.Chmod(mode | 0o200); err != nil {
+		dst.Close()
+		os.Remove(dstPath)
+		return nil, 0, fmt.Errorf("setting permissions on %q: %w", dstPath, err)
 	}
 	return dst, mode, nil
 }
