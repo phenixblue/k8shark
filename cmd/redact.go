@@ -144,7 +144,7 @@ func runRedact(cmd *cobra.Command, _ []string) error {
 			// warn that the redacted copy will be written in plaintext so an
 			// encrypted capture isn't silently downgraded.
 			fmt.Fprintf(cmd.ErrOrStderr(),
-				"warning: source archive is encrypted but the redacted output %q will be written in plaintext; pass --encrypt or --encrypt-recipient to keep it encrypted\n", out)
+				"warning: source archive is encrypted but the redacted output %q will be written in plaintext; pass a passphrase (--encrypt / --encrypt-passphrase-file) or recipient (--encrypt-recipient / --encrypt-recipients-file) flag to keep it encrypted\n", out)
 		}
 	}
 

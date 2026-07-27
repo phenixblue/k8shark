@@ -214,11 +214,19 @@ func runCapture(cmd *cobra.Command, args []string) error {
 		})
 		if err != nil {
 			_ = os.Remove(tmpPath)
+			// When the intermediate was encrypted to the ephemeral in-memory key
+			// (redactIdentities is set), sum.OutputPath can't be decrypted by any
+			// user key — remove it rather than leave an unrecoverable file where
+			// the user expects their capture.
+			if len(redactIdentities) > 0 {
+				_ = os.Remove(sum.OutputPath)
+			}
 			return fmt.Errorf("redacting archive: %w", err)
 		}
 		if err := os.Rename(tmpPath, sum.OutputPath); err != nil {
-			_ = os.Remove(tmpPath)
-			return fmt.Errorf("replacing archive with redacted version: %w", err)
+			// Don't delete tmpPath: it holds the fully-redacted archive, so leave
+			// it for manual recovery instead of destroying the only good copy.
+			return fmt.Errorf("replacing archive with redacted version (redacted output left at %s): %w", tmpPath, err)
 		}
 		if result.SecretsRedacted > 0 || result.FieldsRedacted > 0 {
 			fmt.Fprintf(msgOut, "  Redacted:  %d secret(s), %d record(s) with field rules applied\n",
