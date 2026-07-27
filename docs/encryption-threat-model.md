@@ -3,10 +3,11 @@
 `.kshrk` captures can contain Kubernetes Secret values, tokens, and other
 cluster PII. `kshrk capture`'s encryption flags (`--encrypt`,
 `--encrypt-passphrase-file`, `--encrypt-recipient`,
-`--encrypt-recipients-file` — and the equivalent `kshrk redact` flags) let you
-write an archive as a single [age](https://age-encryption.org/v1) envelope.
-This page states plainly what that protects, what it doesn't, and the
-key-handling rules the CLI enforces.
+`--encrypt-recipients-file` — and the equivalent `kshrk redact` flags), plus
+the standalone `kshrk encrypt`/`kshrk decrypt` commands for an existing
+archive, let you write an archive as a single
+[age](https://age-encryption.org/v1) envelope. This page states plainly what
+that protects, what it doesn't, and the key-handling rules the CLI enforces.
 See [archive-format.md](archive-format.md#encryption) for how the envelope is
 built; see [usage.md](usage.md#encryption) for command examples.
 
@@ -49,7 +50,7 @@ built; see [usage.md](usage.md#encryption) for command examples.
 - **Recipient revocation.** age has no built-in mechanism to revoke a
   recipient key. If a private key or passphrase may have been exposed, the
   only remedy is to re-encrypt to a new key/recipient set (see
-  [Rotating keys](#rotating-keys-today) below) — there is no way to
+  [Rotating keys](#rotating-keys) below) — there is no way to
   retroactively deny that key access to copies already handed out.
 - **Old `kshrk` binaries.** A `kshrk` build from before encryption support
   (anything prior to this feature) will fail with a raw, unhelpful
@@ -91,20 +92,21 @@ built; see [usage.md](usage.md#encryption) for command examples.
 | Automation | Passphrase must be distributed to every consumer (file/env) | Encrypt to a public key with no secret material on the encrypting side |
 | Rotation | Requires a new shared secret and re-encryption | Add/remove recipients by re-encrypting to a different key set |
 
-## Rotating keys today
+## Rotating keys
 
-There's no dedicated `kshrk encrypt`/`kshrk decrypt` command yet (tracked for
-a later milestone). In the meantime, `kshrk redact` can serve as a re-encrypt
-tool even with no redaction rules — pass `--decrypt-*` for the source key and
-`--encrypt-*` for the new key/recipients:
+Use `kshrk decrypt` followed by `kshrk encrypt` to rotate a passphrase, move
+from a passphrase to recipient keys, or add/remove recipients:
 
 ```sh
-kshrk redact --in old.kshrk --out new.kshrk \
-  --decrypt-passphrase-file old-pass.txt \
-  --encrypt-recipient age1newrecipient...
+kshrk decrypt old.kshrk --decrypt-passphrase-file old-pass.txt --output plain.kshrk
+kshrk encrypt plain.kshrk --encrypt-recipient age1newrecipient... --output new.kshrk
 ```
 
-**Caveat**: this always marks the output archive's metadata as `redacted:
-true`, even if no redaction actually occurred, since `kshrk redact` doesn't
-distinguish "re-key only" from "redact" today. Treat this as a workaround,
-not the intended long-term interface.
+The intermediate `plain.kshrk` is a real plaintext file on disk between the
+two commands — remove it once `new.kshrk` is confirmed good if that matters
+for your threat model (there's no combined "re-key without ever writing
+plaintext" command). `kshrk redact` is also usable as a re-encrypt tool even
+with no redaction rules (pass `--decrypt-*` for the source key and
+`--encrypt-*` for the new key/recipients), which avoids the plaintext
+intermediate, but always marks the output's metadata as `redacted: true`
+even when nothing was actually redacted.

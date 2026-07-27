@@ -67,3 +67,102 @@ func isNoIdentityMatch(err error) bool {
 	var noMatch *age.NoIdentityMatchError
 	return errors.As(err, &noMatch)
 }
+
+// EncryptFile writes an age-encrypted copy of the plaintext file at srcPath to
+// dstPath, encrypting to recipients. Unlike NewEncryptedStreamWriter (which
+// encrypts while writing a brand-new archive), this is a whole-file transform
+// for encrypting an archive that already exists on disk — used by
+// `kshrk encrypt`. It refuses to run if srcPath is already an age-encrypted
+// file, and removes a partially-written dstPath on any failure.
+func EncryptFile(srcPath, dstPath string, recipients []age.Recipient) error {
+	encrypted, err := IsEncrypted(srcPath)
+	if err != nil {
+		return fmt.Errorf("reading %q: %w", srcPath, err)
+	}
+	if encrypted {
+		return fmt.Errorf("%q is already encrypted", srcPath)
+	}
+	if len(recipients) == 0 {
+		return fmt.Errorf("EncryptFile: at least one recipient is required")
+	}
+
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return fmt.Errorf("opening %q: %w", srcPath, err)
+	}
+	defer src.Close()
+
+	dst, err := os.Create(dstPath)
+	if err != nil {
+		return fmt.Errorf("creating %q: %w", dstPath, err)
+	}
+	w, err := age.Encrypt(dst, recipients...)
+	if err != nil {
+		dst.Close()
+		os.Remove(dstPath)
+		return fmt.Errorf("setting up encryption: %w", err)
+	}
+	if _, err := io.Copy(w, src); err != nil {
+		dst.Close()
+		os.Remove(dstPath)
+		return fmt.Errorf("encrypting %q: %w", srcPath, err)
+	}
+	if err := w.Close(); err != nil {
+		dst.Close()
+		os.Remove(dstPath)
+		return fmt.Errorf("finishing encryption of %q: %w", srcPath, err)
+	}
+	if err := dst.Close(); err != nil {
+		return fmt.Errorf("closing %q: %w", dstPath, err)
+	}
+	return nil
+}
+
+// DecryptFile writes a plaintext copy of the age-encrypted file at srcPath to
+// dstPath, decrypting with identities. It is the inverse whole-file transform
+// of EncryptFile, used by `kshrk decrypt`. It refuses to run if srcPath is not
+// an age-encrypted file, and removes a partially-written dstPath on any
+// failure.
+func DecryptFile(srcPath, dstPath string, identities []age.Identity) error {
+	encrypted, err := IsEncrypted(srcPath)
+	if err != nil {
+		return fmt.Errorf("reading %q: %w", srcPath, err)
+	}
+	if !encrypted {
+		return fmt.Errorf("%q is not encrypted", srcPath)
+	}
+	if len(identities) == 0 {
+		return fmt.Errorf("DecryptFile: at least one identity is required")
+	}
+
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return fmt.Errorf("opening %q: %w", srcPath, err)
+	}
+	defer src.Close()
+
+	r, err := age.Decrypt(src, identities...)
+	if err != nil {
+		if isNoIdentityMatch(err) {
+			return fmt.Errorf("failed to decrypt %q: incorrect passphrase or key", srcPath)
+		}
+		return fmt.Errorf("decrypting %q: %w", srcPath, err)
+	}
+
+	dst, err := os.Create(dstPath)
+	if err != nil {
+		return fmt.Errorf("creating %q: %w", dstPath, err)
+	}
+	if _, err := io.Copy(dst, r); err != nil {
+		dst.Close()
+		os.Remove(dstPath)
+		// A wrong identity/passphrase is always caught above, synchronously in
+		// age.Decrypt's header parsing. A failure here means age's per-chunk
+		// STREAM authentication rejected tampered or corrupt ciphertext.
+		return fmt.Errorf("decrypting %q: tampered or corrupt archive: %w", srcPath, err)
+	}
+	if err := dst.Close(); err != nil {
+		return fmt.Errorf("closing %q: %w", dstPath, err)
+	}
+	return nil
+}

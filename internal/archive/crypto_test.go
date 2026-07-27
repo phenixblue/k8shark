@@ -314,3 +314,151 @@ func TestPlaintextArchiveStillOpens(t *testing.T) {
 	}
 	defer ar2.Close()
 }
+
+// TestEncryptFile_DecryptFile_RoundTrip_Passphrase encrypts an existing
+// plaintext archive after the fact, confirms the result is an age-encrypted
+// file readable by OpenWithIdentities, then decrypts it back and confirms the
+// bytes are byte-for-byte identical to the original plaintext archive.
+func TestEncryptFile_DecryptFile_RoundTrip_Passphrase(t *testing.T) {
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.kshrk")
+	sampleArchive(t, plainPath)
+	original, err := os.ReadFile(plainPath)
+	if err != nil {
+		t.Fatalf("ReadFile(plain): %v", err)
+	}
+
+	recipients, err := RecipientsFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("RecipientsFromPassphrase: %v", err)
+	}
+	encPath := filepath.Join(dir, "enc.kshrk")
+	if err := EncryptFile(plainPath, encPath, recipients); err != nil {
+		t.Fatalf("EncryptFile: %v", err)
+	}
+
+	if enc, err := IsEncrypted(encPath); err != nil || !enc {
+		t.Fatalf("IsEncrypted(encrypted output) = %v, %v; want true, nil", enc, err)
+	}
+	// The source file must be untouched.
+	if unchanged, err := os.ReadFile(plainPath); err != nil || string(unchanged) != string(original) {
+		t.Fatalf("EncryptFile modified its source file")
+	}
+
+	identities, err := IdentitiesFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("IdentitiesFromPassphrase: %v", err)
+	}
+	ar, err := OpenWithIdentities(encPath, identities)
+	if err != nil {
+		t.Fatalf("OpenWithIdentities(encrypted output): %v", err)
+	}
+	_ = ar.Close()
+
+	decPath := filepath.Join(dir, "dec.kshrk")
+	if err := DecryptFile(encPath, decPath, identities); err != nil {
+		t.Fatalf("DecryptFile: %v", err)
+	}
+	decrypted, err := os.ReadFile(decPath)
+	if err != nil {
+		t.Fatalf("ReadFile(decrypted): %v", err)
+	}
+	if string(decrypted) != string(original) {
+		t.Error("DecryptFile output does not match the original plaintext archive byte-for-byte")
+	}
+}
+
+// TestEncryptFile_DecryptFile_RoundTrip_X25519 is the recipient-mode
+// equivalent of the passphrase round trip.
+func TestEncryptFile_DecryptFile_RoundTrip_X25519(t *testing.T) {
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.kshrk")
+	sampleArchive(t, plainPath)
+
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatalf("GenerateX25519Identity: %v", err)
+	}
+	encPath := filepath.Join(dir, "enc.kshrk")
+	if err := EncryptFile(plainPath, encPath, []age.Recipient{id.Recipient()}); err != nil {
+		t.Fatalf("EncryptFile: %v", err)
+	}
+
+	decPath := filepath.Join(dir, "dec.kshrk")
+	if err := DecryptFile(encPath, decPath, []age.Identity{id}); err != nil {
+		t.Fatalf("DecryptFile: %v", err)
+	}
+	original, err := os.ReadFile(plainPath)
+	if err != nil {
+		t.Fatalf("ReadFile(plain): %v", err)
+	}
+	decrypted, err := os.ReadFile(decPath)
+	if err != nil {
+		t.Fatalf("ReadFile(decrypted): %v", err)
+	}
+	if string(decrypted) != string(original) {
+		t.Error("DecryptFile output does not match the original plaintext archive byte-for-byte")
+	}
+}
+
+// TestEncryptFile_RejectsAlreadyEncrypted guards against silently
+// double-wrapping an already-encrypted archive.
+func TestEncryptFile_RejectsAlreadyEncrypted(t *testing.T) {
+	dir := t.TempDir()
+	recipients, err := RecipientsFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("RecipientsFromPassphrase: %v", err)
+	}
+	encPath := filepath.Join(dir, "enc.kshrk")
+	sampleEncryptedArchive(t, encPath, recipients)
+
+	if err := EncryptFile(encPath, filepath.Join(dir, "double.kshrk"), recipients); err == nil {
+		t.Fatal("EncryptFile on an already-encrypted archive succeeded, want error")
+	} else if !strings.Contains(err.Error(), "already encrypted") {
+		t.Errorf("error = %q, want it to mention the archive is already encrypted", err)
+	}
+}
+
+// TestDecryptFile_RejectsNotEncrypted guards against silently passing a
+// plaintext archive through unchanged (or failing with a confusing
+// "at least one identity is required" error) when given to DecryptFile.
+func TestDecryptFile_RejectsNotEncrypted(t *testing.T) {
+	dir := t.TempDir()
+	plainPath := filepath.Join(dir, "plain.kshrk")
+	sampleArchive(t, plainPath)
+
+	identities, err := IdentitiesFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("IdentitiesFromPassphrase: %v", err)
+	}
+	err = DecryptFile(plainPath, filepath.Join(dir, "out.kshrk"), identities)
+	if err == nil {
+		t.Fatal("DecryptFile on a plaintext archive succeeded, want error")
+	}
+	if !strings.Contains(err.Error(), "not encrypted") {
+		t.Errorf("error = %q, want it to mention the archive is not encrypted", err)
+	}
+}
+
+// TestDecryptFile_WrongPassphrase confirms the clean, stable error message.
+func TestDecryptFile_WrongPassphrase(t *testing.T) {
+	dir := t.TempDir()
+	recipients, err := RecipientsFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("RecipientsFromPassphrase: %v", err)
+	}
+	encPath := filepath.Join(dir, "enc.kshrk")
+	sampleEncryptedArchive(t, encPath, recipients)
+
+	wrong, err := IdentitiesFromPassphrase("wrong-passphrase")
+	if err != nil {
+		t.Fatalf("IdentitiesFromPassphrase: %v", err)
+	}
+	err = DecryptFile(encPath, filepath.Join(dir, "out.kshrk"), wrong)
+	if err == nil {
+		t.Fatal("DecryptFile with wrong passphrase succeeded, want error")
+	}
+	if !strings.Contains(err.Error(), "incorrect passphrase or key") {
+		t.Errorf("error = %q, want a clean 'incorrect passphrase or key' message", err)
+	}
+}
