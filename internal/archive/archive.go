@@ -83,7 +83,34 @@ func zstdDecompress(data []byte) ([]byte, error) {
 	if err := dec.Reset(bytes.NewReader(data)); err != nil {
 		return nil, err
 	}
-	return io.ReadAll(dec)
+	return readAllLimited(dec, maxEntryBytes)
+}
+
+// maxEntryBytes bounds how much data a single archive entry may expand to
+// when decompressed or read. A .kshrk archive is designed to be handed
+// between organizations, so every read path must defend against a crafted
+// entry whose declared/compressed size is tiny but whose true decompressed
+// size is enormous (a "zip/zstd bomb") — mirroring internal/k8sbin's
+// maxExtractedBytes guard against the same class of untrusted input. Applied
+// per entry (a record, the index, metadata.json, ...) rather than as a
+// cumulative budget across the archive's lifetime, since a long-running
+// replay server legitimately reads many records over its lifetime and a
+// cumulative cap would eventually reject that regardless of any bomb. High
+// enough that legitimate captures (hundreds of MB total, far smaller per
+// entry) still open.
+const maxEntryBytes = 512 << 20 // 512 MiB
+
+// readAllLimited reads all of r, returning an error instead of allocating
+// unbounded memory if more than limit bytes would be read.
+func readAllLimited(r io.Reader, limit int64) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("exceeds %d bytes", limit)
+	}
+	return data, nil
 }
 
 // StreamWriter streams each record directly into a .kshrk (ZIP+Zstd) archive.
@@ -541,7 +568,11 @@ func (a *Archive) PathDirs() []string {
 // PathDir exposes the pathDir function for use by other packages (e.g. capture engine).
 func PathDir(apiPath string) string { return pathDir(apiPath) }
 
-// readRaw reads an uncompressed ZIP entry.
+// readRaw reads an uncompressed ZIP entry. A ZIP entry may itself use Deflate
+// (see writeBytes's doc comment — the method is not part of the format
+// contract, so older archives may still use it), which zf.Open() decompresses
+// on the fly; readAllLimited bounds that against a deflate bomb the same way
+// zstdDecompress bounds a zstd one.
 func (a *Archive) readRaw(name string) ([]byte, error) {
 	zf, ok := a.byName[name]
 	if !ok {
@@ -552,7 +583,11 @@ func (a *Archive) readRaw(name string) ([]byte, error) {
 		return nil, err
 	}
 	defer rc.Close()
-	return io.ReadAll(rc)
+	data, err := readAllLimited(rc, maxEntryBytes)
+	if err != nil {
+		return nil, fmt.Errorf("reading entry %q in archive %q: %w", name, a.path, err)
+	}
+	return data, nil
 }
 
 // readZstd reads a Zstd-compressed ZIP entry and returns decompressed bytes.
@@ -561,7 +596,11 @@ func (a *Archive) readZstd(name string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return zstdDecompress(compressed)
+	data, err := zstdDecompress(compressed)
+	if err != nil {
+		return nil, fmt.Errorf("decompressing entry %q in archive %q: %w", name, a.path, err)
+	}
+	return data, nil
 }
 
 // ---- helpers used by StreamWriter ----
