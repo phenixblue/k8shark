@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -201,6 +202,147 @@ func buildTestStore(t *testing.T, records map[string][]byte) *CaptureStore {
 		t.Fatalf("LoadStore: %v", err)
 	}
 	return store
+}
+
+// TestAggregateAcrossNamespaces_Deterministic verifies AggregateAcrossNamespaces
+// iterates a sorted path list rather than ranging s.Index directly, so the
+// merged output is byte-identical across repeated calls instead of shuffling
+// item order on every request depending on Go's randomized map iteration
+// (#212).
+func TestAggregateAcrossNamespaces_Deterministic(t *testing.T) {
+	records := map[string][]byte{}
+	for _, ns := range []string{"ns-a", "ns-b", "ns-c", "ns-d", "ns-e"} {
+		records["/api/v1/namespaces/"+ns+"/pods"] = []byte(fmt.Sprintf(
+			`{"kind":"PodList","apiVersion":"v1","items":[{"metadata":{"name":"pod-%s","namespace":"%s","uid":"%s"}}]}`, ns, ns, ns))
+	}
+	store := buildTestStore(t, records)
+
+	var first []byte
+	for i := 0; i < 20; i++ {
+		out, code, err := store.AggregateAcrossNamespaces("/api/v1/pods", time.Time{})
+		if err != nil {
+			t.Fatalf("run %d: AggregateAcrossNamespaces: %v", i, err)
+		}
+		if code != 200 {
+			t.Fatalf("run %d: code = %d, want 200", i, code)
+		}
+		if first == nil {
+			first = out
+			continue
+		}
+		if !bytes.Equal(first, out) {
+			t.Fatalf("run %d: output differs from run 0\nrun0: %s\nrun%d: %s", i, first, i, out)
+		}
+	}
+}
+
+// TestAggregateTableAcrossNamespaces_Deterministic verifies the Table variant
+// of the same fix: iterating a sorted path list keeps row order, and which
+// namespace's columnDefinitions win, stable across repeated calls — rather
+// than depending on whichever namespace the map iteration visits first.
+func TestAggregateTableAcrossNamespaces_Deterministic(t *testing.T) {
+	records := map[string][]byte{}
+	for _, ns := range []string{"ns-a", "ns-b", "ns-c", "ns-d", "ns-e"} {
+		records[fmt.Sprintf("/api/v1/namespaces/%s/pods?as=Table", ns)] = []byte(fmt.Sprintf(
+			`{"kind":"Table","columnDefinitions":[{"name":"from-%s"}],"rows":[{"object":{"metadata":{"name":"pod-%s","namespace":"%s","uid":"%s"}}}]}`,
+			ns, ns, ns, ns))
+	}
+	store := buildTestStore(t, records)
+
+	var first []byte
+	for i := 0; i < 20; i++ {
+		out, code, err := store.AggregateTableAcrossNamespaces("/api/v1/pods", time.Time{})
+		if err != nil {
+			t.Fatalf("run %d: AggregateTableAcrossNamespaces: %v", i, err)
+		}
+		if code != 200 {
+			t.Fatalf("run %d: code = %d, want 200", i, code)
+		}
+		if first == nil {
+			first = out
+			continue
+		}
+		if !bytes.Equal(first, out) {
+			t.Fatalf("run %d: output differs from run 0\nrun0: %s\nrun%d: %s", i, first, i, out)
+		}
+	}
+
+	// The winning columnDefinitions must come from the alphabetically-first
+	// namespace (ns-a), not an arbitrary one.
+	var table struct {
+		ColumnDefinitions []struct {
+			Name string `json:"name"`
+		} `json:"columnDefinitions"`
+	}
+	if err := json.Unmarshal(first, &table); err != nil {
+		t.Fatalf("decode: %v\n%s", err, first)
+	}
+	if len(table.ColumnDefinitions) != 1 || table.ColumnDefinitions[0].Name != "from-ns-a" {
+		t.Fatalf("columnDefinitions = %v, want [from-ns-a] (first namespace in sorted order)", table.ColumnDefinitions)
+	}
+}
+
+// TestAggregateAcrossNamespaces_Capped_StableAndNamespaceOrdered verifies the
+// aggregate item cap (lowered here via aggregateItemCap, a test hook) keeps
+// the same retained set across repeated calls, and that the items admitted
+// before the cap trips are the ones from the alphabetically-earliest
+// namespaces — the direct consequence of iterating a sorted path list.
+// Previously, which arbitrary subset of the cluster survived the cap changed
+// on every request (#212).
+func TestAggregateAcrossNamespaces_Capped_StableAndNamespaceOrdered(t *testing.T) {
+	origCap := aggregateItemCap
+	aggregateItemCap = 3
+	t.Cleanup(func() { aggregateItemCap = origCap })
+
+	records := map[string][]byte{}
+	for _, ns := range []string{"ns-a", "ns-b", "ns-c"} {
+		records["/api/v1/namespaces/"+ns+"/pods"] = []byte(fmt.Sprintf(
+			`{"kind":"PodList","apiVersion":"v1","items":[`+
+				`{"metadata":{"name":"%s-1","namespace":"%s","uid":"%s-1"}},`+
+				`{"metadata":{"name":"%s-2","namespace":"%s","uid":"%s-2"}}]}`,
+			ns, ns, ns, ns, ns, ns))
+	}
+	store := buildTestStore(t, records)
+
+	var want []string
+	for i := 0; i < 5; i++ {
+		out, code, err := store.AggregateAcrossNamespaces("/api/v1/pods", time.Time{})
+		if err != nil {
+			t.Fatalf("run %d: %v", i, err)
+		}
+		if code != 200 {
+			t.Fatalf("run %d: code = %d, want 200", i, code)
+		}
+		var list struct {
+			Items []struct {
+				Metadata struct {
+					Name string `json:"name"`
+				} `json:"metadata"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(out, &list); err != nil {
+			t.Fatalf("run %d: decode: %v\n%s", i, err, out)
+		}
+		if len(list.Items) != 3 {
+			t.Fatalf("run %d: got %d items, want 3 (the lowered cap)", i, len(list.Items))
+		}
+		names := make([]string, len(list.Items))
+		for j, it := range list.Items {
+			names[j] = it.Metadata.Name
+		}
+		if want == nil {
+			want = names
+			// The cap should trip inside ns-b (2 items from ns-a, then 1 from
+			// ns-b), so ns-c must never be represented.
+			if want[0] != "ns-a-1" || want[1] != "ns-a-2" || want[2] != "ns-b-1" {
+				t.Fatalf("retained items = %v, want [ns-a-1 ns-a-2 ns-b-1] (namespace-ordered)", want)
+			}
+			continue
+		}
+		if !reflect.DeepEqual(names, want) {
+			t.Fatalf("run %d: retained items = %v, want stable set %v", i, names, want)
+		}
+	}
 }
 
 // TestCaptureStore_Close_ImmediateWithLargeCapture is a regression test for

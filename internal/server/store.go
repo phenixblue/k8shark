@@ -688,6 +688,15 @@ func itemDedupeKey(raw json.RawMessage) string {
 	return obj.Metadata.UID
 }
 
+// aggregateItemCap is a safety cap: resources like packagemanifests return the
+// full cluster list for every namespace (OLM behavior). Aggregating across all
+// namespaces would multiply the item count by the number of namespaces and
+// materialise hundreds of millions of items. Cap the aggregate at this many
+// unique items (keyed by uid or name) to prevent unbounded memory use. A var
+// (not const) so tests can lower it to exercise the cap without building a
+// 10 000-item fixture.
+var aggregateItemCap = 10_000
+
 // AggregateAcrossNamespaces aggregates list items from all namespaced paths.
 func (s *CaptureStore) AggregateAcrossNamespaces(clusterPath string, at time.Time) ([]byte, int, error) {
 	g, v, resource, _ := parseAPIPath(clusterPath)
@@ -699,13 +708,6 @@ func (s *CaptureStore) AggregateAcrossNamespaces(clusterPath string, at time.Tim
 	}
 	suffix := "/" + resource
 
-	// Safety cap: resources like packagemanifests return the full cluster list
-	// for every namespace (OLM behavior). Aggregating across all namespaces
-	// would multiply the item count by the number of namespaces and materialise
-	// hundreds of millions of items. Cap the aggregate at 10 000 unique items
-	// (keyed by uid or name) to prevent unbounded memory use.
-	const aggregateItemCap = 10_000
-
 	var (
 		allItems   []json.RawMessage
 		listKind   string
@@ -715,10 +717,19 @@ func (s *CaptureStore) AggregateAcrossNamespaces(clusterPath string, at time.Tim
 		capped     bool
 	)
 
+	var matchingPaths []string
 	for indexPath := range s.Index {
-		if !strings.HasPrefix(indexPath, pathPrefix) || !strings.HasSuffix(indexPath, suffix) {
-			continue
+		if strings.HasPrefix(indexPath, pathPrefix) && strings.HasSuffix(indexPath, suffix) {
+			matchingPaths = append(matchingPaths, indexPath)
 		}
+	}
+	// s.Index is a map; iterating it directly makes every downstream
+	// decision (item order, which namespace's list Kind/apiVersion win, which
+	// items survive the cap below) depend on Go's randomized map iteration
+	// order — a different, arbitrary answer on every request (#212).
+	sort.Strings(matchingPaths)
+
+	for _, indexPath := range matchingPaths {
 		body, code, err := s.ReconstructAt(indexPath, at)
 		if err != nil || code != 200 {
 			continue
@@ -824,10 +835,18 @@ func (s *CaptureStore) AggregateTableAcrossNamespaces(clusterPath string, at tim
 		seen    = make(map[string]struct{})
 	)
 
+	var matchingPaths []string
 	for indexPath := range s.Index {
-		if !strings.HasPrefix(indexPath, pathPrefix) || !strings.HasSuffix(indexPath, tableKeySuffix) {
-			continue
+		if strings.HasPrefix(indexPath, pathPrefix) && strings.HasSuffix(indexPath, tableKeySuffix) {
+			matchingPaths = append(matchingPaths, indexPath)
 		}
+	}
+	// See the identical comment in AggregateAcrossNamespaces: without this,
+	// colDefs (and therefore the output's column set) comes from whichever
+	// namespace wins the map's randomized iteration order (#212).
+	sort.Strings(matchingPaths)
+
+	for _, indexPath := range matchingPaths {
 		body, code, err := s.Latest(indexPath, at)
 		if err != nil || code != 200 {
 			continue
