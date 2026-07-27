@@ -229,10 +229,11 @@ func TestCaptureStore_Close_ImmediateWithLargeCapture(t *testing.T) {
 			`"resources":[{"name":"widgets","singularName":"widget","namespaced":true,"kind":"Widget"}]}`, i)
 		now := time.Now().UTC()
 		rec := capture.Record{ID: fmt.Sprintf("rec-%d", i), CapturedAt: now, APIPath: path, HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(body)}
-		if _, err := sw.WriteRecord(&rec); err != nil {
+		seq, err := sw.WriteRecord(&rec)
+		if err != nil {
 			t.Fatalf("WriteRecord: %v", err)
 		}
-		index[path] = &capture.IndexEntry{APIPath: path, Seqs: []int{0}, Times: []time.Time{now}}
+		index[path] = &capture.IndexEntry{APIPath: path, Seqs: []int{seq}, Times: []time.Time{now}}
 	}
 	meta := capture.CaptureMetadata{
 		CaptureID: "large-test", KubernetesVersion: "v1.29.0",
