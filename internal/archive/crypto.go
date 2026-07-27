@@ -70,6 +70,23 @@ func isNoIdentityMatch(err error) bool {
 	return errors.As(err, &noMatch)
 }
 
+// classifyDecryptCopyError turns an io.Copy failure encountered while
+// decrypting into a clear error, distinguishing a genuine OS-level I/O
+// problem (disk full or a permission problem writing the temp file, a read
+// error on the source) from age's per-chunk STREAM authentication rejecting
+// tampered or corrupt ciphertext — conflating the two would make an ordinary
+// operational failure look like a security incident. A wrong
+// identity/passphrase is always caught earlier, synchronously in
+// age.Decrypt's header parsing, so anything reaching here that isn't an I/O
+// error is a tamper/corruption signal.
+func classifyDecryptCopyError(srcPath string, err error) error {
+	var pathErr *fs.PathError
+	if errors.As(err, &pathErr) {
+		return fmt.Errorf("decrypting %q: %w", srcPath, err)
+	}
+	return fmt.Errorf("decrypting %q: tampered or corrupt archive: %w", srcPath, err)
+}
+
 // createLike creates a fresh temporary file in dstPath's directory — never
 // dstPath itself — and returns it along with src's permission bits and a
 // commit function. The caller writes into the returned file, then, once
@@ -129,15 +146,15 @@ func createLike(dstPath string, src *os.File) (dst *os.File, mode os.FileMode, c
 		return nil, 0, nil, fmt.Errorf("creating temporary file for %q: %w", dstPath, err)
 	}
 	tmpPath := tmp.Name()
-	// os.CreateTemp always uses 0600 regardless of src's mode; add the
-	// owner-write bit for good measure (0600 already has it) while we
-	// populate the file. commit narrows this to the exact source mode
-	// before the rename.
-	if err := tmp.Chmod(mode | 0o200); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
-		return nil, 0, nil, fmt.Errorf("setting permissions on temporary file: %w", err)
-	}
+	// Deliberately left at os.CreateTemp's default 0600 (not widened to
+	// src's mode) for the entire time the file is being populated: 0600
+	// already grants the owner-write this function needs regardless of what
+	// src's mode is, and NOT touching it here means a permissive source mode
+	// (e.g. 0644) can never cause partially-written content — plaintext, for
+	// DecryptFile — to sit exposed at that wider mode while being written or
+	// if cleanup runs after a failure. commit is the only place the file's
+	// mode changes, narrowing (or widening) it to the exact source mode in
+	// the same moment it's renamed into place.
 
 	commit = func() error {
 		if err := tmp.Chmod(mode); err != nil {
@@ -261,10 +278,7 @@ func DecryptFile(srcPath, dstPath string, identities []age.Identity) (err error)
 	}()
 
 	if _, err = io.Copy(dst, r); err != nil {
-		// A wrong identity/passphrase is always caught above, synchronously in
-		// age.Decrypt's header parsing. A failure here means age's per-chunk
-		// STREAM authentication rejected tampered or corrupt ciphertext.
-		return fmt.Errorf("decrypting %q: tampered or corrupt archive: %w", srcPath, err)
+		return classifyDecryptCopyError(srcPath, err)
 	}
 	if err = commit(); err != nil {
 		return err

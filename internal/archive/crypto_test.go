@@ -1,6 +1,8 @@
 package archive
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -768,5 +770,55 @@ func TestDecryptFile_WrongPassphrase(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "incorrect passphrase or key") {
 		t.Errorf("error = %q, want a clean 'incorrect passphrase or key' message", err)
+	}
+}
+
+// TestDecryptFile_TamperedCiphertext confirms a real, end-to-end tamper (a
+// flipped byte in the ciphertext payload, past the header) is classified as
+// "tampered or corrupt", not a generic decryption failure.
+func TestDecryptFile_TamperedCiphertext(t *testing.T) {
+	dir := t.TempDir()
+	recipients, err := RecipientsFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("RecipientsFromPassphrase: %v", err)
+	}
+	encPath := filepath.Join(dir, "enc.kshrk")
+	sampleEncryptedArchive(t, encPath, recipients)
+
+	data, err := os.ReadFile(encPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	data[len(data)-10] ^= 0xFF
+	if err := os.WriteFile(encPath, data, 0o600); err != nil {
+		t.Fatalf("WriteFile(tampered): %v", err)
+	}
+
+	identities, err := IdentitiesFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("IdentitiesFromPassphrase: %v", err)
+	}
+	err = DecryptFile(encPath, filepath.Join(dir, "out.kshrk"), identities)
+	if err == nil {
+		t.Fatal("DecryptFile against tampered ciphertext succeeded, want error")
+	}
+	if !strings.Contains(err.Error(), "tampered or corrupt") {
+		t.Errorf("error = %q, want it to mention tampered or corrupt content", err)
+	}
+}
+
+// TestClassifyDecryptCopyError unit-tests the I/O-vs-tamper distinction
+// directly with synthetic errors, since reliably forcing a genuine mid-copy
+// OS-level I/O failure (disk full, a permission error on an already-open fd)
+// isn't practical to reproduce deterministically and portably in a test.
+func TestClassifyDecryptCopyError(t *testing.T) {
+	ioErr := &fs.PathError{Op: "write", Path: "/tmp/whatever", Err: errors.New("no space left on device")}
+	if got := classifyDecryptCopyError("src.kshrk", ioErr).Error(); strings.Contains(got, "tampered or corrupt") {
+		t.Errorf("classifyDecryptCopyError(*fs.PathError) = %q, want it to NOT claim tampering for a plain I/O error", got)
+	}
+
+	otherErr := errors.New("chunk authentication failed")
+	if got := classifyDecryptCopyError("src.kshrk", otherErr).Error(); !strings.Contains(got, "tampered or corrupt") {
+		t.Errorf("classifyDecryptCopyError(non-PathError) = %q, want it to mention tampered or corrupt content", got)
 	}
 }
