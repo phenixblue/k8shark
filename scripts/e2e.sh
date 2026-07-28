@@ -106,11 +106,18 @@ cleanup() {
   done
   info "Deleting KinD cluster '$CLUSTER_NAME'..."
   kind delete cluster --name "$CLUSTER_NAME" 2>/dev/null || true
-  rm -f "$CAPTURE_FILE" "$CAPTURE_CONFIG" "$KIND_KUBECONFIG" "$SERVER_LOG" \
-    "$ENC_PASS_FILE" "$ENC_WRONG_PASS_FILE" "$ENC_FILE" "$DEC_FILE" \
-    "$ENC_DEC_SERVER_LOG" "$ENC_DEC_KC" "$ENC_OPEN_SERVER_LOG" "$ENC_OPEN_KC" \
-    "$KEYGEN_SRC" "$AGE_IDENTITY_FILE" "$ENC_RECIPIENT_FILE" "$DEC_RECIPIENT_FILE" \
+  # Phase 9c's paths may still be "" if the script exited before reaching
+  # that phase; filter those out rather than passing empty strings to rm.
+  local cleanup_paths=(
+    "$CAPTURE_FILE" "$CAPTURE_CONFIG" "$KIND_KUBECONFIG" "$SERVER_LOG"
+    "$ENC_PASS_FILE" "$ENC_WRONG_PASS_FILE" "$ENC_FILE" "$DEC_FILE"
+    "$ENC_DEC_SERVER_LOG" "$ENC_DEC_KC" "$ENC_OPEN_SERVER_LOG" "$ENC_OPEN_KC"
+    "$KEYGEN_SRC" "$AGE_IDENTITY_FILE" "$ENC_RECIPIENT_FILE" "$DEC_RECIPIENT_FILE"
     "$REC_SERVER_LOG" "$REC_KC"
+  )
+  for p in "${cleanup_paths[@]}"; do
+    [[ -n "$p" ]] && rm -f "$p"
+  done
 }
 trap cleanup EXIT
 
