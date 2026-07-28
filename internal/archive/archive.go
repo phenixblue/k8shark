@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -420,6 +421,21 @@ func OpenWithIdentities(archivePath string, identities []age.Identity) (*Archive
 	return openArchive(archivePath, identities)
 }
 
+// wrapZipFormatErr gives zip.NewReader's ErrFormat an actionable diagnosis:
+// Go's archive/zip returns that identical error for a truncated capture
+// (missing central directory), an empty file, and garbage bytes — it can't
+// distinguish the causes — so name both plausible ones instead of surfacing
+// the raw "not a valid zip file". Applies equally to a plaintext archive and
+// the plaintext zip data recovered from decrypting an age-encrypted one,
+// since an interrupted encrypted capture truncates the same underlying zip
+// stream before it's ever encrypted.
+func wrapZipFormatErr(archivePath string, err error) error {
+	if errors.Is(err, zip.ErrFormat) {
+		return fmt.Errorf("archive %q is corrupt or incomplete: not a valid zip file — this can happen if a capture was interrupted (e.g. Ctrl+C) or the file was truncated in transfer: %w", archivePath, err)
+	}
+	return fmt.Errorf("opening zip archive %q: %w", archivePath, err)
+}
+
 func openArchive(archivePath string, identities []age.Identity) (*Archive, error) {
 	fi, err := os.Stat(archivePath)
 	if err != nil {
@@ -441,7 +457,7 @@ func openArchive(archivePath string, identities []age.Identity) (*Archive, error
 		zr, err = zip.NewReader(f, fi.Size())
 		if err != nil {
 			f.Close()
-			return nil, fmt.Errorf("opening zip archive %q: %w", archivePath, err)
+			return nil, wrapZipFormatErr(archivePath, err)
 		}
 	} else {
 		if len(identities) == 0 {
@@ -459,7 +475,7 @@ func openArchive(archivePath string, identities []age.Identity) (*Archive, error
 		zr, err = zip.NewReader(ra, plainSize)
 		if err != nil {
 			f.Close()
-			return nil, fmt.Errorf("opening decrypted archive %q: %w", archivePath, err)
+			return nil, wrapZipFormatErr(archivePath, err)
 		}
 	}
 
@@ -485,7 +501,10 @@ func (a *Archive) ReadMetadata(v any) error {
 	if err != nil {
 		return fmt.Errorf("reading metadata.json: %w", err)
 	}
-	return json.Unmarshal(data, v)
+	if err := json.Unmarshal(data, v); err != nil {
+		return fmt.Errorf("parsing metadata.json in archive %q: %w", a.path, err)
+	}
+	return nil
 }
 
 // ReadIndex reads and parses the Zstd-compressed index.json.zst.
@@ -494,7 +513,10 @@ func (a *Archive) ReadIndex(v any) error {
 	if err != nil {
 		return fmt.Errorf("reading index.json.zst: %w", err)
 	}
-	return json.Unmarshal(data, v)
+	if err := json.Unmarshal(data, v); err != nil {
+		return fmt.Errorf("parsing index.json.zst in archive %q: %w", a.path, err)
+	}
+	return nil
 }
 
 // ReadWatchIndex reads and parses watch-index.json.zst, if present.
@@ -508,7 +530,10 @@ func (a *Archive) ReadWatchIndex(v any) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("reading watch-index.json.zst: %w", err)
 	}
-	return true, json.Unmarshal(data, v)
+	if err := json.Unmarshal(data, v); err != nil {
+		return true, fmt.Errorf("parsing watch-index.json.zst in archive %q: %w", a.path, err)
+	}
+	return true, nil
 }
 
 // ReadRecord reads the record at sequence seq under apiPath.
@@ -576,7 +601,7 @@ func PathDir(apiPath string) string { return pathDir(apiPath) }
 func (a *Archive) readRaw(name string) ([]byte, error) {
 	zf, ok := a.byName[name]
 	if !ok {
-		return nil, fmt.Errorf("entry %q not found in archive", name)
+		return nil, fmt.Errorf("entry %q not found in archive %q", name, a.path)
 	}
 	rc, err := zf.Open()
 	if err != nil {
