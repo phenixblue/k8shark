@@ -144,6 +144,214 @@ func TestReadWatchIndex_MalformedEntry_StillReportsPresent(t *testing.T) {
 	}
 }
 
+// buildZipNullWatchIndexEntry writes a structurally valid ZIP archive whose
+// watch-index.json.zst is valid JSON but maps a path to a null entry — the
+// writer never produces this shape (it only ever inserts a populated
+// *WatchIndexEntry), so it can only come from a hand-crafted or corrupted
+// file.
+func buildZipNullWatchIndexEntry(t *testing.T, path string) {
+	t.Helper()
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("os.Create: %v", err)
+	}
+	defer f.Close() // safety net; see buildZipMissingMetadata
+	zw := zip.NewWriter(f)
+	defer zw.Close()
+
+	writeEntry := func(name string, data []byte) {
+		t.Helper()
+		w, err := zw.CreateHeader(&zip.FileHeader{Name: name, Method: zip.Store})
+		if err != nil {
+			t.Fatalf("CreateHeader(%s): %v", name, err)
+		}
+		if _, err := w.Write(data); err != nil {
+			t.Fatalf("write(%s): %v", name, err)
+		}
+	}
+
+	writeEntry("k8shark-capture/metadata.json", []byte(`{"format_version":1,"capture_id":"null-watch-index-entry"}`))
+	idxZ, err := zstdCompress([]byte(`{}`))
+	if err != nil {
+		t.Fatalf("zstdCompress(index): %v", err)
+	}
+	writeEntry("k8shark-capture/index.json.zst", idxZ)
+	watchZ, err := zstdCompress([]byte(`{"/api/v1/namespaces/default/pods":null}`))
+	if err != nil {
+		t.Fatalf("zstdCompress(watch-index): %v", err)
+	}
+	writeEntry("k8shark-capture/watch-index.json.zst", watchZ)
+
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zip Close: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("file Close: %v", err)
+	}
+}
+
+// buildZipUndecompressibleWatchIndex writes a structurally valid ZIP archive
+// whose watch-index.json.zst entry is not valid Zstd data at all (as opposed
+// to buildZipMalformedWatchIndex, whose entry decompresses fine but fails to
+// parse as JSON) — e.g. bit-rot in the compressed bytes themselves.
+func buildZipUndecompressibleWatchIndex(t *testing.T, path string) {
+	t.Helper()
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("os.Create: %v", err)
+	}
+	defer f.Close() // safety net; see buildZipMissingMetadata
+	zw := zip.NewWriter(f)
+	defer zw.Close()
+
+	writeEntry := func(name string, data []byte) {
+		t.Helper()
+		w, err := zw.CreateHeader(&zip.FileHeader{Name: name, Method: zip.Store})
+		if err != nil {
+			t.Fatalf("CreateHeader(%s): %v", name, err)
+		}
+		if _, err := w.Write(data); err != nil {
+			t.Fatalf("write(%s): %v", name, err)
+		}
+	}
+
+	writeEntry("k8shark-capture/metadata.json", []byte(`{"format_version":1,"capture_id":"undecompressible-watch-index"}`))
+	idxZ, err := zstdCompress([]byte(`{}`))
+	if err != nil {
+		t.Fatalf("zstdCompress(index): %v", err)
+	}
+	writeEntry("k8shark-capture/index.json.zst", idxZ)
+	writeEntry("k8shark-capture/watch-index.json.zst", []byte("not zstd data at all"))
+
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zip Close: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("file Close: %v", err)
+	}
+}
+
+// TestReadWatchIndex_UndecompressibleEntry_StillReportsPresent is a
+// regression test: ReadWatchIndex's found return value means "the entry is
+// present in the archive", independent of whether it could even be
+// decompressed. A watch-index.json.zst entry that isn't valid Zstd data must
+// still report found=true (with a non-nil error), the same as an entry that
+// decompresses but fails to parse as JSON — otherwise a caller that checks
+// err first would still be fine, but found would inconsistently read
+// "absent" for one corruption mode and "present" for another.
+func TestReadWatchIndex_UndecompressibleEntry_StillReportsPresent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "undecompressible-watch-index.kshrk")
+	buildZipUndecompressibleWatchIndex(t, path)
+
+	ar, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer ar.Close()
+
+	_, found, err := ar.ReadWatchIndex()
+	if err == nil {
+		t.Fatal("ReadWatchIndex on an undecompressible entry succeeded, want error")
+	}
+	if !found {
+		t.Error("ReadWatchIndex found = false, want true — the entry is present even though it couldn't be decompressed")
+	}
+}
+
+// buildZipNullWatchIndex writes a structurally valid ZIP archive whose
+// watch-index.json.zst entry is the literal JSON `null` — the writer always
+// emits at least "{}", so this can only come from a hand-crafted or
+// corrupted file.
+func buildZipNullWatchIndex(t *testing.T, path string) {
+	t.Helper()
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("os.Create: %v", err)
+	}
+	defer f.Close() // safety net; see buildZipMissingMetadata
+	zw := zip.NewWriter(f)
+	defer zw.Close()
+
+	writeEntry := func(name string, data []byte) {
+		t.Helper()
+		w, err := zw.CreateHeader(&zip.FileHeader{Name: name, Method: zip.Store})
+		if err != nil {
+			t.Fatalf("CreateHeader(%s): %v", name, err)
+		}
+		if _, err := w.Write(data); err != nil {
+			t.Fatalf("write(%s): %v", name, err)
+		}
+	}
+
+	writeEntry("k8shark-capture/metadata.json", []byte(`{"format_version":1,"capture_id":"null-watch-index"}`))
+	idxZ, err := zstdCompress([]byte(`{}`))
+	if err != nil {
+		t.Fatalf("zstdCompress(index): %v", err)
+	}
+	writeEntry("k8shark-capture/index.json.zst", idxZ)
+	watchZ, err := zstdCompress([]byte(`null`))
+	if err != nil {
+		t.Fatalf("zstdCompress(watch-index): %v", err)
+	}
+	writeEntry("k8shark-capture/watch-index.json.zst", watchZ)
+
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zip Close: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("file Close: %v", err)
+	}
+}
+
+// TestReadWatchIndex_TopLevelNull_Rejected is a regression test: a
+// watch-index.json.zst containing the literal JSON `null` unmarshals
+// without error into a nil WatchIndex map, which is indistinguishable from
+// "no watch index" at any call site that doesn't check found — but the
+// writer never emits a bare null, so this shape means the archive is
+// corrupt. ReadWatchIndex must reject it instead of returning (nil, true, nil).
+func TestReadWatchIndex_TopLevelNull_Rejected(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "null-watch-index.kshrk")
+	buildZipNullWatchIndex(t, path)
+
+	ar, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer ar.Close()
+
+	_, found, err := ar.ReadWatchIndex()
+	if err == nil {
+		t.Fatal("ReadWatchIndex on a top-level null watch index succeeded, want error")
+	}
+	if !found {
+		t.Error("ReadWatchIndex found = false, want true — the entry is present even though it failed validation")
+	}
+}
+
+// TestReadWatchIndex_NullEntry_Rejected is a regression test: a
+// watch-index.json.zst that is valid JSON but maps a path to a null entry is
+// still corrupt, since every reader dereferences the entry (e.g. entry.Seqs)
+// without a nil check and would panic. ReadWatchIndex must reject this shape
+// rather than returning a WatchIndex containing a nil *WatchIndexEntry.
+func TestReadWatchIndex_NullEntry_Rejected(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "null-watch-index-entry.kshrk")
+	buildZipNullWatchIndexEntry(t, path)
+
+	ar, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer ar.Close()
+
+	_, found, err := ar.ReadWatchIndex()
+	if err == nil {
+		t.Fatal("ReadWatchIndex on a null entry succeeded, want error")
+	}
+	if !found {
+		t.Error("ReadWatchIndex found = false, want true — the entry is present even though it failed validation")
+	}
+}
+
 // TestOpen_CorruptArchives covers every malformed-archive shape a user might
 // plausibly hand kshrk — most likely a Ctrl+C'd capture (`kshrk capture`
 // writes records in place via os.Create and only writes the index/metadata

@@ -64,7 +64,13 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 		return Result{}, fmt.Errorf("reading index: %w", err)
 	}
 
-	wi, _, _ := ar.ReadWatchIndex()
+	// Watch-index may be absent for older archives, but a present-and-malformed
+	// one is a corrupt archive, not an absent one — surface that error rather
+	// than silently redacting as if it were never captured.
+	wi, _, err := ar.ReadWatchIndex()
+	if err != nil {
+		return Result{}, fmt.Errorf("reading watch index: %w", err)
+	}
 
 	result := Result{}
 
