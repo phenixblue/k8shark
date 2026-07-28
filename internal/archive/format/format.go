@@ -121,7 +121,13 @@ func (idx Index) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON accepts both the version-2+ wrapped shape ({"entries": {...}})
 // and a version-1 archive's bare top-level map. The two are unambiguous:
-// a real api_path key always starts with "/", never equals "entries".
+// a real api_path key always starts with "/", never equals "entries". A null
+// "entries" value normalizes to an empty map (an index with nothing in it);
+// a null individual entry value is rejected outright rather than silently
+// stored as a nil *IndexEntry, which would panic the first time a caller
+// dereferences it — the version-1 bare-map path below can't hit this because
+// unmarshaling JSON null into a struct value (not a pointer) is a no-op that
+// leaves a zero-value IndexEntry, not a nil one.
 func (idx *Index) UnmarshalJSON(data []byte) error {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
@@ -131,6 +137,14 @@ func (idx *Index) UnmarshalJSON(data []byte) error {
 		var entries map[string]*IndexEntry
 		if err := json.Unmarshal(entriesRaw, &entries); err != nil {
 			return fmt.Errorf("parsing index entries: %w", err)
+		}
+		if entries == nil {
+			entries = map[string]*IndexEntry{}
+		}
+		for apiPath, entry := range entries {
+			if entry == nil {
+				return fmt.Errorf("index entry %q is null", apiPath)
+			}
 		}
 		*idx = entries
 		return nil
@@ -191,6 +205,14 @@ func (wi *WatchIndex) UnmarshalJSON(data []byte) error {
 		var entries map[string]*WatchIndexEntry
 		if err := json.Unmarshal(entriesRaw, &entries); err != nil {
 			return fmt.Errorf("parsing watch-index entries: %w", err)
+		}
+		if entries == nil {
+			entries = map[string]*WatchIndexEntry{}
+		}
+		for apiPath, entry := range entries {
+			if entry == nil {
+				return fmt.Errorf("watch-index entry %q is null", apiPath)
+			}
 		}
 		*wi = entries
 		return nil

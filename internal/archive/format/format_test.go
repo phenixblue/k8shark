@@ -189,6 +189,29 @@ func TestWatchIndex_UnmarshalJSON_AcceptsVersion1BareMap(t *testing.T) {
 	}
 }
 
+// TestWatchIndex_UnmarshalJSON_NullEntry mirrors TestIndex_UnmarshalJSON_NullEntry.
+func TestWatchIndex_UnmarshalJSON_NullEntry(t *testing.T) {
+	var wi WatchIndex
+	err := json.Unmarshal([]byte(`{"entries": {"/api/v1/pods": null}}`), &wi)
+	if err == nil {
+		t.Fatal("Unmarshal succeeded on a null entry value, want error")
+	}
+}
+
+// TestWatchIndex_UnmarshalJSON_NullEntries mirrors TestIndex_UnmarshalJSON_NullEntries.
+func TestWatchIndex_UnmarshalJSON_NullEntries(t *testing.T) {
+	var wi WatchIndex
+	if err := json.Unmarshal([]byte(`{"entries": null}`), &wi); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if wi == nil {
+		t.Error("WatchIndex = nil, want a non-nil empty map")
+	}
+	if len(wi) != 0 {
+		t.Errorf("WatchIndex has %d entries, want 0", len(wi))
+	}
+}
+
 // TestIndex_UnmarshalJSON_MalformedEntry confirms a malformed entry produces
 // a clear error rather than a zero-value entry or a panic.
 func TestIndex_UnmarshalJSON_MalformedEntry(t *testing.T) {
@@ -202,5 +225,36 @@ func TestIndex_UnmarshalJSON_MalformedEntry(t *testing.T) {
 				t.Fatal("Unmarshal succeeded on a malformed entry, want error")
 			}
 		})
+	}
+}
+
+// TestIndex_UnmarshalJSON_NullEntry confirms a wrapped-shape entry whose
+// value is JSON null is rejected outright rather than silently stored as a
+// nil *IndexEntry — a caller dereferencing idx[path].Seqs on a nil entry
+// would panic. This is specific to the wrapped shape: unmarshaling JSON null
+// into a struct value (the bare v1 path's entry type) is a documented no-op,
+// so a null entry there just yields a zero-value IndexEntry, never a nil one.
+func TestIndex_UnmarshalJSON_NullEntry(t *testing.T) {
+	var idx Index
+	err := json.Unmarshal([]byte(`{"entries": {"/api/v1/pods": null}}`), &idx)
+	if err == nil {
+		t.Fatal("Unmarshal succeeded on a null entry value, want error")
+	}
+}
+
+// TestIndex_UnmarshalJSON_NullEntries confirms a wrapped shape with "entries"
+// itself set to null normalizes to an empty (non-nil) map — the same
+// zero-entry-index case a genuinely empty {"entries":{}} produces — rather
+// than a nil map that would panic on a later write.
+func TestIndex_UnmarshalJSON_NullEntries(t *testing.T) {
+	var idx Index
+	if err := json.Unmarshal([]byte(`{"entries": null}`), &idx); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if idx == nil {
+		t.Error("Index = nil, want a non-nil empty map")
+	}
+	if len(idx) != 0 {
+		t.Errorf("Index has %d entries, want 0", len(idx))
 	}
 }
