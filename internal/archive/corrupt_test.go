@@ -206,10 +206,12 @@ func TestOpenWithIdentities_EncryptedCorruptZip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("os.Create: %v", err)
 	}
+	defer f.Close() // safety net; see buildZipMissingMetadata
 	w, err := age.Encrypt(f, recipients...)
 	if err != nil {
 		t.Fatalf("age.Encrypt: %v", err)
 	}
+	defer w.Close() // safety net; see buildZipMissingMetadata
 	if _, err := w.Write(bytes.Repeat([]byte{0xDE, 0xAD, 0xBE, 0xEF}, 64)); err != nil {
 		t.Fatalf("write garbage: %v", err)
 	}
