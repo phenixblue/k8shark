@@ -11,21 +11,28 @@ import (
 
 // buildZipMissingMetadata writes a structurally valid ZIP archive with an
 // index.json.zst entry but no metadata.json — e.g. a capture interrupted
-// between Finish's writes.
+// between Finish's writes. Uses zip.Store (via CreateHeader), matching how
+// writeBytes in archive.go actually writes entries.
 func buildZipMissingMetadata(t *testing.T, path string) {
 	t.Helper()
 	f, err := os.Create(path)
 	if err != nil {
 		t.Fatalf("os.Create: %v", err)
 	}
+	// Safety net for any t.Fatalf below: on the happy path these are already
+	// closed by the explicit, error-checked calls at the end of the
+	// function, so this is a harmless no-op second close.
+	defer f.Close()
 	zw := zip.NewWriter(f)
+	defer zw.Close()
+
 	idxZ, err := zstdCompress([]byte(`{}`))
 	if err != nil {
 		t.Fatalf("zstdCompress: %v", err)
 	}
-	w, err := zw.Create("k8shark-capture/index.json.zst")
+	w, err := zw.CreateHeader(&zip.FileHeader{Name: "k8shark-capture/index.json.zst", Method: zip.Store})
 	if err != nil {
-		t.Fatalf("Create: %v", err)
+		t.Fatalf("CreateHeader: %v", err)
 	}
 	if _, err := w.Write(idxZ); err != nil {
 		t.Fatalf("write: %v", err)
@@ -46,7 +53,10 @@ func buildZipMalformedMetadata(t *testing.T, path string) {
 	if err != nil {
 		t.Fatalf("os.Create: %v", err)
 	}
+	defer f.Close() // safety net; see buildZipMissingMetadata
 	zw := zip.NewWriter(f)
+	defer zw.Close()
+
 	w, err := zw.CreateHeader(&zip.FileHeader{Name: "k8shark-capture/metadata.json", Method: zip.Store})
 	if err != nil {
 		t.Fatalf("CreateHeader: %v", err)
@@ -148,6 +158,9 @@ func TestOpen_CorruptArchives(t *testing.T) {
 			}
 			if openErr != nil && !strings.Contains(openErr.Error(), path) {
 				t.Errorf("Open error = %v, want it to name the archive path %q", openErr, path)
+			}
+			if metaErr != nil && !strings.Contains(metaErr.Error(), path) {
+				t.Errorf("ReadMetadata error = %v, want it to name the archive path %q", metaErr, path)
 			}
 		})
 	}

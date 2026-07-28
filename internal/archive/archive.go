@@ -485,7 +485,10 @@ func (a *Archive) ReadMetadata(v any) error {
 	if err != nil {
 		return fmt.Errorf("reading metadata.json: %w", err)
 	}
-	return json.Unmarshal(data, v)
+	if err := json.Unmarshal(data, v); err != nil {
+		return fmt.Errorf("parsing metadata.json in archive %q: %w", a.path, err)
+	}
+	return nil
 }
 
 // ReadIndex reads and parses the Zstd-compressed index.json.zst.
@@ -576,7 +579,7 @@ func PathDir(apiPath string) string { return pathDir(apiPath) }
 func (a *Archive) readRaw(name string) ([]byte, error) {
 	zf, ok := a.byName[name]
 	if !ok {
-		return nil, fmt.Errorf("entry %q not found in archive", name)
+		return nil, fmt.Errorf("entry %q not found in archive %q", name, a.path)
 	}
 	rc, err := zf.Open()
 	if err != nil {

@@ -21,6 +21,9 @@ func buildZeroRecordArchive(t *testing.T, path string) {
 	if err != nil {
 		t.Fatalf("NewStreamWriter: %v", err)
 	}
+	// Abort is a no-op once Finish has run, so this is a safe no-op on the
+	// happy path and a real cleanup if a t.Fatalf below skips Finish.
+	defer func() { _ = sw.Abort() }()
 	meta := capture.CaptureMetadata{
 		FormatVersion: capture.CurrentFormatVersion,
 		CaptureID:     "zero-records",
