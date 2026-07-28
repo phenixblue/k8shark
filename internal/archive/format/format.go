@@ -16,7 +16,13 @@ import (
 // optional archive entries) keep the same version. Archives written before this
 // field existed report 0 and are treated as version 1 — they are structurally
 // identical, the marker is simply the only addition.
-const CurrentFormatVersion = 1
+//
+// Bumped to 2: index.json.zst and watch-index.json.zst moved from a bare
+// top-level map to {"entries": {...}}, so the index can gain additional
+// top-level fields later without another version bump (#219). Both shapes
+// are accepted by this build's reader for the life of the 1.x line — see
+// Index.UnmarshalJSON / WatchIndex.UnmarshalJSON.
+const CurrentFormatVersion = 2
 
 // CheckFormatVersion reports whether an archive can be read by this build.
 // A version newer than this build understands is rejected so we never silently
@@ -35,14 +41,13 @@ func CheckFormatVersion(m CaptureMetadata) error {
 
 // Record holds one polled API response.
 type Record struct {
-	ID           string            `json:"id"`
-	CapturedAt   time.Time         `json:"captured_at"`
-	APIPath      string            `json:"api_path"`
-	EventType    string            `json:"event_type,omitempty"`
-	HTTPMethod   string            `json:"http_method"`
-	QueryParams  map[string]string `json:"query_params,omitempty"`
-	ResponseCode int               `json:"response_code"`
-	ResponseBody json.RawMessage   `json:"response_body"`
+	ID           string          `json:"id"`
+	CapturedAt   time.Time       `json:"captured_at"`
+	APIPath      string          `json:"api_path"`
+	EventType    string          `json:"event_type,omitempty"`
+	HTTPMethod   string          `json:"http_method"`
+	ResponseCode int             `json:"response_code"`
+	ResponseBody json.RawMessage `json:"response_body"`
 }
 
 // CaptureMetadata is written as metadata.json inside the archive.
@@ -91,8 +96,52 @@ type IndexEntry struct {
 }
 
 // Index is the top-level index.json written inside the archive.
-// Key is the canonical API path.
+// Key is the canonical API path. On disk (format version 2+) it's wrapped as
+// {"entries": {...}} so the index can gain sibling top-level fields later
+// without another format-version bump; UnmarshalJSON also accepts a
+// version-1 archive's bare top-level map, so this build reads both shapes
+// for the life of the 1.x line. The Go-level type stays a plain map — every
+// existing caller (idx[apiPath], range idx, len(idx), ...) is unaffected.
 type Index map[string]*IndexEntry
+
+// indexWire is the version-2+ on-disk shape of Index.
+type indexWire struct {
+	Entries map[string]*IndexEntry `json:"entries"`
+}
+
+// MarshalJSON always writes the version-2+ wrapped shape.
+func (idx Index) MarshalJSON() ([]byte, error) {
+	return json.Marshal(indexWire{Entries: map[string]*IndexEntry(idx)})
+}
+
+// UnmarshalJSON accepts both the version-2+ wrapped shape ({"entries": {...}})
+// and a version-1 archive's bare top-level map. The two are unambiguous:
+// a real api_path key always starts with "/", never equals "entries".
+func (idx *Index) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if entriesRaw, ok := raw["entries"]; ok {
+		var entries map[string]*IndexEntry
+		if err := json.Unmarshal(entriesRaw, &entries); err != nil {
+			return fmt.Errorf("parsing index entries: %w", err)
+		}
+		*idx = entries
+		return nil
+	}
+	// Version-1 shape: a bare top-level map of apiPath -> *IndexEntry.
+	entries := make(map[string]*IndexEntry, len(raw))
+	for apiPath, entryRaw := range raw {
+		var entry IndexEntry
+		if err := json.Unmarshal(entryRaw, &entry); err != nil {
+			return fmt.Errorf("parsing index entry %q: %w", apiPath, err)
+		}
+		entries[apiPath] = &entry
+	}
+	*idx = entries
+	return nil
+}
 
 // WatchIndexEntry maps an API path to the ordered watch events captured for it.
 // Each watch event is a separate record with event_type ADDED, MODIFIED, or DELETED.
@@ -106,5 +155,45 @@ type WatchIndexEntry struct {
 }
 
 // WatchIndex is the top-level watch-index.json written inside the archive.
-// Key is the canonical API path. Only present in archives captured with watch: true.
+// Key is the canonical API path. Only present in archives captured with
+// watch: true. Wrapped on disk as {"entries": {...}} for the same reason and
+// in the same version-2+/version-1-compatible way as Index — see its doc.
 type WatchIndex map[string]*WatchIndexEntry
+
+// watchIndexWire is the version-2+ on-disk shape of WatchIndex.
+type watchIndexWire struct {
+	Entries map[string]*WatchIndexEntry `json:"entries"`
+}
+
+// MarshalJSON always writes the version-2+ wrapped shape.
+func (wi WatchIndex) MarshalJSON() ([]byte, error) {
+	return json.Marshal(watchIndexWire{Entries: map[string]*WatchIndexEntry(wi)})
+}
+
+// UnmarshalJSON accepts both the version-2+ wrapped shape and a version-1
+// archive's bare top-level map — see Index.UnmarshalJSON for the same logic.
+func (wi *WatchIndex) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if entriesRaw, ok := raw["entries"]; ok {
+		var entries map[string]*WatchIndexEntry
+		if err := json.Unmarshal(entriesRaw, &entries); err != nil {
+			return fmt.Errorf("parsing watch-index entries: %w", err)
+		}
+		*wi = entries
+		return nil
+	}
+	// Version-1 shape: a bare top-level map of apiPath -> *WatchIndexEntry.
+	entries := make(map[string]*WatchIndexEntry, len(raw))
+	for apiPath, entryRaw := range raw {
+		var entry WatchIndexEntry
+		if err := json.Unmarshal(entryRaw, &entry); err != nil {
+			return fmt.Errorf("parsing watch-index entry %q: %w", apiPath, err)
+		}
+		entries[apiPath] = &entry
+	}
+	*wi = entries
+	return nil
+}
