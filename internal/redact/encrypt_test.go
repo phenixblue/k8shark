@@ -115,8 +115,8 @@ func TestRedact_EncryptedRoundTrip(t *testing.T) {
 	}
 	defer ar.Close()
 
-	var meta capture.CaptureMetadata
-	if err := ar.ReadMetadata(&meta); err != nil {
+	meta, err := ar.ReadMetadata()
+	if err != nil {
 		t.Fatalf("ReadMetadata: %v", err)
 	}
 	if !meta.Encrypted {

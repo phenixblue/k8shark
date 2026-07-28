@@ -51,24 +51,20 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 	}
 	defer ar.Close()
 
-	var meta capture.CaptureMetadata
-	if err := ar.ReadMetadata(&meta); err != nil {
+	meta, err := ar.ReadMetadata()
+	if err != nil {
 		return Result{}, fmt.Errorf("reading metadata: %w", err)
-	}
-	if err := capture.CheckFormatVersion(meta); err != nil {
-		return Result{}, err
 	}
 	// The redacted archive is written by the current writer, so stamp it with
 	// the current format version.
 	meta.FormatVersion = capture.CurrentFormatVersion
 
-	var idx capture.Index
-	if err := ar.ReadIndex(&idx); err != nil {
+	idx, err := ar.ReadIndex()
+	if err != nil {
 		return Result{}, fmt.Errorf("reading index: %w", err)
 	}
 
-	var wi capture.WatchIndex
-	_, _ = ar.ReadWatchIndex(&wi)
+	wi, _, _ := ar.ReadWatchIndex()
 
 	result := Result{}
 

@@ -74,15 +74,15 @@ func TestEngine_CaptureEncrypted(t *testing.T) {
 	}
 	defer ar.Close()
 
-	var meta CaptureMetadata
-	if err := ar.ReadMetadata(&meta); err != nil {
+	meta, err := ar.ReadMetadata()
+	if err != nil {
 		t.Fatalf("ReadMetadata: %v", err)
 	}
 	if !meta.Encrypted {
 		t.Error("decrypted metadata.Encrypted = false, want true")
 	}
-	var idx Index
-	if err := ar.ReadIndex(&idx); err != nil {
+	idx, err := ar.ReadIndex()
+	if err != nil {
 		t.Fatalf("ReadIndex: %v", err)
 	}
 	if _, ok := idx["/api/v1/namespaces/default/pods"]; !ok {

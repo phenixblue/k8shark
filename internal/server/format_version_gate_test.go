@@ -11,7 +11,6 @@ import (
 	"github.com/phenixblue/k8shark/internal/diff"
 	"github.com/phenixblue/k8shark/internal/inspect"
 	"github.com/phenixblue/k8shark/internal/redact"
-	"github.com/phenixblue/k8shark/internal/server"
 	"github.com/phenixblue/k8shark/internal/transitions"
 )
 
@@ -73,18 +72,18 @@ func TestAllReaders_RejectFutureFormatVersion(t *testing.T) {
 		}
 	}
 
-	t.Run("inspect.Run", func(t *testing.T) {
-		_, err := inspect.Run(path, nil)
+	t.Run("archive.Open", func(t *testing.T) {
+		// archive.Open enforces the format-version gate directly (#233), so
+		// every caller below — including server.LoadStore's, which used to
+		// be exercised as its own subtest — actually rejects the archive
+		// here, before ever reaching its own logic. Pinned explicitly since
+		// it's the thing this test now fundamentally relies on.
+		_, err := archive.Open(path)
 		assertUpgradeError(t, err)
 	})
 
-	t.Run("server.LoadStore", func(t *testing.T) {
-		ar, err := archive.Open(path)
-		if err != nil {
-			t.Fatalf("archive.Open: %v", err)
-		}
-		defer ar.Close()
-		_, err = server.LoadStore(ar)
+	t.Run("inspect.Run", func(t *testing.T) {
+		_, err := inspect.Run(path, nil)
 		assertUpgradeError(t, err)
 	})
 

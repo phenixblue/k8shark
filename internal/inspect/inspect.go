@@ -48,16 +48,13 @@ func Run(archivePath string, identities []age.Identity) (*Report, error) {
 	}
 	defer ar.Close()
 
-	var meta capture.CaptureMetadata
-	if err := ar.ReadMetadata(&meta); err != nil {
+	meta, err := ar.ReadMetadata()
+	if err != nil {
 		return nil, fmt.Errorf("reading metadata: %w", err)
 	}
-	if err := capture.CheckFormatVersion(meta); err != nil {
-		return nil, err
-	}
 
-	var idx capture.Index
-	if err := ar.ReadIndex(&idx); err != nil {
+	idx, err := ar.ReadIndex()
+	if err != nil {
 		return nil, fmt.Errorf("reading index: %w", err)
 	}
 

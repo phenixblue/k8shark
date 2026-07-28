@@ -8,6 +8,7 @@ import (
 
 	"filippo.io/age"
 	"github.com/phenixblue/k8shark/internal/archive"
+	"github.com/phenixblue/k8shark/internal/capture"
 	"github.com/spf13/cobra"
 )
 
@@ -34,7 +35,7 @@ func writeEncryptedArchive(t *testing.T, path, passphrase string) {
 	if err != nil {
 		t.Fatalf("NewEncryptedStreamWriter: %v", err)
 	}
-	rec := map[string]any{"id": "r1", "api_path": "/api/v1/nodes"}
+	rec := &capture.Record{ID: "r1", APIPath: "/api/v1/nodes"}
 	if _, err := sw.WriteRecord(rec); err != nil {
 		t.Fatalf("WriteRecord: %v", err)
 	}
@@ -49,7 +50,7 @@ func writePlaintextArchive(t *testing.T, path string) {
 	if err != nil {
 		t.Fatalf("NewStreamWriter: %v", err)
 	}
-	rec := map[string]any{"id": "r1", "api_path": "/api/v1/nodes"}
+	rec := &capture.Record{ID: "r1", APIPath: "/api/v1/nodes"}
 	if _, err := sw.WriteRecord(rec); err != nil {
 		t.Fatalf("WriteRecord: %v", err)
 	}
@@ -104,12 +105,12 @@ func TestResolveDecryptIdentities_PassphraseFile(t *testing.T) {
 		t.Fatalf("OpenWithIdentities: %v", err)
 	}
 	defer ar.Close()
-	var meta map[string]any
-	if err := ar.ReadMetadata(&meta); err != nil {
+	meta, err := ar.ReadMetadata()
+	if err != nil {
 		t.Fatalf("ReadMetadata: %v", err)
 	}
-	if meta["capture_id"] != "enc" {
-		t.Errorf("capture_id = %v, want enc", meta["capture_id"])
+	if meta.CaptureID != "enc" {
+		t.Errorf("capture_id = %v, want enc", meta.CaptureID)
 	}
 }
 
@@ -148,7 +149,7 @@ func TestResolveDecryptIdentities_IdentityFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewEncryptedStreamWriter: %v", err)
 	}
-	if _, err := sw.WriteRecord(map[string]any{"id": "r1", "api_path": "/api/v1/nodes"}); err != nil {
+	if _, err := sw.WriteRecord(&capture.Record{ID: "r1", APIPath: "/api/v1/nodes"}); err != nil {
 		t.Fatalf("WriteRecord: %v", err)
 	}
 	if err := sw.Finish(map[string]any{"capture_id": "x25519"}, map[string]any{}, nil); err != nil {
