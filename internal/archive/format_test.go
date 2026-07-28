@@ -13,13 +13,14 @@ import (
 
 var update = flag.Bool("update", false, "regenerate golden testdata fixtures")
 
-// goldenV1SHA256 pins the checked-in golden-v1.kshrk fixture's content hash.
-// TestGoldenV1 is the only guard that this build can still read archives
-// written by earlier releases; if the fixture goes missing, the test must
-// fail loudly (not skip), and if it's regenerated via -update, updating this
-// constant is a required second step — so running -update can't silently
-// swap in "whatever the current writer produces" as the thing being tested
-// against (#251).
+// goldenV1SHA256 pins the checked-in golden-v1.kshrk (plaintext) fixture's
+// content hash. TestGoldenV1 is the guard that this build can still read
+// plaintext archives written by earlier releases — see crypto_test.go's
+// goldenV1PassphraseSHA256 for the encrypted-fixture counterpart. If the
+// fixture goes missing, the test must fail loudly (not skip), and if it's
+// regenerated via -update, updating this constant is a required second
+// step — so running -update can't silently swap in "whatever the current
+// writer produces" as the thing being tested against (#251).
 const goldenV1SHA256 = "d7468f8f8b4b1d257f58fadbe4a8d839e1445869a8c6b11f3c4b0597e7ef4f83"
 
 // requireFixtureHash fails the test unless path's content hashes to want,
