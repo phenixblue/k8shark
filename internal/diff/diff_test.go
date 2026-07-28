@@ -101,6 +101,45 @@ func TestRun_Filters(t *testing.T) {
 	}
 }
 
+// TestRun_ResourceFilter_SurfacesPodLogChanges is a regression test for
+// #235: pod-log index keys carry a "?container=" query suffix
+// (".../pods/<name>/log?container=<c>"), which the pre-fix parseAPIPath (no
+// query stripping, rigid segment-count match) mis-parsed to
+// resource="", namespace="". matchesFilters then rejected every such entry
+// whenever --resource/--namespace was set, so `diff --resource pods`
+// silently dropped pod-log changes and exited 0 as if nothing had changed.
+func TestRun_ResourceFilter_SurfacesPodLogChanges(t *testing.T) {
+	const logPath = "/api/v1/namespaces/default/pods/nginx/log?container=app"
+	before := buildArchive(t, map[string][]capture.Record{
+		logPath: {
+			newRecord("log-1", logPath, time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC), `"starting up"`),
+		},
+	})
+	after := buildArchive(t, map[string][]capture.Record{
+		logPath: {
+			newRecord("log-2", logPath, time.Date(2026, 4, 9, 10, 5, 0, 0, time.UTC), `"starting up\ncrash: OOMKilled"`),
+		},
+	})
+
+	result, err := Run(Options{BeforeArchive: before, AfterArchive: after, Resource: "pods"})
+	if err != nil {
+		t.Fatalf("Run() error: %v", err)
+	}
+	if len(result.Changes) != 1 {
+		t.Fatalf("expected 1 change (the pod log), got %d: %+v", len(result.Changes), result.Changes)
+	}
+	ch := result.Changes[0]
+	if ch.Path != logPath {
+		t.Fatalf("unexpected path %q, want %q", ch.Path, logPath)
+	}
+	if ch.Resource != "pods" || ch.Namespace != "default" {
+		t.Errorf("Change.Resource/Namespace = %q/%q, want pods/default", ch.Resource, ch.Namespace)
+	}
+	if !strings.Contains(string(ch.After), "OOMKilled") {
+		t.Errorf("expected the after body to contain the new log line, got %s", ch.After)
+	}
+}
+
 func TestRun_NoDiff(t *testing.T) {
 	before := buildArchive(t, map[string][]capture.Record{
 		"/api/v1/namespaces/default/pods": {

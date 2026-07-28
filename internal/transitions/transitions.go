@@ -10,6 +10,7 @@ import (
 	"filippo.io/age"
 	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/capture"
+	"github.com/phenixblue/k8shark/internal/k8spath"
 )
 
 // Transition is a single state-change event for a Kubernetes object detected
@@ -374,27 +375,7 @@ func inWindow(t, since, until time.Time) bool {
 // parseAPIPath extracts group, version, resource, and namespace from a
 // canonical Kubernetes API path (/api/... or /apis/...).
 func parseAPIPath(path string) (group, version, resource, namespace string) {
-	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
-	switch {
-	case len(parts) >= 3 && parts[0] == "api":
-		version = parts[1]
-		if len(parts) == 3 {
-			resource = parts[2]
-		} else if len(parts) == 5 && parts[2] == "namespaces" {
-			namespace = parts[3]
-			resource = parts[4]
-		}
-	case len(parts) >= 4 && parts[0] == "apis":
-		group = parts[1]
-		version = parts[2]
-		if len(parts) == 4 {
-			resource = parts[3]
-		} else if len(parts) == 6 && parts[3] == "namespaces" {
-			namespace = parts[4]
-			resource = parts[5]
-		}
-	}
-	return
+	return k8spath.Parse(path)
 }
 
 // jsonEqual reports whether two JSON blobs are semantically equivalent.

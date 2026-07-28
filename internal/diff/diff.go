@@ -11,6 +11,7 @@ import (
 	"filippo.io/age"
 	archivepkg "github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/capture"
+	"github.com/phenixblue/k8shark/internal/k8spath"
 	"github.com/phenixblue/k8shark/internal/server"
 	"github.com/pmezard/go-difflib/difflib"
 )
@@ -270,27 +271,7 @@ func matchesFilters(path, resource, namespace string) bool {
 }
 
 func parseAPIPath(path string) (group, version, resource, namespace string) {
-	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
-	switch {
-	case len(parts) >= 3 && parts[0] == "api":
-		version = parts[1]
-		if len(parts) == 3 {
-			resource = parts[2]
-		} else if len(parts) == 5 && parts[2] == "namespaces" {
-			namespace = parts[3]
-			resource = parts[4]
-		}
-	case len(parts) >= 4 && parts[0] == "apis":
-		group = parts[1]
-		version = parts[2]
-		if len(parts) == 4 {
-			resource = parts[3]
-		} else if len(parts) == 6 && parts[3] == "namespaces" {
-			namespace = parts[4]
-			resource = parts[5]
-		}
-	}
-	return
+	return k8spath.Parse(path)
 }
 
 func prettyJSON(body []byte) string {
