@@ -1092,10 +1092,10 @@ rm -f "$ALL_TRUE_CAPTURE_FILE" "$ALL_TRUE_CONFIG" "$ALL_TRUE_SERVER_LOG" "$ALL_T
 # ── Phase 9c: encrypt -> decrypt -> open -> kubectl (passphrase + recipient) ──
 log "Testing capture -> encrypt -> decrypt -> open -> kubectl"
 
-ENC_PASS_FILE="/tmp/k8shark-e2e-encpass-$$.txt"
-ENC_WRONG_PASS_FILE="/tmp/k8shark-e2e-encpass-wrong-$$.txt"
-(umask 077 && echo "correct-horse-battery-staple-e2e" >"$ENC_PASS_FILE")
-(umask 077 && echo "definitely-the-wrong-passphrase" >"$ENC_WRONG_PASS_FILE")
+ENC_PASS_FILE=$(mktemp /tmp/k8shark-e2e-encpass-XXXXXX)
+ENC_WRONG_PASS_FILE=$(mktemp /tmp/k8shark-e2e-encpass-wrong-XXXXXX)
+echo "correct-horse-battery-staple-e2e" >"$ENC_PASS_FILE"
+echo "definitely-the-wrong-passphrase" >"$ENC_WRONG_PASS_FILE"
 
 # -- Passphrase mode --
 ENC_FILE="/tmp/k8shark-e2e-encrypted-$$.kshrk"
@@ -1110,7 +1110,7 @@ fi
 
 # inspect with no key must reject the encrypted archive outright.
 out=$("$BINARY" inspect "$ENC_FILE" 2>&1) || true
-assert_contains "inspect (no passphrase): rejects encrypted archive" "$out" "encrypted"
+assert_contains "inspect (no passphrase): rejects encrypted archive" "$out" "supply a decryption key"
 
 # inspect with the wrong passphrase must fail with the documented message.
 out=$("$BINARY" inspect "$ENC_FILE" --decrypt-passphrase-file "$ENC_WRONG_PASS_FILE" 2>&1) || true
@@ -1244,8 +1244,8 @@ GOEOF
   else
     pass "encrypt-recipient: generated a test age keypair"
 
-    AGE_IDENTITY_FILE="/tmp/k8shark-e2e-age-identity-$$.txt"
-    (umask 077 && echo "$AGE_IDENTITY" >"$AGE_IDENTITY_FILE")
+    AGE_IDENTITY_FILE=$(mktemp /tmp/k8shark-e2e-age-identity-XXXXXX)
+    echo "$AGE_IDENTITY" >"$AGE_IDENTITY_FILE"
 
     ENC_RECIPIENT_FILE="/tmp/k8shark-e2e-encrypted-recipient-$$.kshrk"
     "$BINARY" --config "$CAPTURE_CONFIG" capture \
