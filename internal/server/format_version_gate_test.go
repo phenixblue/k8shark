@@ -24,6 +24,9 @@ func buildFutureFormatArchive(t *testing.T, path string) {
 	if err != nil {
 		t.Fatalf("NewStreamWriter: %v", err)
 	}
+	// Abort is a no-op once Finish has run, so this is a safe no-op on the
+	// happy path and a real cleanup if a t.Fatalf below skips Finish.
+	defer func() { _ = sw.Abort() }()
 	rec := capture.Record{
 		ID: "rec-1", CapturedAt: time.Now().UTC(), APIPath: "/api/v1/namespaces/default/pods",
 		HTTPMethod: "GET", ResponseCode: 200, ResponseBody: []byte(`{"kind":"PodList","items":[]}`),
