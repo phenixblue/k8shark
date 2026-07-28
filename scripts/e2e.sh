@@ -1049,6 +1049,193 @@ if [[ -n "$ALL_TRUE_SERVER_PID" ]]; then
 fi
 rm -f "$ALL_TRUE_CAPTURE_FILE" "$ALL_TRUE_CONFIG" "$ALL_TRUE_SERVER_LOG" "$ALL_TRUE_KC"
 
+# ── Phase 9c: encrypt -> decrypt -> open -> kubectl (passphrase + recipient) ──
+log "Testing capture -> encrypt -> decrypt -> open -> kubectl"
+
+ENC_PASS_FILE="/tmp/k8shark-e2e-encpass-$$.txt"
+ENC_WRONG_PASS_FILE="/tmp/k8shark-e2e-encpass-wrong-$$.txt"
+echo "correct-horse-battery-staple-e2e" >"$ENC_PASS_FILE"
+echo "definitely-the-wrong-passphrase" >"$ENC_WRONG_PASS_FILE"
+
+# -- Passphrase mode --
+ENC_FILE="/tmp/k8shark-e2e-encrypted-$$.kshrk"
+"$BINARY" --config "$CAPTURE_CONFIG" capture \
+  --encrypt-passphrase-file "$ENC_PASS_FILE" \
+  --output "$ENC_FILE"
+if [[ -s "$ENC_FILE" ]]; then
+  pass "capture --encrypt-passphrase-file: encrypted archive created"
+else
+  fail "capture --encrypt-passphrase-file: archive missing or empty"
+fi
+
+# inspect with no key must reject the encrypted archive outright.
+out=$("$BINARY" inspect "$ENC_FILE" 2>&1) || true
+assert_contains "inspect (no passphrase): rejects encrypted archive" "$out" "encrypted"
+
+# inspect with the wrong passphrase must fail with the documented message.
+out=$("$BINARY" inspect "$ENC_FILE" --decrypt-passphrase-file "$ENC_WRONG_PASS_FILE" 2>&1) || true
+assert_contains "inspect (wrong passphrase): fails with documented message" "$out" "incorrect passphrase or key"
+
+# inspect with the correct passphrase succeeds.
+out=$("$BINARY" inspect "$ENC_FILE" --decrypt-passphrase-file "$ENC_PASS_FILE" 2>&1) || true
+assert_contains "inspect (correct passphrase): succeeds" "$out" "Capture ID:"
+
+# kshrk decrypt to a standalone plaintext archive.
+DEC_FILE="/tmp/k8shark-e2e-decrypted-$$.kshrk"
+"$BINARY" decrypt "$ENC_FILE" --decrypt-passphrase-file "$ENC_PASS_FILE" --output "$DEC_FILE"
+if [[ -s "$DEC_FILE" ]]; then
+  pass "kshrk decrypt: plaintext archive created"
+else
+  fail "kshrk decrypt: output archive missing or empty"
+fi
+
+# Open the decrypted archive (no key needed) and confirm kubectl works.
+ENC_DEC_SERVER_LOG="/tmp/k8shark-enc-dec-server-$$.log"
+ENC_DEC_KC="/tmp/k8shark-enc-dec-kc-$$.yaml"
+ENC_DEC_SERVER_PID=""
+"$BINARY" open "$DEC_FILE" --kubeconfig-out "$ENC_DEC_KC" >"$ENC_DEC_SERVER_LOG" 2>&1 &
+ENC_DEC_SERVER_PID=$!
+for i in $(seq 1 30); do
+  if [[ -s "$ENC_DEC_KC" ]]; then break; fi
+  sleep 0.5
+done
+if [[ ! -s "$ENC_DEC_KC" ]]; then
+  fail "open (decrypted archive): mock server did not start within 15s"
+else
+  for i in $(seq 1 20); do
+    if kubectl --kubeconfig "$ENC_DEC_KC" --request-timeout=2s \
+        get namespaces </dev/null &>/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.5
+  done
+  out=$(kubectl --kubeconfig "$ENC_DEC_KC" --request-timeout=10s get pods -n k8shark-test -o name 2>&1) || true
+  assert_not_empty "open (decrypted archive): pods present" "$out"
+fi
+if [[ -n "$ENC_DEC_SERVER_PID" ]]; then
+  kill "$ENC_DEC_SERVER_PID" 2>/dev/null || true
+  wait "$ENC_DEC_SERVER_PID" 2>/dev/null || true
+fi
+
+# Open the STILL-encrypted archive directly, decrypting on the fly — no
+# separate decrypt step.
+ENC_OPEN_SERVER_LOG="/tmp/k8shark-enc-open-server-$$.log"
+ENC_OPEN_KC="/tmp/k8shark-enc-open-kc-$$.yaml"
+ENC_OPEN_SERVER_PID=""
+"$BINARY" open "$ENC_FILE" --decrypt-passphrase-file "$ENC_PASS_FILE" \
+  --kubeconfig-out "$ENC_OPEN_KC" >"$ENC_OPEN_SERVER_LOG" 2>&1 &
+ENC_OPEN_SERVER_PID=$!
+for i in $(seq 1 30); do
+  if [[ -s "$ENC_OPEN_KC" ]]; then break; fi
+  sleep 0.5
+done
+if [[ ! -s "$ENC_OPEN_KC" ]]; then
+  fail "open --decrypt-passphrase-file (still-encrypted archive): mock server did not start within 15s"
+else
+  for i in $(seq 1 20); do
+    if kubectl --kubeconfig "$ENC_OPEN_KC" --request-timeout=2s \
+        get namespaces </dev/null &>/dev/null 2>&1; then
+      break
+    fi
+    sleep 0.5
+  done
+  out=$(kubectl --kubeconfig "$ENC_OPEN_KC" --request-timeout=10s get pods -n k8shark-test -o name 2>&1) || true
+  assert_not_empty "open --decrypt-passphrase-file: pods present (decrypted on the fly)" "$out"
+fi
+if [[ -n "$ENC_OPEN_SERVER_PID" ]]; then
+  kill "$ENC_OPEN_SERVER_PID" 2>/dev/null || true
+  wait "$ENC_OPEN_SERVER_PID" 2>/dev/null || true
+fi
+
+rm -f "$ENC_FILE" "$DEC_FILE" "$ENC_PASS_FILE" "$ENC_WRONG_PASS_FILE" \
+  "$ENC_DEC_SERVER_LOG" "$ENC_DEC_KC" "$ENC_OPEN_SERVER_LOG" "$ENC_OPEN_KC"
+
+# -- Recipient-key mode --
+# Generate a throwaway age X25519 keypair via the age library already vendored
+# in go.sum, rather than depending on the separate age-keygen binary being
+# present in every environment this script runs in.
+KEYGEN_SRC="/tmp/k8shark-e2e-keygen-$$.go"
+cat >"$KEYGEN_SRC" <<'GOEOF'
+package main
+
+import (
+	"fmt"
+
+	"filippo.io/age"
+)
+
+func main() {
+	id, err := age.GenerateX25519Identity()
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(id.String())
+	fmt.Println(id.Recipient().String())
+}
+GOEOF
+KEYPAIR=$(cd "$PROJ_ROOT" && go run "$KEYGEN_SRC") || true
+rm -f "$KEYGEN_SRC"
+AGE_IDENTITY=$(echo "$KEYPAIR" | sed -n '1p')
+AGE_RECIPIENT=$(echo "$KEYPAIR" | sed -n '2p')
+
+if [[ -z "$AGE_IDENTITY" || -z "$AGE_RECIPIENT" ]]; then
+  fail "encrypt-recipient: failed to generate an age keypair"
+else
+  pass "encrypt-recipient: generated a test age keypair"
+
+  AGE_IDENTITY_FILE="/tmp/k8shark-e2e-age-identity-$$.txt"
+  echo "$AGE_IDENTITY" >"$AGE_IDENTITY_FILE"
+
+  ENC_RECIPIENT_FILE="/tmp/k8shark-e2e-encrypted-recipient-$$.kshrk"
+  "$BINARY" --config "$CAPTURE_CONFIG" capture \
+    --encrypt-recipient "$AGE_RECIPIENT" \
+    --output "$ENC_RECIPIENT_FILE"
+  if [[ -s "$ENC_RECIPIENT_FILE" ]]; then
+    pass "capture --encrypt-recipient: encrypted archive created"
+  else
+    fail "capture --encrypt-recipient: archive missing or empty"
+  fi
+
+  DEC_RECIPIENT_FILE="/tmp/k8shark-e2e-decrypted-recipient-$$.kshrk"
+  "$BINARY" decrypt "$ENC_RECIPIENT_FILE" \
+    --decrypt-identity-file "$AGE_IDENTITY_FILE" \
+    --output "$DEC_RECIPIENT_FILE"
+  if [[ -s "$DEC_RECIPIENT_FILE" ]]; then
+    pass "kshrk decrypt --decrypt-identity-file: plaintext archive created"
+  else
+    fail "kshrk decrypt --decrypt-identity-file: output archive missing or empty"
+  fi
+
+  REC_SERVER_LOG="/tmp/k8shark-recipient-server-$$.log"
+  REC_KC="/tmp/k8shark-recipient-kc-$$.yaml"
+  REC_SERVER_PID=""
+  "$BINARY" open "$DEC_RECIPIENT_FILE" --kubeconfig-out "$REC_KC" >"$REC_SERVER_LOG" 2>&1 &
+  REC_SERVER_PID=$!
+  for i in $(seq 1 30); do
+    if [[ -s "$REC_KC" ]]; then break; fi
+    sleep 0.5
+  done
+  if [[ ! -s "$REC_KC" ]]; then
+    fail "open (recipient-decrypted archive): mock server did not start within 15s"
+  else
+    for i in $(seq 1 20); do
+      if kubectl --kubeconfig "$REC_KC" --request-timeout=2s \
+          get namespaces </dev/null &>/dev/null 2>&1; then
+        break
+      fi
+      sleep 0.5
+    done
+    out=$(kubectl --kubeconfig "$REC_KC" --request-timeout=10s get pods -n k8shark-test -o name 2>&1) || true
+    assert_not_empty "open (recipient-decrypted archive): pods present" "$out"
+  fi
+  if [[ -n "$REC_SERVER_PID" ]]; then
+    kill "$REC_SERVER_PID" 2>/dev/null || true
+    wait "$REC_SERVER_PID" 2>/dev/null || true
+  fi
+
+  rm -f "$ENC_RECIPIENT_FILE" "$DEC_RECIPIENT_FILE" "$AGE_IDENTITY_FILE" "$REC_SERVER_LOG" "$REC_KC"
+fi
+
 # ── Phase 10: Summary ───────────────────────────────────────────────────────────
 log "Test summary"
 printf '  Passed: \033[1;32m%d\033[0m\n' "$PASS"
