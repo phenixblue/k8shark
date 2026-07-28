@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"github.com/klauspost/compress/zstd"
+
+	"github.com/phenixblue/k8shark/internal/archive/format"
 )
 
 // bombSize is how large a "bomb" fixture decompresses to: one byte past the
@@ -71,14 +73,14 @@ func TestArchive_ZstdBombRecord_ReturnsSizeLimitError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStreamWriter: %v", err)
 	}
-	bomb := map[string]any{
-		"id": "bomb-1", "api_path": "/api/v1/namespaces/default/pods",
-		"http_method": "GET", "response_code": 200,
+	bomb := &format.Record{
+		ID: "bomb-1", APIPath: "/api/v1/namespaces/default/pods",
+		HTTPMethod: "GET", ResponseCode: 200,
 		// Highly compressible: one byte past the cap once decompressed, but
-		// tiny once zstd-compressed. WriteRecord's any-typed API has no
-		// streaming form, so this string is necessarily materialized whole —
-		// bombSize (not an arbitrarily large size) keeps that to a minimum.
-		"response_body": strings.Repeat("A", bombSize),
+		// tiny once zstd-compressed. WriteRecord has no streaming form, so
+		// this string is necessarily materialized whole — bombSize (not an
+		// arbitrarily large size) keeps that to a minimum.
+		ResponseBody: []byte(`"` + strings.Repeat("A", bombSize) + `"`),
 	}
 	if _, err := sw.WriteRecord(bomb); err != nil {
 		t.Fatalf("WriteRecord: %v", err)
@@ -136,16 +138,11 @@ func TestOpen_DeflateBombEntry_ReturnsSizeLimitError(t *testing.T) {
 		t.Fatalf("file Close: %v", err)
 	}
 
-	ar, err := Open(outPath)
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer ar.Close()
-
-	var meta map[string]any
-	err = ar.ReadMetadata(&meta)
+	// Open reads and validates metadata.json eagerly (#233), so the bomb is
+	// caught here rather than via a later ReadMetadata call.
+	_, err = Open(outPath)
 	if err == nil {
-		t.Fatal("expected a size-limit error reading a deflate-bomb entry, got nil")
+		t.Fatal("expected a size-limit error opening a deflate-bomb metadata.json, got nil")
 	}
 	if !strings.Contains(err.Error(), outPath) {
 		t.Errorf("error = %v, want it to name the archive path %q", err, outPath)
@@ -168,10 +165,10 @@ func TestArchive_LargeLegitimateEntry_StillOpens(t *testing.T) {
 	if _, err := rand.Read(body); err != nil {
 		t.Fatalf("rand.Read: %v", err)
 	}
-	rec := map[string]any{
-		"id": "large-1", "api_path": "/api/v1/namespaces/default/pods",
-		"http_method": "GET", "response_code": 200,
-		"response_body": fmt.Sprintf("%x", body),
+	rec := &format.Record{
+		ID: "large-1", APIPath: "/api/v1/namespaces/default/pods",
+		HTTPMethod: "GET", ResponseCode: 200,
+		ResponseBody: []byte(`"` + fmt.Sprintf("%x", body) + `"`),
 	}
 	if _, err := sw.WriteRecord(rec); err != nil {
 		t.Fatalf("WriteRecord: %v", err)
@@ -239,11 +236,11 @@ func TestOpen_ZipSlipEntryNameIsInert(t *testing.T) {
 	}
 	defer ar.Close()
 
-	var meta map[string]any
-	if err := ar.ReadMetadata(&meta); err != nil {
+	meta, err := ar.ReadMetadata()
+	if err != nil {
 		t.Fatalf("ReadMetadata: %v", err)
 	}
-	if meta["capture_id"] != "zipslip-test" {
+	if meta.CaptureID != "zipslip-test" {
 		t.Fatalf("unexpected metadata: %+v", meta)
 	}
 

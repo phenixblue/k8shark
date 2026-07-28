@@ -3,6 +3,8 @@ package archive
 import (
 	"errors"
 	"testing"
+
+	"github.com/phenixblue/k8shark/internal/archive/format"
 )
 
 // failingWriter returns an error from every Write, simulating a broken pipe
@@ -22,10 +24,10 @@ func TestNDJSONWriter_WriteRecord_FailedEncodeDoesNotAdvanceState(t *testing.T) 
 	wantErr := errors.New("broken pipe")
 	w := NewNDJSONWriter(&failingWriter{err: wantErr})
 
-	rec := map[string]any{
-		"id": "rec-1", "api_path": "/api/v1/namespaces/default/pods",
-		"http_method": "GET", "response_code": 200,
-		"response_body": map[string]any{"apiVersion": "v1", "kind": "PodList", "items": []any{}},
+	rec := &format.Record{
+		ID: "rec-1", APIPath: "/api/v1/namespaces/default/pods",
+		HTTPMethod: "GET", ResponseCode: 200,
+		ResponseBody: []byte(`{"apiVersion":"v1","kind":"PodList","items":[]}`),
 	}
 	if _, err := w.WriteRecord(rec); !errors.Is(err, wantErr) {
 		t.Fatalf("WriteRecord error = %v, want %v", err, wantErr)

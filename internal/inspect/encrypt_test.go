@@ -6,6 +6,7 @@ import (
 
 	"filippo.io/age"
 	"github.com/phenixblue/k8shark/internal/archive"
+	"github.com/phenixblue/k8shark/internal/archive/format"
 )
 
 // TestRun_Encrypted verifies inspect.Run threads identities through to the
@@ -24,8 +25,8 @@ func TestRun_Encrypted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewEncryptedStreamWriter: %v", err)
 	}
-	rec := map[string]any{"id": "r1", "api_path": "/api/v1/nodes", "response_code": 200,
-		"response_body": map[string]any{"apiVersion": "v1", "kind": "NodeList", "items": []any{}}}
+	rec := &format.Record{ID: "r1", APIPath: "/api/v1/nodes", ResponseCode: 200,
+		ResponseBody: []byte(`{"apiVersion":"v1","kind":"NodeList","items":[]}`)}
 	if _, err := sw.WriteRecord(rec); err != nil {
 		t.Fatalf("WriteRecord: %v", err)
 	}

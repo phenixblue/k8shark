@@ -93,16 +93,13 @@ type ResourceInfo struct {
 // below can't still be reading from the archive when it's closed (the
 // server's teardown does this).
 func LoadStore(ar *archive.Archive) (*CaptureStore, error) {
-	var meta capture.CaptureMetadata
-	if err := ar.ReadMetadata(&meta); err != nil {
+	meta, err := ar.ReadMetadata()
+	if err != nil {
 		return nil, fmt.Errorf("reading metadata: %w", err)
 	}
-	if err := capture.CheckFormatVersion(meta); err != nil {
-		return nil, err
-	}
 
-	var idx capture.Index
-	if err := ar.ReadIndex(&idx); err != nil {
+	idx, err := ar.ReadIndex()
+	if err != nil {
 		return nil, fmt.Errorf("reading index: %w", err)
 	}
 
@@ -118,8 +115,7 @@ func LoadStore(ar *archive.Archive) (*CaptureStore, error) {
 	}
 
 	// Load watch index if present.
-	var wi capture.WatchIndex
-	if found, err := ar.ReadWatchIndex(&wi); err == nil && found && wi != nil {
+	if wi, found, err := ar.ReadWatchIndex(); err == nil && found && wi != nil {
 		s.WatchIndex = wi
 	}
 

@@ -26,19 +26,15 @@ type sliceSink struct {
 	pathSeq map[string]int
 }
 
-func (s *sliceSink) WriteRecord(rec any) (int, error) {
-	r, ok := rec.(*Record)
-	if !ok {
-		return 0, nil
-	}
+func (s *sliceSink) WriteRecord(rec *Record) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.records = append(s.records, r)
+	s.records = append(s.records, rec)
 	if s.pathSeq == nil {
 		s.pathSeq = make(map[string]int)
 	}
-	seq := s.pathSeq[r.APIPath]
-	s.pathSeq[r.APIPath] = seq + 1
+	seq := s.pathSeq[rec.APIPath]
+	s.pathSeq[rec.APIPath] = seq + 1
 	return seq, nil
 }
 func (s *sliceSink) Finish(_, _, _ any) error { return nil }
@@ -54,10 +50,10 @@ func (s *sliceSink) UncompressedBytes() int64 { return 0 }
 // entry, and must not be silent.
 type failingSink struct{ err error }
 
-func (s *failingSink) WriteRecord(any) (int, error) { return 0, s.err }
-func (s *failingSink) Finish(_, _, _ any) error     { return nil }
-func (s *failingSink) RecordCount() int             { return 0 }
-func (s *failingSink) UncompressedBytes() int64     { return 0 }
+func (s *failingSink) WriteRecord(*Record) (int, error) { return 0, s.err }
+func (s *failingSink) Finish(_, _, _ any) error         { return nil }
+func (s *failingSink) RecordCount() int                 { return 0 }
+func (s *failingSink) UncompressedBytes() int64         { return 0 }
 
 // fakeK8sServer returns an httptest.TLSServer that responds to the paths used by
 // a minimal capture config (pods in default, nodes cluster-scoped).
@@ -122,13 +118,11 @@ func TestEngine_CaptureToArchive(t *testing.T) {
 	defer ar.Close()
 
 	// metadata must be readable.
-	var capMeta CaptureMetadata
-	if err := ar.ReadMetadata(&capMeta); err != nil {
+	if _, err := ar.ReadMetadata(); err != nil {
 		t.Error("metadata.json missing from archive")
 	}
 	// index must be readable.
-	var capIdx Index
-	if err := ar.ReadIndex(&capIdx); err != nil {
+	if _, err := ar.ReadIndex(); err != nil {
 		t.Error("index.json missing from archive")
 	}
 
@@ -190,12 +184,12 @@ func TestEngine_CapturedAt_ReflectsPollStart(t *testing.T) {
 	}
 	defer ar.Close()
 
-	var meta CaptureMetadata
-	if err := ar.ReadMetadata(&meta); err != nil {
+	meta, err := ar.ReadMetadata()
+	if err != nil {
 		t.Fatalf("ReadMetadata: %v", err)
 	}
-	var idx Index
-	if err := ar.ReadIndex(&idx); err != nil {
+	idx, err := ar.ReadIndex()
+	if err != nil {
 		t.Fatalf("ReadIndex: %v", err)
 	}
 
@@ -1925,7 +1919,10 @@ func TestConcurrentPollAndWatch_NoIndexSeqCollision(t *testing.T) {
 
 	wg.Wait()
 
-	if err := sw.Finish(nil, eng.index, eng.watchIndex); err != nil {
+	// archive.Open reads and validates metadata.json unconditionally (#233),
+	// so this needs a real (if minimal) metadata value now — this test only
+	// cares about index/watch-index seq correctness, not metadata content.
+	if err := sw.Finish(&CaptureMetadata{}, eng.index, eng.watchIndex); err != nil {
 		t.Fatalf("Finish: %v", err)
 	}
 
@@ -2148,21 +2145,12 @@ func TestEngine_MetadataIncludesDeduplicatedCount(t *testing.T) {
 		t.Fatalf("failed to open archive: %v", err)
 	}
 	defer ar2.Close()
-	var meta map[string]any
-	if err := ar2.ReadMetadata(&meta); err != nil {
+	meta, err := ar2.ReadMetadata()
+	if err != nil {
 		t.Fatalf("failed to read metadata: %v", err)
 	}
-
-	v, ok := meta["deduplicated_count"]
-	if !ok {
-		t.Fatal("metadata missing deduplicated_count")
-	}
-	count, ok := v.(float64)
-	if !ok {
-		t.Fatalf("deduplicated_count has unexpected type %T", v)
-	}
-	if count < 1 {
-		t.Fatalf("deduplicated_count = %v, want >= 1", count)
+	if meta.DeduplicatedCount < 1 {
+		t.Fatalf("deduplicated_count = %v, want >= 1", meta.DeduplicatedCount)
 	}
 }
 

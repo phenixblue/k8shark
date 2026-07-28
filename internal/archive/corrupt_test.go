@@ -135,8 +135,7 @@ func TestReadWatchIndex_MalformedEntry_StillReportsPresent(t *testing.T) {
 	}
 	defer ar.Close()
 
-	var wi map[string]any
-	found, err := ar.ReadWatchIndex(&wi)
+	_, found, err := ar.ReadWatchIndex()
 	if err == nil {
 		t.Fatal("ReadWatchIndex on a malformed entry succeeded, want error")
 	}
@@ -150,9 +149,12 @@ func TestReadWatchIndex_MalformedEntry_StillReportsPresent(t *testing.T) {
 // writes records in place via os.Create and only writes the index/metadata
 // in Finish, so an interrupted capture is a ZIP with records but no central
 // directory), plus a truncated transfer, garbage bytes, and a structurally
-// valid ZIP with a missing or malformed metadata.json. Every case must
-// produce a clear, non-nil error naming the archive path — never a panic,
-// a nil-map, or a wrong-but-plausible answer (#248).
+// valid ZIP with a missing or malformed metadata.json. Open reads and
+// validates metadata.json eagerly (#233), so every case here fails at Open
+// time — there's no longer a separate "Open succeeds, ReadMetadata fails"
+// path to exercise. Every case must produce a clear, non-nil error naming
+// the archive path — never a panic, a nil-map, or a wrong-but-plausible
+// answer (#248).
 func TestOpen_CorruptArchives(t *testing.T) {
 	valid := filepath.Join(t.TempDir(), "valid.kshrk")
 	sampleArchive(t, valid)
@@ -220,7 +222,7 @@ func TestOpen_CorruptArchives(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "corrupt.kshrk")
 			tc.build(t, path)
 
-			var openErr, metaErr error
+			var openErr error
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
@@ -229,30 +231,19 @@ func TestOpen_CorruptArchives(t *testing.T) {
 				}()
 				ar, err := Open(path)
 				openErr = err
-				if err != nil {
-					return
+				if err == nil {
+					ar.Close()
 				}
-				defer ar.Close()
-				var meta map[string]any
-				metaErr = ar.ReadMetadata(&meta)
 			}()
 
-			if openErr == nil && metaErr == nil {
-				t.Fatal("expected an error from Open or ReadMetadata, got nil for both")
+			if openErr == nil {
+				t.Fatal("expected Open to fail, got nil")
 			}
-			if openErr != nil && !strings.Contains(openErr.Error(), path) {
+			if !strings.Contains(openErr.Error(), path) {
 				t.Errorf("Open error = %v, want it to name the archive path %q", openErr, path)
 			}
-			if metaErr != nil && !strings.Contains(metaErr.Error(), path) {
-				t.Errorf("ReadMetadata error = %v, want it to name the archive path %q", metaErr, path)
-			}
-			if tc.wantActionable {
-				if openErr == nil {
-					t.Fatalf("expected Open to fail with a corrupt/incomplete diagnosis, got nil")
-				}
-				if !strings.Contains(openErr.Error(), "corrupt or incomplete") {
-					t.Errorf("Open error = %v, want it to recognize the archive as corrupt or incomplete", openErr)
-				}
+			if tc.wantActionable && !strings.Contains(openErr.Error(), "corrupt or incomplete") {
+				t.Errorf("Open error = %v, want it to recognize the archive as corrupt or incomplete", openErr)
 			}
 		})
 	}
