@@ -9,18 +9,49 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/klauspost/compress/zstd"
 )
 
-// TestZstdDecompress_BombRejected verifies zstdDecompress itself rejects a
-// zstd "bomb": a payload that compresses 1 GiB of zeros down to a few KB but
-// would otherwise decompress back to the full 1 GiB, unbounded (#214).
-func TestZstdDecompress_BombRejected(t *testing.T) {
-	zeros := make([]byte, 1<<30) // 1 GiB of zeros
-	compressed, err := zstdCompress(zeros)
+// bombSize is how large a "bomb" fixture decompresses to: one byte past the
+// cap is all the guard needs to see to reject it, so tests target this
+// instead of an arbitrarily large size like 1 GiB.
+const bombSize = maxEntryBytes + 1
+
+// buildZstdBomb streams n zero bytes through a zstd encoder in fixed-size
+// chunks, without ever materializing them as one contiguous n-byte slice,
+// and returns the (tiny) compressed result.
+func buildZstdBomb(t *testing.T, n int) []byte {
+	t.Helper()
+	enc, err := zstd.NewWriter(nil)
 	if err != nil {
-		t.Fatalf("zstdCompress: %v", err)
+		t.Fatalf("zstd.NewWriter: %v", err)
 	}
-	t.Logf("1 GiB of zeros compressed to %d bytes", len(compressed))
+	var buf bytes.Buffer
+	enc.Reset(&buf)
+	chunk := make([]byte, 1<<20) // 1 MiB of zeros, reused across writes
+	for remaining := n; remaining > 0; {
+		w := len(chunk)
+		if remaining < w {
+			w = remaining
+		}
+		if _, err := enc.Write(chunk[:w]); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+		remaining -= w
+	}
+	if err := enc.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// TestZstdDecompress_BombRejected verifies zstdDecompress itself rejects a
+// zstd "bomb": a payload that compresses many zero bytes down to a few KB but
+// would otherwise decompress back to the full size, unbounded (#214).
+func TestZstdDecompress_BombRejected(t *testing.T) {
+	compressed := buildZstdBomb(t, bombSize)
+	t.Logf("%d zero bytes compressed to %d bytes", bombSize, len(compressed))
 
 	if _, err := zstdDecompress(compressed); err == nil {
 		t.Fatal("expected a size-limit error, got nil")
@@ -43,9 +74,11 @@ func TestArchive_ZstdBombRecord_ReturnsSizeLimitError(t *testing.T) {
 	bomb := map[string]any{
 		"id": "bomb-1", "api_path": "/api/v1/namespaces/default/pods",
 		"http_method": "GET", "response_code": 200,
-		// Highly compressible: 600 MiB of the same byte, comfortably above the
-		// 512 MiB cap once decompressed, but tiny once zstd-compressed.
-		"response_body": strings.Repeat("A", 600<<20),
+		// Highly compressible: one byte past the cap once decompressed, but
+		// tiny once zstd-compressed. WriteRecord's any-typed API has no
+		// streaming form, so this string is necessarily materialized whole —
+		// bombSize (not an arbitrarily large size) keeps that to a minimum.
+		"response_body": strings.Repeat("A", bombSize),
 	}
 	if _, err := sw.WriteRecord(bomb); err != nil {
 		t.Fatalf("WriteRecord: %v", err)
@@ -90,7 +123,7 @@ func TestOpen_DeflateBombEntry_ReturnsSizeLimitError(t *testing.T) {
 		t.Fatalf("CreateHeader: %v", err)
 	}
 	chunk := bytes.Repeat([]byte("A"), 1<<20) // 1 MiB, highly compressible
-	const chunks = 600                        // 600 MiB decompressed, above the 512 MiB cap
+	chunks := bombSize/(1<<20) + 1            // one MiB past the cap, not an arbitrarily large size
 	for i := 0; i < chunks; i++ {
 		if _, err := w.Write(chunk); err != nil {
 			t.Fatalf("write chunk %d: %v", i, err)
@@ -214,9 +247,11 @@ func TestOpen_ZipSlipEntryNameIsInert(t *testing.T) {
 		t.Fatalf("unexpected metadata: %+v", meta)
 	}
 
+	// Only check for existence — never remove it. The name is unique per test
+	// run (it embeds t.Name()), but this path is outside the test's own temp
+	// directory, so a test must never delete anything there even on failure.
 	markerPath := filepath.Join(os.TempDir(), markerName)
 	if _, err := os.Stat(markerPath); err == nil {
-		os.Remove(markerPath)
-		t.Fatal("archive entry with a path-traversal name escaped to disk")
+		t.Fatalf("archive entry with a path-traversal name escaped to disk: %s", markerPath)
 	}
 }
