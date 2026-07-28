@@ -1135,15 +1135,21 @@ done
 if [[ ! -s "$ENC_DEC_KC" ]]; then
   fail "open (decrypted archive): mock server did not start within 15s"
 else
+  ENC_DEC_READY=false
   for i in $(seq 1 20); do
     if kubectl --kubeconfig "$ENC_DEC_KC" --request-timeout=2s \
         get namespaces </dev/null &>/dev/null 2>&1; then
+      ENC_DEC_READY=true
       break
     fi
     sleep 0.5
   done
-  out=$(kubectl --kubeconfig "$ENC_DEC_KC" --request-timeout=10s get pods -n k8shark-test -o name 2>&1) || true
-  assert_not_empty "open (decrypted archive): pods present" "$out"
+  if [[ "$ENC_DEC_READY" != "true" ]]; then
+    fail "open (decrypted archive): mock server did not become ready within 10s"
+  else
+    out=$(kubectl --kubeconfig "$ENC_DEC_KC" --request-timeout=10s get pods -n k8shark-test -o name 2>&1) || true
+    assert_contains "open (decrypted archive): pods present" "$out" "^pod/"
+  fi
 fi
 if [[ -n "$ENC_DEC_SERVER_PID" ]]; then
   kill "$ENC_DEC_SERVER_PID" 2>/dev/null || true
@@ -1165,15 +1171,21 @@ done
 if [[ ! -s "$ENC_OPEN_KC" ]]; then
   fail "open --decrypt-passphrase-file (still-encrypted archive): mock server did not start within 15s"
 else
+  ENC_OPEN_READY=false
   for i in $(seq 1 20); do
     if kubectl --kubeconfig "$ENC_OPEN_KC" --request-timeout=2s \
         get namespaces </dev/null &>/dev/null 2>&1; then
+      ENC_OPEN_READY=true
       break
     fi
     sleep 0.5
   done
-  out=$(kubectl --kubeconfig "$ENC_OPEN_KC" --request-timeout=10s get pods -n k8shark-test -o name 2>&1) || true
-  assert_not_empty "open --decrypt-passphrase-file: pods present (decrypted on the fly)" "$out"
+  if [[ "$ENC_OPEN_READY" != "true" ]]; then
+    fail "open --decrypt-passphrase-file (still-encrypted archive): mock server did not become ready within 10s"
+  else
+    out=$(kubectl --kubeconfig "$ENC_OPEN_KC" --request-timeout=10s get pods -n k8shark-test -o name 2>&1) || true
+    assert_contains "open --decrypt-passphrase-file: pods present (decrypted on the fly)" "$out" "^pod/"
+  fi
 fi
 if [[ -n "$ENC_OPEN_SERVER_PID" ]]; then
   kill "$ENC_OPEN_SERVER_PID" 2>/dev/null || true
@@ -1258,15 +1270,21 @@ GOEOF
     if [[ ! -s "$REC_KC" ]]; then
       fail "open (recipient-decrypted archive): mock server did not start within 15s"
     else
+      REC_READY=false
       for i in $(seq 1 20); do
         if kubectl --kubeconfig "$REC_KC" --request-timeout=2s \
             get namespaces </dev/null &>/dev/null 2>&1; then
+          REC_READY=true
           break
         fi
         sleep 0.5
       done
-      out=$(kubectl --kubeconfig "$REC_KC" --request-timeout=10s get pods -n k8shark-test -o name 2>&1) || true
-      assert_not_empty "open (recipient-decrypted archive): pods present" "$out"
+      if [[ "$REC_READY" != "true" ]]; then
+        fail "open (recipient-decrypted archive): mock server did not become ready within 10s"
+      else
+        out=$(kubectl --kubeconfig "$REC_KC" --request-timeout=10s get pods -n k8shark-test -o name 2>&1) || true
+        assert_contains "open (recipient-decrypted archive): pods present" "$out" "^pod/"
+      fi
     fi
     if [[ -n "$REC_SERVER_PID" ]]; then
       kill "$REC_SERVER_PID" 2>/dev/null || true
