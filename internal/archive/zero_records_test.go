@@ -65,7 +65,10 @@ func TestArchive_ZeroRecords(t *testing.T) {
 		if err != nil {
 			t.Fatalf("server.LoadStore: %v", err)
 		}
-		store.Close()
+		// Deferred immediately (not just called at the end) so a t.Fatalf added
+		// later in this subtest can't skip it and leave the enrichment
+		// goroutine running when the deferred ar.Close() above runs.
+		defer store.Close()
 		if len(store.Index) != 0 {
 			t.Errorf("Index = %v, want empty", store.Index)
 		}
