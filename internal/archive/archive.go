@@ -549,6 +549,15 @@ func (a *Archive) ReadWatchIndex() (format.WatchIndex, bool, error) {
 	if err := json.Unmarshal(data, &wi); err != nil {
 		return nil, true, fmt.Errorf("parsing watch-index.json.zst in archive %q: %w", a.path, err)
 	}
+	// A well-formed watch-index.json never has a null entry for a path — the
+	// writer only ever inserts a populated *WatchIndexEntry. A null entry here
+	// means the JSON is structurally valid but semantically corrupt, and every
+	// reader dereferences the entry (e.g. entry.Seqs) without a nil check.
+	for apiPath, entry := range wi {
+		if entry == nil {
+			return nil, true, fmt.Errorf("parsing watch-index.json.zst in archive %q: null entry for path %q", a.path, apiPath)
+		}
+	}
 	return wi, true, nil
 }
 
