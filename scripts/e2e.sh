@@ -70,14 +70,47 @@ sorted_names() {
 
 # ── Cleanup ────────────────────────────────────────────────────────────────────
 SERVER_PID=""
+# Phase 9c (encrypt/decrypt) temp paths and background-server PIDs. Declared
+# here (before Phase 9c assigns them) so cleanup() can always reference them
+# under `set -u`, and so a `set -e` exit partway through Phase 9c — leaving
+# the private age identity file or a background mock server behind — is
+# still cleaned up rather than relying on the rm/kill calls at the end of
+# each Phase 9c block, which an early exit skips.
+ENC_PASS_FILE=""
+ENC_WRONG_PASS_FILE=""
+ENC_FILE=""
+DEC_FILE=""
+ENC_DEC_SERVER_LOG=""
+ENC_DEC_KC=""
+ENC_DEC_SERVER_PID=""
+ENC_OPEN_SERVER_LOG=""
+ENC_OPEN_KC=""
+ENC_OPEN_SERVER_PID=""
+KEYGEN_SRC=""
+AGE_IDENTITY_FILE=""
+ENC_RECIPIENT_FILE=""
+DEC_RECIPIENT_FILE=""
+REC_SERVER_LOG=""
+REC_KC=""
+REC_SERVER_PID=""
 cleanup() {
   if [[ -n "$SERVER_PID" ]]; then
     kill "$SERVER_PID" 2>/dev/null || true
     wait "$SERVER_PID" 2>/dev/null || true
   fi
+  for pid in "$ENC_DEC_SERVER_PID" "$ENC_OPEN_SERVER_PID" "$REC_SERVER_PID"; do
+    if [[ -n "$pid" ]]; then
+      kill "$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+    fi
+  done
   info "Deleting KinD cluster '$CLUSTER_NAME'..."
   kind delete cluster --name "$CLUSTER_NAME" 2>/dev/null || true
-  rm -f "$CAPTURE_FILE" "$CAPTURE_CONFIG" "$KIND_KUBECONFIG" "$SERVER_LOG"
+  rm -f "$CAPTURE_FILE" "$CAPTURE_CONFIG" "$KIND_KUBECONFIG" "$SERVER_LOG" \
+    "$ENC_PASS_FILE" "$ENC_WRONG_PASS_FILE" "$ENC_FILE" "$DEC_FILE" \
+    "$ENC_DEC_SERVER_LOG" "$ENC_DEC_KC" "$ENC_OPEN_SERVER_LOG" "$ENC_OPEN_KC" \
+    "$KEYGEN_SRC" "$AGE_IDENTITY_FILE" "$ENC_RECIPIENT_FILE" "$DEC_RECIPIENT_FILE" \
+    "$REC_SERVER_LOG" "$REC_KC"
 }
 trap cleanup EXIT
 
@@ -1054,8 +1087,8 @@ log "Testing capture -> encrypt -> decrypt -> open -> kubectl"
 
 ENC_PASS_FILE="/tmp/k8shark-e2e-encpass-$$.txt"
 ENC_WRONG_PASS_FILE="/tmp/k8shark-e2e-encpass-wrong-$$.txt"
-echo "correct-horse-battery-staple-e2e" >"$ENC_PASS_FILE"
-echo "definitely-the-wrong-passphrase" >"$ENC_WRONG_PASS_FILE"
+(umask 077 && echo "correct-horse-battery-staple-e2e" >"$ENC_PASS_FILE")
+(umask 077 && echo "definitely-the-wrong-passphrase" >"$ENC_WRONG_PASS_FILE")
 
 # -- Passphrase mode --
 ENC_FILE="/tmp/k8shark-e2e-encrypted-$$.kshrk"
@@ -1151,11 +1184,18 @@ rm -f "$ENC_FILE" "$DEC_FILE" "$ENC_PASS_FILE" "$ENC_WRONG_PASS_FILE" \
   "$ENC_DEC_SERVER_LOG" "$ENC_DEC_KC" "$ENC_OPEN_SERVER_LOG" "$ENC_OPEN_KC"
 
 # -- Recipient-key mode --
-# Generate a throwaway age X25519 keypair via the age library already vendored
-# in go.sum, rather than depending on the separate age-keygen binary being
-# present in every environment this script runs in.
-KEYGEN_SRC="/tmp/k8shark-e2e-keygen-$$.go"
-cat >"$KEYGEN_SRC" <<'GOEOF'
+# Generate a throwaway age X25519 keypair via filippo.io/age, which is
+# already a module dependency of this codebase (see go.mod/go.sum) and
+# downloadable through the Go toolchain, rather than depending on the
+# separate age-keygen binary being present in every environment this script
+# runs in. Requires the go toolchain, unlike the rest of this script — check
+# explicitly so a missing 'go' fails clearly here instead of aborting the
+# whole script under set -e with a bare "command not found".
+if ! command -v go >/dev/null 2>&1; then
+  fail "encrypt-recipient: 'go' not found in PATH, cannot generate a test age keypair"
+else
+  KEYGEN_SRC="/tmp/k8shark-e2e-keygen-$$.go"
+  cat >"$KEYGEN_SRC" <<'GOEOF'
 package main
 
 import (
@@ -1173,67 +1213,68 @@ func main() {
 	fmt.Println(id.Recipient().String())
 }
 GOEOF
-KEYPAIR=$(cd "$PROJ_ROOT" && go run "$KEYGEN_SRC") || true
-rm -f "$KEYGEN_SRC"
-AGE_IDENTITY=$(echo "$KEYPAIR" | sed -n '1p')
-AGE_RECIPIENT=$(echo "$KEYPAIR" | sed -n '2p')
+  KEYPAIR=$(cd "$PROJ_ROOT" && go run "$KEYGEN_SRC") || true
+  rm -f "$KEYGEN_SRC"
+  AGE_IDENTITY=$(echo "$KEYPAIR" | sed -n '1p')
+  AGE_RECIPIENT=$(echo "$KEYPAIR" | sed -n '2p')
 
-if [[ -z "$AGE_IDENTITY" || -z "$AGE_RECIPIENT" ]]; then
-  fail "encrypt-recipient: failed to generate an age keypair"
-else
-  pass "encrypt-recipient: generated a test age keypair"
-
-  AGE_IDENTITY_FILE="/tmp/k8shark-e2e-age-identity-$$.txt"
-  echo "$AGE_IDENTITY" >"$AGE_IDENTITY_FILE"
-
-  ENC_RECIPIENT_FILE="/tmp/k8shark-e2e-encrypted-recipient-$$.kshrk"
-  "$BINARY" --config "$CAPTURE_CONFIG" capture \
-    --encrypt-recipient "$AGE_RECIPIENT" \
-    --output "$ENC_RECIPIENT_FILE"
-  if [[ -s "$ENC_RECIPIENT_FILE" ]]; then
-    pass "capture --encrypt-recipient: encrypted archive created"
+  if [[ -z "$AGE_IDENTITY" || -z "$AGE_RECIPIENT" ]]; then
+    fail "encrypt-recipient: failed to generate an age keypair"
   else
-    fail "capture --encrypt-recipient: archive missing or empty"
-  fi
+    pass "encrypt-recipient: generated a test age keypair"
 
-  DEC_RECIPIENT_FILE="/tmp/k8shark-e2e-decrypted-recipient-$$.kshrk"
-  "$BINARY" decrypt "$ENC_RECIPIENT_FILE" \
-    --decrypt-identity-file "$AGE_IDENTITY_FILE" \
-    --output "$DEC_RECIPIENT_FILE"
-  if [[ -s "$DEC_RECIPIENT_FILE" ]]; then
-    pass "kshrk decrypt --decrypt-identity-file: plaintext archive created"
-  else
-    fail "kshrk decrypt --decrypt-identity-file: output archive missing or empty"
-  fi
+    AGE_IDENTITY_FILE="/tmp/k8shark-e2e-age-identity-$$.txt"
+    (umask 077 && echo "$AGE_IDENTITY" >"$AGE_IDENTITY_FILE")
 
-  REC_SERVER_LOG="/tmp/k8shark-recipient-server-$$.log"
-  REC_KC="/tmp/k8shark-recipient-kc-$$.yaml"
-  REC_SERVER_PID=""
-  "$BINARY" open "$DEC_RECIPIENT_FILE" --kubeconfig-out "$REC_KC" >"$REC_SERVER_LOG" 2>&1 &
-  REC_SERVER_PID=$!
-  for i in $(seq 1 30); do
-    if [[ -s "$REC_KC" ]]; then break; fi
-    sleep 0.5
-  done
-  if [[ ! -s "$REC_KC" ]]; then
-    fail "open (recipient-decrypted archive): mock server did not start within 15s"
-  else
-    for i in $(seq 1 20); do
-      if kubectl --kubeconfig "$REC_KC" --request-timeout=2s \
-          get namespaces </dev/null &>/dev/null 2>&1; then
-        break
-      fi
+    ENC_RECIPIENT_FILE="/tmp/k8shark-e2e-encrypted-recipient-$$.kshrk"
+    "$BINARY" --config "$CAPTURE_CONFIG" capture \
+      --encrypt-recipient "$AGE_RECIPIENT" \
+      --output "$ENC_RECIPIENT_FILE"
+    if [[ -s "$ENC_RECIPIENT_FILE" ]]; then
+      pass "capture --encrypt-recipient: encrypted archive created"
+    else
+      fail "capture --encrypt-recipient: archive missing or empty"
+    fi
+
+    DEC_RECIPIENT_FILE="/tmp/k8shark-e2e-decrypted-recipient-$$.kshrk"
+    "$BINARY" decrypt "$ENC_RECIPIENT_FILE" \
+      --decrypt-identity-file "$AGE_IDENTITY_FILE" \
+      --output "$DEC_RECIPIENT_FILE"
+    if [[ -s "$DEC_RECIPIENT_FILE" ]]; then
+      pass "kshrk decrypt --decrypt-identity-file: plaintext archive created"
+    else
+      fail "kshrk decrypt --decrypt-identity-file: output archive missing or empty"
+    fi
+
+    REC_SERVER_LOG="/tmp/k8shark-recipient-server-$$.log"
+    REC_KC="/tmp/k8shark-recipient-kc-$$.yaml"
+    REC_SERVER_PID=""
+    "$BINARY" open "$DEC_RECIPIENT_FILE" --kubeconfig-out "$REC_KC" >"$REC_SERVER_LOG" 2>&1 &
+    REC_SERVER_PID=$!
+    for i in $(seq 1 30); do
+      if [[ -s "$REC_KC" ]]; then break; fi
       sleep 0.5
     done
-    out=$(kubectl --kubeconfig "$REC_KC" --request-timeout=10s get pods -n k8shark-test -o name 2>&1) || true
-    assert_not_empty "open (recipient-decrypted archive): pods present" "$out"
-  fi
-  if [[ -n "$REC_SERVER_PID" ]]; then
-    kill "$REC_SERVER_PID" 2>/dev/null || true
-    wait "$REC_SERVER_PID" 2>/dev/null || true
-  fi
+    if [[ ! -s "$REC_KC" ]]; then
+      fail "open (recipient-decrypted archive): mock server did not start within 15s"
+    else
+      for i in $(seq 1 20); do
+        if kubectl --kubeconfig "$REC_KC" --request-timeout=2s \
+            get namespaces </dev/null &>/dev/null 2>&1; then
+          break
+        fi
+        sleep 0.5
+      done
+      out=$(kubectl --kubeconfig "$REC_KC" --request-timeout=10s get pods -n k8shark-test -o name 2>&1) || true
+      assert_not_empty "open (recipient-decrypted archive): pods present" "$out"
+    fi
+    if [[ -n "$REC_SERVER_PID" ]]; then
+      kill "$REC_SERVER_PID" 2>/dev/null || true
+      wait "$REC_SERVER_PID" 2>/dev/null || true
+    fi
 
-  rm -f "$ENC_RECIPIENT_FILE" "$DEC_RECIPIENT_FILE" "$AGE_IDENTITY_FILE" "$REC_SERVER_LOG" "$REC_KC"
+    rm -f "$ENC_RECIPIENT_FILE" "$DEC_RECIPIENT_FILE" "$AGE_IDENTITY_FILE" "$REC_SERVER_LOG" "$REC_KC"
+  fi
 fi
 
 # ── Phase 10: Summary ───────────────────────────────────────────────────────────
