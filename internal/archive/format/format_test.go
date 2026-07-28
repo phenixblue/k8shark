@@ -1,0 +1,363 @@
+package format
+
+import (
+	"encoding/json"
+	"reflect"
+	"testing"
+	"time"
+)
+
+// testTime is a fixed timestamp for populating IndexEntry/WatchIndexEntry
+// Times fields in these tests. Times is required (no omitempty) and parallel
+// to Seqs in the real schema, so test fixtures should include it — the exact
+// value isn't asserted on, only its presence and length.
+var testTime = time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC)
+
+// TestIndex_MarshalJSON_WrapsAsEntries pins the version-2+ on-disk shape:
+// {"entries": {...}}, not a bare top-level map, so the index can gain
+// sibling fields later without another format-version bump (#219).
+func TestIndex_MarshalJSON_WrapsAsEntries(t *testing.T) {
+	idx := Index{
+		"/api/v1/pods": {APIPath: "/api/v1/pods", Seqs: []int{0, 1}, Times: []time.Time{testTime, testTime}},
+	}
+	data, err := json.Marshal(idx)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("Unmarshal into raw map: %v", err)
+	}
+	if _, ok := raw["entries"]; !ok {
+		t.Fatalf("marshaled Index has no top-level \"entries\" key: %s", data)
+	}
+	if len(raw) != 1 {
+		t.Errorf("marshaled Index has %d top-level keys, want exactly 1 (\"entries\"): %s", len(raw), data)
+	}
+}
+
+// TestIndex_MarshalJSON_NilIndexWritesEmptyObject confirms a nil Index
+// marshals "entries" as {}, not null — the documented v2+ schema says
+// "entries" is an object, and null would also round-trip back to a nil map
+// instead of the empty-but-non-nil map ReadIndex's callers expect.
+func TestIndex_MarshalJSON_NilIndexWritesEmptyObject(t *testing.T) {
+	var idx Index
+	data, err := json.Marshal(idx)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if want := `{"entries":{}}`; string(data) != want {
+		t.Errorf("Marshal(nil Index) = %s, want %s", data, want)
+	}
+}
+
+// TestIndex_UnmarshalJSON_RoundTrip confirms Marshal -> Unmarshal reproduces
+// the original map, including exact Seqs/Counts contents and order — not
+// just lengths, which wouldn't catch a reordering or truncation bug.
+func TestIndex_UnmarshalJSON_RoundTrip(t *testing.T) {
+	want := Index{
+		"/api/v1/pods": {
+			APIPath: "/api/v1/pods", Seqs: []int{5, 2, 9}, Counts: []int{7, 0, 3},
+			Times: []time.Time{testTime, testTime, testTime},
+		},
+		"/api/v1/namespaces/x/pods": {
+			APIPath: "/api/v1/namespaces/x/pods", Seqs: []int{4},
+			Times: []time.Time{testTime},
+		},
+	}
+	data, err := json.Marshal(want)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var got Index
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %d entries, want %d", len(got), len(want))
+	}
+	for path, wantEntry := range want {
+		gotEntry, ok := got[path]
+		if !ok {
+			t.Errorf("entry %q missing after round trip", path)
+			continue
+		}
+		if gotEntry.APIPath != wantEntry.APIPath {
+			t.Errorf("entry %q APIPath = %q, want %q", path, gotEntry.APIPath, wantEntry.APIPath)
+		}
+		if !reflect.DeepEqual(gotEntry.Seqs, wantEntry.Seqs) {
+			t.Errorf("entry %q Seqs = %v, want %v", path, gotEntry.Seqs, wantEntry.Seqs)
+		}
+		if !reflect.DeepEqual(gotEntry.Counts, wantEntry.Counts) {
+			t.Errorf("entry %q Counts = %v, want %v", path, gotEntry.Counts, wantEntry.Counts)
+		}
+		if !reflect.DeepEqual(gotEntry.Times, wantEntry.Times) {
+			t.Errorf("entry %q Times = %v, want %v", path, gotEntry.Times, wantEntry.Times)
+		}
+	}
+}
+
+// TestIndex_UnmarshalJSON_AcceptsVersion1BareMap is the actual compatibility
+// guarantee #219 exists to protect: a version-1 archive's index.json.zst was
+// written as a bare top-level map (no "entries" wrapper) — this build must
+// still read it correctly for the life of the 1.x line.
+func TestIndex_UnmarshalJSON_AcceptsVersion1BareMap(t *testing.T) {
+	bareV1 := `{
+		"/api/v1/namespaces/default/pods": {
+			"api_path": "/api/v1/namespaces/default/pods",
+			"seqs": [0, 1, 2],
+			"times": ["2026-04-09T10:00:00Z", "2026-04-09T10:00:30Z", "2026-04-09T10:01:00Z"],
+			"counts": [4, 4, 5]
+		}
+	}`
+	var idx Index
+	if err := json.Unmarshal([]byte(bareV1), &idx); err != nil {
+		t.Fatalf("Unmarshal(bare v1 shape): %v", err)
+	}
+	entry, ok := idx["/api/v1/namespaces/default/pods"]
+	if !ok {
+		t.Fatal("expected pods entry, not found")
+	}
+	if entry.APIPath != "/api/v1/namespaces/default/pods" {
+		t.Errorf("APIPath = %q", entry.APIPath)
+	}
+	if len(entry.Seqs) != 3 || len(entry.Counts) != 3 {
+		t.Errorf("Seqs/Counts = %v/%v, want length 3 each", entry.Seqs, entry.Counts)
+	}
+}
+
+// TestIndex_UnmarshalJSON_EmptyBareMapAndEmptyWrapped confirms a zero-entry
+// index round-trips as an empty (non-nil) map regardless of which shape
+// produced it — a v1 archive with nothing captured wrote a bare "{}", while
+// this build always writes the wrapped "{"entries":{}}" shape.
+func TestIndex_UnmarshalJSON_EmptyBareMapAndEmptyWrapped(t *testing.T) {
+	for _, tc := range []struct{ name, json string }{
+		{"empty bare v1 map", `{}`},
+		{"empty wrapped v2 shape", `{"entries":{}}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var idx Index
+			if err := json.Unmarshal([]byte(tc.json), &idx); err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			if idx == nil {
+				t.Error("Index = nil, want a non-nil empty map")
+			}
+			if len(idx) != 0 {
+				t.Errorf("Index has %d entries, want 0", len(idx))
+			}
+		})
+	}
+}
+
+// TestWatchIndex_MarshalJSON_WrapsAsEntries and the round-trip/v1-compat
+// cases mirror Index's — see those doc comments for why.
+func TestWatchIndex_MarshalJSON_WrapsAsEntries(t *testing.T) {
+	wi := WatchIndex{
+		"/api/v1/pods": {APIPath: "/api/v1/pods", Seqs: []int{0}, Times: []time.Time{testTime}, EventTypes: []string{"ADDED"}},
+	}
+	data, err := json.Marshal(wi)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("Unmarshal into raw map: %v", err)
+	}
+	if _, ok := raw["entries"]; !ok {
+		t.Fatalf("marshaled WatchIndex has no top-level \"entries\" key: %s", data)
+	}
+}
+
+// TestWatchIndex_MarshalJSON_NilWatchIndexWritesEmptyObject mirrors
+// TestIndex_MarshalJSON_NilIndexWritesEmptyObject — see its doc comment.
+func TestWatchIndex_MarshalJSON_NilWatchIndexWritesEmptyObject(t *testing.T) {
+	var wi WatchIndex
+	data, err := json.Marshal(wi)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if want := `{"entries":{}}`; string(data) != want {
+		t.Errorf("Marshal(nil WatchIndex) = %s, want %s", data, want)
+	}
+}
+
+func TestWatchIndex_UnmarshalJSON_AcceptsVersion1BareMap(t *testing.T) {
+	bareV1 := `{
+		"/api/v1/namespaces/default/pods": {
+			"api_path": "/api/v1/namespaces/default/pods",
+			"seqs": [0],
+			"times": ["2026-04-09T10:00:00Z"],
+			"event_types": ["ADDED"]
+		}
+	}`
+	var wi WatchIndex
+	if err := json.Unmarshal([]byte(bareV1), &wi); err != nil {
+		t.Fatalf("Unmarshal(bare v1 shape): %v", err)
+	}
+	entry, ok := wi["/api/v1/namespaces/default/pods"]
+	if !ok {
+		t.Fatal("expected pods entry, not found")
+	}
+	if len(entry.EventTypes) != 1 || entry.EventTypes[0] != "ADDED" {
+		t.Errorf("EventTypes = %v", entry.EventTypes)
+	}
+}
+
+// TestWatchIndex_UnmarshalJSON_RejectsMixedShape mirrors
+// TestIndex_UnmarshalJSON_RejectsMixedShape.
+func TestWatchIndex_UnmarshalJSON_RejectsMixedShape(t *testing.T) {
+	mixed := `{
+		"entries": {"/api/v1/pods": {"api_path": "/api/v1/pods", "seqs": [0], "times": ["2026-04-09T10:00:00Z"], "event_types": ["ADDED"]}},
+		"/api/v1/nodes": {"api_path": "/api/v1/nodes", "seqs": [0], "times": ["2026-04-09T10:00:00Z"], "event_types": ["ADDED"]}
+	}`
+	var wi WatchIndex
+	if err := json.Unmarshal([]byte(mixed), &wi); err == nil {
+		t.Fatal("Unmarshal succeeded on a mixed wrapped/bare-map shape, want error")
+	}
+}
+
+// TestWatchIndex_UnmarshalJSON_NullEntry mirrors TestIndex_UnmarshalJSON_NullEntry.
+func TestWatchIndex_UnmarshalJSON_NullEntry(t *testing.T) {
+	for _, tc := range []struct{ name, json string }{
+		{"wrapped shape", `{"entries": {"/api/v1/pods": null}}`},
+		{"bare v1 shape", `{"/api/v1/pods": null}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var wi WatchIndex
+			if err := json.Unmarshal([]byte(tc.json), &wi); err == nil {
+				t.Fatal("Unmarshal succeeded on a null entry value, want error")
+			}
+		})
+	}
+}
+
+// TestWatchIndex_UnmarshalJSON_NullEntries mirrors TestIndex_UnmarshalJSON_NullEntries.
+func TestWatchIndex_UnmarshalJSON_NullEntries(t *testing.T) {
+	var wi WatchIndex
+	if err := json.Unmarshal([]byte(`{"entries": null}`), &wi); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if wi == nil {
+		t.Error("WatchIndex = nil, want a non-nil empty map")
+	}
+	if len(wi) != 0 {
+		t.Errorf("WatchIndex has %d entries, want 0", len(wi))
+	}
+}
+
+// TestWatchIndex_UnmarshalJSON_TopLevelNull mirrors TestIndex_UnmarshalJSON_TopLevelNull.
+func TestWatchIndex_UnmarshalJSON_TopLevelNull(t *testing.T) {
+	var wi WatchIndex
+	if err := json.Unmarshal([]byte(`null`), &wi); err == nil {
+		t.Fatal("Unmarshal(null) succeeded, want error")
+	}
+}
+
+// TestIndex_UnmarshalJSON_MalformedEntry confirms a malformed entry produces
+// a clear error rather than a zero-value entry or a panic.
+func TestIndex_UnmarshalJSON_MalformedEntry(t *testing.T) {
+	for _, tc := range []struct{ name, json string }{
+		{"malformed wrapped entries", `{"entries": {"/api/v1/pods": "not an object"}}`},
+		{"malformed bare v1 entry", `{"/api/v1/pods": "not an object"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var idx Index
+			if err := json.Unmarshal([]byte(tc.json), &idx); err == nil {
+				t.Fatal("Unmarshal succeeded on a malformed entry, want error")
+			}
+		})
+	}
+}
+
+// TestIndex_UnmarshalJSON_RejectsMixedShape confirms an object containing
+// both a wrapped "entries" key and a top-level entry-shaped key (starting
+// with "/", the way every real api_path does) is rejected rather than
+// silently taking the wrapped shape and discarding the stray key — a
+// plausible corruption/hand-edit pattern that would otherwise lose data
+// without any error.
+func TestIndex_UnmarshalJSON_RejectsMixedShape(t *testing.T) {
+	mixed := `{
+		"entries": {"/api/v1/pods": {"api_path": "/api/v1/pods", "seqs": [0]}},
+		"/api/v1/nodes": {"api_path": "/api/v1/nodes", "seqs": [0]}
+	}`
+	var idx Index
+	if err := json.Unmarshal([]byte(mixed), &idx); err == nil {
+		t.Fatal("Unmarshal succeeded on a mixed wrapped/bare-map shape, want error")
+	}
+}
+
+// TestIndex_UnmarshalJSON_ToleratesFutureAdditiveField confirms a sibling
+// top-level field alongside "entries" that is NOT entry-shaped (doesn't
+// start with "/") is silently tolerated — this is the whole point of the
+// wrapped shape (#219): future fields like "checksum" must not break old
+// readers, unlike TestIndex_UnmarshalJSON_RejectsMixedShape's stray
+// api_path-shaped key, which is almost certainly corruption, not a future
+// field.
+func TestIndex_UnmarshalJSON_ToleratesFutureAdditiveField(t *testing.T) {
+	withExtra := `{
+		"entries": {"/api/v1/pods": {"api_path": "/api/v1/pods", "seqs": [0]}},
+		"checksum": "deadbeef"
+	}`
+	var idx Index
+	if err := json.Unmarshal([]byte(withExtra), &idx); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if _, ok := idx["/api/v1/pods"]; !ok {
+		t.Error("expected pods entry, not found")
+	}
+}
+
+// TestIndex_UnmarshalJSON_NullEntry confirms an entry whose value is JSON
+// null is rejected outright in both on-disk shapes: the wrapped shape would
+// otherwise silently store a nil *IndexEntry (a caller dereferencing
+// idx[path].Seqs on it would panic), and the bare v1 shape would otherwise
+// silently accept it as a zero-value IndexEntry (unmarshaling JSON null into
+// a struct value, rather than a pointer, is a documented no-op) — treating
+// corrupt/malformed input as a valid, if empty, entry.
+func TestIndex_UnmarshalJSON_NullEntry(t *testing.T) {
+	for _, tc := range []struct{ name, json string }{
+		{"wrapped shape", `{"entries": {"/api/v1/pods": null}}`},
+		{"bare v1 shape", `{"/api/v1/pods": null}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var idx Index
+			if err := json.Unmarshal([]byte(tc.json), &idx); err == nil {
+				t.Fatal("Unmarshal succeeded on a null entry value, want error")
+			}
+		})
+	}
+}
+
+// TestIndex_UnmarshalJSON_NullEntries confirms a wrapped shape with "entries"
+// itself set to null normalizes to an empty (non-nil) map — the same
+// zero-entry-index case a genuinely empty {"entries":{}} produces — rather
+// than a nil map that would panic on a later write.
+func TestIndex_UnmarshalJSON_NullEntries(t *testing.T) {
+	var idx Index
+	if err := json.Unmarshal([]byte(`{"entries": null}`), &idx); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if idx == nil {
+		t.Error("Index = nil, want a non-nil empty map")
+	}
+	if len(idx) != 0 {
+		t.Errorf("Index has %d entries, want 0", len(idx))
+	}
+}
+
+// TestIndex_UnmarshalJSON_TopLevelNull confirms a top-level JSON null (the
+// whole index.json.zst content, not just its "entries" value) is rejected
+// rather than silently treated as an empty index. Unlike
+// TestIndex_UnmarshalJSON_NullEntries's {"entries": null} — a structurally
+// valid wrapped shape whose entries happen to be empty — a bare top-level
+// null isn't valid JSON for either shape and can't come from this build's
+// writer (MarshalJSON always emits an object), so it's most plausibly a
+// corrupt or truncated index.json.zst.
+func TestIndex_UnmarshalJSON_TopLevelNull(t *testing.T) {
+	var idx Index
+	if err := json.Unmarshal([]byte(`null`), &idx); err == nil {
+		t.Fatal("Unmarshal(null) succeeded, want error")
+	}
+}

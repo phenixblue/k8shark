@@ -37,7 +37,7 @@ Capture-level information. Written once at the end of the capture run.
 
 ```json
 {
-  "format_version":      1,
+  "format_version":      2,
   "capture_id":          "550e8400-e29b-41d4-a716-446655440000",
   "captured_at":         "2026-04-09T10:00:00Z",
   "captured_until":      "2026-04-09T10:10:00Z",
@@ -60,7 +60,7 @@ Capture-level information. Written once at the end of the capture run.
 ## Format version & compatibility
 
 `metadata.json` carries an integer `format_version` identifying the archive
-schema. The current version is **1**. This is the stability promise for the
+schema. The current version is **2**. This is the stability promise for the
 `.kshrk` format.
 
 ### What is guaranteed (the contract)
@@ -115,37 +115,71 @@ assuming a fixed byte layout.
 ### Changing the format (for contributors)
 
 A breaking format change must, in one change: bump `CurrentFormatVersion`
-(`internal/capture`), update this section, and extend the golden-fixture test
-(`internal/archive`) so the new build still reads older fixtures. Additive
-changes need only an `omitempty` field / optional entry and a note here.
+(`internal/archive/format`), update this section, and extend the
+golden-fixture tests (`internal/archive`) so the new build still reads older
+fixtures — freeze a new `golden-vN` fixture pair (plaintext + passphrase) for
+the new format alongside the existing ones for older versions, never replace
+them. Additive changes need only an `omitempty` field / optional entry and a
+note here.
 
 ## index.json.zst
 
 Maps canonical API paths to the ordered sequence numbers captured for each path. The mock server uses this to find records without scanning all files. The entry is Zstd-compressed JSON.
 
+Since format version 2, the map is wrapped under a top-level `entries` key so
+the index can gain sibling fields later (e.g. a schema marker, a count) without
+another format-version bump:
+
 ```json
 {
-  "/api/v1/namespaces/default/pods": {
-    "api_path": "/api/v1/namespaces/default/pods",
-    "seqs":     [0, 1, 2],
-    "times":    ["2026-04-09T10:00:00Z", "2026-04-09T10:00:30Z", "2026-04-09T10:01:00Z"],
-    "counts":   [4, 4, 5]
-  },
-  "/api/v1/namespaces/default/pods?as=Table": {
-    "api_path": "/api/v1/namespaces/default/pods?as=Table",
-    "seqs":     [0, 1],
-    "times":    ["2026-04-09T10:00:00Z", "2026-04-09T10:00:30Z"]
+  "entries": {
+    "/api/v1/namespaces/default/pods": {
+      "api_path": "/api/v1/namespaces/default/pods",
+      "seqs":     [0, 1, 2],
+      "times":    ["2026-04-09T10:00:00Z", "2026-04-09T10:00:30Z", "2026-04-09T10:01:00Z"],
+      "counts":   [4, 4, 5]
+    },
+    "/api/v1/namespaces/default/pods?as=Table": {
+      "api_path": "/api/v1/namespaces/default/pods?as=Table",
+      "seqs":     [0, 1],
+      "times":    ["2026-04-09T10:00:00Z", "2026-04-09T10:00:30Z"]
+    }
   }
 }
 ```
 
 `seqs`, `times`, and `counts` are parallel arrays, ordered by capture time ascending. `seqs[i]` is the sequence number used in the record filename (`records/<pathDir>/<seq>.json.zst`). `counts` is optional — it records the number of top-level items in each list response and is omitted in older archives.
 
+A version-1 archive's `index.json.zst` (and `watch-index.json.zst`) is a
+**bare** top-level map — the `entries` wrapper without the `entries` key
+itself, i.e. this same object with `entries`'s value promoted to the top
+level. Readers in the `1.x` line accept both shapes for the life of the
+series; writers always emit the wrapped shape.
+
 ### Table response keys
 
 For each resource path, k8shark also captures the Kubernetes Table-format response (the data `kubectl get -o wide` uses). These are stored under the same path with a `?as=Table` suffix. This suffix is a convention internal to k8shark — it does not appear in real API URLs.
 
 In addition, every capture records a **columns-only** Table schema for each list-capable native (built-in) kind whose cluster-scoped list path isn't already captured as a full `?as=Table` (i.e. kinds that are untargeted, or targeted only in specific namespaces). It is stored at the kind's cluster-scoped list path with a `?as=TableSchema` suffix. These records contain the server's `columnDefinitions` with the `rows` array stripped — no object data — so the replay server can render kubectl-accurate columns (and `-o wide`) for objects it has no full Table for (e.g. writable-overlay creations or untargeted kinds) without persisting data for kinds the user didn't capture. Custom resources are excluded (their columns come from the CRD's `additionalPrinterColumns`). Both `?as=Table` and `?as=TableSchema` are k8shark-internal conventions and never appear in real API URLs.
+
+## watch-index.json.zst
+
+Only present in archives captured with `watch: true`. Maps each watched API path to its ordered watch events; each event is a separate record with `event_type` `ADDED`, `MODIFIED`, or `DELETED`. Wrapped under `entries` the same way as `index.json.zst` above, and for the same reason.
+
+```json
+{
+  "entries": {
+    "/api/v1/namespaces/default/pods": {
+      "api_path":    "/api/v1/namespaces/default/pods",
+      "seqs":        [0, 1],
+      "times":       ["2026-04-09T10:00:05Z", "2026-04-09T10:02:11Z"],
+      "event_types": ["ADDED", "MODIFIED"]
+    }
+  }
+}
+```
+
+`seqs`, `times`, and `event_types` are parallel arrays, ordered by capture time ascending, mirroring `index.json.zst`'s convention.
 
 ## records/\<pathDir\>/\<seq\>.json.zst
 

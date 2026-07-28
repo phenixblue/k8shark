@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"filippo.io/age"
 
@@ -39,6 +40,46 @@ func sampleEncryptedArchive(t *testing.T, path string, recipients []age.Recipien
 	idx := map[string]any{
 		"/api/v1/namespaces/default/pods": map[string]any{
 			"api_path": "/api/v1/namespaces/default/pods", "seqs": []int{0},
+		},
+	}
+	if err := sw.Finish(meta, idx, nil); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+}
+
+// sampleEncryptedArchiveV2 is sampleEncryptedArchive's version-2+ (wrapped
+// index) counterpart, using typed format.Index/format.CaptureMetadata like
+// sampleArchiveV2 in format_test.go — see that helper's doc for why
+// sampleEncryptedArchive itself must stay frozen to the version-1 shape.
+func sampleEncryptedArchiveV2(t *testing.T, path string, recipients []age.Recipient) {
+	t.Helper()
+	sw, err := NewEncryptedStreamWriter(path, recipients)
+	if err != nil {
+		t.Fatalf("NewEncryptedStreamWriter: %v", err)
+	}
+	capturedAt := time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC)
+	rec := &format.Record{
+		ID: "rec-1", CapturedAt: capturedAt, APIPath: "/api/v1/namespaces/default/pods",
+		HTTPMethod: "GET", ResponseCode: 200,
+		ResponseBody: []byte(`{"apiVersion":"v1","kind":"PodList","items":[]}`),
+	}
+	if _, err := sw.WriteRecord(rec); err != nil {
+		t.Fatalf("WriteRecord: %v", err)
+	}
+	meta := &format.CaptureMetadata{
+		FormatVersion: format.CurrentFormatVersion,
+		CaptureID:     "encrypted-v2",
+		CapturedAt:    capturedAt,
+		CapturedUntil: capturedAt,
+		RecordCount:   1,
+	}
+	// Times is required and parallel to Seqs in production — see
+	// sampleArchiveV2's identical comment in format_test.go.
+	idx := format.Index{
+		"/api/v1/namespaces/default/pods": {
+			APIPath: "/api/v1/namespaces/default/pods",
+			Seqs:    []int{0},
+			Times:   []time.Time{capturedAt},
 		},
 	}
 	if err := sw.Finish(meta, idx, nil); err != nil {
@@ -293,6 +334,55 @@ func TestGoldenV1Passphrase(t *testing.T) {
 	}
 	if meta.CaptureID != "encrypted-v1" {
 		t.Errorf("golden capture_id = %q, want encrypted-v1", meta.CaptureID)
+	}
+	if _, err := ar.ReadRecord("/api/v1/namespaces/default/pods", 0); err != nil {
+		t.Fatalf("ReadRecord(golden): %v", err)
+	}
+}
+
+// goldenV2PassphraseSHA256 pins the checked-in golden-v2-passphrase.kshrk
+// fixture's content hash — the version-2+ (wrapped index) counterpart of
+// goldenV1PassphraseSHA256 above (#219).
+const goldenV2PassphraseSHA256 = "c9359f222500375bc5906f9d5f8911b74a0be2ca7052f4813c5e7cdbff1aba76"
+
+// TestGoldenV2Passphrase is TestGoldenV1Passphrase's version-2+ counterpart.
+// Regenerate with: go test ./internal/archive -run TestGoldenV2Passphrase -update
+func TestGoldenV2Passphrase(t *testing.T) {
+	golden := filepath.Join("testdata", "golden-v2-passphrase.kshrk")
+	if *update {
+		if err := os.MkdirAll("testdata", 0o755); err != nil {
+			t.Fatalf("mkdir testdata: %v", err)
+		}
+		recipients, err := RecipientsFromPassphrase(testPassphrase)
+		if err != nil {
+			t.Fatalf("RecipientsFromPassphrase: %v", err)
+		}
+		sampleEncryptedArchiveV2(t, golden, recipients)
+		t.Logf("regenerated %s", golden)
+	}
+	if _, err := os.Stat(golden); err != nil {
+		// See TestGoldenV1's identical comment: fail loudly, don't skip (#251).
+		t.Fatalf("golden fixture missing (run with -update to regenerate): %v", err)
+	}
+	if !*update {
+		requireFixtureHash(t, golden, goldenV2PassphraseSHA256)
+	}
+
+	identities, err := IdentitiesFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("IdentitiesFromPassphrase: %v", err)
+	}
+	ar, err := OpenWithIdentities(golden, identities)
+	if err != nil {
+		t.Fatalf("OpenWithIdentities(golden): %v", err)
+	}
+	defer ar.Close()
+	meta, err := ar.ReadMetadata()
+	if err != nil {
+		t.Fatalf("ReadMetadata(golden): %v", err)
+	}
+	if meta.CaptureID != "encrypted-v2" {
+		t.Errorf("golden capture_id = %q, want encrypted-v2", meta.CaptureID)
 	}
 	if _, err := ar.ReadRecord("/api/v1/namespaces/default/pods", 0); err != nil {
 		t.Fatalf("ReadRecord(golden): %v", err)
