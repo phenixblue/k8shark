@@ -28,7 +28,8 @@ func buildFutureFormatArchive(t *testing.T, path string) {
 		ID: "rec-1", CapturedAt: time.Now().UTC(), APIPath: "/api/v1/namespaces/default/pods",
 		HTTPMethod: "GET", ResponseCode: 200, ResponseBody: []byte(`{"kind":"PodList","items":[]}`),
 	}
-	if _, err := sw.WriteRecord(&rec); err != nil {
+	seq, err := sw.WriteRecord(&rec)
+	if err != nil {
 		t.Fatalf("WriteRecord: %v", err)
 	}
 	meta := capture.CaptureMetadata{
@@ -40,7 +41,7 @@ func buildFutureFormatArchive(t *testing.T, path string) {
 	index := capture.Index{
 		"/api/v1/namespaces/default/pods": {
 			APIPath: "/api/v1/namespaces/default/pods",
-			Seqs:    []int{0},
+			Seqs:    []int{seq},
 			Times:   []time.Time{rec.CapturedAt},
 		},
 	}
