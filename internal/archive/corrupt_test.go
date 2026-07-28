@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"filippo.io/age"
 )
 
 // buildZipMissingMetadata writes a structurally valid ZIP archive with an
@@ -183,5 +185,53 @@ func TestOpen_CorruptArchives(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestOpenWithIdentities_EncryptedCorruptZip covers the encrypted counterpart
+// of TestOpen_CorruptArchives's corrupt-zip cases. A truncated encrypted
+// capture is normally caught earlier, by age's own AEAD authentication (the
+// ciphertext fails to decrypt at all), so to exercise the case where
+// decryption succeeds but the recovered plaintext still isn't a valid zip —
+// e.g. a bug elsewhere produced a broken archive before it was ever
+// encrypted — this encrypts garbage bytes directly rather than going through
+// StreamWriter, bypassing that earlier check on purpose (#248).
+func TestOpenWithIdentities_EncryptedCorruptZip(t *testing.T) {
+	recipients, err := RecipientsFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("RecipientsFromPassphrase: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "encrypted-corrupt.kshrk")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("os.Create: %v", err)
+	}
+	w, err := age.Encrypt(f, recipients...)
+	if err != nil {
+		t.Fatalf("age.Encrypt: %v", err)
+	}
+	if _, err := w.Write(bytes.Repeat([]byte{0xDE, 0xAD, 0xBE, 0xEF}, 64)); err != nil {
+		t.Fatalf("write garbage: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("age writer Close: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("file Close: %v", err)
+	}
+
+	identities, err := IdentitiesFromPassphrase(testPassphrase)
+	if err != nil {
+		t.Fatalf("IdentitiesFromPassphrase: %v", err)
+	}
+	_, err = OpenWithIdentities(path, identities)
+	if err == nil {
+		t.Fatal("OpenWithIdentities on an encrypted-but-corrupt-plaintext archive succeeded, want error")
+	}
+	if !strings.Contains(err.Error(), path) {
+		t.Errorf("error = %v, want it to name the archive path %q", err, path)
+	}
+	if !strings.Contains(err.Error(), "corrupt or incomplete") {
+		t.Errorf("error = %v, want it to recognize the archive as corrupt or incomplete", err)
 	}
 }
