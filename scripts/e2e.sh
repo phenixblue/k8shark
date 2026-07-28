@@ -1110,7 +1110,7 @@ fi
 
 # inspect with no key must reject the encrypted archive outright.
 out=$("$BINARY" inspect "$ENC_FILE" 2>&1) || true
-assert_contains "inspect (no passphrase): rejects encrypted archive" "$out" "supply a decryption key"
+assert_contains "inspect (no passphrase): rejects encrypted archive" "$out" "provide --decrypt-passphrase-file"
 
 # inspect with the wrong passphrase must fail with the documented message.
 out=$("$BINARY" inspect "$ENC_FILE" --decrypt-passphrase-file "$ENC_WRONG_PASS_FILE" 2>&1) || true
@@ -1215,7 +1215,12 @@ rm -f "$ENC_FILE" "$DEC_FILE" "$ENC_PASS_FILE" "$ENC_WRONG_PASS_FILE" \
 if ! command -v go >/dev/null 2>&1; then
   fail "encrypt-recipient: 'go' not found in PATH, cannot generate a test age keypair"
 else
-  KEYGEN_SRC="/tmp/k8shark-e2e-keygen-$$.go"
+  # go run requires a .go suffix, which mktemp's template can't preserve
+  # portably (see the passphrase-file fix above) — so create the file
+  # securely via mktemp, then atomically rename it to add the suffix.
+  KEYGEN_SRC=$(mktemp /tmp/k8shark-e2e-keygen-XXXXXX)
+  mv "$KEYGEN_SRC" "$KEYGEN_SRC.go"
+  KEYGEN_SRC="$KEYGEN_SRC.go"
   cat >"$KEYGEN_SRC" <<'GOEOF'
 package main
 
