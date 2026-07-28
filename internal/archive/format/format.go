@@ -150,13 +150,20 @@ func (idx *Index) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	// Version-1 shape: a bare top-level map of apiPath -> *IndexEntry.
+	// Unmarshal into a pointer (not a value) so a null entry surfaces as a
+	// nil pointer to reject, rather than silently unmarshaling into a
+	// zero-value IndexEntry — unmarshaling JSON null into a plain struct
+	// value is a documented no-op, so a value target would accept it.
 	entries := make(map[string]*IndexEntry, len(raw))
 	for apiPath, entryRaw := range raw {
-		var entry IndexEntry
+		var entry *IndexEntry
 		if err := json.Unmarshal(entryRaw, &entry); err != nil {
 			return fmt.Errorf("parsing index entry %q: %w", apiPath, err)
 		}
-		entries[apiPath] = &entry
+		if entry == nil {
+			return fmt.Errorf("index entry %q is null", apiPath)
+		}
+		entries[apiPath] = entry
 	}
 	*idx = entries
 	return nil
@@ -218,13 +225,18 @@ func (wi *WatchIndex) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 	// Version-1 shape: a bare top-level map of apiPath -> *WatchIndexEntry.
+	// See Index.UnmarshalJSON's identical comment for why this unmarshals
+	// into a pointer rather than a value.
 	entries := make(map[string]*WatchIndexEntry, len(raw))
 	for apiPath, entryRaw := range raw {
-		var entry WatchIndexEntry
+		var entry *WatchIndexEntry
 		if err := json.Unmarshal(entryRaw, &entry); err != nil {
 			return fmt.Errorf("parsing watch-index entry %q: %w", apiPath, err)
 		}
-		entries[apiPath] = &entry
+		if entry == nil {
+			return fmt.Errorf("watch-index entry %q is null", apiPath)
+		}
+		entries[apiPath] = entry
 	}
 	*wi = entries
 	return nil

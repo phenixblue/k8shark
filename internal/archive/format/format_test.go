@@ -191,10 +191,16 @@ func TestWatchIndex_UnmarshalJSON_AcceptsVersion1BareMap(t *testing.T) {
 
 // TestWatchIndex_UnmarshalJSON_NullEntry mirrors TestIndex_UnmarshalJSON_NullEntry.
 func TestWatchIndex_UnmarshalJSON_NullEntry(t *testing.T) {
-	var wi WatchIndex
-	err := json.Unmarshal([]byte(`{"entries": {"/api/v1/pods": null}}`), &wi)
-	if err == nil {
-		t.Fatal("Unmarshal succeeded on a null entry value, want error")
+	for _, tc := range []struct{ name, json string }{
+		{"wrapped shape", `{"entries": {"/api/v1/pods": null}}`},
+		{"bare v1 shape", `{"/api/v1/pods": null}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var wi WatchIndex
+			if err := json.Unmarshal([]byte(tc.json), &wi); err == nil {
+				t.Fatal("Unmarshal succeeded on a null entry value, want error")
+			}
+		})
 	}
 }
 
@@ -228,17 +234,24 @@ func TestIndex_UnmarshalJSON_MalformedEntry(t *testing.T) {
 	}
 }
 
-// TestIndex_UnmarshalJSON_NullEntry confirms a wrapped-shape entry whose
-// value is JSON null is rejected outright rather than silently stored as a
-// nil *IndexEntry — a caller dereferencing idx[path].Seqs on a nil entry
-// would panic. This is specific to the wrapped shape: unmarshaling JSON null
-// into a struct value (the bare v1 path's entry type) is a documented no-op,
-// so a null entry there just yields a zero-value IndexEntry, never a nil one.
+// TestIndex_UnmarshalJSON_NullEntry confirms an entry whose value is JSON
+// null is rejected outright in both on-disk shapes: the wrapped shape would
+// otherwise silently store a nil *IndexEntry (a caller dereferencing
+// idx[path].Seqs on it would panic), and the bare v1 shape would otherwise
+// silently accept it as a zero-value IndexEntry (unmarshaling JSON null into
+// a struct value, rather than a pointer, is a documented no-op) — treating
+// corrupt/malformed input as a valid, if empty, entry.
 func TestIndex_UnmarshalJSON_NullEntry(t *testing.T) {
-	var idx Index
-	err := json.Unmarshal([]byte(`{"entries": {"/api/v1/pods": null}}`), &idx)
-	if err == nil {
-		t.Fatal("Unmarshal succeeded on a null entry value, want error")
+	for _, tc := range []struct{ name, json string }{
+		{"wrapped shape", `{"entries": {"/api/v1/pods": null}}`},
+		{"bare v1 shape", `{"/api/v1/pods": null}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var idx Index
+			if err := json.Unmarshal([]byte(tc.json), &idx); err == nil {
+				t.Fatal("Unmarshal succeeded on a null entry value, want error")
+			}
+		})
 	}
 }
 
