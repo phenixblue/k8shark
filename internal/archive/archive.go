@@ -531,7 +531,7 @@ func (a *Archive) ReadWatchIndex(v any) (bool, error) {
 		return false, fmt.Errorf("reading watch-index.json.zst: %w", err)
 	}
 	if err := json.Unmarshal(data, v); err != nil {
-		return false, fmt.Errorf("parsing watch-index.json.zst in archive %q: %w", a.path, err)
+		return true, fmt.Errorf("parsing watch-index.json.zst in archive %q: %w", a.path, err)
 	}
 	return true, nil
 }
