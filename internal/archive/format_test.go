@@ -2,6 +2,8 @@ package archive
 
 import (
 	"archive/zip"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"os"
@@ -10,6 +12,33 @@ import (
 )
 
 var update = flag.Bool("update", false, "regenerate golden testdata fixtures")
+
+// goldenV1SHA256 pins the checked-in golden-v1.kshrk (plaintext) fixture's
+// content hash. TestGoldenV1 is the guard that this build can still read
+// plaintext archives written by earlier releases — see crypto_test.go's
+// goldenV1PassphraseSHA256 for the encrypted-fixture counterpart. If the
+// fixture goes missing, the test must fail loudly (not skip), and if it's
+// regenerated via -update, updating this constant is a required second
+// step — so running -update can't silently swap in "whatever the current
+// writer produces" as the thing being tested against (#251).
+const goldenV1SHA256 = "d7468f8f8b4b1d257f58fadbe4a8d839e1445869a8c6b11f3c4b0597e7ef4f83"
+
+// requireFixtureHash fails the test unless path's content hashes to want,
+// naming both hashes so a deliberate regeneration says exactly what to paste
+// into the pinned constant.
+func requireFixtureHash(t *testing.T, path, want string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading fixture %s: %v", path, err)
+	}
+	sum := sha256.Sum256(data)
+	if got := hex.EncodeToString(sum[:]); got != want {
+		t.Fatalf("fixture %s has SHA-256 %s, want pinned %s — if this fixture was "+
+			"regenerated intentionally (go test -update), update the pinned constant to match",
+			path, got, want)
+	}
+}
 
 // sampleArchive writes a minimal but representative archive (one record + index
 // + metadata) to path using the production StreamWriter.
@@ -158,7 +187,14 @@ func TestGoldenV1(t *testing.T) {
 		t.Logf("regenerated %s", golden)
 	}
 	if _, err := os.Stat(golden); err != nil {
-		t.Skipf("golden fixture missing (run with -update): %v", err)
+		// A missing fixture is the highest-consequence failure this test
+		// guards against: it silently disables the only check that a v1.0
+		// build can still read archives written by earlier releases. Fail
+		// loudly, don't skip (#251).
+		t.Fatalf("golden fixture missing (run with -update to regenerate): %v", err)
+	}
+	if !*update {
+		requireFixtureHash(t, golden, goldenV1SHA256)
 	}
 
 	ar, err := Open(golden)

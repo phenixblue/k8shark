@@ -247,6 +247,10 @@ func TestEncryptedArchiveConcurrentReads(t *testing.T) {
 	}
 }
 
+// goldenV1PassphraseSHA256 pins the checked-in golden-v1-passphrase.kshrk
+// fixture's content hash — see goldenV1SHA256 in format_test.go for why (#251).
+const goldenV1PassphraseSHA256 = "4085130da81f688222f71e3150105ed292854bf62839b3d34e2bbee8fa335497"
+
 // TestGoldenV1Passphrase opens a checked-in passphrase-encrypted fixture to
 // catch any future age-library upgrade or kshrk change that breaks reading
 // already-written encrypted archives. Regenerate with:
@@ -265,7 +269,11 @@ func TestGoldenV1Passphrase(t *testing.T) {
 		t.Logf("regenerated %s", golden)
 	}
 	if _, err := os.Stat(golden); err != nil {
-		t.Skipf("golden fixture missing (run with -update): %v", err)
+		// See TestGoldenV1's identical comment: fail loudly, don't skip (#251).
+		t.Fatalf("golden fixture missing (run with -update to regenerate): %v", err)
+	}
+	if !*update {
+		requireFixtureHash(t, golden, goldenV1PassphraseSHA256)
 	}
 
 	identities, err := IdentitiesFromPassphrase(testPassphrase)
