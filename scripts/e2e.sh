@@ -1161,6 +1161,7 @@ fi
 if [[ -n "$ENC_DEC_SERVER_PID" ]]; then
   kill "$ENC_DEC_SERVER_PID" 2>/dev/null || true
   wait "$ENC_DEC_SERVER_PID" 2>/dev/null || true
+  ENC_DEC_SERVER_PID=""
 fi
 
 # Open the STILL-encrypted archive directly, decrypting on the fly — no
@@ -1197,6 +1198,7 @@ fi
 if [[ -n "$ENC_OPEN_SERVER_PID" ]]; then
   kill "$ENC_OPEN_SERVER_PID" 2>/dev/null || true
   wait "$ENC_OPEN_SERVER_PID" 2>/dev/null || true
+  ENC_OPEN_SERVER_PID=""
 fi
 
 rm -f "$ENC_FILE" "$DEC_FILE" "$ENC_PASS_FILE" "$ENC_WRONG_PASS_FILE" \
@@ -1296,6 +1298,7 @@ GOEOF
     if [[ -n "$REC_SERVER_PID" ]]; then
       kill "$REC_SERVER_PID" 2>/dev/null || true
       wait "$REC_SERVER_PID" 2>/dev/null || true
+      REC_SERVER_PID=""
     fi
 
     rm -f "$ENC_RECIPIENT_FILE" "$DEC_RECIPIENT_FILE" "$AGE_IDENTITY_FILE" "$REC_SERVER_LOG" "$REC_KC"
