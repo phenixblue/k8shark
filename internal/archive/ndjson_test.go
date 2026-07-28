@@ -2,7 +2,10 @@ package archive
 
 import (
 	"errors"
+	"io"
 	"testing"
+
+	"github.com/phenixblue/k8shark/internal/archive/format"
 )
 
 // failingWriter returns an error from every Write, simulating a broken pipe
@@ -22,10 +25,10 @@ func TestNDJSONWriter_WriteRecord_FailedEncodeDoesNotAdvanceState(t *testing.T) 
 	wantErr := errors.New("broken pipe")
 	w := NewNDJSONWriter(&failingWriter{err: wantErr})
 
-	rec := map[string]any{
-		"id": "rec-1", "api_path": "/api/v1/namespaces/default/pods",
-		"http_method": "GET", "response_code": 200,
-		"response_body": map[string]any{"apiVersion": "v1", "kind": "PodList", "items": []any{}},
+	rec := &format.Record{
+		ID: "rec-1", APIPath: "/api/v1/namespaces/default/pods",
+		HTTPMethod: "GET", ResponseCode: 200,
+		ResponseBody: []byte(`{"apiVersion":"v1","kind":"PodList","items":[]}`),
 	}
 	if _, err := w.WriteRecord(rec); !errors.Is(err, wantErr) {
 		t.Fatalf("WriteRecord error = %v, want %v", err, wantErr)
@@ -38,5 +41,16 @@ func TestNDJSONWriter_WriteRecord_FailedEncodeDoesNotAdvanceState(t *testing.T) 
 	}
 	if got := w.pathSeq["/api/v1/namespaces/default/pods"]; got != 0 {
 		t.Errorf("pathSeq[...] = %d, want 0 — a failed write must not consume a seq number", got)
+	}
+}
+
+// TestNDJSONWriter_WriteRecord_NilRecord verifies a nil *format.Record
+// returns a clean error rather than panicking on a nil-pointer dereference —
+// a regression risk introduced when WriteRecord's parameter was retyped from
+// any to *format.Record (#233).
+func TestNDJSONWriter_WriteRecord_NilRecord(t *testing.T) {
+	w := NewNDJSONWriter(io.Discard)
+	if _, err := w.WriteRecord(nil); err == nil {
+		t.Fatal("WriteRecord(nil) succeeded, want error")
 	}
 }

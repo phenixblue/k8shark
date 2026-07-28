@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/phenixblue/k8shark/internal/archive/format"
 )
 
 var update = flag.Bool("update", false, "regenerate golden testdata fixtures")
@@ -48,10 +50,10 @@ func sampleArchive(t *testing.T, path string) {
 	if err != nil {
 		t.Fatalf("NewStreamWriter: %v", err)
 	}
-	rec := map[string]any{
-		"id": "rec-1", "api_path": "/api/v1/namespaces/default/pods",
-		"http_method": "GET", "response_code": 200,
-		"response_body": map[string]any{"apiVersion": "v1", "kind": "PodList", "items": []any{}},
+	rec := &format.Record{
+		ID: "rec-1", APIPath: "/api/v1/namespaces/default/pods",
+		HTTPMethod: "GET", ResponseCode: 200,
+		ResponseBody: []byte(`{"apiVersion":"v1","kind":"PodList","items":[]}`),
 	}
 	if _, err := sw.WriteRecord(rec); err != nil {
 		t.Fatalf("WriteRecord: %v", err)
@@ -112,15 +114,31 @@ func TestArchiveFormatContract(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer ar.Close()
-	var meta map[string]any
-	if err := ar.ReadMetadata(&meta); err != nil {
+	meta, err := ar.ReadMetadata()
+	if err != nil {
 		t.Fatalf("ReadMetadata: %v", err)
 	}
-	if meta["capture_id"] != "golden-v1" {
-		t.Errorf("metadata.capture_id = %v", meta["capture_id"])
+	if meta.CaptureID != "golden-v1" {
+		t.Errorf("metadata.capture_id = %v", meta.CaptureID)
 	}
 	if _, err := ar.ReadRecord("/api/v1/namespaces/default/pods", 0); err != nil {
 		t.Errorf("ReadRecord: %v", err)
+	}
+}
+
+// TestStreamWriter_WriteRecord_NilRecord verifies a nil *format.Record
+// returns a clean error rather than panicking on a nil-pointer dereference —
+// a regression risk introduced when WriteRecord's parameter was retyped from
+// any to *format.Record (#233).
+func TestStreamWriter_WriteRecord_NilRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nil-record.kshrk")
+	sw, err := NewStreamWriter(path)
+	if err != nil {
+		t.Fatalf("NewStreamWriter: %v", err)
+	}
+	defer func() { _ = sw.Abort() }()
+	if _, err := sw.WriteRecord(nil); err == nil {
+		t.Fatal("WriteRecord(nil) succeeded, want error")
 	}
 }
 
@@ -166,12 +184,12 @@ func TestReaderAcceptsDeflateEntries(t *testing.T) {
 		t.Fatalf("Open(deflate archive): %v", err)
 	}
 	defer ar.Close()
-	var meta map[string]any
-	if err := ar.ReadMetadata(&meta); err != nil {
+	meta, err := ar.ReadMetadata()
+	if err != nil {
 		t.Fatalf("ReadMetadata(deflate): %v", err)
 	}
-	if meta["capture_id"] != "deflate" {
-		t.Errorf("capture_id = %v, want deflate", meta["capture_id"])
+	if meta.CaptureID != "deflate" {
+		t.Errorf("capture_id = %v, want deflate", meta.CaptureID)
 	}
 }
 
@@ -203,11 +221,8 @@ func TestGoldenV1(t *testing.T) {
 		t.Fatalf("Open(golden): %v", err)
 	}
 	defer ar.Close()
-	var meta struct {
-		FormatVersion int    `json:"format_version"`
-		CaptureID     string `json:"capture_id"`
-	}
-	if err := ar.ReadMetadata(&meta); err != nil {
+	meta, err := ar.ReadMetadata()
+	if err != nil {
 		t.Fatalf("ReadMetadata(golden): %v", err)
 	}
 	if meta.FormatVersion != 1 {

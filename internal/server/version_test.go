@@ -48,9 +48,13 @@ func loadStoreWithVersion(t *testing.T, version int) (*CaptureStore, error) {
 	if err := sw.Finish(meta, idx, nil); err != nil {
 		t.Fatalf("Finish: %v", err)
 	}
+	// archive.Open itself enforces the format-version gate (#233), so a
+	// too-new archive is rejected here rather than by LoadStore below —
+	// propagate the error instead of failing the test so the "newer is
+	// rejected" case can assert on it regardless of which layer catches it.
 	ar, err := archive.Open(out)
 	if err != nil {
-		t.Fatalf("archive.Open: %v", err)
+		return nil, err
 	}
 	t.Cleanup(func() { ar.Close() })
 	return LoadStore(ar)

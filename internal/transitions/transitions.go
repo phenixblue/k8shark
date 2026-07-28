@@ -55,24 +55,16 @@ func LoadTransitions(archivePath string, opts FilterOpts, identities []age.Ident
 	}
 	defer ar.Close()
 
-	var meta capture.CaptureMetadata
-	if err := ar.ReadMetadata(&meta); err != nil {
-		return nil, fmt.Errorf("reading metadata: %w", err)
-	}
-	if err := capture.CheckFormatVersion(meta); err != nil {
-		return nil, err
-	}
-
-	var idx capture.Index
-	if err := ar.ReadIndex(&idx); err != nil {
+	idx, err := ar.ReadIndex()
+	if err != nil {
 		return nil, fmt.Errorf("reading index: %w", err)
 	}
 
 	// Watch-index may be absent for older archives, but a present-and-malformed
 	// one is a corrupt archive, not an absent one — surface that error rather
 	// than silently falling back to poll-based inference.
-	var wi capture.WatchIndex
-	if _, err := ar.ReadWatchIndex(&wi); err != nil {
+	wi, _, err := ar.ReadWatchIndex()
+	if err != nil {
 		return nil, fmt.Errorf("reading watch index: %w", err)
 	}
 

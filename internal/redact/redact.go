@@ -51,27 +51,24 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 	}
 	defer ar.Close()
 
-	var meta capture.CaptureMetadata
-	if err := ar.ReadMetadata(&meta); err != nil {
+	meta, err := ar.ReadMetadata()
+	if err != nil {
 		return Result{}, fmt.Errorf("reading metadata: %w", err)
-	}
-	if err := capture.CheckFormatVersion(meta); err != nil {
-		return Result{}, err
 	}
 	// The redacted archive is written by the current writer, so stamp it with
 	// the current format version.
 	meta.FormatVersion = capture.CurrentFormatVersion
 
-	var idx capture.Index
-	if err := ar.ReadIndex(&idx); err != nil {
+	idx, err := ar.ReadIndex()
+	if err != nil {
 		return Result{}, fmt.Errorf("reading index: %w", err)
 	}
 
 	// Watch-index may be absent for older archives, but a present-and-malformed
 	// one is a corrupt archive, not an absent one — surface that error rather
 	// than silently redacting as if it were never captured.
-	var wi capture.WatchIndex
-	if _, err := ar.ReadWatchIndex(&wi); err != nil {
+	wi, _, err := ar.ReadWatchIndex()
+	if err != nil {
 		return Result{}, fmt.Errorf("reading watch index: %w", err)
 	}
 

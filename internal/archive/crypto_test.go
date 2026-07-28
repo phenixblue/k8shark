@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"filippo.io/age"
+
+	"github.com/phenixblue/k8shark/internal/archive/format"
 )
 
 // testPassphrase is a fixed, documented test-only passphrase. It must never
@@ -25,10 +27,10 @@ func sampleEncryptedArchive(t *testing.T, path string, recipients []age.Recipien
 	if err != nil {
 		t.Fatalf("NewEncryptedStreamWriter: %v", err)
 	}
-	rec := map[string]any{
-		"id": "rec-1", "api_path": "/api/v1/namespaces/default/pods",
-		"http_method": "GET", "response_code": 200,
-		"response_body": map[string]any{"apiVersion": "v1", "kind": "PodList", "items": []any{}},
+	rec := &format.Record{
+		ID: "rec-1", APIPath: "/api/v1/namespaces/default/pods",
+		HTTPMethod: "GET", ResponseCode: 200,
+		ResponseBody: []byte(`{"apiVersion":"v1","kind":"PodList","items":[]}`),
 	}
 	if _, err := sw.WriteRecord(rec); err != nil {
 		t.Fatalf("WriteRecord: %v", err)
@@ -72,12 +74,12 @@ func TestEncryptedArchiveRoundTrip_Passphrase(t *testing.T) {
 	}
 	defer ar.Close()
 
-	var meta map[string]any
-	if err := ar.ReadMetadata(&meta); err != nil {
+	meta, err := ar.ReadMetadata()
+	if err != nil {
 		t.Fatalf("ReadMetadata: %v", err)
 	}
-	if meta["capture_id"] != "encrypted-v1" {
-		t.Errorf("metadata.capture_id = %v", meta["capture_id"])
+	if meta.CaptureID != "encrypted-v1" {
+		t.Errorf("metadata.capture_id = %v", meta.CaptureID)
 	}
 	data, err := ar.ReadRecord("/api/v1/namespaces/default/pods", 0)
 	if err != nil {
@@ -102,12 +104,12 @@ func TestEncryptedArchiveRoundTrip_X25519(t *testing.T) {
 	}
 	defer ar.Close()
 
-	var meta map[string]any
-	if err := ar.ReadMetadata(&meta); err != nil {
+	meta, err := ar.ReadMetadata()
+	if err != nil {
 		t.Fatalf("ReadMetadata: %v", err)
 	}
-	if meta["capture_id"] != "encrypted-v1" {
-		t.Errorf("metadata.capture_id = %v", meta["capture_id"])
+	if meta.CaptureID != "encrypted-v1" {
+		t.Errorf("metadata.capture_id = %v", meta.CaptureID)
 	}
 }
 
@@ -208,7 +210,7 @@ func TestEncryptedArchiveConcurrentReads(t *testing.T) {
 	idx := map[string]any{}
 	seqs := make([]int, 0, n)
 	for i := 0; i < n; i++ {
-		rec := map[string]any{"id": "rec", "api_path": "/api/v1/pods", "n": i}
+		rec := &format.Record{ID: "rec", APIPath: "/api/v1/pods", ResponseBody: []byte(`{}`)}
 		if _, err := sw.WriteRecord(rec); err != nil {
 			t.Fatalf("WriteRecord: %v", err)
 		}
@@ -285,10 +287,8 @@ func TestGoldenV1Passphrase(t *testing.T) {
 		t.Fatalf("OpenWithIdentities(golden): %v", err)
 	}
 	defer ar.Close()
-	var meta struct {
-		CaptureID string `json:"capture_id"`
-	}
-	if err := ar.ReadMetadata(&meta); err != nil {
+	meta, err := ar.ReadMetadata()
+	if err != nil {
 		t.Fatalf("ReadMetadata(golden): %v", err)
 	}
 	if meta.CaptureID != "encrypted-v1" {
@@ -310,12 +310,12 @@ func TestPlaintextArchiveStillOpens(t *testing.T) {
 		t.Fatalf("Open(plaintext): %v", err)
 	}
 	defer ar.Close()
-	var meta map[string]any
-	if err := ar.ReadMetadata(&meta); err != nil {
+	meta, err := ar.ReadMetadata()
+	if err != nil {
 		t.Fatalf("ReadMetadata: %v", err)
 	}
-	if meta["capture_id"] != "golden-v1" {
-		t.Errorf("metadata.capture_id = %v", meta["capture_id"])
+	if meta.CaptureID != "golden-v1" {
+		t.Errorf("metadata.capture_id = %v", meta.CaptureID)
 	}
 
 	// OpenWithIdentities must also work transparently on a plaintext archive.

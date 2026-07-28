@@ -4,22 +4,19 @@ import (
 	"bytes"
 	"fmt"
 	"testing"
+
+	"github.com/phenixblue/k8shark/internal/archive/format"
 )
 
-// sampleRecord is a minimal JSON object with an id field — the minimum
+// sampleRecord is a minimal record with an id field — the minimum
 // WriteRecord requires.
-func sampleRecord(i int) any {
-	return map[string]any{
-		"id":            fmt.Sprintf("record-%04d", i),
-		"captured_at":   "2026-04-10T10:00:00Z",
-		"api_path":      "/api/v1/namespaces/default/pods",
-		"http_method":   "GET",
-		"response_code": 200,
-		"response_body": map[string]any{
-			"kind":       "PodList",
-			"apiVersion": "v1",
-			"items":      []any{},
-		},
+func sampleRecord(i int) *format.Record {
+	return &format.Record{
+		ID:           fmt.Sprintf("record-%04d", i),
+		APIPath:      "/api/v1/namespaces/default/pods",
+		HTTPMethod:   "GET",
+		ResponseCode: 200,
+		ResponseBody: []byte(`{"kind":"PodList","apiVersion":"v1","items":[]}`),
 	}
 }
 

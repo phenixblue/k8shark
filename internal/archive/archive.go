@@ -17,6 +17,8 @@ import (
 
 	"filippo.io/age"
 	"github.com/klauspost/compress/zstd"
+
+	"github.com/phenixblue/k8shark/internal/archive/format"
 )
 
 // epochModTime is a fixed, valid timestamp used for every ZIP entry so archives
@@ -31,7 +33,7 @@ type RecordSink interface {
 	// within its record's api_path — the same numbering readers use to
 	// address it later (see Archive.ReadRecord). The seq is only meaningful
 	// on success; callers must not use it when err is non-nil.
-	WriteRecord(rec any) (int, error)
+	WriteRecord(rec *format.Record) (int, error)
 	// Finish writes metadata.json, index.json, and (when watchIndex is non-nil)
 	// watch-index.json, then closes the archive.
 	Finish(meta, index, watchIndex any) error
@@ -174,38 +176,34 @@ func newStreamWriter(outputPath string, recipients []age.Recipient) (*StreamWrit
 
 // WriteRecord marshals rec to JSON, Zstd-compresses it, and appends it
 // to the ZIP archive under records/<pathDir(apiPath)>/<seq>.json.zst.
-// The record must have both "id" and "api_path" fields. It returns the seq
-// assigned to the record, which is only valid when err is nil.
-func (w *StreamWriter) WriteRecord(rec any) (int, error) {
+// The record must have both ID and APIPath set. It returns the seq assigned
+// to the record, which is only valid when err is nil.
+func (w *StreamWriter) WriteRecord(rec *format.Record) (int, error) {
+	if rec == nil || rec.ID == "" || rec.APIPath == "" {
+		return 0, fmt.Errorf("record missing id or api_path field")
+	}
 	data, err := json.Marshal(rec)
 	if err != nil {
 		return 0, fmt.Errorf("marshalling record: %w", err)
 	}
-	var hdr struct {
-		ID      string `json:"id"`
-		APIPath string `json:"api_path"`
-	}
-	if err := json.Unmarshal(data, &hdr); err != nil || hdr.ID == "" || hdr.APIPath == "" {
-		return 0, fmt.Errorf("record missing id or api_path field")
-	}
 
 	compressed, err := zstdCompress(data)
 	if err != nil {
-		return 0, fmt.Errorf("compressing record %s: %w", hdr.ID, err)
+		return 0, fmt.Errorf("compressing record %s: %w", rec.ID, err)
 	}
 
-	dir := pathDir(hdr.APIPath)
+	dir := pathDir(rec.APIPath)
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	seq := w.pathSeq[hdr.APIPath]
+	seq := w.pathSeq[rec.APIPath]
 	entryName := filepath.Join("k8shark-capture", "records", dir, fmt.Sprintf("%d.json.zst", seq))
 
 	if err := writeBytes(w.zw, entryName, compressed); err != nil {
 		return 0, err
 	}
-	w.pathSeq[hdr.APIPath] = seq + 1
+	w.pathSeq[rec.APIPath] = seq + 1
 	w.n++
 	w.bytes += int64(len(data))
 	return seq, nil
@@ -343,7 +341,10 @@ func NewNDJSONWriter(w io.Writer) *NDJSONWriter {
 // WriteRecord encodes rec as a single JSON line and returns the seq assigned
 // to it within its api_path, matching StreamWriter's numbering even though
 // NDJSON output has no index to look it up by later.
-func (w *NDJSONWriter) WriteRecord(rec any) (int, error) {
+func (w *NDJSONWriter) WriteRecord(rec *format.Record) (int, error) {
+	if rec == nil {
+		return 0, fmt.Errorf("record missing id or api_path field")
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	b, err := json.Marshal(rec)
@@ -351,12 +352,9 @@ func (w *NDJSONWriter) WriteRecord(rec any) (int, error) {
 		return 0, fmt.Errorf("marshalling record: %w", err)
 	}
 
-	var hdr struct {
-		APIPath string `json:"api_path"`
-	}
 	var seq int
-	if json.Unmarshal(b, &hdr) == nil && hdr.APIPath != "" {
-		seq = w.pathSeq[hdr.APIPath]
+	if rec.APIPath != "" {
+		seq = w.pathSeq[rec.APIPath]
 	}
 
 	if err := w.enc.Encode(rec); err != nil {
@@ -366,8 +364,8 @@ func (w *NDJSONWriter) WriteRecord(rec any) (int, error) {
 	// own only-meaningful-on-success rule, so a broken pipe mid-stream can't
 	// over-report bytes for a record that was never written.
 	w.bytes += int64(len(b))
-	if hdr.APIPath != "" {
-		w.pathSeq[hdr.APIPath] = seq + 1
+	if rec.APIPath != "" {
+		w.pathSeq[rec.APIPath] = seq + 1
 	}
 	w.n++
 	return seq, nil
@@ -403,12 +401,15 @@ type Archive struct {
 	size   int64
 	path   string
 	readN  atomic.Int64 // for diagnostics
+	meta   format.CaptureMetadata
 }
 
 // Open opens a k8shark archive for reading. The caller must call Close() when
 // done. If the archive is age-encrypted, Open returns a clear error instead
 // of a raw "not a valid zip file" failure; use OpenWithIdentities with key
-// material to open it.
+// material to open it. Open also reads and validates metadata.json against
+// format.CheckFormatVersion, so every caller gets the format-version gate for
+// free instead of needing to call it themselves after ReadMetadata.
 func Open(archivePath string) (*Archive, error) {
 	return openArchive(archivePath, nil)
 }
@@ -483,7 +484,23 @@ func openArchive(archivePath string, identities []age.Identity) (*Archive, error
 	for _, zf := range zr.File {
 		byName[zf.Name] = zf
 	}
-	return &Archive{zr: zr, closer: f, byName: byName, size: fi.Size(), path: archivePath}, nil
+	ar := &Archive{zr: zr, closer: f, byName: byName, size: fi.Size(), path: archivePath}
+
+	metaData, err := ar.readRaw("k8shark-capture/metadata.json")
+	if err != nil {
+		f.Close()
+		return nil, fmt.Errorf("reading metadata.json: %w", err)
+	}
+	if err := json.Unmarshal(metaData, &ar.meta); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("parsing metadata.json in archive %q: %w", archivePath, err)
+	}
+	if err := format.CheckFormatVersion(ar.meta); err != nil {
+		f.Close()
+		return nil, err
+	}
+
+	return ar, nil
 }
 
 // Close releases the underlying file handle.
@@ -495,45 +512,44 @@ func (a *Archive) Path() string { return a.path }
 // Size returns the on-disk size of the archive in bytes.
 func (a *Archive) Size() int64 { return a.size }
 
-// ReadMetadata reads and parses metadata.json from the archive.
-func (a *Archive) ReadMetadata(v any) error {
-	data, err := a.readRaw("k8shark-capture/metadata.json")
-	if err != nil {
-		return fmt.Errorf("reading metadata.json: %w", err)
-	}
-	if err := json.Unmarshal(data, v); err != nil {
-		return fmt.Errorf("parsing metadata.json in archive %q: %w", a.path, err)
-	}
-	return nil
+// ReadMetadata returns the archive's metadata.json, already parsed and
+// validated against format.CheckFormatVersion by Open — Open cannot have
+// succeeded otherwise, so this never actually fails, but it still returns an
+// error for symmetry with ReadIndex/ReadWatchIndex and to leave room for a
+// future on-demand read without a signature change.
+func (a *Archive) ReadMetadata() (format.CaptureMetadata, error) {
+	return a.meta, nil
 }
 
 // ReadIndex reads and parses the Zstd-compressed index.json.zst.
-func (a *Archive) ReadIndex(v any) error {
+func (a *Archive) ReadIndex() (format.Index, error) {
 	data, err := a.readZstd("k8shark-capture/index.json.zst")
 	if err != nil {
-		return fmt.Errorf("reading index.json.zst: %w", err)
+		return nil, fmt.Errorf("reading index.json.zst: %w", err)
 	}
-	if err := json.Unmarshal(data, v); err != nil {
-		return fmt.Errorf("parsing index.json.zst in archive %q: %w", a.path, err)
+	var idx format.Index
+	if err := json.Unmarshal(data, &idx); err != nil {
+		return nil, fmt.Errorf("parsing index.json.zst in archive %q: %w", a.path, err)
 	}
-	return nil
+	return idx, nil
 }
 
 // ReadWatchIndex reads and parses watch-index.json.zst, if present.
-// Returns (false, nil) when the archive has no watch index.
-func (a *Archive) ReadWatchIndex(v any) (bool, error) {
+// Returns (nil, false, nil) when the archive has no watch index.
+func (a *Archive) ReadWatchIndex() (format.WatchIndex, bool, error) {
 	const name = "k8shark-capture/watch-index.json.zst"
 	if _, ok := a.byName[name]; !ok {
-		return false, nil
+		return nil, false, nil
 	}
 	data, err := a.readZstd(name)
 	if err != nil {
-		return false, fmt.Errorf("reading watch-index.json.zst: %w", err)
+		return nil, false, fmt.Errorf("reading watch-index.json.zst: %w", err)
 	}
-	if err := json.Unmarshal(data, v); err != nil {
-		return true, fmt.Errorf("parsing watch-index.json.zst in archive %q: %w", a.path, err)
+	var wi format.WatchIndex
+	if err := json.Unmarshal(data, &wi); err != nil {
+		return nil, true, fmt.Errorf("parsing watch-index.json.zst in archive %q: %w", a.path, err)
 	}
-	return true, nil
+	return wi, true, nil
 }
 
 // ReadRecord reads the record at sequence seq under apiPath.

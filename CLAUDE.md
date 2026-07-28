@@ -73,8 +73,15 @@ Therefore:
   with `/` redirecting there). The legacy v1 UI was removed in #91 — don't
   reference `/v1/` or `/api/ui/*`.
 - **Archive format version:** see `CheckFormatVersion` in
-  `internal/capture/record.go` and the "Format version & compatibility" section
-  of `docs/archive-format.md`. Semantics: `0` = pre-versioning (treated as v1),
+  `internal/archive/format/format.go` — the .kshrk schema types and version
+  check live in this stdlib-only leaf package so `internal/archive` can
+  reference them without an import cycle back to `internal/capture` (#233).
+  `internal/capture`'s `Record`/`CaptureMetadata`/`Index`/etc. are type
+  aliases to it, so existing `capture.X` call sites are unaffected.
+  `archive.Open`/`OpenWithIdentities` enforce the version check centrally,
+  so callers no longer need their own `CheckFormatVersion` call after
+  `ReadMetadata`. See also the "Format version & compatibility" section of
+  `docs/archive-format.md`. Semantics: `0` = pre-versioning (treated as v1),
   negative = corrupt (rejected), greater than `CurrentFormatVersion` = rejected
   with an "upgrade kshrk" error. Bump `CurrentFormatVersion` only on a breaking,
   structurally-incompatible change.
@@ -91,7 +98,9 @@ Therefore:
   ```
 
   claiming they need `&capture.IndexEntry{...}` because `Index` is
-  `map[string]*IndexEntry` (see `internal/capture/record.go`). This is valid Go:
+  `map[string]*IndexEntry` (see `internal/archive/format/format.go`, aliased
+  as `capture.Index`/`capture.IndexEntry` in `internal/capture/record.go`).
+  This is valid Go:
   the spec lets you elide the `&T` for map/array/slice values whose element type
   is a pointer to a composite literal ("elements or keys that are addresses of
   composite literals may elide the `&T` when the element or key type is `*T`").
