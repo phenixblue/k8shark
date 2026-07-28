@@ -580,7 +580,7 @@ func (a *Archive) readRaw(name string) ([]byte, error) {
 	}
 	rc, err := zf.Open()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("opening entry %q in archive %q: %w", name, a.path, err)
 	}
 	defer rc.Close()
 	data, err := readAllLimited(rc, maxEntryBytes)
