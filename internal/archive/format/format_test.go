@@ -231,6 +231,14 @@ func TestWatchIndex_UnmarshalJSON_NullEntries(t *testing.T) {
 	}
 }
 
+// TestWatchIndex_UnmarshalJSON_TopLevelNull mirrors TestIndex_UnmarshalJSON_TopLevelNull.
+func TestWatchIndex_UnmarshalJSON_TopLevelNull(t *testing.T) {
+	var wi WatchIndex
+	if err := json.Unmarshal([]byte(`null`), &wi); err == nil {
+		t.Fatal("Unmarshal(null) succeeded, want error")
+	}
+}
+
 // TestIndex_UnmarshalJSON_MalformedEntry confirms a malformed entry produces
 // a clear error rather than a zero-value entry or a panic.
 func TestIndex_UnmarshalJSON_MalformedEntry(t *testing.T) {
@@ -320,5 +328,20 @@ func TestIndex_UnmarshalJSON_NullEntries(t *testing.T) {
 	}
 	if len(idx) != 0 {
 		t.Errorf("Index has %d entries, want 0", len(idx))
+	}
+}
+
+// TestIndex_UnmarshalJSON_TopLevelNull confirms a top-level JSON null (the
+// whole index.json.zst content, not just its "entries" value) is rejected
+// rather than silently treated as an empty index. Unlike
+// TestIndex_UnmarshalJSON_NullEntries's {"entries": null} — a structurally
+// valid wrapped shape whose entries happen to be empty — a bare top-level
+// null isn't valid JSON for either shape and can't come from this build's
+// writer (MarshalJSON always emits an object), so it's most plausibly a
+// corrupt or truncated index.json.zst.
+func TestIndex_UnmarshalJSON_TopLevelNull(t *testing.T) {
+	var idx Index
+	if err := json.Unmarshal([]byte(`null`), &idx); err == nil {
+		t.Fatal("Unmarshal(null) succeeded, want error")
 	}
 }

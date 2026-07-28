@@ -150,6 +150,15 @@ func (idx *Index) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
+	if raw == nil {
+		// Unmarshaling top-level JSON null into a map produces a nil map
+		// with no error — left unchecked, that would silently fall through
+		// to the bare-map branch below and be treated as a valid, empty
+		// index, masking what index.json.zst actually contained (a literal
+		// "null" can't come from this build's writer, whose MarshalJSON
+		// always emits {"entries": ...}).
+		return fmt.Errorf("index is null")
+	}
 	if entriesRaw, ok := raw["entries"]; ok {
 		if key, found := strayPathKey(raw); found {
 			return fmt.Errorf("index has both a wrapped \"entries\" key and a top-level entry-shaped key %q — archive may be corrupt", key)
@@ -227,6 +236,10 @@ func (wi *WatchIndex) UnmarshalJSON(data []byte) error {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
+	}
+	if raw == nil {
+		// See Index.UnmarshalJSON's identical check for why.
+		return fmt.Errorf("watch-index is null")
 	}
 	if entriesRaw, ok := raw["entries"]; ok {
 		if key, found := strayPathKey(raw); found {
