@@ -68,9 +68,13 @@ func LoadTransitions(archivePath string, opts FilterOpts, identities []age.Ident
 		return nil, fmt.Errorf("reading index: %w", err)
 	}
 
-	// Watch-index may be absent for older archives.
+	// Watch-index may be absent for older archives, but a present-and-malformed
+	// one is a corrupt archive, not an absent one — surface that error rather
+	// than silently falling back to poll-based inference.
 	var wi capture.WatchIndex
-	_, _ = ar.ReadWatchIndex(&wi)
+	if _, err := ar.ReadWatchIndex(&wi); err != nil {
+		return nil, fmt.Errorf("reading watch index: %w", err)
+	}
 
 	var all []Transition
 

@@ -117,9 +117,13 @@ func LoadStore(ar *archive.Archive) (*CaptureStore, error) {
 		responseCacheMap: make(map[responseCacheKey]*responseCacheEntry),
 	}
 
-	// Load watch index if present.
+	// Load watch index if present. A present-and-malformed entry is a
+	// corrupt archive, not an absent one — surface that error rather than
+	// silently running without watch transitions.
 	var wi capture.WatchIndex
-	if found, err := ar.ReadWatchIndex(&wi); err == nil && found && wi != nil {
+	if found, err := ar.ReadWatchIndex(&wi); err != nil {
+		return nil, fmt.Errorf("reading watch index: %w", err)
+	} else if found && wi != nil {
 		s.WatchIndex = wi
 	}
 
