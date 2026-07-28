@@ -501,7 +501,10 @@ func (a *Archive) ReadIndex(v any) error {
 	if err != nil {
 		return fmt.Errorf("reading index.json.zst: %w", err)
 	}
-	return json.Unmarshal(data, v)
+	if err := json.Unmarshal(data, v); err != nil {
+		return fmt.Errorf("parsing index.json.zst in archive %q: %w", a.path, err)
+	}
+	return nil
 }
 
 // ReadWatchIndex reads and parses watch-index.json.zst, if present.
@@ -515,7 +518,10 @@ func (a *Archive) ReadWatchIndex(v any) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("reading watch-index.json.zst: %w", err)
 	}
-	return true, json.Unmarshal(data, v)
+	if err := json.Unmarshal(data, v); err != nil {
+		return false, fmt.Errorf("parsing watch-index.json.zst in archive %q: %w", a.path, err)
+	}
+	return true, nil
 }
 
 // ReadRecord reads the record at sequence seq under apiPath.

@@ -21,7 +21,8 @@ func buildZipMissingMetadata(t *testing.T, path string) {
 	}
 	// Safety net for any t.Fatalf below: on the happy path these are already
 	// closed by the explicit, error-checked calls at the end of the
-	// function, so this is a harmless no-op second close.
+	// function, so this second Close just returns (and discards) an
+	// "already closed" error rather than doing anything harmful.
 	defer f.Close()
 	zw := zip.NewWriter(f)
 	defer zw.Close()
