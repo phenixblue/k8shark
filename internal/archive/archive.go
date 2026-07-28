@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -441,6 +442,9 @@ func openArchive(archivePath string, identities []age.Identity) (*Archive, error
 		zr, err = zip.NewReader(f, fi.Size())
 		if err != nil {
 			f.Close()
+			if errors.Is(err, zip.ErrFormat) {
+				return nil, fmt.Errorf("archive %q is corrupt or incomplete: not a valid zip file — this can happen if a capture was interrupted (e.g. Ctrl+C) or the file was truncated in transfer: %w", archivePath, err)
+			}
 			return nil, fmt.Errorf("opening zip archive %q: %w", archivePath, err)
 		}
 	} else {

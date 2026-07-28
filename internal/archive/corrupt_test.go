@@ -88,9 +88,16 @@ func TestOpen_CorruptArchives(t *testing.T) {
 		t.Fatalf("reading valid fixture: %v", err)
 	}
 
+	// wantActionable cases hit zip.NewReader's ErrFormat — Go's archive/zip
+	// package doesn't distinguish a missing central directory (truncation)
+	// from garbage bytes, so the most honest "recognized as such" diagnosis
+	// available is a single message naming both plausible causes (#248's
+	// acceptance criteria: "an interrupted capture is recognized as such and
+	// says so").
 	cases := []struct {
-		name  string
-		build func(t *testing.T, path string)
+		name           string
+		build          func(t *testing.T, path string)
+		wantActionable bool
 	}{
 		{
 			name: "truncated at 50% (no central directory, like a Ctrl+C'd capture)",
@@ -100,6 +107,7 @@ func TestOpen_CorruptArchives(t *testing.T) {
 					t.Fatalf("WriteFile: %v", err)
 				}
 			},
+			wantActionable: true,
 		},
 		{
 			name: "truncated to 10 bytes",
@@ -109,6 +117,7 @@ func TestOpen_CorruptArchives(t *testing.T) {
 					t.Fatalf("WriteFile: %v", err)
 				}
 			},
+			wantActionable: true,
 		},
 		{
 			name: "empty file",
@@ -117,6 +126,7 @@ func TestOpen_CorruptArchives(t *testing.T) {
 					t.Fatalf("WriteFile: %v", err)
 				}
 			},
+			wantActionable: true,
 		},
 		{
 			name: "random bytes",
@@ -126,6 +136,7 @@ func TestOpen_CorruptArchives(t *testing.T) {
 					t.Fatalf("WriteFile: %v", err)
 				}
 			},
+			wantActionable: true,
 		},
 		{name: "valid ZIP missing metadata.json", build: buildZipMissingMetadata},
 		{name: "valid ZIP with malformed metadata.json", build: buildZipMalformedMetadata},
@@ -161,6 +172,14 @@ func TestOpen_CorruptArchives(t *testing.T) {
 			}
 			if metaErr != nil && !strings.Contains(metaErr.Error(), path) {
 				t.Errorf("ReadMetadata error = %v, want it to name the archive path %q", metaErr, path)
+			}
+			if tc.wantActionable {
+				if openErr == nil {
+					t.Fatalf("expected Open to fail with a corrupt/incomplete diagnosis, got nil")
+				}
+				if !strings.Contains(openErr.Error(), "corrupt or incomplete") {
+					t.Errorf("Open error = %v, want it to recognize the archive as corrupt or incomplete", openErr)
+				}
 			}
 		})
 	}
