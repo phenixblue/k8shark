@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/phenixblue/k8shark/internal/archive/format"
 )
@@ -30,7 +31,7 @@ const goldenV1SHA256 = "d7468f8f8b4b1d257f58fadbe4a8d839e1445869a8c6b11f3c4b0597
 // above. TestGoldenV2 guards this build's ability to read its own current
 // format going forward, the same way TestGoldenV1 guards the version-1
 // bare-map shape it must keep reading for the life of the 1.x line (#219).
-const goldenV2SHA256 = "37635d015b971f0441c6bddc330fe873a69d719eb5af0f975d96ef0989e46e0d"
+const goldenV2SHA256 = "0eba08e9f0cdd87b999e47a49f22dff0a03af3fd373f88f4286b4db2acaad5ef"
 
 // requireFixtureHash fails the test unless path's content hashes to want,
 // naming both hashes so a deliberate regeneration says exactly what to paste
@@ -92,8 +93,9 @@ func sampleArchiveV2(t *testing.T, path string) {
 	if err != nil {
 		t.Fatalf("NewStreamWriter: %v", err)
 	}
+	capturedAt := time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC)
 	rec := &format.Record{
-		ID: "rec-1", APIPath: "/api/v1/namespaces/default/pods",
+		ID: "rec-1", CapturedAt: capturedAt, APIPath: "/api/v1/namespaces/default/pods",
 		HTTPMethod: "GET", ResponseCode: 200,
 		ResponseBody: []byte(`{"apiVersion":"v1","kind":"PodList","items":[]}`),
 	}
@@ -103,10 +105,19 @@ func sampleArchiveV2(t *testing.T, path string) {
 	meta := &format.CaptureMetadata{
 		FormatVersion: format.CurrentFormatVersion,
 		CaptureID:     "golden-v2",
+		CapturedAt:    capturedAt,
+		CapturedUntil: capturedAt,
 		RecordCount:   1,
 	}
+	// Times is required and parallel to Seqs in production (see
+	// internal/capture/engine.go, which always appends both together) — a
+	// golden fixture is only representative if it matches that shape.
 	idx := format.Index{
-		"/api/v1/namespaces/default/pods": {APIPath: "/api/v1/namespaces/default/pods", Seqs: []int{0}},
+		"/api/v1/namespaces/default/pods": {
+			APIPath: "/api/v1/namespaces/default/pods",
+			Seqs:    []int{0},
+			Times:   []time.Time{capturedAt},
+		},
 	}
 	if err := sw.Finish(meta, idx, nil); err != nil {
 		t.Fatalf("Finish: %v", err)

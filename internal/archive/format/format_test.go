@@ -4,14 +4,21 @@ import (
 	"encoding/json"
 	"reflect"
 	"testing"
+	"time"
 )
+
+// testTime is a fixed timestamp for populating IndexEntry/WatchIndexEntry
+// Times fields in these tests. Times is required (no omitempty) and parallel
+// to Seqs in the real schema, so test fixtures should include it — the exact
+// value isn't asserted on, only its presence and length.
+var testTime = time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC)
 
 // TestIndex_MarshalJSON_WrapsAsEntries pins the version-2+ on-disk shape:
 // {"entries": {...}}, not a bare top-level map, so the index can gain
 // sibling fields later without another format-version bump (#219).
 func TestIndex_MarshalJSON_WrapsAsEntries(t *testing.T) {
 	idx := Index{
-		"/api/v1/pods": {APIPath: "/api/v1/pods", Seqs: []int{0, 1}},
+		"/api/v1/pods": {APIPath: "/api/v1/pods", Seqs: []int{0, 1}, Times: []time.Time{testTime, testTime}},
 	}
 	data, err := json.Marshal(idx)
 	if err != nil {
@@ -50,8 +57,14 @@ func TestIndex_MarshalJSON_NilIndexWritesEmptyObject(t *testing.T) {
 // just lengths, which wouldn't catch a reordering or truncation bug.
 func TestIndex_UnmarshalJSON_RoundTrip(t *testing.T) {
 	want := Index{
-		"/api/v1/pods":              {APIPath: "/api/v1/pods", Seqs: []int{5, 2, 9}, Counts: []int{7, 0, 3}},
-		"/api/v1/namespaces/x/pods": {APIPath: "/api/v1/namespaces/x/pods", Seqs: []int{4}},
+		"/api/v1/pods": {
+			APIPath: "/api/v1/pods", Seqs: []int{5, 2, 9}, Counts: []int{7, 0, 3},
+			Times: []time.Time{testTime, testTime, testTime},
+		},
+		"/api/v1/namespaces/x/pods": {
+			APIPath: "/api/v1/namespaces/x/pods", Seqs: []int{4},
+			Times: []time.Time{testTime},
+		},
 	}
 	data, err := json.Marshal(want)
 	if err != nil {
@@ -78,6 +91,9 @@ func TestIndex_UnmarshalJSON_RoundTrip(t *testing.T) {
 		}
 		if !reflect.DeepEqual(gotEntry.Counts, wantEntry.Counts) {
 			t.Errorf("entry %q Counts = %v, want %v", path, gotEntry.Counts, wantEntry.Counts)
+		}
+		if !reflect.DeepEqual(gotEntry.Times, wantEntry.Times) {
+			t.Errorf("entry %q Times = %v, want %v", path, gotEntry.Times, wantEntry.Times)
 		}
 	}
 }
@@ -139,7 +155,7 @@ func TestIndex_UnmarshalJSON_EmptyBareMapAndEmptyWrapped(t *testing.T) {
 // cases mirror Index's — see those doc comments for why.
 func TestWatchIndex_MarshalJSON_WrapsAsEntries(t *testing.T) {
 	wi := WatchIndex{
-		"/api/v1/pods": {APIPath: "/api/v1/pods", Seqs: []int{0}, EventTypes: []string{"ADDED"}},
+		"/api/v1/pods": {APIPath: "/api/v1/pods", Seqs: []int{0}, Times: []time.Time{testTime}, EventTypes: []string{"ADDED"}},
 	}
 	data, err := json.Marshal(wi)
 	if err != nil {

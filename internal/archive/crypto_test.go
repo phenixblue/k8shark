@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"filippo.io/age"
 
@@ -56,8 +57,9 @@ func sampleEncryptedArchiveV2(t *testing.T, path string, recipients []age.Recipi
 	if err != nil {
 		t.Fatalf("NewEncryptedStreamWriter: %v", err)
 	}
+	capturedAt := time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC)
 	rec := &format.Record{
-		ID: "rec-1", APIPath: "/api/v1/namespaces/default/pods",
+		ID: "rec-1", CapturedAt: capturedAt, APIPath: "/api/v1/namespaces/default/pods",
 		HTTPMethod: "GET", ResponseCode: 200,
 		ResponseBody: []byte(`{"apiVersion":"v1","kind":"PodList","items":[]}`),
 	}
@@ -67,10 +69,18 @@ func sampleEncryptedArchiveV2(t *testing.T, path string, recipients []age.Recipi
 	meta := &format.CaptureMetadata{
 		FormatVersion: format.CurrentFormatVersion,
 		CaptureID:     "encrypted-v2",
+		CapturedAt:    capturedAt,
+		CapturedUntil: capturedAt,
 		RecordCount:   1,
 	}
+	// Times is required and parallel to Seqs in production — see
+	// sampleArchiveV2's identical comment in format_test.go.
 	idx := format.Index{
-		"/api/v1/namespaces/default/pods": {APIPath: "/api/v1/namespaces/default/pods", Seqs: []int{0}},
+		"/api/v1/namespaces/default/pods": {
+			APIPath: "/api/v1/namespaces/default/pods",
+			Seqs:    []int{0},
+			Times:   []time.Time{capturedAt},
+		},
 	}
 	if err := sw.Finish(meta, idx, nil); err != nil {
 		t.Fatalf("Finish: %v", err)
@@ -333,7 +343,7 @@ func TestGoldenV1Passphrase(t *testing.T) {
 // goldenV2PassphraseSHA256 pins the checked-in golden-v2-passphrase.kshrk
 // fixture's content hash — the version-2+ (wrapped index) counterpart of
 // goldenV1PassphraseSHA256 above (#219).
-const goldenV2PassphraseSHA256 = "818fde8e30b78a1cfde41d29cc2d8e909975b45fbb32d3dc2238bd9963aabe35"
+const goldenV2PassphraseSHA256 = "c9359f222500375bc5906f9d5f8911b74a0be2ca7052f4813c5e7cdbff1aba76"
 
 // TestGoldenV2Passphrase is TestGoldenV1Passphrase's version-2+ counterpart.
 // Regenerate with: go test ./internal/archive -run TestGoldenV2Passphrase -update
