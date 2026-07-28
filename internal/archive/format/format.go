@@ -109,9 +109,14 @@ type indexWire struct {
 	Entries map[string]*IndexEntry `json:"entries"`
 }
 
-// MarshalJSON always writes the version-2+ wrapped shape.
+// MarshalJSON always writes the version-2+ wrapped shape, with "entries" as
+// an object ({}) even for a nil Index — never null.
 func (idx Index) MarshalJSON() ([]byte, error) {
-	return json.Marshal(indexWire{Entries: map[string]*IndexEntry(idx)})
+	entries := map[string]*IndexEntry(idx)
+	if entries == nil {
+		entries = map[string]*IndexEntry{}
+	}
+	return json.Marshal(indexWire{Entries: entries})
 }
 
 // UnmarshalJSON accepts both the version-2+ wrapped shape ({"entries": {...}})
@@ -165,9 +170,14 @@ type watchIndexWire struct {
 	Entries map[string]*WatchIndexEntry `json:"entries"`
 }
 
-// MarshalJSON always writes the version-2+ wrapped shape.
+// MarshalJSON always writes the version-2+ wrapped shape, with "entries" as
+// an object ({}) even for a nil WatchIndex — never null.
 func (wi WatchIndex) MarshalJSON() ([]byte, error) {
-	return json.Marshal(watchIndexWire{Entries: map[string]*WatchIndexEntry(wi)})
+	entries := map[string]*WatchIndexEntry(wi)
+	if entries == nil {
+		entries = map[string]*WatchIndexEntry{}
+	}
+	return json.Marshal(watchIndexWire{Entries: entries})
 }
 
 // UnmarshalJSON accepts both the version-2+ wrapped shape and a version-1

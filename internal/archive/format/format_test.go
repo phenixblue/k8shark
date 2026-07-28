@@ -2,6 +2,7 @@ package format
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 )
 
@@ -29,12 +30,28 @@ func TestIndex_MarshalJSON_WrapsAsEntries(t *testing.T) {
 	}
 }
 
+// TestIndex_MarshalJSON_NilIndexWritesEmptyObject confirms a nil Index
+// marshals "entries" as {}, not null — the documented v2+ schema says
+// "entries" is an object, and null would also round-trip back to a nil map
+// instead of the empty-but-non-nil map ReadIndex's callers expect.
+func TestIndex_MarshalJSON_NilIndexWritesEmptyObject(t *testing.T) {
+	var idx Index
+	data, err := json.Marshal(idx)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if want := `{"entries":{}}`; string(data) != want {
+		t.Errorf("Marshal(nil Index) = %s, want %s", data, want)
+	}
+}
+
 // TestIndex_UnmarshalJSON_RoundTrip confirms Marshal -> Unmarshal reproduces
-// the original map.
+// the original map, including exact Seqs/Counts contents and order — not
+// just lengths, which wouldn't catch a reordering or truncation bug.
 func TestIndex_UnmarshalJSON_RoundTrip(t *testing.T) {
 	want := Index{
-		"/api/v1/pods":              {APIPath: "/api/v1/pods", Seqs: []int{0, 1}, Counts: []int{3, 3}},
-		"/api/v1/namespaces/x/pods": {APIPath: "/api/v1/namespaces/x/pods", Seqs: []int{0}},
+		"/api/v1/pods":              {APIPath: "/api/v1/pods", Seqs: []int{5, 2, 9}, Counts: []int{7, 0, 3}},
+		"/api/v1/namespaces/x/pods": {APIPath: "/api/v1/namespaces/x/pods", Seqs: []int{4}},
 	}
 	data, err := json.Marshal(want)
 	if err != nil {
@@ -53,8 +70,14 @@ func TestIndex_UnmarshalJSON_RoundTrip(t *testing.T) {
 			t.Errorf("entry %q missing after round trip", path)
 			continue
 		}
-		if gotEntry.APIPath != wantEntry.APIPath || len(gotEntry.Seqs) != len(wantEntry.Seqs) {
-			t.Errorf("entry %q = %+v, want %+v", path, gotEntry, wantEntry)
+		if gotEntry.APIPath != wantEntry.APIPath {
+			t.Errorf("entry %q APIPath = %q, want %q", path, gotEntry.APIPath, wantEntry.APIPath)
+		}
+		if !reflect.DeepEqual(gotEntry.Seqs, wantEntry.Seqs) {
+			t.Errorf("entry %q Seqs = %v, want %v", path, gotEntry.Seqs, wantEntry.Seqs)
+		}
+		if !reflect.DeepEqual(gotEntry.Counts, wantEntry.Counts) {
+			t.Errorf("entry %q Counts = %v, want %v", path, gotEntry.Counts, wantEntry.Counts)
 		}
 	}
 }
@@ -128,6 +151,19 @@ func TestWatchIndex_MarshalJSON_WrapsAsEntries(t *testing.T) {
 	}
 	if _, ok := raw["entries"]; !ok {
 		t.Fatalf("marshaled WatchIndex has no top-level \"entries\" key: %s", data)
+	}
+}
+
+// TestWatchIndex_MarshalJSON_NilWatchIndexWritesEmptyObject mirrors
+// TestIndex_MarshalJSON_NilIndexWritesEmptyObject — see its doc comment.
+func TestWatchIndex_MarshalJSON_NilWatchIndexWritesEmptyObject(t *testing.T) {
+	var wi WatchIndex
+	data, err := json.Marshal(wi)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if want := `{"entries":{}}`; string(data) != want {
+		t.Errorf("Marshal(nil WatchIndex) = %s, want %s", data, want)
 	}
 }
 
