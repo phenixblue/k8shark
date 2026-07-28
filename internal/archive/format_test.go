@@ -188,9 +188,10 @@ func TestGoldenV1(t *testing.T) {
 	}
 	if _, err := os.Stat(golden); err != nil {
 		// A missing fixture is the highest-consequence failure this test
-		// guards against: it silently disables the only check that a v1.0
-		// build can still read archives written by earlier releases. Fail
-		// loudly, don't skip (#251).
+		// guards against: it silently disables this test's check that a v1.0
+		// build can still read plaintext archives written by earlier
+		// releases (see TestGoldenV1Passphrase in crypto_test.go for the
+		// encrypted counterpart). Fail loudly, don't skip (#251).
 		t.Fatalf("golden fixture missing (run with -update to regenerate): %v", err)
 	}
 	if !*update {
