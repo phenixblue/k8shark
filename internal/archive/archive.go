@@ -179,7 +179,7 @@ func newStreamWriter(outputPath string, recipients []age.Recipient) (*StreamWrit
 // The record must have both ID and APIPath set. It returns the seq assigned
 // to the record, which is only valid when err is nil.
 func (w *StreamWriter) WriteRecord(rec *format.Record) (int, error) {
-	if rec.ID == "" || rec.APIPath == "" {
+	if rec == nil || rec.ID == "" || rec.APIPath == "" {
 		return 0, fmt.Errorf("record missing id or api_path field")
 	}
 	data, err := json.Marshal(rec)
@@ -342,6 +342,9 @@ func NewNDJSONWriter(w io.Writer) *NDJSONWriter {
 // to it within its api_path, matching StreamWriter's numbering even though
 // NDJSON output has no index to look it up by later.
 func (w *NDJSONWriter) WriteRecord(rec *format.Record) (int, error) {
+	if rec == nil {
+		return 0, fmt.Errorf("record missing id or api_path field")
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	b, err := json.Marshal(rec)

@@ -126,6 +126,22 @@ func TestArchiveFormatContract(t *testing.T) {
 	}
 }
 
+// TestStreamWriter_WriteRecord_NilRecord verifies a nil *format.Record
+// returns a clean error rather than panicking on a nil-pointer dereference —
+// a regression risk introduced when WriteRecord's parameter was retyped from
+// any to *format.Record (#233).
+func TestStreamWriter_WriteRecord_NilRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nil-record.kshrk")
+	sw, err := NewStreamWriter(path)
+	if err != nil {
+		t.Fatalf("NewStreamWriter: %v", err)
+	}
+	defer func() { _ = sw.Abort() }()
+	if _, err := sw.WriteRecord(nil); err == nil {
+		t.Fatal("WriteRecord(nil) succeeded, want error")
+	}
+}
+
 // TestReaderAcceptsDeflateEntries proves the switch to Store stays
 // backward-compatible: an archive whose entries were written with Deflate (the
 // pre-change behavior) still opens, because the reader is ZIP-method-agnostic.
