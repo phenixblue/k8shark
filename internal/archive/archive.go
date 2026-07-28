@@ -543,7 +543,7 @@ func (a *Archive) ReadWatchIndex() (format.WatchIndex, bool, error) {
 	}
 	data, err := a.readZstd(name)
 	if err != nil {
-		return nil, false, fmt.Errorf("reading watch-index.json.zst: %w", err)
+		return nil, true, fmt.Errorf("reading watch-index.json.zst: %w", err)
 	}
 	var wi format.WatchIndex
 	if err := json.Unmarshal(data, &wi); err != nil {

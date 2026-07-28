@@ -190,6 +190,74 @@ func buildZipNullWatchIndexEntry(t *testing.T, path string) {
 	}
 }
 
+// buildZipUndecompressableWatchIndex writes a structurally valid ZIP archive
+// whose watch-index.json.zst entry is not valid Zstd data at all (as opposed
+// to buildZipMalformedWatchIndex, whose entry decompresses fine but fails to
+// parse as JSON) — e.g. bit-rot in the compressed bytes themselves.
+func buildZipUndecompressableWatchIndex(t *testing.T, path string) {
+	t.Helper()
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("os.Create: %v", err)
+	}
+	defer f.Close() // safety net; see buildZipMissingMetadata
+	zw := zip.NewWriter(f)
+	defer zw.Close()
+
+	writeEntry := func(name string, data []byte) {
+		t.Helper()
+		w, err := zw.CreateHeader(&zip.FileHeader{Name: name, Method: zip.Store})
+		if err != nil {
+			t.Fatalf("CreateHeader(%s): %v", name, err)
+		}
+		if _, err := w.Write(data); err != nil {
+			t.Fatalf("write(%s): %v", name, err)
+		}
+	}
+
+	writeEntry("k8shark-capture/metadata.json", []byte(`{"format_version":1,"capture_id":"undecompressable-watch-index"}`))
+	idxZ, err := zstdCompress([]byte(`{}`))
+	if err != nil {
+		t.Fatalf("zstdCompress(index): %v", err)
+	}
+	writeEntry("k8shark-capture/index.json.zst", idxZ)
+	writeEntry("k8shark-capture/watch-index.json.zst", []byte("not zstd data at all"))
+
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zip Close: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("file Close: %v", err)
+	}
+}
+
+// TestReadWatchIndex_UndecompressableEntry_StillReportsPresent is a
+// regression test: ReadWatchIndex's found return value means "the entry is
+// present in the archive", independent of whether it could even be
+// decompressed. A watch-index.json.zst entry that isn't valid Zstd data must
+// still report found=true (with a non-nil error), the same as an entry that
+// decompresses but fails to parse as JSON — otherwise a caller that checks
+// err first would still be fine, but found would inconsistently read
+// "absent" for one corruption mode and "present" for another.
+func TestReadWatchIndex_UndecompressableEntry_StillReportsPresent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "undecompressable-watch-index.kshrk")
+	buildZipUndecompressableWatchIndex(t, path)
+
+	ar, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer ar.Close()
+
+	_, found, err := ar.ReadWatchIndex()
+	if err == nil {
+		t.Fatal("ReadWatchIndex on an undecompressable entry succeeded, want error")
+	}
+	if !found {
+		t.Error("ReadWatchIndex found = false, want true — the entry is present even though it couldn't be decompressed")
+	}
+}
+
 // TestReadWatchIndex_NullEntry_Rejected is a regression test: a
 // watch-index.json.zst that is valid JSON but maps a path to a null entry is
 // still corrupt, since every reader dereferences the entry (e.g. entry.Seqs)

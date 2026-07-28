@@ -27,6 +27,11 @@ func buildMalformedWatchIndexArchive(t *testing.T, path string) {
 	if err != nil {
 		t.Fatalf("os.Create: %v", err)
 	}
+	// Safety net for any t.Fatalf below: on the happy path these are already
+	// closed by the explicit, error-checked calls at the end of this
+	// function, so this second Close just returns (and discards) an
+	// "already closed" error rather than doing anything harmful — see
+	// internal/archive/corrupt_test.go's buildZipMissingMetadata.
 	defer f.Close()
 	zw := zip.NewWriter(f)
 	defer zw.Close()
