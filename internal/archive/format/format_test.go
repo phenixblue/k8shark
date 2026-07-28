@@ -189,6 +189,19 @@ func TestWatchIndex_UnmarshalJSON_AcceptsVersion1BareMap(t *testing.T) {
 	}
 }
 
+// TestWatchIndex_UnmarshalJSON_RejectsMixedShape mirrors
+// TestIndex_UnmarshalJSON_RejectsMixedShape.
+func TestWatchIndex_UnmarshalJSON_RejectsMixedShape(t *testing.T) {
+	mixed := `{
+		"entries": {"/api/v1/pods": {"api_path": "/api/v1/pods", "seqs": [0], "times": ["2026-04-09T10:00:00Z"], "event_types": ["ADDED"]}},
+		"/api/v1/nodes": {"api_path": "/api/v1/nodes", "seqs": [0], "times": ["2026-04-09T10:00:00Z"], "event_types": ["ADDED"]}
+	}`
+	var wi WatchIndex
+	if err := json.Unmarshal([]byte(mixed), &wi); err == nil {
+		t.Fatal("Unmarshal succeeded on a mixed wrapped/bare-map shape, want error")
+	}
+}
+
 // TestWatchIndex_UnmarshalJSON_NullEntry mirrors TestIndex_UnmarshalJSON_NullEntry.
 func TestWatchIndex_UnmarshalJSON_NullEntry(t *testing.T) {
 	for _, tc := range []struct{ name, json string }{
@@ -231,6 +244,44 @@ func TestIndex_UnmarshalJSON_MalformedEntry(t *testing.T) {
 				t.Fatal("Unmarshal succeeded on a malformed entry, want error")
 			}
 		})
+	}
+}
+
+// TestIndex_UnmarshalJSON_RejectsMixedShape confirms an object containing
+// both a wrapped "entries" key and a top-level entry-shaped key (starting
+// with "/", the way every real api_path does) is rejected rather than
+// silently taking the wrapped shape and discarding the stray key — a
+// plausible corruption/hand-edit pattern that would otherwise lose data
+// without any error.
+func TestIndex_UnmarshalJSON_RejectsMixedShape(t *testing.T) {
+	mixed := `{
+		"entries": {"/api/v1/pods": {"api_path": "/api/v1/pods", "seqs": [0]}},
+		"/api/v1/nodes": {"api_path": "/api/v1/nodes", "seqs": [0]}
+	}`
+	var idx Index
+	if err := json.Unmarshal([]byte(mixed), &idx); err == nil {
+		t.Fatal("Unmarshal succeeded on a mixed wrapped/bare-map shape, want error")
+	}
+}
+
+// TestIndex_UnmarshalJSON_ToleratesFutureAdditiveField confirms a sibling
+// top-level field alongside "entries" that is NOT entry-shaped (doesn't
+// start with "/") is silently tolerated — this is the whole point of the
+// wrapped shape (#219): future fields like "checksum" must not break old
+// readers, unlike TestIndex_UnmarshalJSON_RejectsMixedShape's stray
+// api_path-shaped key, which is almost certainly corruption, not a future
+// field.
+func TestIndex_UnmarshalJSON_ToleratesFutureAdditiveField(t *testing.T) {
+	withExtra := `{
+		"entries": {"/api/v1/pods": {"api_path": "/api/v1/pods", "seqs": [0]}},
+		"checksum": "deadbeef"
+	}`
+	var idx Index
+	if err := json.Unmarshal([]byte(withExtra), &idx); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if _, ok := idx["/api/v1/pods"]; !ok {
+		t.Error("expected pods entry, not found")
 	}
 }
 

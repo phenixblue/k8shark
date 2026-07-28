@@ -7,6 +7,7 @@ package format
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -119,6 +120,22 @@ func (idx Index) MarshalJSON() ([]byte, error) {
 	return json.Marshal(indexWire{Entries: entries})
 }
 
+// strayPathKey returns the first key in raw, other than "entries", that
+// looks like it was meant to be an index/watch-index entry (starts with
+// "/", the way every real api_path does) rather than a legitimate future
+// additive sibling field (e.g. "checksum"). Its presence alongside
+// "entries" means the object mixes the wrapped and bare-map shapes — most
+// plausibly a corrupt or hand-edited file — so callers should reject it
+// rather than silently taking the wrapped shape and discarding the rest.
+func strayPathKey(raw map[string]json.RawMessage) (string, bool) {
+	for key := range raw {
+		if key != "entries" && strings.HasPrefix(key, "/") {
+			return key, true
+		}
+	}
+	return "", false
+}
+
 // UnmarshalJSON accepts both the version-2+ wrapped shape ({"entries": {...}})
 // and a version-1 archive's bare top-level map. The two are unambiguous:
 // a real api_path key always starts with "/", never equals "entries". A null
@@ -134,6 +151,9 @@ func (idx *Index) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	if entriesRaw, ok := raw["entries"]; ok {
+		if key, found := strayPathKey(raw); found {
+			return fmt.Errorf("index has both a wrapped \"entries\" key and a top-level entry-shaped key %q — archive may be corrupt", key)
+		}
 		var entries map[string]*IndexEntry
 		if err := json.Unmarshal(entriesRaw, &entries); err != nil {
 			return fmt.Errorf("parsing index entries: %w", err)
@@ -209,6 +229,9 @@ func (wi *WatchIndex) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	if entriesRaw, ok := raw["entries"]; ok {
+		if key, found := strayPathKey(raw); found {
+			return fmt.Errorf("watch-index has both a wrapped \"entries\" key and a top-level entry-shaped key %q — archive may be corrupt", key)
+		}
 		var entries map[string]*WatchIndexEntry
 		if err := json.Unmarshal(entriesRaw, &entries); err != nil {
 			return fmt.Errorf("parsing watch-index entries: %w", err)
