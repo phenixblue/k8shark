@@ -49,9 +49,14 @@ const (
 // Execute is the entry point called from main.
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
-		var exitErr interface{ ExitCode() int }
+		// Match specifically on the internal exitError type, not any error
+		// implementing ExitCode() int — os/exec.ExitError also satisfies
+		// that shape, and matching it here would let a failing subprocess
+		// (kwok, kube-controller-manager, ...) escape with an arbitrary
+		// exit code instead of the documented 0/1/2 contract.
+		var exitErr exitError
 		if errors.As(err, &exitErr) {
-			if err.Error() != "" {
+			if exitErr.msg != "" {
 				fmt.Fprintln(os.Stderr, err)
 			}
 			os.Exit(exitErr.ExitCode())
