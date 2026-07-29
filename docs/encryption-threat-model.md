@@ -98,8 +98,8 @@ Use `kshrk decrypt` followed by `kshrk encrypt` to rotate a passphrase, move
 from a passphrase to recipient keys, or add/remove recipients:
 
 ```sh
-kshrk decrypt old.kshrk --decrypt-passphrase-file old-pass.txt --output plain.kshrk
-kshrk encrypt plain.kshrk --encrypt-recipient age1newrecipient... --output new.kshrk
+kshrk decrypt old.kshrk --decrypt-passphrase-file old-pass.txt --out plain.kshrk
+kshrk encrypt plain.kshrk --encrypt-recipient age1newrecipient... --out new.kshrk
 ```
 
 The intermediate `plain.kshrk` is a real plaintext file on disk between the

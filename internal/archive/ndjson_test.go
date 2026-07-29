@@ -9,7 +9,7 @@ import (
 )
 
 // failingWriter returns an error from every Write, simulating a broken pipe
-// (e.g. `kshrk capture --output -` piped into a process that exits early).
+// (e.g. `kshrk capture --out -` piped into a process that exits early).
 type failingWriter struct{ err error }
 
 func (w *failingWriter) Write(p []byte) (int, error) { return 0, w.err }

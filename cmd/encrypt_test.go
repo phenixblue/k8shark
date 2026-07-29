@@ -14,7 +14,7 @@ import (
 
 func newTestEncryptCmdCommand() *cobra.Command {
 	cmd := &cobra.Command{}
-	cmd.Flags().StringP("output", "o", "", "")
+	cmd.Flags().String("out", "", "")
 	addEncryptFlags(cmd)
 	// These tests assert on disk state and returned errors, not the printed
 	// summary, so discard stdout rather than letting it leak to os.Stdout.
@@ -61,7 +61,7 @@ func TestRunEncrypt_ExplicitOutput(t *testing.T) {
 	out := filepath.Join(filepath.Dir(in), "custom.kshrk")
 
 	cmd := newTestEncryptCmdCommand()
-	if err := cmd.Flags().Set("output", out); err != nil {
+	if err := cmd.Flags().Set("out", out); err != nil {
 		t.Fatalf("set flag: %v", err)
 	}
 	if err := cmd.Flags().Set("encrypt-recipient", mustGenerateRecipient(t)); err != nil {
@@ -117,14 +117,14 @@ func TestRunEncrypt_RejectsAlreadyEncrypted(t *testing.T) {
 func TestRunEncrypt_SameOutputRejected(t *testing.T) {
 	in := buildDiffArchive(t, healthyPodList)
 	cmd := newTestEncryptCmdCommand()
-	if err := cmd.Flags().Set("output", in); err != nil {
+	if err := cmd.Flags().Set("out", in); err != nil {
 		t.Fatalf("set flag: %v", err)
 	}
 	if err := cmd.Flags().Set("encrypt-recipient", mustGenerateRecipient(t)); err != nil {
 		t.Fatalf("set flag: %v", err)
 	}
 	if err := runEncrypt(cmd, []string{in}); err == nil {
-		t.Fatal("expected an error when --output equals the input path")
+		t.Fatal("expected an error when --out equals the input path")
 	}
 }
 

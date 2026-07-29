@@ -448,7 +448,7 @@ redaction:
 The same config can be passed to `kshrk redact` to apply exactly the same rules to an existing archive:
 
 ```bash
-kshrk redact --in capture.kshrk --out redacted.kshrk --config k8shark.yaml
+kshrk redact capture.kshrk --out redacted.kshrk --config k8shark.yaml
 ```
 
 ---

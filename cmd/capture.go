@@ -23,7 +23,7 @@ single .kshrk capture file for later replay.
 
 Resources, namespaces, and intervals come from the --config file. Use
 --auto-discover to capture every available API resource without listing them,
---output - to stream records as NDJSON to stdout, --redact-secrets to scrub
+--out - to stream records as NDJSON to stdout, --redact-secrets to scrub
 Secret values from the archive after capture, and --encrypt (passphrase) or
 --encrypt-recipient (age public keys) to write the archive as an encrypted
 (age) envelope.`,
@@ -34,7 +34,7 @@ Secret values from the archive after capture, and --encrypt (passphrase) or
   kshrk capture --auto-discover --duration 5m
 
   # Stream records as NDJSON to stdout instead of writing an archive
-  kshrk capture --config k8shark.yaml --output -
+  kshrk capture --config k8shark.yaml --out -
 
   # Capture, then redact Secret values from the archive
   kshrk capture --config k8shark.yaml --redact-secrets
@@ -52,7 +52,7 @@ Secret values from the archive after capture, and --encrypt (passphrase) or
 
 func init() {
 	rootCmd.AddCommand(captureCmd)
-	captureCmd.Flags().StringP("output", "o", "", "output file path (default: ./k8shark-<timestamp>.kshrk)")
+	captureCmd.Flags().String("out", "", "output file path (default: ./k8shark-<timestamp>.kshrk)")
 	captureCmd.Flags().String("kubeconfig", "", "path to kubeconfig (defaults to KUBECONFIG env, then ~/.kube/config)")
 	captureCmd.Flags().String("duration", "", "capture duration, overrides config file value (e.g. 10m, 1h)")
 	captureCmd.Flags().Bool("auto-discover", false, "auto-discover and capture all available API resources")
@@ -60,13 +60,15 @@ func init() {
 	captureCmd.Flags().StringArray("allow-secret", nil, "namespace/name of secret to preserve when --redact-secrets is set (repeatable)")
 	captureCmd.Flags().StringArray("redact-field", nil, "field redaction rule applied after capture: <fieldPath>:<Kind>:<replacement>[:<valueType>] (repeatable)")
 	addEncryptFlags(captureCmd)
-	_ = viper.BindPFlag("output", captureCmd.Flags().Lookup("output"))
+	// The viper key stays "output" (matching the config file's own `output:`
+	// field) even though the CLI flag is now spelled --out — see #215.
+	_ = viper.BindPFlag("output", captureCmd.Flags().Lookup("out"))
 	_ = viper.BindPFlag("kubeconfig", captureCmd.Flags().Lookup("kubeconfig"))
 	_ = viper.BindPFlag("duration", captureCmd.Flags().Lookup("duration"))
 	_ = viper.BindPFlag("auto_discover", captureCmd.Flags().Lookup("auto-discover"))
-	// --output writes a *.kshrk archive, but also accepts "-" to stream NDJSON
+	// --out writes a *.kshrk archive, but also accepts "-" to stream NDJSON
 	// to stdout. Scope file completion to *.kshrk while still offering "-".
-	_ = captureCmd.RegisterFlagCompletionFunc("output", func(_ *cobra.Command, _ []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	_ = captureCmd.RegisterFlagCompletionFunc("out", func(_ *cobra.Command, _ []string, toComplete string) ([]string, cobra.ShellCompDirective) {
 		if strings.HasPrefix(toComplete, "-") {
 			return []string{"-\tstream NDJSON to stdout"}, cobra.ShellCompDirectiveNoFileComp
 		}
@@ -80,7 +82,7 @@ func runCapture(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("loading config: %w", err)
 	}
 
-	if v, _ := cmd.Flags().GetString("output"); v != "" {
+	if v, _ := cmd.Flags().GetString("out"); v != "" {
 		cfg.Output = v
 	}
 	if v, _ := cmd.Flags().GetString("kubeconfig"); v != "" {
@@ -110,7 +112,7 @@ func runCapture(cmd *cobra.Command, args []string) error {
 	// prompt so users aren't asked for a secret only to be told it can't be
 	// used. These helpers check the flags without prompting.
 	if (encryptRequested(cmd) || recipientsRequested(cmd)) && streamingStdout {
-		return fmt.Errorf("archive encryption cannot be combined with --output - (NDJSON streaming to stdout is not encrypted)")
+		return fmt.Errorf("archive encryption cannot be combined with --out - (NDJSON streaming to stdout is not encrypted)")
 	}
 
 	// Resolve redaction inputs up front: whether the capture will be redacted
@@ -121,7 +123,7 @@ func runCapture(cmd *cobra.Command, args []string) error {
 	}
 	willRedact := doRedactSecrets || len(fieldRules) > 0
 	if willRedact && streamingStdout {
-		return fmt.Errorf("redaction (--redact-secrets / --redact-field) cannot be combined with --output - (redaction rewrites the archive file, which NDJSON streaming to stdout does not produce)")
+		return fmt.Errorf("redaction (--redact-secrets / --redact-field) cannot be combined with --out - (redaction rewrites the archive file, which NDJSON streaming to stdout does not produce)")
 	}
 
 	// Resolve encryption before the (potentially long) capture starts so a bad
