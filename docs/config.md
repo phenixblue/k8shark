@@ -2,17 +2,41 @@
 
 k8shark reads a YAML config file that controls what gets captured, from which namespaces, and for how long.
 
+## Naming convention
+
+Multi-word config keys are **camelCase** (`autoDiscover`, `previousLogs`,
+`redactSecrets`, `fieldPath`, ...) — this is the one consistent convention
+across the whole schema. A handful of keys predate this convention and were
+spelled `snake_case` (`auto_discover`, `auto_discover_exclude_groups`,
+`ui.api_port`); those legacy spellings are still accepted for one minor
+release as a deprecated alias, but new configs should use the camelCase
+form. `kshrk validate` rejects any other unrecognized key by name — a typo
+like `previouslogs` (wrong case, not a legacy alias) fails validation
+instead of being silently ignored.
+
 ## Top-level fields
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
+| `version` | int | `1` | Config schema version. Omit for version 1; a version newer than this build of `kshrk` understands fails validation with an "upgrade kshrk" error. |
 | `duration` | duration string | `10m` | Total time to run the capture. Polling continues until time runs out. |
 | `output` | string | `./k8shark-<timestamp>.kshrk` | Path for the output archive. |
 | `kubeconfig` | string | `$KUBECONFIG` → `~/.kube/config` | Path to the kubeconfig for the source cluster. |
 | `resources` | list | required | Resource types to capture. See below. |
-| `auto_discover` | bool | `false` | Legacy global discovery toggle. Prefer `resources: - all: true` for fine-grained control. |
+| `autoDiscover` | bool | `false` | Legacy global discovery toggle. Prefer `resources: - all: true` for fine-grained control. (Legacy alias: `auto_discover`.) |
 | `redaction` | object | — | Optional field-level redaction rules applied after capture. See [Redaction](#redaction). |
 | `ui` | object | — | Ports for the `kshrk ui` web explorer. See [Web UI ports](#web-ui-ports). |
+
+## Environment variable overrides
+
+`duration`, `output`, `kubeconfig`, and `autoDiscover` can each be overridden
+by a `KSHRK_`-prefixed environment variable — `KSHRK_DURATION`,
+`KSHRK_OUTPUT`, `KSHRK_KUBECONFIG`, `KSHRK_AUTODISCOVER` (camelCase keys
+collapse to one uppercase word — no underscore). Precedence, highest first:
+CLI flag > environment variable > config file > default. An **unprefixed**
+variable (bare `DURATION`, `OUTPUT`, ...) is never read — only `KSHRK_`-
+prefixed names claim anything, so k8shark doesn't collide with unrelated
+environment variables already in use (e.g. in CI).
 
 ## Web UI ports
 
@@ -21,14 +45,14 @@ both bind a random free port. Set the `ui` block to pin consistent ports:
 
 ```yaml
 ui:
-  port: "8080"       # local web UI server
-  api_port: "8081"   # mock Kubernetes API server
+  port: "8080"      # local web UI server
+  apiPort: "8081"   # mock Kubernetes API server
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `ui.port` | string | `0` (random) | Port for the local web UI. |
-| `ui.api_port` | string | `0` (random) | Port for the mock Kubernetes API server. |
+| `ui.apiPort` | string | `0` (random) | Port for the mock Kubernetes API server. (Legacy alias: `ui.api_port`.) |
 
 The `--port` and `--api-port` flags on `kshrk ui` override these when provided.
 
@@ -536,14 +560,14 @@ resources:
 
 ### Auto-discovery (capture all installed CRDs automatically)
 
-Instead of enumerating every CRD in the config, set `auto_discover: true` to
+Instead of enumerating every CRD in the config, set `autoDiscover: true` to
 have k8shark walk the cluster's `/apis` endpoint at capture time and
 automatically add every non-core resource type it finds.
 
 ```yaml
 duration: 10m
 output: ./full-capture.kshrk
-auto_discover: true
+autoDiscover: true
 
 # Explicit entries are still captured and take precedence over auto-discovered
 # duplicates.  You can combine the two approaches.
@@ -578,11 +602,11 @@ resources:
   | `authentication.k8s.io` | Token review — live-only |
   | `authorization.k8s.io` | Access review — live-only |
 
-- Add your own exclusions with `auto_discover_exclude_groups`:
+- Add your own exclusions with `autoDiscoverExcludeGroups`:
 
 ```yaml
-auto_discover: true
-auto_discover_exclude_groups:
+autoDiscover: true
+autoDiscoverExcludeGroups:
   - metrics.k8s.io
   - my-internal.company.io
 ```
@@ -592,8 +616,8 @@ auto_discover_exclude_groups:
 #### Flux CD
 
 ```yaml
-auto_discover: true
-auto_discover_exclude_groups:
+autoDiscover: true
+autoDiscoverExcludeGroups:
   - metrics.k8s.io
 
 resources:
@@ -606,12 +630,12 @@ resources:
 
 Flux CRDs (`kustomizations.kustomize.toolkit.fluxcd.io`,
 `helmreleases.helm.toolkit.fluxcd.io`, etc.) will be picked up automatically
-by `auto_discover: true`.
+by `autoDiscover: true`.
 
 #### ArgoCD
 
 ```yaml
-auto_discover: true
+autoDiscover: true
 
 resources:
   - group: ""
@@ -622,4 +646,4 @@ resources:
 ```
 
 ArgoCD CRDs (`applications.argoproj.io`, `appprojects.argoproj.io`) are
-captured automatically via `auto_discover`.
+captured automatically via `autoDiscover`.

@@ -524,7 +524,7 @@ screenshots, see **[docs/web-ui.md](web-ui.md)**.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--port` | from config (`ui.port`), else random | Port for the local UI server |
-| `--api-port` | from config (`ui.api_port`), else random | Port for the mock API server |
+| `--api-port` | from config (`ui.apiPort`), else random | Port for the mock API server |
 | `--kubeconfig-out` | `~/.kube/k8shark-<id>.yaml` | Where to write the generated kubeconfig |
 | `--at` | latest records | Pin UI data to a specific timestamp (RFC3339 or relative duration) |
 
@@ -994,7 +994,7 @@ These operations work against any k8shark archive with no special config:
 ### Requires CRD resources to be captured
 
 These tools or commands require CRD-backed resources to be present in the
-archive. Use `auto_discover: true` or explicit config entries (see
+archive. Use `autoDiscover: true` or explicit config entries (see
 [Capturing CRD-backed resources](config.md#capturing-crd-backed-resources)).
 
 | Client / Command | Required resources |

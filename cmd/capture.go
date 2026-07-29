@@ -65,7 +65,7 @@ func init() {
 	_ = viper.BindPFlag("output", captureCmd.Flags().Lookup("out"))
 	_ = viper.BindPFlag("kubeconfig", captureCmd.Flags().Lookup("kubeconfig"))
 	_ = viper.BindPFlag("duration", captureCmd.Flags().Lookup("duration"))
-	_ = viper.BindPFlag("auto_discover", captureCmd.Flags().Lookup("auto-discover"))
+	_ = viper.BindPFlag("autoDiscover", captureCmd.Flags().Lookup("auto-discover"))
 	// --out writes a *.kshrk archive, but also accepts "-" to stream NDJSON
 	// to stdout. Scope file completion to *.kshrk while still offering "-".
 	_ = captureCmd.RegisterFlagCompletionFunc("out", func(_ *cobra.Command, _ []string, toComplete string) ([]string, cobra.ShellCompDirective) {

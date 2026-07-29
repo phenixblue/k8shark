@@ -2,9 +2,222 @@ package config
 
 import (
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/spf13/viper"
 )
+
+// writeConfigFile writes contents to a temp *.yaml file and returns its path.
+func writeConfigFile(t *testing.T, contents string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "k8shark.yaml")
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("writing config file: %v", err)
+	}
+	return path
+}
+
+func TestLoad_BasicFile(t *testing.T) {
+	path := writeConfigFile(t, `
+duration: 5m
+output: ./capture.kshrk
+resources:
+  - group: ""
+    version: v1
+    resource: pods
+    namespaces: [default]
+    interval: 30s
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.DurationRaw != "5m" {
+		t.Errorf("DurationRaw = %q, want 5m", cfg.DurationRaw)
+	}
+	if cfg.Output != "./capture.kshrk" {
+		t.Errorf("Output = %q, want ./capture.kshrk", cfg.Output)
+	}
+	if len(cfg.Resources) != 1 || cfg.Resources[0].Resource != "pods" {
+		t.Fatalf("unexpected Resources: %+v", cfg.Resources)
+	}
+}
+
+func TestLoad_NoConfigFile(t *testing.T) {
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load(\"\"): %v", err)
+	}
+	if cfg.DurationRaw != "" || cfg.Output != "" || len(cfg.Resources) != 0 {
+		t.Errorf("expected a zero-value config, got %+v", cfg)
+	}
+}
+
+func TestLoad_UnknownKeyRejected(t *testing.T) {
+	path := writeConfigFile(t, `
+duration: 5m
+outptu: ./capture.kshrk
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected an error for the unknown key 'outptu'")
+	}
+	if !strings.Contains(err.Error(), "outptu") {
+		t.Errorf("error = %v, want it to name the unknown key 'outptu'", err)
+	}
+}
+
+func TestLoad_WrongCaseKeyRejected(t *testing.T) {
+	// "previouslogs" is a real, case-insensitively-matchable key one letter
+	// away from valid — exactly the kind of typo #220 exists to catch. A
+	// case-insensitive decode would silently accept this as previousLogs.
+	path := writeConfigFile(t, `
+duration: 5m
+resources:
+  - group: ""
+    version: v1
+    resource: pods
+    namespaces: [default]
+    interval: 30s
+    previouslogs: true
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected an error for the wrongly-cased key 'previouslogs'")
+	}
+	if !strings.Contains(err.Error(), "previouslogs") {
+		t.Errorf("error = %v, want it to name the unknown key 'previouslogs'", err)
+	}
+}
+
+func TestLoad_CorrectlyCasedKeyAccepted(t *testing.T) {
+	path := writeConfigFile(t, `
+duration: 5m
+resources:
+  - group: ""
+    version: v1
+    resource: pods
+    namespaces: [default]
+    interval: 30s
+    previousLogs: true
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.Resources[0].PreviousLogs {
+		t.Error("expected PreviousLogs=true")
+	}
+}
+
+func TestLoad_LegacyTopLevelKeyAlias(t *testing.T) {
+	path := writeConfigFile(t, `
+duration: 5m
+auto_discover: true
+auto_discover_exclude_groups: ["metrics.k8s.io"]
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.AutoDiscover {
+		t.Error("expected AutoDiscover=true from legacy auto_discover key")
+	}
+	if len(cfg.AutoDiscoverExcludeGroups) != 1 || cfg.AutoDiscoverExcludeGroups[0] != "metrics.k8s.io" {
+		t.Errorf("unexpected AutoDiscoverExcludeGroups: %v", cfg.AutoDiscoverExcludeGroups)
+	}
+}
+
+func TestLoad_LegacyNestedKeyAlias(t *testing.T) {
+	path := writeConfigFile(t, `
+duration: 5m
+ui:
+  port: "8080"
+  api_port: "8081"
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.UI.Port != "8080" {
+		t.Errorf("UI.Port = %q, want 8080", cfg.UI.Port)
+	}
+	if cfg.UI.APIPort != "8081" {
+		t.Errorf("UI.APIPort = %q, want 8081 (from legacy api_port)", cfg.UI.APIPort)
+	}
+}
+
+func TestLoad_CanonicalKeyWinsOverLegacyAlias(t *testing.T) {
+	path := writeConfigFile(t, `
+duration: 5m
+auto_discover: false
+autoDiscover: true
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.AutoDiscover {
+		t.Error("expected the canonical autoDiscover=true to win over the legacy auto_discover=false")
+	}
+}
+
+func TestLoad_VersionTooNew(t *testing.T) {
+	path := writeConfigFile(t, `
+version: 999
+duration: 5m
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected an error for a config version newer than this build understands")
+	}
+	if !strings.Contains(err.Error(), "upgrade kshrk") {
+		t.Errorf("error = %v, want it to suggest upgrading kshrk", err)
+	}
+}
+
+func TestLoad_EnvOverride(t *testing.T) {
+	// Mirrors cmd/root.go's initConfig wiring, scoped to this test via the
+	// global viper singleton (config.Load reads it for env/flag overrides
+	// only — see Load's doc comment).
+	viper.SetEnvPrefix("KSHRK")
+	viper.AutomaticEnv()
+	t.Setenv("KSHRK_DURATION", "99h")
+	t.Setenv("KSHRK_OUTPUT", "from-env.kshrk")
+
+	path := writeConfigFile(t, `
+duration: 5m
+output: ./capture.kshrk
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.DurationRaw != "99h" {
+		t.Errorf("DurationRaw = %q, want 99h (from KSHRK_DURATION)", cfg.DurationRaw)
+	}
+	if cfg.Output != "from-env.kshrk" {
+		t.Errorf("Output = %q, want from-env.kshrk (from KSHRK_OUTPUT)", cfg.Output)
+	}
+}
+
+func TestLoad_UnprefixedEnvVarIgnored(t *testing.T) {
+	viper.SetEnvPrefix("KSHRK")
+	viper.AutomaticEnv()
+	t.Setenv("DURATION", "99h") // bare, unprefixed — must NOT override (#218)
+
+	path := writeConfigFile(t, `duration: 5m`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.DurationRaw != "5m" {
+		t.Errorf("DurationRaw = %q, want 5m (unprefixed DURATION must not apply)", cfg.DurationRaw)
+	}
+}
 
 func validatedCfg(t *testing.T, dur string, resources []Resource) *Config {
 	t.Helper()
