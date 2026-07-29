@@ -9,7 +9,7 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 )
 
-// k8s object shape we inspect for filtering.
+// K8sObject is the k8s object shape we inspect for filtering.
 type K8sObject struct {
 	Metadata struct {
 		Name      string            `json:"name"`
@@ -20,8 +20,8 @@ type K8sObject struct {
 	Status map[string]any `json:"status"`
 }
 
-// labelRequirement is one parsed segment of a labelSelector.
-type labelRequirement struct {
+// LabelRequirement is one parsed segment of a labelSelector.
+type LabelRequirement struct {
 	key    string
 	op     string // "=", "!=", "in", "notin", "exists", "doesnotexist"
 	values []string
@@ -31,11 +31,11 @@ type labelRequirement struct {
 // Supports: key=val, key==val, key!=val, key in (v1,v2), key notin (v1,v2),
 //
 //	key (existence), !key (non-existence).
-func ParseRequirements(selector string) ([]labelRequirement, error) {
+func ParseRequirements(selector string) ([]LabelRequirement, error) {
 	if selector == "" {
 		return nil, nil
 	}
-	var reqs []labelRequirement
+	var reqs []LabelRequirement
 	for _, seg := range splitRespectingParens(selector) {
 		seg = strings.TrimSpace(seg)
 		if seg == "" {
@@ -50,8 +50,8 @@ func ParseRequirements(selector string) ([]labelRequirement, error) {
 	return reqs, nil
 }
 
-func parseOneRequirement(seg string) (labelRequirement, error) {
-	var r labelRequirement
+func parseOneRequirement(seg string) (LabelRequirement, error) {
+	var r LabelRequirement
 	// key notin (v1,v2)
 	if i := strings.Index(seg, " notin "); i >= 0 {
 		r.key = strings.TrimSpace(seg[:i])
@@ -132,7 +132,7 @@ func splitRespectingParens(s string) []string {
 }
 
 // MatchesLabels returns true if the object's labels satisfy all requirements.
-func MatchesLabels(obj *K8sObject, reqs []labelRequirement) bool {
+func MatchesLabels(obj *K8sObject, reqs []LabelRequirement) bool {
 	for _, r := range reqs {
 		val, exists := obj.Metadata.Labels[r.key]
 		switch r.op {
@@ -177,8 +177,8 @@ func MatchesLabels(obj *K8sObject, reqs []labelRequirement) bool {
 	return true
 }
 
-// fieldSelectorReq is one parsed field= or field!= requirement.
-type fieldSelectorReq struct {
+// FieldSelectorReq is one parsed field= or field!= requirement.
+type FieldSelectorReq struct {
 	field string
 	op    string // "=" or "!="
 	value string
@@ -187,17 +187,17 @@ type fieldSelectorReq struct {
 // parseFieldSelectorSegment parses one fieldSelector segment ("key=val",
 // "key==val", or "key!=val") into a requirement. ok is false if the segment
 // matches none of those forms.
-func parseFieldSelectorSegment(seg string) (fieldSelectorReq, bool) {
+func parseFieldSelectorSegment(seg string) (FieldSelectorReq, bool) {
 	if i := strings.Index(seg, "!="); i >= 0 {
-		return fieldSelectorReq{strings.TrimSpace(seg[:i]), "!=", strings.TrimSpace(seg[i+2:])}, true
+		return FieldSelectorReq{strings.TrimSpace(seg[:i]), "!=", strings.TrimSpace(seg[i+2:])}, true
 	}
 	if i := strings.Index(seg, "=="); i >= 0 {
-		return fieldSelectorReq{strings.TrimSpace(seg[:i]), "=", strings.TrimSpace(seg[i+2:])}, true
+		return FieldSelectorReq{strings.TrimSpace(seg[:i]), "=", strings.TrimSpace(seg[i+2:])}, true
 	}
 	if i := strings.Index(seg, "="); i >= 0 {
-		return fieldSelectorReq{strings.TrimSpace(seg[:i]), "=", strings.TrimSpace(seg[i+1:])}, true
+		return FieldSelectorReq{strings.TrimSpace(seg[:i]), "=", strings.TrimSpace(seg[i+1:])}, true
 	}
-	return fieldSelectorReq{}, false
+	return FieldSelectorReq{}, false
 }
 
 // ParseFieldSelector parses a comma-separated fieldSelector for reads.
@@ -208,11 +208,11 @@ func parseFieldSelectorSegment(seg string) (fieldSelectorReq, bool) {
 // FilterItemsStrict instead (see below), which parses with apimachinery's
 // real selector grammar rather than this lenient one, since the same
 // leniency there would risk deleting more than the caller asked for.
-func ParseFieldSelector(selector string) []fieldSelectorReq {
+func ParseFieldSelector(selector string) []FieldSelectorReq {
 	if selector == "" {
 		return nil
 	}
-	var reqs []fieldSelectorReq
+	var reqs []FieldSelectorReq
 	for _, seg := range strings.Split(selector, ",") {
 		if req, ok := parseFieldSelectorSegment(strings.TrimSpace(seg)); ok {
 			reqs = append(reqs, req)
@@ -323,7 +323,7 @@ func FilterItemsStrict(items []json.RawMessage, labelSelector, fieldSelector str
 
 // MatchesFields returns true if the object satisfies all field selector requirements.
 // Only metadata.name and metadata.namespace are supported.
-func MatchesFields(obj *K8sObject, reqs []fieldSelectorReq) bool {
+func MatchesFields(obj *K8sObject, reqs []FieldSelectorReq) bool {
 	for _, r := range reqs {
 		var actual string
 		switch r.field {
