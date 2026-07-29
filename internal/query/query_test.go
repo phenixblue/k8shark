@@ -41,11 +41,11 @@ func buildQueryStore(t *testing.T, bodies map[string]string) *store.CaptureStore
 		t.Fatalf("archive.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = ar.Close() })
-	store, err := store.LoadStore(ar)
+	cs, err := store.LoadStore(ar)
 	if err != nil {
 		t.Fatalf("LoadStore: %v", err)
 	}
-	return store
+	return cs
 }
 
 func TestRun_MatchesAcrossResourceTypes(t *testing.T) {

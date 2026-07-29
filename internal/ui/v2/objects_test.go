@@ -277,9 +277,9 @@ func buildV2TestStore(t *testing.T, recs []*capture.Record, idx capture.Index, m
 		t.Fatalf("archive.Open: %v", err)
 	}
 	t.Cleanup(func() { ar.Close() })
-	store, err := store.LoadStore(ar)
+	cs, err := store.LoadStore(ar)
 	if err != nil {
 		t.Fatalf("LoadStore: %v", err)
 	}
-	return store
+	return cs
 }

@@ -41,11 +41,11 @@ func buildDiagStore(t *testing.T, bodies map[string]string) *store.CaptureStore 
 		t.Fatalf("archive.Open: %v", err)
 	}
 	t.Cleanup(func() { ar.Close() })
-	store, err := store.LoadStore(ar)
+	cs, err := store.LoadStore(ar)
 	if err != nil {
 		t.Fatalf("LoadStore: %v", err)
 	}
-	return store
+	return cs
 }
 
 // fullFixture exercises every PR-1 rule plus a healthy pod (which must yield

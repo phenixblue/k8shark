@@ -61,18 +61,18 @@ func TestArchive_ZeroRecords(t *testing.T) {
 			t.Fatalf("archive.Open: %v", err)
 		}
 		defer ar.Close()
-		store, err := store.LoadStore(ar)
+		cs, err := store.LoadStore(ar)
 		if err != nil {
 			t.Fatalf("store.LoadStore: %v", err)
 		}
 		// Deferred immediately (not just called at the end) so a t.Fatalf added
 		// later in this subtest can't skip it and leave the enrichment
 		// goroutine running when the deferred ar.Close() above runs.
-		defer store.Close()
-		if len(store.Index) != 0 {
-			t.Errorf("Index = %v, want empty", store.Index)
+		defer cs.Close()
+		if len(cs.Index) != 0 {
+			t.Errorf("Index = %v, want empty", cs.Index)
 		}
-		if got := len(store.Resources()); got != 0 {
+		if got := len(cs.Resources()); got != 0 {
 			t.Errorf("Resources() = %d entries, want 0", got)
 		}
 	})

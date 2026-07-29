@@ -210,22 +210,22 @@ func loadArchiveSnapshot(archivePath string, at time.Time, identities []age.Iden
 	if err != nil {
 		return nil, fmt.Errorf("opening archive %q: %w", archivePath, err)
 	}
-	store, err := store.LoadStore(ar)
+	cs, err := store.LoadStore(ar)
 	if err != nil {
 		_ = ar.Close()
 		return nil, fmt.Errorf("loading archive %q: %w", archivePath, err)
 	}
 	shot := &archiveSnapshot{
 		ar:       ar,
-		store:    store,
-		meta:     store.Metadata,
-		snapshot: make(map[string]json.RawMessage, len(store.Index)),
+		store:    cs,
+		meta:     cs.Metadata,
+		snapshot: make(map[string]json.RawMessage, len(cs.Index)),
 	}
-	for path := range store.Index {
+	for path := range cs.Index {
 		if strings.Contains(path, "?as=Table") {
 			continue
 		}
-		body, code, err := store.Latest(path, at)
+		body, code, err := cs.Latest(path, at)
 		if err != nil {
 			shot.cleanup()
 			return nil, fmt.Errorf("reading %s from %q: %w", path, archivePath, err)

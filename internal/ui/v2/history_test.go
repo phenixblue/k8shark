@@ -62,11 +62,11 @@ func buildV2WatchStore(t *testing.T, events []v2WatchEvent, captureStart time.Ti
 		t.Fatalf("archive.Open: %v", err)
 	}
 	t.Cleanup(func() { ar.Close() })
-	store, err := store.LoadStore(ar)
+	cs, err := store.LoadStore(ar)
 	if err != nil {
 		t.Fatalf("LoadStore: %v", err)
 	}
-	return store
+	return cs
 }
 
 func TestServeObjectHistory(t *testing.T) {

@@ -44,11 +44,14 @@ type Handler struct {
 	// Overlay is the mock API server backing this same archive. Every
 	// list/detail read merges its writable-overlay writes (kubectl/helm/kwok/
 	// controller-manager) over the captured state, so the dashboard shows
-	// live changes instead of only what was captured. Its accessor methods
-	// (OverlayScopes, MergeOverlayList, ...) are nil-safe on both a nil
-	// *Server (plain `open`, or a caller that didn't wire one up) and a
-	// Server without a writable overlay — callers here can call them on
-	// h.Overlay directly without checking either case first.
+	// live changes instead of only what was captured. *server.Server's own
+	// accessor methods (OverlayScopes, MergeOverlayList, ...) are nil-safe on
+	// both a nil *Server (plain `open`, or a caller that didn't wire one up)
+	// and a Server without a writable overlay — but Overlay is an interface,
+	// and a nil OverlayReader panics on any method call regardless of
+	// whether the underlying concrete type would have been nil-safe. Every
+	// call site in this package nil-checks h.Overlay itself before calling
+	// through it.
 	Overlay OverlayReader
 
 	// discoveryMetaOnce/discoveryMetaCache memoize discoveryResourceMeta
