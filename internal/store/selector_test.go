@@ -32,16 +32,16 @@ func TestParseRequirements(t *testing.T) {
 			continue
 		}
 		r := reqs[0]
-		if r.key != tc.key {
-			t.Errorf("[%q] key: got %q, want %q", tc.sel, r.key, tc.key)
+		if r.Key != tc.key {
+			t.Errorf("[%q] key: got %q, want %q", tc.sel, r.Key, tc.key)
 		}
-		if r.op != tc.op {
-			t.Errorf("[%q] op: got %q, want %q", tc.sel, r.op, tc.op)
+		if r.Op != tc.op {
+			t.Errorf("[%q] op: got %q, want %q", tc.sel, r.Op, tc.op)
 		}
 		if tc.values != nil {
 			for i, v := range tc.values {
-				if i >= len(r.values) || r.values[i] != v {
-					t.Errorf("[%q] values[%d]: got %v, want %q", tc.sel, i, r.values, v)
+				if i >= len(r.Values) || r.Values[i] != v {
+					t.Errorf("[%q] values[%d]: got %v, want %q", tc.sel, i, r.Values, v)
 				}
 			}
 		}

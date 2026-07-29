@@ -22,9 +22,9 @@ type K8sObject struct {
 
 // LabelRequirement is one parsed segment of a labelSelector.
 type LabelRequirement struct {
-	key    string
-	op     string // "=", "!=", "in", "notin", "exists", "doesnotexist"
-	values []string
+	Key    string
+	Op     string // "=", "!=", "in", "notin", "exists", "doesnotexist"
+	Values []string
 }
 
 // ParseRequirements parses a comma-separated labelSelector string into requirements.
@@ -54,44 +54,44 @@ func parseOneRequirement(seg string) (LabelRequirement, error) {
 	var r LabelRequirement
 	// key notin (v1,v2)
 	if i := strings.Index(seg, " notin "); i >= 0 {
-		r.key = strings.TrimSpace(seg[:i])
-		r.op = "notin"
-		r.values = parseParenList(seg[i+7:])
+		r.Key = strings.TrimSpace(seg[:i])
+		r.Op = "notin"
+		r.Values = parseParenList(seg[i+7:])
 		return r, nil
 	}
 	// key in (v1,v2)
 	if i := strings.Index(seg, " in "); i >= 0 {
-		r.key = strings.TrimSpace(seg[:i])
-		r.op = "in"
-		r.values = parseParenList(seg[i+4:])
+		r.Key = strings.TrimSpace(seg[:i])
+		r.Op = "in"
+		r.Values = parseParenList(seg[i+4:])
 		return r, nil
 	}
 	// key!=val
 	if i := strings.Index(seg, "!="); i >= 0 {
-		r.key = strings.TrimSpace(seg[:i])
-		r.op = "!="
-		r.values = []string{strings.TrimSpace(seg[i+2:])}
+		r.Key = strings.TrimSpace(seg[:i])
+		r.Op = "!="
+		r.Values = []string{strings.TrimSpace(seg[i+2:])}
 		return r, nil
 	}
 	// key==val or key=val
 	for _, eq := range []string{"==", "="} {
 		if i := strings.Index(seg, eq); i >= 0 {
-			r.key = strings.TrimSpace(seg[:i])
-			r.op = "="
-			r.values = []string{strings.TrimSpace(seg[i+len(eq):])}
+			r.Key = strings.TrimSpace(seg[:i])
+			r.Op = "="
+			r.Values = []string{strings.TrimSpace(seg[i+len(eq):])}
 			return r, nil
 		}
 	}
 	// !key (non-existence)
 	if strings.HasPrefix(seg, "!") {
-		r.key = strings.TrimSpace(seg[1:])
-		r.op = "doesnotexist"
+		r.Key = strings.TrimSpace(seg[1:])
+		r.Op = "doesnotexist"
 		return r, nil
 	}
 	// key (existence check)
 	if seg != "" {
-		r.key = seg
-		r.op = "exists"
+		r.Key = seg
+		r.Op = "exists"
 		return r, nil
 	}
 	return r, fmt.Errorf("empty requirement segment")
@@ -134,14 +134,14 @@ func splitRespectingParens(s string) []string {
 // MatchesLabels returns true if the object's labels satisfy all requirements.
 func MatchesLabels(obj *K8sObject, reqs []LabelRequirement) bool {
 	for _, r := range reqs {
-		val, exists := obj.Metadata.Labels[r.key]
-		switch r.op {
+		val, exists := obj.Metadata.Labels[r.Key]
+		switch r.Op {
 		case "=":
-			if !exists || val != r.values[0] {
+			if !exists || val != r.Values[0] {
 				return false
 			}
 		case "!=":
-			if exists && val == r.values[0] {
+			if exists && val == r.Values[0] {
 				return false
 			}
 		case "in":
@@ -149,7 +149,7 @@ func MatchesLabels(obj *K8sObject, reqs []LabelRequirement) bool {
 				return false
 			}
 			found := false
-			for _, v := range r.values {
+			for _, v := range r.Values {
 				if val == v {
 					found = true
 					break
@@ -159,7 +159,7 @@ func MatchesLabels(obj *K8sObject, reqs []LabelRequirement) bool {
 				return false
 			}
 		case "notin":
-			for _, v := range r.values {
+			for _, v := range r.Values {
 				if exists && val == v {
 					return false
 				}
@@ -179,9 +179,9 @@ func MatchesLabels(obj *K8sObject, reqs []LabelRequirement) bool {
 
 // FieldSelectorReq is one parsed field= or field!= requirement.
 type FieldSelectorReq struct {
-	field string
-	op    string // "=" or "!="
-	value string
+	Field string
+	Op    string // "=" or "!="
+	Value string
 }
 
 // parseFieldSelectorSegment parses one fieldSelector segment ("key=val",
@@ -326,7 +326,7 @@ func FilterItemsStrict(items []json.RawMessage, labelSelector, fieldSelector str
 func MatchesFields(obj *K8sObject, reqs []FieldSelectorReq) bool {
 	for _, r := range reqs {
 		var actual string
-		switch r.field {
+		switch r.Field {
 		case "metadata.name":
 			actual = obj.Metadata.Name
 		case "metadata.namespace":
@@ -335,13 +335,13 @@ func MatchesFields(obj *K8sObject, reqs []FieldSelectorReq) bool {
 			// Unknown field — skip (generous, avoids false negatives on unsupported fields).
 			continue
 		}
-		switch r.op {
+		switch r.Op {
 		case "=":
-			if actual != r.value {
+			if actual != r.Value {
 				return false
 			}
 		case "!=":
-			if actual == r.value {
+			if actual == r.Value {
 				return false
 			}
 		}
