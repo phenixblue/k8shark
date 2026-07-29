@@ -68,30 +68,35 @@ func runTransitions(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// A lightweight metadata-only open, so relative --from/--to durations can
-	// be anchored to the capture end and validated against its bounds, the
-	// same as every other time flag (#221). LoadTransitions below reopens the
-	// archive for the actual scan.
-	ar, err := archive.OpenWithIdentities(args[0], identities)
-	if err != nil {
-		return fmt.Errorf("opening archive: %w", err)
-	}
-	meta, err := ar.ReadMetadata()
-	_ = ar.Close()
-	if err != nil {
-		return fmt.Errorf("reading metadata: %w", err)
-	}
-
 	opts := transitions.FilterOpts{
 		Resource:  resource,
 		Namespace: namespace,
 		Name:      name,
 	}
-	if opts.Since, err = timewindow.ParseAt(fromRaw, meta.CapturedAt, meta.CapturedUntil, "--from"); err != nil {
-		return err
-	}
-	if opts.Until, err = timewindow.ParseAt(toRaw, meta.CapturedAt, meta.CapturedUntil, "--to"); err != nil {
-		return err
+	if fromRaw != "" || toRaw != "" {
+		// A lightweight metadata-only open, so relative --from/--to durations
+		// can be anchored to the capture end and validated against its
+		// bounds, the same as every other time flag (#221). Skipped
+		// entirely when neither flag is set: ParseAt("") returns the zero
+		// Time without needing capture bounds at all, so opening the
+		// archive twice (once here, once inside LoadTransitions) would be
+		// pure overhead on the default, unfiltered path. LoadTransitions
+		// below reopens the archive for the actual scan either way.
+		ar, err := archive.OpenWithIdentities(args[0], identities)
+		if err != nil {
+			return fmt.Errorf("opening archive: %w", err)
+		}
+		meta, err := ar.ReadMetadata()
+		_ = ar.Close()
+		if err != nil {
+			return fmt.Errorf("reading metadata: %w", err)
+		}
+		if opts.Since, err = timewindow.ParseAt(fromRaw, meta.CapturedAt, meta.CapturedUntil, "--from"); err != nil {
+			return err
+		}
+		if opts.Until, err = timewindow.ParseAt(toRaw, meta.CapturedAt, meta.CapturedUntil, "--to"); err != nil {
+			return err
+		}
 	}
 
 	ts, err := transitions.LoadTransitions(args[0], opts, identities)
