@@ -1,9 +1,9 @@
 // Package timewindow parses the CLI's time-point and time-window flags
 // (--at, --from/--to) against a capture's [CapturedAt, CapturedUntil] bounds.
-// It is the single implementation shared by cmd (diagnose, query), internal/diff,
-// and internal/server (open/replay/ui) — previously each had its own copy, and
-// only one of the three guarded a relative duration against an unknown capture
-// end time (#221).
+// It is the single implementation shared by cmd (diagnose, query, transitions),
+// internal/diff, internal/server (open/replay), and internal/ui (ui) — each
+// previously had its own copy, and only one of them guarded a relative
+// duration against an unknown capture end time (#221).
 package timewindow
 
 import (

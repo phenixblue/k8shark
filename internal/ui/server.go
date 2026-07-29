@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/phenixblue/k8shark/internal/server"
+	"github.com/phenixblue/k8shark/internal/timewindow"
 	v2 "github.com/phenixblue/k8shark/internal/ui/v2"
 )
 
@@ -133,23 +134,9 @@ func serveRoot(w http.ResponseWriter, r *http.Request) {
 
 // parseReplayAt resolves the --at value (RFC3339 timestamp or relative duration
 // like -5m) against the capture window. An empty value selects the latest state.
+// Delegates to the shared internal/timewindow parser (also used by cmd,
+// internal/diff, and internal/server) so this validation isn't duplicated
+// per package (#221).
 func parseReplayAt(start, end time.Time, raw string) (time.Time, error) {
-	if raw == "" {
-		return time.Time{}, nil
-	}
-	at, err := time.Parse(time.RFC3339, raw)
-	if err != nil {
-		d, derr := time.ParseDuration(raw)
-		if derr != nil {
-			return time.Time{}, fmt.Errorf("parsing --at %q: must be RFC3339 or a relative duration like -5m", raw)
-		}
-		at = end.Add(d)
-	}
-	if !start.IsZero() && at.Before(start) {
-		return time.Time{}, fmt.Errorf("parsing --at %q: requested time %s is before capture start %s", raw, at.Format(time.RFC3339), start.Format(time.RFC3339))
-	}
-	if !end.IsZero() && at.After(end) {
-		return time.Time{}, fmt.Errorf("parsing --at %q: requested time %s is after capture end %s", raw, at.Format(time.RFC3339), end.Format(time.RFC3339))
-	}
-	return at, nil
+	return timewindow.ParseAt(raw, start, end, "--at")
 }
