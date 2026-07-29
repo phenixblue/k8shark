@@ -197,6 +197,6 @@ info "Capture it with k8shark:"
 printf '    make build\n'
 printf '    ./kshrk capture --kubeconfig %s --auto-discover --duration 5m --out scale.kshrk\n\n' "$KIND_KUBECONFIG"
 info "Then explore the capture (UI on 18080/18081):"
-printf '    ./kshrk ui scale.kshrk --ui-port 18080 --api-port 18081\n\n'
+printf '    ./kshrk ui scale.kshrk --port 18080 --api-port 18081\n\n'
 info "Tear down when finished:"
 printf '    make kind-down\n\n'
