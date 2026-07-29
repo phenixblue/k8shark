@@ -22,9 +22,10 @@ environment without direct connectivity.`,
 	// "Error: ..." + usage-block printing for every subcommand (cobra checks
 	// both the executing command's and the root's flag — see ExecuteC), so
 	// Execute below is the single place that prints an error. Without this,
-	// a command whose exitError carries an empty message (a clean --fail-on
-	// gate trip) printed a bare "Error: " followed by a full usage dump, and
-	// every other error printed twice (once by cobra, once here) (#217).
+	// a command whose exitError carries an empty message (a --fail-on gate
+	// trip with nothing more to say than "findings exist") printed a bare
+	// "Error: " followed by a full usage dump, and every other error printed
+	// twice (once by cobra, once here) (#217).
 	SilenceErrors: true,
 	SilenceUsage:  true,
 }
@@ -49,21 +50,29 @@ const (
 // Execute is the entry point called from main.
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
-		// Match specifically on the internal exitError type, not any error
-		// implementing ExitCode() int — os/exec.ExitError also satisfies
-		// that shape, and matching it here would let a failing subprocess
-		// (kwok, kube-controller-manager, ...) escape with an arbitrary
-		// exit code instead of the documented 0/1/2 contract.
-		var exitErr exitError
-		if errors.As(err, &exitErr) {
-			if exitErr.msg != "" {
-				fmt.Fprintln(os.Stderr, err)
-			}
-			os.Exit(exitErr.ExitCode())
+		code, printErr := exitCodeAndMessage(err)
+		if printErr {
+			fmt.Fprintln(os.Stderr, err)
 		}
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(exitCodeFailure)
+		os.Exit(code)
 	}
+}
+
+// exitCodeAndMessage decides the process exit code and whether err should be
+// printed to stderr, for a non-nil error returned by rootCmd.Execute(). It's
+// split out from Execute so the 0/1/2 dispatch contract is testable without
+// an actual os.Exit.
+func exitCodeAndMessage(err error) (code int, printErr bool) {
+	// Match specifically on the internal exitError type, not any error
+	// implementing ExitCode() int — os/exec.ExitError also satisfies that
+	// shape, and matching it here would let a failing subprocess (kwok,
+	// kube-controller-manager, ...) escape with an arbitrary exit code
+	// instead of the documented 0/1/2 contract.
+	var exitErr exitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode(), exitErr.msg != ""
+	}
+	return exitCodeFailure, true
 }
 
 func init() {
