@@ -107,7 +107,7 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 	}
 
 	if hasDiff {
-		return exitError{code: 1}
+		return exitError{code: exitCodeFindings}
 	}
 	return nil
 }

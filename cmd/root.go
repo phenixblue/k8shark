@@ -18,7 +18,33 @@ var rootCmd = &cobra.Command{
 	Long: `k8shark captures a Kubernetes cluster's state over time and replays
 it through a mock API server, letting support engineers query a customer's
 environment without direct connectivity.`,
+	// SilenceErrors/SilenceUsage on the root command suppress cobra's own
+	// "Error: ..." + usage-block printing for every subcommand (cobra checks
+	// both the executing command's and the root's flag — see ExecuteC), so
+	// Execute below is the single place that prints an error. Without this,
+	// a command whose exitError carries an empty message (a clean --fail-on
+	// gate trip) printed a bare "Error: " followed by a full usage dump, and
+	// every other error printed twice (once by cobra, once here) (#217).
+	SilenceErrors: true,
+	SilenceUsage:  true,
 }
+
+// Exit codes follow the diff(1)/git diff --exit-code convention, so CI can
+// tell "the command ran and found something" apart from "the command
+// couldn't run at all" (#217):
+//
+//	0 - clean: no findings/differences
+//	1 - the command ran successfully and found something (a diagnose
+//	    --fail-on gate trip, a diff with differences)
+//	2 - the command failed (bad archive, invalid flags, I/O error, ...)
+//
+// A command signals exit code 1 by returning an exitError{code: 1}; any
+// other error (including a plain error from fmt.Errorf) falls through to the
+// exit code 2 case below.
+const (
+	exitCodeFindings = 1
+	exitCodeFailure  = 2
+)
 
 // Execute is the entry point called from main.
 func Execute() {
@@ -31,7 +57,7 @@ func Execute() {
 			os.Exit(exitErr.ExitCode())
 		}
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		os.Exit(exitCodeFailure)
 	}
 }
 

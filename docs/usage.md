@@ -257,6 +257,12 @@ kshrk diagnose capture.kshrk --severity warning --category scheduling -o json
 kshrk diagnose capture.kshrk --fail-on critical
 ```
 
+Exit codes follow the `diff(1)`/`git diff --exit-code` convention:
+
+- `0` — no findings at or above `--fail-on` (or `--fail-on` not set)
+- `1` — `--fail-on` tripped: at least one finding at or above the given severity
+- `2` — the command failed (bad archive, invalid flags, ...)
+
 ### Rules
 
 | rule_id | Severity | Category | Detects |
@@ -577,10 +583,11 @@ kshrk diff --before before.kshrk --after after.kshrk --output json
 | `--namespace` | | Limit diff to one namespace |
 | `--output`, `-o` | `text` | Output format: `text` or `json` |
 
-Exit codes follow the usual diff convention:
+Exit codes follow the `diff(1)`/`git diff --exit-code` convention:
 
-- `0` when no differences are found
-- `1` when differences are found
+- `0` — no differences found
+- `1` — differences found
+- `2` — the command failed (bad archive, invalid flags, ...)
 
 ---
 
