@@ -11,7 +11,7 @@ import (
 
 	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/capture"
-	"github.com/phenixblue/k8shark/internal/server"
+	"github.com/phenixblue/k8shark/internal/store"
 )
 
 // ── normalizeObjectBody (pure) ───────────────────────────────────────────────
@@ -257,7 +257,7 @@ func newObjectTestHandler(t *testing.T) *Handler {
 
 // buildV2TestStore writes records to a temp archive and loads a CaptureStore,
 // mirroring the helper used by the legacy UI tests.
-func buildV2TestStore(t *testing.T, recs []*capture.Record, idx capture.Index, meta *capture.CaptureMetadata) *server.CaptureStore {
+func buildV2TestStore(t *testing.T, recs []*capture.Record, idx capture.Index, meta *capture.CaptureMetadata) *store.CaptureStore {
 	t.Helper()
 	out := filepath.Join(t.TempDir(), "capture.kshrk")
 	sw, err := archive.NewStreamWriter(out)
@@ -277,9 +277,10 @@ func buildV2TestStore(t *testing.T, recs []*capture.Record, idx capture.Index, m
 		t.Fatalf("archive.Open: %v", err)
 	}
 	t.Cleanup(func() { ar.Close() })
-	store, err := server.LoadStore(ar)
+	cs, err := store.LoadStore(ar)
 	if err != nil {
 		t.Fatalf("LoadStore: %v", err)
 	}
-	return store
+	t.Cleanup(cs.Close)
+	return cs
 }

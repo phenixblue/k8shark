@@ -1,4 +1,4 @@
-package server
+package store
 
 import (
 	"encoding/json"
@@ -22,26 +22,26 @@ func TestParseRequirements(t *testing.T) {
 		{"!app", 1, "doesnotexist", "app", nil},
 	}
 	for _, tc := range cases {
-		reqs, err := parseRequirements(tc.sel)
+		reqs, err := ParseRequirements(tc.sel)
 		if err != nil {
-			t.Errorf("parseRequirements(%q) error: %v", tc.sel, err)
+			t.Errorf("ParseRequirements(%q) error: %v", tc.sel, err)
 			continue
 		}
 		if len(reqs) != tc.count {
-			t.Errorf("parseRequirements(%q): got %d reqs, want %d", tc.sel, len(reqs), tc.count)
+			t.Errorf("ParseRequirements(%q): got %d reqs, want %d", tc.sel, len(reqs), tc.count)
 			continue
 		}
 		r := reqs[0]
-		if r.key != tc.key {
-			t.Errorf("[%q] key: got %q, want %q", tc.sel, r.key, tc.key)
+		if r.Key != tc.key {
+			t.Errorf("[%q] key: got %q, want %q", tc.sel, r.Key, tc.key)
 		}
-		if r.op != tc.op {
-			t.Errorf("[%q] op: got %q, want %q", tc.sel, r.op, tc.op)
+		if r.Op != tc.op {
+			t.Errorf("[%q] op: got %q, want %q", tc.sel, r.Op, tc.op)
 		}
 		if tc.values != nil {
 			for i, v := range tc.values {
-				if i >= len(r.values) || r.values[i] != v {
-					t.Errorf("[%q] values[%d]: got %v, want %q", tc.sel, i, r.values, v)
+				if i >= len(r.Values) || r.Values[i] != v {
+					t.Errorf("[%q] values[%d]: got %v, want %q", tc.sel, i, r.Values, v)
 				}
 			}
 		}
@@ -49,7 +49,7 @@ func TestParseRequirements(t *testing.T) {
 }
 
 func TestMultiRequirement(t *testing.T) {
-	reqs, err := parseRequirements("app=nginx,env=prod")
+	reqs, err := ParseRequirements("app=nginx,env=prod")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestMultiRequirement(t *testing.T) {
 }
 
 func TestInWithCommas(t *testing.T) {
-	reqs, err := parseRequirements("app in (nginx,redis),env=prod")
+	reqs, err := ParseRequirements("app in (nginx,redis),env=prod")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestApplySelectors_LabelFilter(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		filtered, err := applySelectors(list, tc.sel, "")
+		filtered, err := ApplySelectors(list, tc.sel, "")
 		if err != nil {
 			t.Fatalf("[%q] error: %v", tc.sel, err)
 		}
@@ -123,7 +123,7 @@ func TestApplySelectors_FieldFilter(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		filtered, err := applySelectors(list, "", tc.sel)
+		filtered, err := ApplySelectors(list, "", tc.sel)
 		if err != nil {
 			t.Fatalf("[%q] error: %v", tc.sel, err)
 		}
@@ -136,7 +136,7 @@ func TestApplySelectors_FieldFilter(t *testing.T) {
 
 func TestApplySelectors_EmptySelector(t *testing.T) {
 	list := listWithPods([]podSpec{{name: "nginx", labels: map[string]string{"app": "nginx"}}})
-	out, err := applySelectors(list, "", "")
+	out, err := ApplySelectors(list, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestApplySelectors_EmptySelector(t *testing.T) {
 
 func TestApplySelectors_NotAList(t *testing.T) {
 	body := []byte(`{"apiVersion":"v1","kind":"Pod","metadata":{"name":"nginx"}}`)
-	out, err := applySelectors(body, "app=nginx", "")
+	out, err := ApplySelectors(body, "app=nginx", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +222,7 @@ func stringSliceEqual(a, b []string) bool {
 	return true
 }
 
-// ── filterTableRows tests ─────────────────────────────────────────────────────
+// ── FilterTableRows tests ─────────────────────────────────────────────────────
 
 // tableWithPods builds a meta.k8s.io/v1 Table JSON from a slice of podSpecs,
 // mirroring the structure the mock server stores from a real cluster capture.
@@ -304,7 +304,7 @@ func TestFilterTableRows_LabelFilter(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		filtered, err := filterTableRows(table, tc.sel, "")
+		filtered, err := FilterTableRows(table, tc.sel, "")
 		if err != nil {
 			t.Fatalf("[%q] error: %v", tc.sel, err)
 		}
@@ -331,7 +331,7 @@ func TestFilterTableRows_FieldFilter(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		filtered, err := filterTableRows(table, "", tc.sel)
+		filtered, err := FilterTableRows(table, "", tc.sel)
 		if err != nil {
 			t.Fatalf("[%q] error: %v", tc.sel, err)
 		}
@@ -344,7 +344,7 @@ func TestFilterTableRows_FieldFilter(t *testing.T) {
 
 func TestFilterTableRows_EmptySelector(t *testing.T) {
 	table := tableWithPods([]podSpec{{name: "nginx", labels: map[string]string{"app": "nginx"}}})
-	out, err := filterTableRows(table, "", "")
+	out, err := FilterTableRows(table, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -355,7 +355,7 @@ func TestFilterTableRows_EmptySelector(t *testing.T) {
 
 func TestFilterTableRows_NotATable(t *testing.T) {
 	body := []byte(`{"apiVersion":"v1","kind":"Pod","metadata":{"name":"nginx"}}`)
-	out, err := filterTableRows(body, "app=nginx", "")
+	out, err := FilterTableRows(body, "app=nginx", "")
 	if err != nil {
 		t.Fatal(err)
 	}

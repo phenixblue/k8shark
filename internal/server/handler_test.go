@@ -12,6 +12,8 @@ import (
 
 	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/capture"
+
+	kstore "github.com/phenixblue/k8shark/internal/store"
 )
 
 func TestHandler_Version(t *testing.T) {
@@ -91,7 +93,7 @@ func TestHandler_APIGroupList(t *testing.T) {
 // TestHandler_APIGroupList_PreferredVersionDeterministic verifies a group
 // with multiple captured versions always reports the highest-priority one
 // (GA over beta/alpha, highest major/minor within a type) as preferredVersion
-// — CaptureStore.Resources() iterates a map internally, so without sorting,
+// — kstore.CaptureStore.Resources() iterates a map internally, so without sorting,
 // preferredVersion could flip between any of the group's versions from one
 // call to the next. Found via Copilot review of the /apis/<group> fix.
 func TestHandler_APIGroupList_PreferredVersionDeterministic(t *testing.T) {
@@ -277,7 +279,7 @@ func TestHandler_NotFound_ItemPath(t *testing.T) {
 	store := buildTestStore(t, map[string][]byte{})
 	h := newHandler(store, time.Time{}, false)
 
-	// 6-segment path (item-level): parseAPIPath returns empty resource → 404.
+	// 6-segment path (item-level): kstore.ParseAPIPath returns empty resource → 404.
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/namespaces/default/services/my-svc", nil)
 	rw := httptest.NewRecorder()
 	h.ServeHTTP(rw, req)
@@ -297,7 +299,7 @@ func TestHandler_NotFound_ItemPath_StandardStatus(t *testing.T) {
 	store := buildTestStore(t, map[string][]byte{
 		"/apis/networking.k8s.io/v1": []byte(discoveryBody),
 	})
-	store.discoveryEnrichmentDone.Wait()
+	store.Close()
 	h := newHandler(store, time.Time{}, false)
 
 	req := httptest.NewRequest(http.MethodGet, "/apis/networking.k8s.io/v1/namespaces/default/ingresses/nope", nil)
@@ -413,7 +415,7 @@ func TestHandler_NotFound_ListPath_KnownResourceNoWarning(t *testing.T) {
 	store := buildTestStore(t, map[string][]byte{
 		"/apis/networking.k8s.io/v1": []byte(discoveryBody),
 	})
-	store.discoveryEnrichmentDone.Wait()
+	store.Close()
 	h := newHandler(store, time.Time{}, false)
 
 	req := httptest.NewRequest(http.MethodGet, "/apis/networking.k8s.io/v1/namespaces/default/ingresses", nil)
@@ -441,7 +443,7 @@ func TestHandler_NotFound_ListPath_KnownResourceNoWarning(t *testing.T) {
 
 // TestHandler_NotFound_ListPath_KnownResourceUsesDiscoveryKind verifies the
 // empty-list fallback uses the authoritative Kind from discovery metadata,
-// not the resourceToKind heuristic — which guesses "Endpointslice" (wrong)
+// not the kstore.ResourceToKind heuristic — which guesses "Endpointslice" (wrong)
 // rather than the real "EndpointSlice" for "endpointslices", since it doesn't
 // follow simple depluralization. A client deserializing by GVK would break on
 // the heuristic's guess.
@@ -451,7 +453,7 @@ func TestHandler_NotFound_ListPath_KnownResourceUsesDiscoveryKind(t *testing.T) 
 	store := buildTestStore(t, map[string][]byte{
 		"/apis/discovery.k8s.io/v1": []byte(discoveryBody),
 	})
-	store.discoveryEnrichmentDone.Wait()
+	store.Close()
 	h := newHandler(store, time.Time{}, false)
 
 	req := httptest.NewRequest(http.MethodGet, "/apis/discovery.k8s.io/v1/namespaces/default/endpointslices", nil)
@@ -651,10 +653,11 @@ func TestHandler_ReplayAtTimestamp(t *testing.T) {
 	}
 	t.Cleanup(func() { ar.Close() })
 
-	store, err := LoadStore(ar)
+	store, err := kstore.LoadStore(ar)
 	if err != nil {
-		t.Fatalf("LoadStore: %v", err)
+		t.Fatalf("kstore.LoadStore: %v", err)
 	}
+	t.Cleanup(store.Close)
 	h := newHandler(store, t1.Add(time.Minute), false)
 
 	req := httptest.NewRequest(http.MethodGet, path, nil)

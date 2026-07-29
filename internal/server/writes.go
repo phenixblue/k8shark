@@ -27,6 +27,8 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/yaml"
+
+	kstore "github.com/phenixblue/k8shark/internal/store"
 )
 
 // handleWrite services a create/update/patch/delete against the in-memory overlay
@@ -182,7 +184,7 @@ func (h *handler) storeNewObject(group, version, resource, namespace, name strin
 		// A real apiextensions-apiserver also registers the CRD's defined type
 		// with the aggregated discovery document the moment it's created. The
 		// store's resourceInfo is otherwise a snapshot built once from the
-		// capture archive (see CaptureStore.buildResourceInfo/LoadStore), so
+		// capture archive (see kstore.CaptureStore.buildResourceInfo/kstore.LoadStore), so
 		// without this a CRD applied at runtime (e.g. `istioctl install`) is
 		// visible via `kubectl get crd` (a plain object read) but absent from
 		// `kubectl api-resources` / `istioctl analyze` (which walk discovery),
@@ -447,7 +449,7 @@ func ensureCRDEstablished(body json.RawMessage, now string) json.RawMessage {
 
 // registerCRDResourceInfo parses a freshly created CustomResourceDefinition's
 // spec and registers its defined group/version/resource/kind with the store's
-// discovery metadata (CaptureStore.mergeResourceInfo), so /apis and
+// discovery metadata (kstore.CaptureStore.MergeResourceInfo), so /apis and
 // /apis/<group>/<version> — and therefore `kubectl api-resources` and any
 // client that walks discovery (e.g. `istioctl analyze`) — reflect it
 // immediately, rather than only once the archive is reloaded. Best-effort: a
@@ -477,13 +479,13 @@ func (h *handler) registerCRDResourceInfo(body json.RawMessage) {
 		return
 	}
 	if crd.Spec.Group == "" || crd.Spec.Names.Plural == "" || crd.Spec.Names.Kind == "" {
-		// A missing Kind would otherwise fall through to mergeResourceInfo's
-		// resourceToKind heuristic fallback, which is a plural-depluralizing
+		// A missing Kind would otherwise fall through to MergeResourceInfo's
+		// kstore.ResourceToKind heuristic fallback, which is a plural-depluralizing
 		// guess known to be wrong for most CRDs — skipping keeps a malformed
 		// CRD body from polluting discovery with a made-up Kind.
 		return
 	}
-	// mergeResourceInfo treats namespaced as authoritative and overwrites any
+	// MergeResourceInfo treats namespaced as authoritative and overwrites any
 	// existing value, so an empty/unrecognized spec.scope (a malformed body)
 	// must be skipped entirely rather than defaulting to namespaced=true.
 	var namespaced bool
@@ -507,7 +509,7 @@ func (h *handler) registerCRDResourceInfo(body json.RawMessage) {
 		if !v.Served || v.Name == "" {
 			continue
 		}
-		h.store.mergeResourceInfo(crd.Spec.Group, v.Name, crd.Spec.Names.Plural, namespaced,
+		h.store.MergeResourceInfo(crd.Spec.Group, v.Name, crd.Spec.Names.Plural, namespaced,
 			crd.Spec.Names.Kind, crd.Spec.Names.Singular, crd.Spec.Names.ShortNames)
 	}
 }
@@ -710,7 +712,7 @@ func (h *handler) overlayDelete(w http.ResponseWriter, group, version, resource,
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"apiVersion": "v1", "kind": "Status", "status": "Success",
-		"details": map[string]any{"name": name, "kind": resourceToKind(resource)},
+		"details": map[string]any{"name": name, "kind": kstore.ResourceToKind(resource)},
 	})
 }
 
@@ -727,13 +729,13 @@ func (h *handler) overlayDeleteCollection(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusInternalServerError, statusObj(http.StatusInternalServerError, err.Error()))
 		return
 	}
-	// Unlike a read (applySelectors/filterItems, deliberately best-effort — a
+	// Unlike a read (kstore.ApplySelectors/kstore.FilterItems, deliberately best-effort — a
 	// malformed selector there just means "show more than intended"), a
 	// malformed or unsupported selector here would mean "delete more than
-	// intended" — filterItemsStrict parses with apimachinery's real selector
+	// intended" — kstore.FilterItemsStrict parses with apimachinery's real selector
 	// grammar and 400s on anything malformed, rather than silently matching
 	// everything.
-	msg, filtered := filterItemsStrict(items, r.URL.Query().Get("labelSelector"), r.URL.Query().Get("fieldSelector"))
+	msg, filtered := kstore.FilterItemsStrict(items, r.URL.Query().Get("labelSelector"), r.URL.Query().Get("fieldSelector"))
 	if msg != "" {
 		h.writeStatus(w, http.StatusBadRequest, msg)
 		return
@@ -767,7 +769,7 @@ func (h *handler) overlayDeleteCollection(w http.ResponseWriter, r *http.Request
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"apiVersion": "v1", "kind": "Status", "status": "Success",
-		"details": map[string]any{"kind": resourceToKind(resource)},
+		"details": map[string]any{"kind": kstore.ResourceToKind(resource)},
 	})
 }
 
@@ -830,7 +832,7 @@ func (h *handler) currentListItems(group, version, resource, namespace string) (
 // reconstructListItems reconstructs a captured list at `at` and returns its
 // items. Returns nil (not an error) when nothing was captured at that exact
 // path (a non-200 reconstruction), or when the 200 body isn't list-shaped
-// (e.g. a Table-format or other non-list snapshot — CaptureStore.ReconstructAt
+// (e.g. a Table-format or other non-list snapshot — kstore.CaptureStore.ReconstructAt
 // is deliberately tolerant of those and returns them unchanged, so failing to
 // decode "items" here is best-effort, not a hard error) — either way,
 // currentListItems' overlay merge still applies on top. A genuine store error

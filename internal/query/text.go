@@ -10,7 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/phenixblue/k8shark/internal/server"
+	"github.com/phenixblue/k8shark/internal/store"
 )
 
 // TextOptions configures a SearchText.
@@ -64,7 +64,7 @@ type TextResult struct {
 
 // SearchText finds opts.Pattern across every captured object body and pod
 // log in store at the resolved snapshot.
-func SearchText(store *server.CaptureStore, opts TextOptions) (*TextResult, error) {
+func SearchText(store *store.CaptureStore, opts TextOptions) (*TextResult, error) {
 	find, err := newFinder(opts.Pattern, opts.Regex)
 	if err != nil {
 		return nil, err
@@ -129,7 +129,7 @@ func SearchText(store *server.CaptureStore, opts TextOptions) (*TextResult, erro
 	return &TextResult{Matches: matches}, nil
 }
 
-func searchLogPath(store *server.CaptureStore, path string, at time.Time, find finder, opts TextOptions) ([]TextMatch, bool) {
+func searchLogPath(store *store.CaptureStore, path string, at time.Time, find finder, opts TextOptions) ([]TextMatch, bool) {
 	ns, name, container, previous, ok := parseLogPath(path)
 	if !ok {
 		return nil, false

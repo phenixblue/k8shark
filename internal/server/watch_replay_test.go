@@ -247,7 +247,7 @@ func TestWatchTimeline_AggregatesAcrossNamespaces(t *testing.T) {
 		},
 	)
 
-	timeline := store.buildReplayTimeline("/api/v1/pods")
+	timeline := buildReplayTimeline(store, "/api/v1/pods")
 	if len(timeline) != 3 {
 		t.Fatalf("timeline length = %d, want 3", len(timeline))
 	}

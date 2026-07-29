@@ -34,7 +34,7 @@ manual bumps. Pin any new CI tool the same way.
 ## Archive lifecycle (gotcha)
 
 `archive.Open` returns a `*zip.ReadCloser` that holds a real OS file handle, and
-`server.LoadStore` needs the archive to stay open for the store's lifetime.
+`store.LoadStore` needs the archive to stay open for the store's lifetime.
 Therefore:
 
 - **`internal/server`** (the mock API server) is the only long-lived holder
@@ -85,6 +85,18 @@ Therefore:
   negative = corrupt (rejected), greater than `CurrentFormatVersion` = rejected
   with an "upgrade kshrk" error. Bump `CurrentFormatVersion` only on a breaking,
   structurally-incompatible change.
+- **`internal/store`** holds `CaptureStore`/`LoadStore` (archive-backed
+  reads, selectors, response content negotiation) — extracted from
+  `internal/server` (#234) so `diagnose`/`query`/`diff` read an archive
+  without importing the HTTP mock apiserver package. `internal/server`
+  imports it back (aliased `kstore`, since many of its functions/methods take
+  or hold a local/field variable literally named `store`) for the mock
+  apiserver's own reads. `internal/ui/v2`'s `Handler.Overlay` is typed as an
+  `OverlayReader` interface (defined in `v2`, satisfied by `*server.Server`)
+  rather than the concrete server type — but unlike `*server.Server`'s
+  nil-safe methods, a nil `OverlayReader` interface value panics on any method
+  call, so every `h.Overlay.OverlayScopes()`/`MergeOverlayList` call site
+  still nil-checks `h.Overlay` first.
 
 ## Code review notes
 

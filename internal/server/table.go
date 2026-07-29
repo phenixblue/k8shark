@@ -10,6 +10,8 @@ import (
 
 	"k8s.io/apimachinery/pkg/util/duration"
 	"k8s.io/client-go/util/jsonpath"
+
+	kstore "github.com/phenixblue/k8shark/internal/store"
 )
 
 // Table rendering
@@ -729,13 +731,13 @@ func genericColumns(objs []map[string]any) []tableCol {
 func (h *handler) renderResourceTable(path string, body []byte, at time.Time) ([]byte, bool) {
 	trimmed := strings.TrimSuffix(path, "/")
 	listPath := trimmed
-	group, version, resource, _ := parseAPIPath(trimmed)
+	group, version, resource, _ := kstore.ParseAPIPath(trimmed)
 	if resource == "" {
-		// parseAPIPath only resolves list paths; a single-object GET
+		// kstore.ParseAPIPath only resolves list paths; a single-object GET
 		// (.../<resource>/<name>) resolves after dropping the trailing name.
 		if i := strings.LastIndex(trimmed, "/"); i > 0 {
 			listPath = trimmed[:i]
-			group, version, resource, _ = parseAPIPath(listPath)
+			group, version, resource, _ = kstore.ParseAPIPath(listPath)
 		}
 	}
 	if resource == "" {

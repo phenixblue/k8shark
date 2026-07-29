@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/phenixblue/k8shark/internal/k8spath"
-	"github.com/phenixblue/k8shark/internal/server"
+	"github.com/phenixblue/k8shark/internal/store"
 )
 
 // Options configures a diagnose run.
@@ -17,7 +17,7 @@ type Options struct {
 }
 
 // Run analyzes the capture in store and returns a ranked Report.
-func Run(store *server.CaptureStore, opts Options) Report {
+func Run(store *store.CaptureStore, opts Options) Report {
 	at := opts.At
 	if at.IsZero() {
 		at = store.Metadata.CapturedUntil
@@ -79,7 +79,7 @@ func Run(store *server.CaptureStore, opts Options) Report {
 
 // forEachResource calls fn for every captured list of the given resource
 // (skipping Table/query variants), passing the namespace, list path, and items.
-func forEachResource(store *server.CaptureStore, at time.Time, resource string, fn func(ns, path string, items []json.RawMessage)) {
+func forEachResource(store *store.CaptureStore, at time.Time, resource string, fn func(ns, path string, items []json.RawMessage)) {
 	for path := range store.Index {
 		if strings.Contains(path, "?") {
 			continue

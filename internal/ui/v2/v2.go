@@ -6,20 +6,35 @@ package v2
 
 import (
 	"embed"
+	"encoding/json"
 	"io/fs"
 	"net/http"
 	"sync"
 	"time"
 
 	"github.com/phenixblue/k8shark/internal/server"
+	"github.com/phenixblue/k8shark/internal/store"
 )
 
 //go:embed static
 var staticFS embed.FS
 
+// OverlayReader is the read-only subset of *server.Server's overlay
+// accessors the v2 dashboard depends on, so Handler.Overlay can be satisfied
+// by anything providing overlay reads/merges instead of requiring the
+// concrete HTTP mock apiserver type (#234).
+type OverlayReader interface {
+	// OverlayScopes returns every distinct group/version/resource/namespace
+	// scope with at least one live overlay entry.
+	OverlayScopes() []server.OverlayScope
+	// MergeOverlayList merges overlay writes for (group, version, resource,
+	// namespace) over base, "overlay wins".
+	MergeOverlayList(group, version, resource, namespace string, base []json.RawMessage) []json.RawMessage
+}
+
 // Handler holds the shared state for v2 endpoints.
 type Handler struct {
-	Store       *server.CaptureStore
+	Store       *store.CaptureStore
 	At          time.Time
 	ArchivePath string
 	Verbose     bool
@@ -29,12 +44,15 @@ type Handler struct {
 	// Overlay is the mock API server backing this same archive. Every
 	// list/detail read merges its writable-overlay writes (kubectl/helm/kwok/
 	// controller-manager) over the captured state, so the dashboard shows
-	// live changes instead of only what was captured. Its accessor methods
-	// (OverlayScopes, MergeOverlayList, ...) are nil-safe on both a nil
-	// *Server (plain `open`, or a caller that didn't wire one up) and a
-	// Server without a writable overlay — callers here can call them on
-	// h.Overlay directly without checking either case first.
-	Overlay *server.Server
+	// live changes instead of only what was captured. *server.Server's own
+	// accessor methods (OverlayScopes, MergeOverlayList, ...) are nil-safe on
+	// both a nil *Server (plain `open`, or a caller that didn't wire one up)
+	// and a Server without a writable overlay — but Overlay is an interface,
+	// and a nil OverlayReader panics on any method call regardless of
+	// whether the underlying concrete type would have been nil-safe. Every
+	// call site in this package nil-checks h.Overlay itself before calling
+	// through it.
+	Overlay OverlayReader
 
 	// discoveryMetaOnce/discoveryMetaCache memoize discoveryResourceMeta
 	// (objects.go): it's derived purely from the capture's own discovery

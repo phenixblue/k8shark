@@ -1,4 +1,4 @@
-package server
+package store
 
 import (
 	"bytes"
@@ -31,9 +31,9 @@ func TestParseAPIPath(t *testing.T) {
 		{"/apis/batch/v1/namespaces/ci/jobs", "batch", "v1", "jobs", "ci"},
 	}
 	for _, tc := range cases {
-		g, v, r, ns := parseAPIPath(tc.path)
+		g, v, r, ns := ParseAPIPath(tc.path)
 		if g != tc.group || v != tc.version || r != tc.resource || ns != tc.namespace {
-			t.Errorf("parseAPIPath(%q): got (%q,%q,%q,%q), want (%q,%q,%q,%q)",
+			t.Errorf("ParseAPIPath(%q): got (%q,%q,%q,%q), want (%q,%q,%q,%q)",
 				tc.path, g, v, r, ns, tc.group, tc.version, tc.resource, tc.namespace)
 		}
 	}
@@ -65,8 +65,8 @@ func TestResourceToKind(t *testing.T) {
 		"widgets":                           "Widget",                   // unknown resource: naive fallback
 	}
 	for resource, want := range cases {
-		if got := resourceToKind(resource); got != want {
-			t.Errorf("resourceToKind(%q) = %q, want %q", resource, got, want)
+		if got := ResourceToKind(resource); got != want {
+			t.Errorf("ResourceToKind(%q) = %q, want %q", resource, got, want)
 		}
 	}
 }
@@ -84,7 +84,7 @@ func TestEnrichResourceInfoFromDiscovery_KnownButUncaptured(t *testing.T) {
 	})
 	store.discoveryEnrichmentDone.Wait()
 
-	if !store.isKnownResource("networking.k8s.io", "v1", "ingresses") {
+	if !store.IsKnownResource("networking.k8s.io", "v1", "ingresses") {
 		t.Fatal("ingresses should be a known resource after discovery enrichment")
 	}
 	resources := store.Resources()
@@ -201,6 +201,7 @@ func buildTestStore(t *testing.T, records map[string][]byte) *CaptureStore {
 	if err != nil {
 		t.Fatalf("LoadStore: %v", err)
 	}
+	t.Cleanup(store.Close)
 	return store
 }
 
@@ -577,6 +578,7 @@ func TestStore_Latest_AtTimestamp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadStore: %v", err)
 	}
+	t.Cleanup(store.Close)
 
 	body, code, err := store.Latest(path, t1.Add(time.Minute))
 	if err != nil {
@@ -697,6 +699,7 @@ func buildTestStoreWithWatch(t *testing.T, snapshots map[string]watchTestRecord,
 	if err != nil {
 		t.Fatalf("LoadStore: %v", err)
 	}
+	t.Cleanup(store.Close)
 	return store
 }
 

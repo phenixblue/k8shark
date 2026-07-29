@@ -11,11 +11,13 @@ import (
 	"time"
 
 	apimachineryversion "k8s.io/apimachinery/pkg/version"
+
+	kstore "github.com/phenixblue/k8shark/internal/store"
 )
 
 // handler is the http.Handler for the mock Kubernetes API server.
 type handler struct {
-	store   *CaptureStore
+	store   *kstore.CaptureStore
 	at      time.Time
 	verbose bool
 	// clock, when non-nil, puts the handler in replay mode: LIST/GET reconstruct
@@ -59,7 +61,7 @@ func (h *handler) waitForRequests() {
 	h.wg.Wait()
 }
 
-func newHandler(store *CaptureStore, at time.Time, verbose bool) *handler {
+func newHandler(store *kstore.CaptureStore, at time.Time, verbose bool) *handler {
 	return &handler{store: store, at: at, verbose: verbose}
 }
 
@@ -85,7 +87,7 @@ func (h *handler) timelineFor(watchPath string) []replayEvent {
 	}
 	h.timelineMu.Unlock()
 
-	tl := h.store.buildReplayTimeline(watchPath)
+	tl := buildReplayTimeline(h.store, watchPath)
 
 	h.timelineMu.Lock()
 	defer h.timelineMu.Unlock()
@@ -125,9 +127,9 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// and for endpoints that never return a protobuf object and may be large or
 	// streamed (OpenAPI docs, pod logs), to avoid buffering them pointlessly.
 	watchParam := r.URL.Query().Get("watch")
-	if wantsProtobuf(r) && watchParam != "1" && watchParam != "true" && !isNonProtobufPath(path) {
-		pw := newProtobufResponseWriter(w)
-		defer pw.flush()
+	if kstore.WantsProtobuf(r) && watchParam != "1" && watchParam != "true" && !kstore.IsNonProtobufPath(path) {
+		pw := kstore.NewProtobufResponseWriter(w)
+		defer pw.Flush()
 		w = pw
 	}
 
@@ -618,7 +620,7 @@ func (h *handler) serveAPIVersions(w http.ResponseWriter) {
 // serveAPIGroupList (building a full APIGroupList from scratch) and
 // tryServeAPIGroupListFromStore (checking for/merging only the groups a
 // captured discovery document doesn't already list).
-func groupVersionsByGroup(resources []ResourceInfo, exclude map[string]bool) map[string][]groupVersion {
+func groupVersionsByGroup(resources []kstore.ResourceInfo, exclude map[string]bool) map[string][]groupVersion {
 	seen := map[string][]groupVersion{}
 	for _, ri := range resources {
 		if ri.Group == "" || exclude[ri.Group] {
@@ -670,7 +672,7 @@ func (h *handler) serveAPIGroupList(w http.ResponseWriter) {
 }
 
 // groupVersion is one version entry within a group, as returned by
-// CaptureStore.Resources() (an unordered map iteration — see
+// kstore.CaptureStore.Resources() (an unordered map iteration — see
 // sortedGroupVersions).
 type groupVersion struct{ version, groupVersion string }
 
@@ -702,7 +704,7 @@ func sortedGroupVersions(gvs []groupVersion) []map[string]string {
 // exclude (nil is fine). Shared by serveAPIGroup (building a full APIGroup
 // from scratch) and tryServeAPIGroupFromStore (checking for/merging only the
 // versions a captured discovery document doesn't already list).
-func groupVersionsFor(resources []ResourceInfo, group string, exclude map[string]bool) []groupVersion {
+func groupVersionsFor(resources []kstore.ResourceInfo, group string, exclude map[string]bool) []groupVersion {
 	var gvs []groupVersion
 	seen := map[string]bool{}
 	for _, ri := range resources {
@@ -778,12 +780,12 @@ func shortNamesFor(resource string) []string {
 // apiResourceEntry renders a single APIResourceList entry for ri. verbs is
 // always the read-only set — the store has no record of which verbs a
 // resource's real APIResource advertised, only what got captured/registered
-// (see ResourceInfo). Shared by serveAPIResourceList (building a full
+// (see kstore.ResourceInfo). Shared by serveAPIResourceList (building a full
 // APIResourceList from scratch, where this is the entire entry) and
 // tryServeAPIResourceListFromStore (only for a resource newly registered
 // after capture — e.g. a CRD created via the overlay — since an
 // already-captured resource keeps its original, richer entry untouched).
-func apiResourceEntry(ri ResourceInfo) map[string]any {
+func apiResourceEntry(ri kstore.ResourceInfo) map[string]any {
 	entry := map[string]any{
 		"name":       ri.Resource,
 		"namespaced": ri.Namespaced,
@@ -896,7 +898,7 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 		// like /api/v1/pods or /apis/apps/v1/deployments. Only fire for paths
 		// with no namespace segment; namespace-scoped 404s fall through to the
 		// cluster-scoped fallback below, which correctly filters by namespace.
-		if _, _, _, reqNS := parseAPIPath(path); reqNS == "" {
+		if _, _, _, reqNS := kstore.ParseAPIPath(path); reqNS == "" {
 			body, code, err = h.store.AggregateAcrossNamespaces(path, at)
 			if err != nil {
 				writeJSON(w, http.StatusInternalServerError, statusObj(500, err.Error()))
@@ -911,7 +913,7 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 		// but the request targets a specific namespace, try the cluster path and
 		// filter items by metadata.namespace. This makes kubectl get pods -n <ns>
 		// work even when only /api/v1/pods (not per-namespace paths) was captured.
-		g, v, resource, ns := parseAPIPath(path)
+		g, v, resource, ns := kstore.ParseAPIPath(path)
 		if ns != "" && resource != "" {
 			var clusterPath string
 			if g == "" {
@@ -925,7 +927,7 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 				return
 			}
 			if clusterCode == 200 {
-				filtered, ferr := applySelectors(clusterBody, "", "metadata.namespace="+ns)
+				filtered, ferr := kstore.ApplySelectors(clusterBody, "", "metadata.namespace="+ns)
 				if ferr == nil {
 					body, code = filtered, 200
 				}
@@ -940,19 +942,19 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 		// empty live collection: no warning, since a client may well create
 		// objects of it next (especially in writable mode). Reserve the warning
 		// for a genuinely unknown/misconfigured kind (#177).
-		g, v, resource, _ := parseAPIPath(path)
+		g, v, resource, _ := kstore.ParseAPIPath(path)
 		if resource != "" {
 			av := v
 			if g != "" {
 				av = g + "/" + v
 			}
 			// Prefer the authoritative Kind from discovery/index metadata over the
-			// resourceToKind heuristic, which guesses wrong for resources whose
+			// kstore.ResourceToKind heuristic, which guesses wrong for resources whose
 			// Kind doesn't follow simple depluralization (e.g. endpointslices)
 			// and for most CRDs — a client deserializing by GVK would break.
-			kind := h.store.resourceKind(g, v, resource)
+			kind := h.store.ResourceKind(g, v, resource)
 			if kind == "" {
-				kind = resourceToKind(resource)
+				kind = kstore.ResourceToKind(resource)
 			}
 			emptyList, _ := json.Marshal(map[string]any{
 				"apiVersion": av,
@@ -960,13 +962,13 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 				"metadata":   map[string]string{"resourceVersion": "0"},
 				"items":      []any{},
 			})
-			if !h.store.isKnownResource(g, v, resource) {
+			if !h.store.IsKnownResource(g, v, resource) {
 				w.Header().Set("Warning", fmt.Sprintf(`299 k8shark %q`,
 					resource+" not found in capture; was it included in the capture config?"))
 			}
 			body, code = emptyList, 200
 		} else {
-			// Item-level GET (path has more segments than parseAPIPath handles):
+			// Item-level GET (path has more segments than kstore.ParseAPIPath handles):
 			// for a known resource, a standard NotFound Status matching a live
 			// cluster, so apierrors.IsNotFound() recognizes it (#177). An unknown
 			// resource keeps the k8shark-specific message instead — it signals a
@@ -974,7 +976,7 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 			// "<resource> \"<name>\" not found" would misleadingly present as "the
 			// object is just missing".
 			ig, iv, iresource, _, iname, _ := parseWritePath(strings.TrimSuffix(path, "/"))
-			if iresource != "" && iname != "" && h.store.isKnownResource(ig, iv, iresource) {
+			if iresource != "" && iname != "" && h.store.IsKnownResource(ig, iv, iresource) {
 				writeJSON(w, http.StatusNotFound, notFoundStatus(ig, iresource, iname))
 				return
 			}
@@ -986,7 +988,7 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 	// Apply label/field selectors if present.
 	labelSel := r.URL.Query().Get("labelSelector")
 	fieldSel := r.URL.Query().Get("fieldSelector")
-	body, err = applySelectors(body, labelSel, fieldSel)
+	body, err = kstore.ApplySelectors(body, labelSel, fieldSel)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, statusObj(500, err.Error()))
 		return
@@ -997,7 +999,7 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 	// consistently with replayed items.
 	if h.overlay != nil {
 		body, _ = h.mergeOverlayList(path, body)
-		if filtered, ferr := applySelectors(body, labelSel, fieldSel); ferr == nil {
+		if filtered, ferr := kstore.ApplySelectors(body, labelSel, fieldSel); ferr == nil {
 			body = filtered
 		}
 	}
@@ -1009,7 +1011,7 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 		if labelSel == "" && fieldSel == "" {
 			return tb
 		}
-		if out, ferr := filterTableRows(tb, labelSel, fieldSel); ferr == nil {
+		if out, ferr := kstore.FilterTableRows(tb, labelSel, fieldSel); ferr == nil {
 			return out
 		}
 		return tb
@@ -1044,7 +1046,7 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 		}
 		// Aggregated Table across namespaces (for -A / cluster-scoped paths only).
 		// Also bypassed in writable mode (see above).
-		if _, _, _, reqNS := parseAPIPath(path); reqNS == "" && h.overlay == nil {
+		if _, _, _, reqNS := kstore.ParseAPIPath(path); reqNS == "" && h.overlay == nil {
 			if tb, tbCode, _ := h.store.AggregateTableAcrossNamespaces(path, at); tbCode == 200 {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(200)
@@ -1069,7 +1071,7 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 		body = rewriteListResourceVersion(body, func() int64 {
 			rv := rvAsOf(h.timelineFor(path), at)
 			if h.overlay != nil {
-				g, v, resource, namespace := parseAPIPath(strings.TrimSuffix(path, "/"))
+				g, v, resource, namespace := kstore.ParseAPIPath(strings.TrimSuffix(path, "/"))
 				if orv := h.overlay.scopeRV(g, v, resource, namespace); orv > rv {
 					rv = orv
 				}
@@ -1114,7 +1116,7 @@ func (h *handler) serveScale(w http.ResponseWriter, group, version, resource, na
 // burst uses it as its overlay-event skip floor. LIST callers ignore the RV.
 func (h *handler) mergeOverlayList(path string, body []byte) ([]byte, int64) {
 	h.syncEpoch() // reset-on-loop before merging into a LIST
-	group, version, resource, namespace := parseAPIPath(strings.TrimSuffix(path, "/"))
+	group, version, resource, namespace := kstore.ParseAPIPath(strings.TrimSuffix(path, "/"))
 	if resource == "" {
 		return body, 0
 	}
@@ -1192,7 +1194,7 @@ func (h *handler) trySingleItemGet(path string, at time.Time) ([]byte, int) {
 	if err != nil || code != 200 {
 		// Namespace-scoped single-item GET whose per-namespace list was not
 		// captured: fall back to the cluster-scoped list and filter by namespace.
-		g, v, resource, ns := parseAPIPath(parentPath)
+		g, v, resource, ns := kstore.ParseAPIPath(parentPath)
 		if ns != "" && resource != "" {
 			var clusterParent string
 			if g == "" {
@@ -1203,7 +1205,7 @@ func (h *handler) trySingleItemGet(path string, at time.Time) ([]byte, int) {
 			clusterBody, clusterCode, cerr := h.store.ReconstructAt(clusterParent, at)
 			if cerr == nil && clusterCode == 200 {
 				// Filter to the requested namespace before doing the name lookup.
-				filtered, ferr := applySelectors(clusterBody, "", "metadata.namespace="+ns)
+				filtered, ferr := kstore.ApplySelectors(clusterBody, "", "metadata.namespace="+ns)
 				if ferr == nil {
 					body, code = filtered, 200
 				}

@@ -1,4 +1,4 @@
-package server
+package store
 
 import (
 	"container/list"
@@ -31,26 +31,26 @@ type CaptureStore struct {
 	// wait for it before the caller closes the archive out from under it.
 	discoveryEnrichmentDone sync.WaitGroup
 
-	// Record LRU cache (bounded by recordCacheMaxBytes total body bytes).
+	// Record LRU cache (bounded by RecordCacheMaxBytes total body bytes).
 	recordCacheMu    sync.Mutex
 	recordCacheMap   map[recordKey]*list.Element
 	recordCacheList  *list.List
 	recordCacheBytes int64
 
 	// Response cache: (path, at) → marshalled body + code.
-	// Entries are valid for responseCacheTTL, bounded by responseCacheMaxBytes.
+	// Entries are valid for responseCacheTTL, bounded by ResponseCacheMaxBytes.
 	responseCacheMu    sync.RWMutex
 	responseCacheMap   map[responseCacheKey]*responseCacheEntry
 	responseCacheBytes int64
 }
 
-// recordCacheMaxBytes caps the total in-memory size of cached record bodies.
+// RecordCacheMaxBytes caps the total in-memory size of cached record bodies.
 // Large cluster captures can have response bodies of hundreds of KB each;
 // a count-based cap of 2048 was the primary driver of the v0.2.0 memory regression.
-const recordCacheMaxBytes = 128 * 1024 * 1024 // 128 MiB
+const RecordCacheMaxBytes = 128 * 1024 * 1024 // 128 MiB
 
-// responseCacheMaxBytes caps the total in-memory size of cached response bodies.
-const responseCacheMaxBytes = 32 * 1024 * 1024 // 32 MiB
+// ResponseCacheMaxBytes caps the total in-memory size of cached response bodies.
+const ResponseCacheMaxBytes = 32 * 1024 * 1024 // 32 MiB
 
 type recordKey struct {
 	apiPath string
@@ -128,7 +128,7 @@ func LoadStore(ar *archive.Archive) (*CaptureStore, error) {
 
 	// Enrich ResourceInfo from discovery records asynchronously — this also
 	// creates entries for resources listed in a captured discovery document
-	// that have zero captured objects (see mergeResourceInfo), so a known kind
+	// that have zero captured objects (see MergeResourceInfo), so a known kind
 	// with nothing captured is distinguishable from a genuinely unknown one.
 	s.discoveryEnrichmentDone.Add(1)
 	go s.enrichResourceInfoFromDiscovery()
@@ -145,7 +145,7 @@ func (s *CaptureStore) buildResourceInfo() {
 		if strings.Contains(path, "?") {
 			continue
 		}
-		g, v, r, ns := parseAPIPath(path)
+		g, v, r, ns := ParseAPIPath(path)
 		if r == "" {
 			continue
 		}
@@ -160,13 +160,13 @@ func (s *CaptureStore) buildResourceInfo() {
 			Group:      g,
 			Version:    v,
 			Resource:   r,
-			Kind:       resourceToKind(r),
+			Kind:       ResourceToKind(r),
 			Namespaced: ns != "",
 		}
 	}
 }
 
-// mergeResourceInfo inserts or enriches the ResourceInfo for group/version/
+// MergeResourceInfo inserts or enriches the ResourceInfo for group/version/
 // resource from a captured discovery document, creating a new entry (zero
 // captured objects) if one doesn't already exist from the index. Safe for
 // concurrent use. namespaced always overwrites: discovery is the authoritative
@@ -176,7 +176,7 @@ func (s *CaptureStore) buildResourceInfo() {
 // (/api/v1/pods, no namespaces: in config) would otherwise report a
 // namespaced resource as cluster-scoped in the regenerated discovery
 // document.
-func (s *CaptureStore) mergeResourceInfo(group, version, resource string, namespaced bool, kind, singularName string, shortNames []string) {
+func (s *CaptureStore) MergeResourceInfo(group, version, resource string, namespaced bool, kind, singularName string, shortNames []string) {
 	s.resourceInfoMu.Lock()
 	defer s.resourceInfoMu.Unlock()
 	key := group + "/" + version + "/" + resource
@@ -189,7 +189,7 @@ func (s *CaptureStore) mergeResourceInfo(group, version, resource string, namesp
 	if kind != "" {
 		ri.Kind = kind
 	} else if ri.Kind == "" {
-		ri.Kind = resourceToKind(resource)
+		ri.Kind = ResourceToKind(resource)
 	}
 	if singularName != "" {
 		ri.SingularName = singularName
@@ -207,9 +207,16 @@ func (s *CaptureStore) Close() {
 	s.discoveryEnrichmentDone.Wait()
 }
 
+// Archive returns the archive.Archive backing this store, for callers (e.g.
+// internal/server's poll-only replay-timeline inference) that need to read
+// records the store doesn't already expose through Read/Latest/SnapshotAt.
+func (s *CaptureStore) Archive() *archive.Archive {
+	return s.ar
+}
+
 // enrichResourceInfoFromDiscovery reads captured APIResourceList bodies from
 // the archive and back-fills Kind, ShortNames, SingularName into resourceInfo
-// — creating a new entry (via mergeResourceInfo) for a resource the discovery
+// — creating a new entry (via MergeResourceInfo) for a resource the discovery
 // document lists but that has zero captured objects, so it's still reported
 // as a known kind rather than "not found in capture" (#177). Runs in a
 // background goroutine; store is usable before this completes.
@@ -265,14 +272,14 @@ func (s *CaptureStore) enrichResourceInfoFromDiscovery() {
 			if strings.Contains(res.Name, "/") {
 				continue // a subresource entry (e.g. "pods/status"), not a top-level resource
 			}
-			s.mergeResourceInfo(g, v, res.Name, res.Namespaced, res.Kind, res.SingularName, res.ShortNames)
+			s.MergeResourceInfo(g, v, res.Name, res.Namespaced, res.Kind, res.SingularName, res.ShortNames)
 		}
 	}
 }
 
 // Resources returns a snapshot of all distinct ResourceInfo entries, fully
 // decoupled from internal storage. Each element is a value copy taken under
-// the lock, not the pointer stored in the map — mergeResourceInfo can mutate
+// the lock, not the pointer stored in the map — MergeResourceInfo can mutate
 // an existing entry's fields (Kind/SingularName/ShortNames/Namespaced) from
 // the background discovery enrichment goroutine at any time, so returning the
 // original pointers would let a caller observe a struct being concurrently
@@ -294,27 +301,27 @@ func (s *CaptureStore) Resources() []ResourceInfo {
 	return out
 }
 
-// isKnownResource reports whether group/version/resource is a real API type
+// IsKnownResource reports whether group/version/resource is a real API type
 // the captured cluster exposed — present in a captured discovery document or
 // the archive index — even if zero objects of it were ever captured. Used to
 // distinguish "known kind, nothing captured" (should read like an empty live
 // collection) from a genuinely unknown/misconfigured kind (#177).
-func (s *CaptureStore) isKnownResource(group, version, resource string) bool {
+func (s *CaptureStore) IsKnownResource(group, version, resource string) bool {
 	s.resourceInfoMu.RLock()
 	defer s.resourceInfoMu.RUnlock()
 	_, ok := s.resourceInfo[group+"/"+version+"/"+resource]
 	return ok
 }
 
-// resourceKind returns the authoritative Kind for a known group/version/
-// resource (from captured discovery, or resourceToKind's heuristic if only
-// seen in the index — see buildResourceInfo/mergeResourceInfo), or "" if the
-// resource isn't known at all. Prefer this over calling resourceToKind
+// ResourceKind returns the authoritative Kind for a known group/version/
+// resource (from captured discovery, or ResourceToKind's heuristic if only
+// seen in the index — see buildResourceInfo/MergeResourceInfo), or "" if the
+// resource isn't known at all. Prefer this over calling ResourceToKind
 // directly when a resource might be known: the heuristic guesses wrong for
 // built-in types whose Kind doesn't follow simple depluralization (e.g.
 // "endpointslices" -> "Endpointslice", not the real "EndpointSlice") and for
 // most CRDs.
-func (s *CaptureStore) resourceKind(group, version, resource string) string {
+func (s *CaptureStore) ResourceKind(group, version, resource string) string {
 	s.resourceInfoMu.RLock()
 	defer s.resourceInfoMu.RUnlock()
 	if ri, ok := s.resourceInfo[group+"/"+version+"/"+resource]; ok {
@@ -376,7 +383,7 @@ func (s *CaptureStore) readRecord(apiPath string, seq int) (capture.Record, erro
 
 	s.recordCacheMu.Lock()
 	// Evict LRU entries until the new entry fits within the byte budget.
-	for s.recordCacheBytes+entry.size > recordCacheMaxBytes {
+	for s.recordCacheBytes+entry.size > RecordCacheMaxBytes {
 		back := s.recordCacheList.Back()
 		if back == nil {
 			break
@@ -445,11 +452,11 @@ func (s *CaptureStore) NamespaceItemCountsAt(at time.Time) map[string]map[string
 		if strings.Contains(path, "?") {
 			continue
 		}
-		_, _, resource, ns := parseAPIPath(path)
+		_, _, resource, ns := ParseAPIPath(path)
 		if resource == "" || ns == "" {
 			continue
 		}
-		// Skip per-item paths (e.g. .../pods/<name>) — parseAPIPath returns
+		// Skip per-item paths (e.g. .../pods/<name>) — ParseAPIPath returns
 		// resource="" for these in this codebase, but be defensive.
 
 		// Pick the latest record at or before `at`.
@@ -522,7 +529,7 @@ func (s *CaptureStore) ReconstructAt(apiPath string, at time.Time) ([]byte, int,
 	s.responseCacheMap[cacheKey] = &responseCacheEntry{body: body, code: code, created: time.Now()}
 	s.responseCacheBytes += int64(len(body))
 	// Evict expired entries when over the byte budget.
-	if s.responseCacheBytes > responseCacheMaxBytes {
+	if s.responseCacheBytes > ResponseCacheMaxBytes {
 		now := time.Now()
 		for k, v := range s.responseCacheMap {
 			if now.Sub(v.created) > responseCacheTTL {
@@ -558,7 +565,7 @@ func (s *CaptureStore) reconstructAt(apiPath string, at time.Time) ([]byte, int,
 			return snapBody, snapCode, nil
 		}
 	} else {
-		group, version, resource, _ := parseAPIPath(apiPath)
+		group, version, resource, _ := ParseAPIPath(apiPath)
 		if resource == "" {
 			return nil, 404, nil
 		}
@@ -567,7 +574,7 @@ func (s *CaptureStore) reconstructAt(apiPath string, at time.Time) ([]byte, int,
 		} else {
 			snapList.APIVersion = group + "/" + version
 		}
-		snapList.Kind = resourceToKind(resource) + "List"
+		snapList.Kind = ResourceToKind(resource) + "List"
 		snapList.Metadata = json.RawMessage(`{"resourceVersion":"0"}`)
 	}
 
@@ -699,7 +706,7 @@ var aggregateItemCap = 10_000
 
 // AggregateAcrossNamespaces aggregates list items from all namespaced paths.
 func (s *CaptureStore) AggregateAcrossNamespaces(clusterPath string, at time.Time) ([]byte, int, error) {
-	g, v, resource, _ := parseAPIPath(clusterPath)
+	g, v, resource, _ := ParseAPIPath(clusterPath)
 	var pathPrefix string
 	if g == "" {
 		pathPrefix = "/api/" + v + "/namespaces/"
@@ -776,7 +783,7 @@ func (s *CaptureStore) AggregateAcrossNamespaces(clusterPath string, at time.Tim
 	}
 
 	if listKind == "" {
-		listKind = resourceToKind(resource) + "List"
+		listKind = ResourceToKind(resource) + "List"
 	}
 	if apiVersion == "" {
 		if g == "" {
@@ -819,7 +826,7 @@ func tableRowDedupeKey(row json.RawMessage) string {
 
 // AggregateTableAcrossNamespaces merges per-namespace Table responses.
 func (s *CaptureStore) AggregateTableAcrossNamespaces(clusterPath string, at time.Time) ([]byte, int, error) {
-	g, v, resource, _ := parseAPIPath(clusterPath)
+	g, v, resource, _ := ParseAPIPath(clusterPath)
 	var pathPrefix string
 	if g == "" {
 		pathPrefix = "/api/" + v + "/namespaces/"
@@ -893,7 +900,7 @@ func (s *CaptureStore) AggregateTableAcrossNamespaces(clusterPath string, at tim
 	return out, 200, nil
 }
 
-// parseAPIPath extracts (group, version, resource, namespace) from a REST
+// ParseAPIPath extracts (group, version, resource, namespace) from a REST
 // path. Deliberately NOT internal/k8spath.Parse (see #235): this rigid,
 // exact-segment-count form doubles as handler.go's "is this a list-level
 // path, or something with more segments (an item GET)?" sentinel — an
@@ -903,7 +910,7 @@ func (s *CaptureStore) AggregateTableAcrossNamespaces(clusterPath string, at tim
 // paths (including the object name). Unifying this with k8spath.Parse's
 // looser, subresource-tolerant matching changes that sentinel and breaks
 // item-level GET 404 handling — see the regression this caused when tried.
-func parseAPIPath(path string) (group, version, resource, namespace string) {
+func ParseAPIPath(path string) (group, version, resource, namespace string) {
 	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
 	switch {
 	case len(parts) >= 3 && parts[0] == "api":
@@ -954,8 +961,8 @@ func buildBuiltinKindByResource() map[string]string {
 	return m
 }
 
-// resourceToKind maps a plural resource name to its Kind string.
-func resourceToKind(resource string) string {
+// ResourceToKind maps a plural resource name to its Kind string.
+func ResourceToKind(resource string) string {
 	if k, ok := builtinKindByResource[resource]; ok {
 		return k
 	}

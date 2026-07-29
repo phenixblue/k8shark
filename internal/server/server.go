@@ -16,6 +16,8 @@ import (
 	"filippo.io/age"
 	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/capture"
+
+	kstore "github.com/phenixblue/k8shark/internal/store"
 )
 
 // OpenOptions holds parameters for opening a capture archive.
@@ -81,12 +83,12 @@ type Server struct {
 }
 
 // closeStoreAndArchive closes ar, waiting first for store's background
-// enrichment pass to finish if store is non-nil. Pass nil only when LoadStore
+// enrichment pass to finish if store is non-nil. Pass nil only when kstore.LoadStore
 // itself failed (there is no store yet to wait on); every other early-return
-// path below runs after LoadStore has succeeded, meaning its background
+// path below runs after kstore.LoadStore has succeeded, meaning its background
 // goroutine is already reading from ar — closing ar without this wait would
 // race that read (#232).
-func closeStoreAndArchive(store *CaptureStore, ar *archive.Archive) {
+func closeStoreAndArchive(store *kstore.CaptureStore, ar *archive.Archive) {
 	if store != nil {
 		store.Close()
 	}
@@ -100,7 +102,7 @@ func Open(opts OpenOptions) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("opening archive: %w", err)
 	}
-	store, err := LoadStore(ar)
+	store, err := kstore.LoadStore(ar)
 	if err != nil {
 		closeStoreAndArchive(nil, ar)
 		return nil, fmt.Errorf("loading capture: %w", err)
@@ -121,7 +123,7 @@ func Replay(opts ReplayOptions) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("opening archive: %w", err)
 	}
-	store, err := LoadStore(ar)
+	store, err := kstore.LoadStore(ar)
 	if err != nil {
 		closeStoreAndArchive(nil, ar)
 		return nil, fmt.Errorf("loading capture: %w", err)
@@ -146,7 +148,7 @@ func Replay(opts ReplayOptions) (*Server, error) {
 // serve brings up the shared TLS listener, kubeconfig, and HTTP server. When
 // clock is non-nil the handler runs in replay mode; when writable is set (replay
 // only) client writes land in an in-memory overlay.
-func serve(ar *archive.Archive, store *CaptureStore, at time.Time, clock *ReplayClock, writable, schedulePods bool, port, kubeconfigOut string, verbose bool) (*Server, error) {
+func serve(ar *archive.Archive, store *kstore.CaptureStore, at time.Time, clock *ReplayClock, writable, schedulePods bool, port, kubeconfigOut string, verbose bool) (*Server, error) {
 	certPEM, keyPEM, err := generateSelfSignedCert()
 	if err != nil {
 		closeStoreAndArchive(store, ar)

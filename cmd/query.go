@@ -8,7 +8,7 @@ import (
 
 	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/query"
-	"github.com/phenixblue/k8shark/internal/server"
+	"github.com/phenixblue/k8shark/internal/store"
 	"github.com/spf13/cobra"
 )
 
@@ -72,19 +72,19 @@ func runQuery(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("opening archive: %w", err)
 	}
 	defer ar.Close()
-	store, err := server.LoadStore(ar)
+	cs, err := store.LoadStore(ar)
 	if err != nil {
 		return fmt.Errorf("loading capture: %w", err)
 	}
-	defer store.Close()
+	defer cs.Close()
 
-	at, err := parseAtFlag(atRaw, store.Metadata.CapturedAt, store.Metadata.CapturedUntil)
+	at, err := parseAtFlag(atRaw, cs.Metadata.CapturedAt, cs.Metadata.CapturedUntil)
 	if err != nil {
 		return err
 	}
 
 	if text || useRegex {
-		result, err := query.SearchText(store, query.TextOptions{
+		result, err := query.SearchText(cs, query.TextOptions{
 			Pattern:   args[1],
 			Regex:     useRegex,
 			At:        at,
@@ -105,7 +105,7 @@ func runQuery(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	result, err := query.Run(store, query.Options{
+	result, err := query.Run(cs, query.Options{
 		Expression: args[1],
 		At:         at,
 		Resource:   resource,

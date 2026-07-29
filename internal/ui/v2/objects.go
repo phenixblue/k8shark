@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/phenixblue/k8shark/internal/server"
+	"github.com/phenixblue/k8shark/internal/store"
 )
 
 // ObjectDetail is the response from /v2/api/object — a single captured object
@@ -316,22 +316,24 @@ func (h *Handler) serveResourceCatalog(w http.ResponseWriter, r *http.Request) {
 	for k, row := range agg {
 		zeroIndexCount[k] = row.Count == 0
 	}
-	for _, sc := range h.Overlay.OverlayScopes() {
-		k := key{sc.Group, sc.Version, sc.Resource}
-		row := agg[k]
-		if row == nil {
-			row = &ResourceCatalogRow{
-				Group: sc.Group, Version: sc.Version, Resource: sc.Resource,
-				Kind: kindFromSample(sc.Sample, sc.Resource), Link: resourceLink(sc.Resource, ""),
+	if h.Overlay != nil {
+		for _, sc := range h.Overlay.OverlayScopes() {
+			k := key{sc.Group, sc.Version, sc.Resource}
+			row := agg[k]
+			if row == nil {
+				row = &ResourceCatalogRow{
+					Group: sc.Group, Version: sc.Version, Resource: sc.Resource,
+					Kind: kindFromSample(sc.Sample, sc.Resource), Link: resourceLink(sc.Resource, ""),
+				}
+				agg[k] = row
+				zeroIndexCount[k] = true // brand-new row — nothing from the index at all
 			}
-			agg[k] = row
-			zeroIndexCount[k] = true // brand-new row — nothing from the index at all
-		}
-		if sc.Namespace != "" {
-			row.Namespaced = true
-		}
-		if zeroIndexCount[k] {
-			row.Count += sc.Count
+			if sc.Namespace != "" {
+				row.Namespaced = true
+			}
+			if zeroIndexCount[k] {
+				row.Count += sc.Count
+			}
 		}
 	}
 
@@ -376,7 +378,7 @@ func (h *Handler) discoveryResourceMeta() map[string]discMeta {
 	return h.discoveryMetaCache
 }
 
-func buildDiscoveryResourceMeta(store *server.CaptureStore) map[string]discMeta {
+func buildDiscoveryResourceMeta(store *store.CaptureStore) map[string]discMeta {
 	m := map[string]discMeta{}
 	for path, entry := range store.Index {
 		if entry == nil || len(entry.Seqs) == 0 {
@@ -481,9 +483,11 @@ func (h *Handler) resourceKind(resource string) string {
 	if dm, ok := h.discoveryResourceMeta()[resource]; ok && dm.Kind != "" {
 		return dm.Kind
 	}
-	for _, sc := range h.Overlay.OverlayScopes() {
-		if sc.Resource == resource {
-			return kindFromSample(sc.Sample, resource)
+	if h.Overlay != nil {
+		for _, sc := range h.Overlay.OverlayScopes() {
+			if sc.Resource == resource {
+				return kindFromSample(sc.Sample, resource)
+			}
 		}
 	}
 	return kindFromResource(resource)
