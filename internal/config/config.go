@@ -211,6 +211,12 @@ func Load(configFile string) (*Config, error) {
 		cfg.AutoDiscover = viper.GetBool("autoDiscover")
 	}
 
+	// A missing version: key means version 1, not 0 — normalize so the
+	// in-memory config matches what's documented, and so a future version 2
+	// can tell "predates versioning" apart from an explicit (invalid) 0.
+	if cfg.Version == 0 {
+		cfg.Version = 1
+	}
 	if cfg.Version > CurrentConfigVersion {
 		return nil, fmt.Errorf("config version %d is newer than this build of kshrk understands (max %d) — upgrade kshrk", cfg.Version, CurrentConfigVersion)
 	}

@@ -165,6 +165,17 @@ autoDiscover: true
 	}
 }
 
+func TestLoad_MissingVersionDefaultsToOne(t *testing.T) {
+	path := writeConfigFile(t, `duration: 5m`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Version != 1 {
+		t.Errorf("Version = %d, want 1 (the implicit default for a config with no version: key)", cfg.Version)
+	}
+}
+
 func TestLoad_VersionTooNew(t *testing.T) {
 	path := writeConfigFile(t, `
 version: 999
@@ -182,7 +193,10 @@ duration: 5m
 func TestLoad_EnvOverride(t *testing.T) {
 	// Mirrors cmd/root.go's initConfig wiring, scoped to this test via the
 	// global viper singleton (config.Load reads it for env/flag overrides
-	// only — see Load's doc comment).
+	// only — see Load's doc comment). Reset afterward so this doesn't leak
+	// SetEnvPrefix/AutomaticEnv state into other tests in this package,
+	// whose execution order isn't guaranteed.
+	t.Cleanup(viper.Reset)
 	viper.SetEnvPrefix("KSHRK")
 	viper.AutomaticEnv()
 	t.Setenv("KSHRK_DURATION", "99h")
@@ -205,6 +219,9 @@ output: ./capture.kshrk
 }
 
 func TestLoad_UnprefixedEnvVarIgnored(t *testing.T) {
+	// See TestLoad_EnvOverride: reset afterward so SetEnvPrefix/AutomaticEnv
+	// doesn't leak into other tests in this package.
+	t.Cleanup(viper.Reset)
 	viper.SetEnvPrefix("KSHRK")
 	viper.AutomaticEnv()
 	t.Setenv("DURATION", "99h") // bare, unprefixed — must NOT override (#218)
