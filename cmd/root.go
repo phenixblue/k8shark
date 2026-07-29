@@ -39,7 +39,7 @@ environment without direct connectivity.`,
 //	    --fail-on gate trip, a diff with differences)
 //	2 - the command failed (bad archive, invalid flags, I/O error, ...)
 //
-// A command signals exit code 1 by returning an exitError{code: exitCodeFindings};
+// A command signals exit code 1 by returning an exitError{} (see diff.go);
 // any other error (including a plain error from fmt.Errorf) falls through to
 // the exit code 2 case below.
 const (

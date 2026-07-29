@@ -29,19 +29,19 @@ func TestExitCodeAndMessage(t *testing.T) {
 		},
 		{
 			name:         "findings with no message stays silent",
-			err:          exitError{code: exitCodeFindings},
+			err:          exitError{},
 			wantCode:     exitCodeFindings,
 			wantPrintErr: false,
 		},
 		{
 			name:         "findings with a message is printed",
-			err:          exitError{code: exitCodeFindings, msg: "3 differences found"},
+			err:          exitError{msg: "3 differences found"},
 			wantCode:     exitCodeFindings,
 			wantPrintErr: true,
 		},
 		{
 			name:         "wrapped exitError is still matched",
-			err:          fmt.Errorf("wrapping: %w", exitError{code: exitCodeFindings}),
+			err:          fmt.Errorf("wrapping: %w", exitError{}),
 			wantCode:     exitCodeFindings,
 			wantPrintErr: false,
 		},
