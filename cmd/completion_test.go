@@ -63,7 +63,10 @@ func TestCompleteArchiveArg(t *testing.T) {
 }
 
 func TestPositionalArchiveCompletionRegistered(t *testing.T) {
-	for _, name := range []string{"inspect", "open", "ui", "transitions"} {
+	// redact switched from a --in flag to a positional archive argument in
+	// this change (#215); cover it here so a regression in its Args/
+	// ValidArgsFunction wiring is caught the same way as the others.
+	for _, name := range []string{"inspect", "open", "ui", "transitions", "redact"} {
 		comps, directive := runCompletion(t, name, "")
 		if !contains(comps, captureExt) {
 			t.Errorf("%s positional completion = %v, want it to include %q", name, comps, captureExt)
