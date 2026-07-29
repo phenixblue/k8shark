@@ -1,4 +1,4 @@
-package server
+package store
 
 import (
 	"bytes"
@@ -6,6 +6,10 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	kjson "k8s.io/apimachinery/pkg/runtime/serializer/json"
+	"k8s.io/apimachinery/pkg/runtime/serializer/protobuf"
+	"k8s.io/client-go/kubernetes/scheme"
 )
 
 // Response content negotiation for a uniform apiserver surface (issue #150).
@@ -20,22 +24,33 @@ import (
 // scheme decode and pass through as JSON — exactly as a real apiserver does
 // (CRDs have no protobuf).
 
-const protobufMediaType = "application/vnd.kubernetes.protobuf"
+const ProtobufMediaType = "application/vnd.kubernetes.protobuf"
 
-// isNonProtobufPath reports request paths that never return a Kubernetes
+// scheme.Scheme registers all built-in Kubernetes types; both serializers are
+// stateless over it and safe for concurrent use. internal/server's
+// writes_codec.go needs the same pair for the opposite direction (decoding a
+// protobuf write body to JSON) and declares its own instances rather than
+// importing this package for two lines of construction.
+var (
+	protobufSerializer = protobuf.NewSerializer(scheme.Scheme, scheme.Scheme)
+	jsonSerializer     = kjson.NewSerializerWithOptions(
+		kjson.DefaultMetaFactory, scheme.Scheme, scheme.Scheme, kjson.SerializerOptions{})
+)
+
+// IsNonProtobufPath reports request paths that never return a Kubernetes
 // protobuf object and may be large or streamed — OpenAPI documents (multi-MB
 // JSON) and pod log subresources (text/plain). The protobuf response wrapper
 // skips these so they aren't buffered in memory only to pass through unchanged.
-func isNonProtobufPath(path string) bool {
+func IsNonProtobufPath(path string) bool {
 	return strings.HasPrefix(path, "/openapi") || strings.HasSuffix(path, "/log")
 }
 
-// wantsProtobuf reports whether the client's Accept header selects Kubernetes
+// WantsProtobuf reports whether the client's Accept header selects Kubernetes
 // protobuf over JSON. It mirrors apiserver negotiation: among acceptable (q>0)
 // media types, the highest q wins, and header order breaks ties. So
 // `protobuf,json` (both q=1) picks protobuf, `json,protobuf` picks JSON, a
 // higher-q entry always wins, and `…protobuf;q=0` / Table requests yield JSON.
-func wantsProtobuf(r *http.Request) bool {
+func WantsProtobuf(r *http.Request) bool {
 	accept := r.Header.Get("Accept")
 	if accept == "" {
 		return false
@@ -52,7 +67,7 @@ func wantsProtobuf(r *http.Request) bool {
 		}
 		var isProto, isJSON bool
 		switch mt {
-		case protobufMediaType:
+		case ProtobufMediaType:
 			isProto = true
 		case "application/json", "application/*", "*/*":
 			isJSON = true
@@ -92,26 +107,26 @@ func jsonToProtobuf(body []byte) ([]byte, bool) {
 	return buf.Bytes(), true
 }
 
-// protobufResponseWriter buffers a response so a JSON body of a built-in type
+// ProtobufResponseWriter buffers a response so a JSON body of a built-in type
 // can be re-encoded as protobuf on flush. It is only used for non-watch requests
 // whose client prefers protobuf.
-type protobufResponseWriter struct {
+type ProtobufResponseWriter struct {
 	http.ResponseWriter
 	status int
 	buf    bytes.Buffer
 }
 
-func newProtobufResponseWriter(w http.ResponseWriter) *protobufResponseWriter {
-	return &protobufResponseWriter{ResponseWriter: w}
+func NewProtobufResponseWriter(w http.ResponseWriter) *ProtobufResponseWriter {
+	return &ProtobufResponseWriter{ResponseWriter: w}
 }
 
-func (p *protobufResponseWriter) WriteHeader(code int) { p.status = code }
+func (p *ProtobufResponseWriter) WriteHeader(code int) { p.status = code }
 
-func (p *protobufResponseWriter) Write(b []byte) (int, error) { return p.buf.Write(b) }
+func (p *ProtobufResponseWriter) Write(b []byte) (int, error) { return p.buf.Write(b) }
 
-// flush writes the buffered response, transcoding a JSON built-in-object body to
+// Flush writes the buffered response, transcoding a JSON built-in-object body to
 // protobuf when possible; otherwise it passes the JSON through unchanged.
-func (p *protobufResponseWriter) flush() {
+func (p *ProtobufResponseWriter) Flush() {
 	status := p.status
 	if status == 0 {
 		status = http.StatusOK
@@ -125,7 +140,7 @@ func (p *protobufResponseWriter) flush() {
 	ct := p.Header().Get("Content-Type")
 	if strings.HasPrefix(ct, "application/json") {
 		if pb, ok := jsonToProtobuf(body); ok {
-			p.Header().Set("Content-Type", protobufMediaType)
+			p.Header().Set("Content-Type", ProtobufMediaType)
 			p.Header().Del("Content-Length") // length changed; let net/http recompute
 			p.ResponseWriter.WriteHeader(status)
 			_, _ = p.ResponseWriter.Write(pb)

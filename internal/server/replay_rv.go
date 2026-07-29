@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/phenixblue/k8shark/internal/transitions"
+
+	kstore "github.com/phenixblue/k8shark/internal/store"
 )
 
 // Replay resourceVersion (RV) scheme
@@ -38,7 +40,7 @@ const replayRVBase = 1
 // watchIndexPaths returns the capture watch-index paths feeding a watch on
 // watchPath: the exact path if captured, else (for a cluster-wide path) the
 // per-namespace demultiplexed paths. The result is sorted for determinism.
-func (s *CaptureStore) watchIndexPaths(watchPath string) []string {
+func watchIndexPaths(s *kstore.CaptureStore, watchPath string) []string {
 	if _, ok := s.WatchIndex[watchPath]; ok {
 		return []string{watchPath}
 	}
@@ -59,7 +61,7 @@ func (s *CaptureStore) watchIndexPaths(watchPath string) []string {
 // snapshotPaths returns the capture snapshot (index) paths feeding a watch on
 // watchPath for poll-only inference. Same resolution as watchIndexPaths but over
 // the snapshot index, skipping Table-format keys.
-func (s *CaptureStore) snapshotPaths(watchPath string) []string {
+func snapshotPaths(s *kstore.CaptureStore, watchPath string) []string {
 	if _, ok := s.Index[watchPath]; ok {
 		return []string{watchPath}
 	}
@@ -96,7 +98,7 @@ const tableSchemaIndexKeySuffix = "?as=TableSchema"
 // suffix used to find the per-namespace children of a cluster-wide watch path.
 // ok is false when watchPath is namespaced or not a resource path.
 func clusterWideChildPrefix(watchPath string) (prefix, suffix string, ok bool) {
-	g, v, resource, ns := parseAPIPath(watchPath)
+	g, v, resource, ns := kstore.ParseAPIPath(watchPath)
 	if ns != "" || resource == "" {
 		return "", "", false
 	}
@@ -112,10 +114,10 @@ func clusterWideChildPrefix(watchPath string) (prefix, suffix string, ok bool) {
 // path and assigns each event a monotonic rv. Watch-enabled paths use the watch
 // index (bodies read lazily); poll-only paths synthesize events by diffing
 // consecutive snapshots (bodies inlined).
-func (s *CaptureStore) buildReplayTimeline(watchPath string) []replayEvent {
+func buildReplayTimeline(s *kstore.CaptureStore, watchPath string) []replayEvent {
 	var evs []replayEvent
 
-	if wps := s.watchIndexPaths(watchPath); len(wps) > 0 {
+	if wps := watchIndexPaths(s, watchPath); len(wps) > 0 {
 		for _, p := range wps {
 			wi := s.WatchIndex[p]
 			for i := range wi.Seqs {
@@ -127,12 +129,12 @@ func (s *CaptureStore) buildReplayTimeline(watchPath string) []replayEvent {
 		}
 	} else {
 		// Poll-only: infer events from snapshot diffs.
-		for _, p := range s.snapshotPaths(watchPath) {
+		for _, p := range snapshotPaths(s, watchPath) {
 			entry := s.Index[p]
 			if entry == nil {
 				continue
 			}
-			trs, err := transitions.InferPollTransitions(s.ar, p, entry)
+			trs, err := transitions.InferPollTransitions(s.Archive(), p, entry)
 			if err != nil {
 				continue
 			}

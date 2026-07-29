@@ -10,7 +10,7 @@ import (
 
 	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/capture"
-	"github.com/phenixblue/k8shark/internal/server"
+	"github.com/phenixblue/k8shark/internal/store"
 )
 
 type v2WatchEvent struct {
@@ -21,7 +21,7 @@ type v2WatchEvent struct {
 // buildV2WatchStore writes watch event records plus a watch index, mirroring
 // the watch-store helper in internal/server's tests. Seqs are assigned per path
 // in write order, matching how StreamWriter numbers records.
-func buildV2WatchStore(t *testing.T, events []v2WatchEvent, captureStart time.Time) *server.CaptureStore {
+func buildV2WatchStore(t *testing.T, events []v2WatchEvent, captureStart time.Time) *store.CaptureStore {
 	t.Helper()
 	out := filepath.Join(t.TempDir(), "watch.kshrk")
 	sw, err := archive.NewStreamWriter(out)
@@ -62,7 +62,7 @@ func buildV2WatchStore(t *testing.T, events []v2WatchEvent, captureStart time.Ti
 		t.Fatalf("archive.Open: %v", err)
 	}
 	t.Cleanup(func() { ar.Close() })
-	store, err := server.LoadStore(ar)
+	store, err := store.LoadStore(ar)
 	if err != nil {
 		t.Fatalf("LoadStore: %v", err)
 	}

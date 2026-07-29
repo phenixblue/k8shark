@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	kstore "github.com/phenixblue/k8shark/internal/store"
 )
 
 // watchList is a parsed list body ready to be streamed as watch events.
@@ -40,7 +42,7 @@ func (h *handler) resolveWatchList(watchPath string, at time.Time, labelSelector
 
 	if code == 404 {
 		// Only aggregate across namespaces for cluster-wide watch paths.
-		if _, _, _, reqNS := parseAPIPath(watchPath); reqNS == "" {
+		if _, _, _, reqNS := kstore.ParseAPIPath(watchPath); reqNS == "" {
 			rawBody, code, err = h.store.AggregateAcrossNamespaces(watchPath, at)
 			if err != nil {
 				return watchList{}, false, err
@@ -52,7 +54,7 @@ func (h *handler) resolveWatchList(watchPath string, at time.Time, labelSelector
 		// Cluster-scoped fallback: resource was captured at the cluster path
 		// (e.g. /api/v1/pods) but the watch targets a specific namespace. Filter
 		// by metadata.namespace so namespaced watchers see the right items.
-		g, v, resource, ns := parseAPIPath(watchPath)
+		g, v, resource, ns := kstore.ParseAPIPath(watchPath)
 		if ns != "" && resource != "" {
 			var clusterPath string
 			if g == "" {
@@ -62,7 +64,7 @@ func (h *handler) resolveWatchList(watchPath string, at time.Time, labelSelector
 			}
 			clusterBody, clusterCode, cerr := h.store.ReconstructAt(clusterPath, at)
 			if cerr == nil && clusterCode == 200 {
-				filtered, ferr := applySelectors(clusterBody, "", "metadata.namespace="+ns)
+				filtered, ferr := kstore.ApplySelectors(clusterBody, "", "metadata.namespace="+ns)
 				if ferr == nil {
 					rawBody, code = filtered, 200
 				}
@@ -71,7 +73,7 @@ func (h *handler) resolveWatchList(watchPath string, at time.Time, labelSelector
 	}
 
 	if code == 404 {
-		g, v, resource, _ := parseAPIPath(watchPath)
+		g, v, resource, _ := kstore.ParseAPIPath(watchPath)
 		if resource != "" {
 			av := v
 			if g != "" {
@@ -79,7 +81,7 @@ func (h *handler) resolveWatchList(watchPath string, at time.Time, labelSelector
 			}
 			emptyList, _ := json.Marshal(map[string]any{
 				"apiVersion": av,
-				"kind":       resourceToKind(resource) + "List",
+				"kind":       kstore.ResourceToKind(resource) + "List",
 				"metadata":   map[string]string{"resourceVersion": "0"},
 				"items":      []any{},
 			})
@@ -101,7 +103,7 @@ func (h *handler) resolveWatchList(watchPath string, at time.Time, labelSelector
 		rawBody, overlaySkipRV = h.mergeOverlayList(watchPath, rawBody)
 	}
 
-	body, serr := applySelectors(rawBody, labelSelector, fieldSelector)
+	body, serr := kstore.ApplySelectors(rawBody, labelSelector, fieldSelector)
 	if serr != nil {
 		// Best-effort: fall back to the unfiltered list rather than failing the
 		// whole watch on a selector/marshal error.
@@ -147,16 +149,16 @@ func matchesSelectors(raw json.RawMessage, labelSelector, fieldSelector string) 
 	if labelSelector == "" && fieldSelector == "" {
 		return true
 	}
-	labelReqs, err := parseRequirements(labelSelector)
+	labelReqs, err := kstore.ParseRequirements(labelSelector)
 	if err != nil {
 		return true
 	}
-	fieldReqs := parseFieldSelector(fieldSelector)
-	var obj k8sObject
+	fieldReqs := kstore.ParseFieldSelector(fieldSelector)
+	var obj kstore.K8sObject
 	if err := json.Unmarshal(raw, &obj); err != nil {
 		return true
 	}
-	return matchesLabels(&obj, labelReqs) && matchesFields(&obj, fieldReqs)
+	return kstore.MatchesLabels(&obj, labelReqs) && kstore.MatchesFields(&obj, fieldReqs)
 }
 
 // withKind stamps apiVersion/kind onto a watch event object when they're absent,
@@ -254,7 +256,7 @@ func (h *handler) streamReplayWatch(w http.ResponseWriter, r *http.Request, path
 		// (otherwise a LIST→WATCH informer would loop on 410).
 		maxRV := replayRVBase + int64(len(timeline))
 		if h.overlay != nil {
-			g, v, resource, namespace := parseAPIPath(watchPath)
+			g, v, resource, namespace := kstore.ParseAPIPath(watchPath)
 			if orv := h.overlay.scopeRV(g, v, resource, namespace); orv > maxRV {
 				maxRV = orv
 			}
@@ -271,8 +273,8 @@ func (h *handler) streamReplayWatch(w http.ResponseWriter, r *http.Request, path
 
 	// Path-derived defaults for the BOOKMARK object kind/apiVersion, and the scope
 	// for overlay watch feedback.
-	g, v, resource, watchNS := parseAPIPath(watchPath)
-	defKind := resourceToKind(resource)
+	g, v, resource, watchNS := kstore.ParseAPIPath(watchPath)
+	defKind := kstore.ResourceToKind(resource)
 	defAPIVersion := v
 	if g != "" {
 		defAPIVersion = g + "/" + v
@@ -666,7 +668,7 @@ func (h *handler) replayPass(ctx context.Context, timer <-chan time.Time, clock 
 		// Poll-only events carry their body inline; watch events read it lazily.
 		body := ev.body
 		if body == nil {
-			rec, err := h.store.readRecord(ev.apiPath, ev.seq)
+			rec, err := h.store.ReadRecord(ev.apiPath, ev.seq)
 			if err != nil {
 				continue
 			}

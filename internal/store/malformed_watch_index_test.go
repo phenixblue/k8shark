@@ -1,4 +1,4 @@
-package server_test
+package store_test
 
 import (
 	"archive/zip"
@@ -10,7 +10,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/redact"
-	"github.com/phenixblue/k8shark/internal/server"
+	"github.com/phenixblue/k8shark/internal/store"
 	"github.com/phenixblue/k8shark/internal/transitions"
 )
 
@@ -97,13 +97,13 @@ func TestAllReaders_RejectMalformedWatchIndex(t *testing.T) {
 		}
 	}
 
-	t.Run("server.LoadStore", func(t *testing.T) {
+	t.Run("store.LoadStore", func(t *testing.T) {
 		ar, err := archive.Open(path)
 		if err != nil {
 			t.Fatalf("archive.Open: %v", err)
 		}
 		defer ar.Close()
-		_, err = server.LoadStore(ar)
+		_, err = store.LoadStore(ar)
 		assertWatchIndexError(t, err)
 	})
 

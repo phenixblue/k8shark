@@ -11,12 +11,14 @@ import (
 
 	"github.com/phenixblue/k8shark/internal/archive"
 	capture "github.com/phenixblue/k8shark/internal/capture"
+
+	kstore "github.com/phenixblue/k8shark/internal/store"
 )
 
-// buildBenchStore builds a CaptureStore with n pod list records for
+// buildBenchStore builds a kstore.CaptureStore with n pod list records for
 // benchmarking. It bypasses buildTestStore because that helper only accepts
 // *testing.T.
-func buildBenchStore(b *testing.B, n int) *CaptureStore {
+func buildBenchStore(b *testing.B, n int) *kstore.CaptureStore {
 	b.Helper()
 	dir := b.TempDir()
 	outPath := filepath.Join(dir, "bench.kshrk")
@@ -67,9 +69,9 @@ func buildBenchStore(b *testing.B, n int) *CaptureStore {
 	}
 	b.Cleanup(func() { ar.Close() })
 
-	store, err := LoadStore(ar)
+	store, err := kstore.LoadStore(ar)
 	if err != nil {
-		b.Fatalf("LoadStore: %v", err)
+		b.Fatalf("kstore.LoadStore: %v", err)
 	}
 	return store
 }

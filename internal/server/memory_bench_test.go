@@ -13,6 +13,8 @@ import (
 
 	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/capture"
+
+	kstore "github.com/phenixblue/k8shark/internal/store"
 )
 
 // varyPodList builds a realistic, *varied* PodList body — not the near-identical
@@ -115,7 +117,7 @@ func writeLargeArchive(tb testing.TB, path string, namespaces, snapshots, pods i
 // populates the record + response caches. Returns the number of paths that
 // failed to reconstruct, so callers can surface silent reconstruction errors
 // instead of measuring against a broken store.
-func sweep(store *CaptureStore, at time.Time) int {
+func sweep(store *kstore.CaptureStore, at time.Time) int {
 	fails := 0
 	for path := range store.Index {
 		body, code, err := store.ReconstructAt(path, at)
@@ -145,7 +147,7 @@ func BenchmarkServeLargeCapture(b *testing.B) {
 		b.Fatal(err)
 	}
 	b.Cleanup(func() { ar.Close() })
-	store, err := LoadStore(ar)
+	store, err := kstore.LoadStore(ar)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -186,7 +188,7 @@ func TestLargeCaptureMemory(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer ar.Close()
-	store, err := LoadStore(ar)
+	store, err := kstore.LoadStore(ar)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +214,7 @@ func TestLargeCaptureMemory(t *testing.T) {
 	t.Logf("  records=%d  raw record bytes=%.1f MiB  archive on disk=%.1f MiB",
 		recs, float64(raw)/(1<<20), float64(fi.Size())/(1<<20))
 	t.Logf("  record cache cap=%.0f MiB  response cache cap=%.0f MiB",
-		float64(recordCacheMaxBytes)/(1<<20), float64(responseCacheMaxBytes)/(1<<20))
+		float64(kstore.RecordCacheMaxBytes)/(1<<20), float64(kstore.ResponseCacheMaxBytes)/(1<<20))
 	t.Logf("  HeapInuse=%.1f MiB  HeapAlloc=%.1f MiB  Sys=%.1f MiB",
 		mib(m.HeapInuse), mib(m.HeapAlloc), mib(m.Sys))
 }

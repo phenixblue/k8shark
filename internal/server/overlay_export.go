@@ -1,6 +1,10 @@
 package server
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	kstore "github.com/phenixblue/k8shark/internal/store"
+)
 
 // This file exposes a read-only view of the store and (when writable replay
 // is on) the overlay to other in-process readers — namely the web UI
@@ -11,10 +15,10 @@ import "encoding/json"
 // they behave as if the overlay were empty, so callers don't need to check
 // for nil or Writable() first.
 
-// Store returns the CaptureStore backing this server, so a second in-process
+// Store returns the kstore.CaptureStore backing this server, so a second in-process
 // reader (the web UI) can share it instead of loading the archive again.
 // Returns nil on a nil *Server, matching every other accessor in this file.
-func (s *Server) Store() *CaptureStore {
+func (s *Server) Store() *kstore.CaptureStore {
 	if s == nil {
 		return nil
 	}

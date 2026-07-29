@@ -1,4 +1,4 @@
-package server
+package store
 
 import (
 	"encoding/json"
@@ -10,7 +10,7 @@ import (
 )
 
 // k8s object shape we inspect for filtering.
-type k8sObject struct {
+type K8sObject struct {
 	Metadata struct {
 		Name      string            `json:"name"`
 		Namespace string            `json:"namespace"`
@@ -27,11 +27,11 @@ type labelRequirement struct {
 	values []string
 }
 
-// parseRequirements parses a comma-separated labelSelector string into requirements.
+// ParseRequirements parses a comma-separated labelSelector string into requirements.
 // Supports: key=val, key==val, key!=val, key in (v1,v2), key notin (v1,v2),
 //
 //	key (existence), !key (non-existence).
-func parseRequirements(selector string) ([]labelRequirement, error) {
+func ParseRequirements(selector string) ([]labelRequirement, error) {
 	if selector == "" {
 		return nil, nil
 	}
@@ -131,8 +131,8 @@ func splitRespectingParens(s string) []string {
 	return parts
 }
 
-// matchesLabels returns true if the object's labels satisfy all requirements.
-func matchesLabels(obj *k8sObject, reqs []labelRequirement) bool {
+// MatchesLabels returns true if the object's labels satisfy all requirements.
+func MatchesLabels(obj *K8sObject, reqs []labelRequirement) bool {
 	for _, r := range reqs {
 		val, exists := obj.Metadata.Labels[r.key]
 		switch r.op {
@@ -200,15 +200,15 @@ func parseFieldSelectorSegment(seg string) (fieldSelectorReq, bool) {
 	return fieldSelectorReq{}, false
 }
 
-// parseFieldSelector parses a comma-separated fieldSelector for reads.
+// ParseFieldSelector parses a comma-separated fieldSelector for reads.
 // Supported fields: metadata.name, metadata.namespace. An unparseable segment
-// is silently skipped — best-effort, matching matchesFields' generous
+// is silently skipped — best-effort, matching MatchesFields' generous
 // handling of unsupported keys — safe for a read, where "matches more than
 // intended" only affects display fidelity. deletecollection uses
-// filterItemsStrict instead (see below), which parses with apimachinery's
+// FilterItemsStrict instead (see below), which parses with apimachinery's
 // real selector grammar rather than this lenient one, since the same
 // leniency there would risk deleting more than the caller asked for.
-func parseFieldSelector(selector string) []fieldSelectorReq {
+func ParseFieldSelector(selector string) []fieldSelectorReq {
 	if selector == "" {
 		return nil
 	}
@@ -221,18 +221,18 @@ func parseFieldSelector(selector string) []fieldSelectorReq {
 	return reqs
 }
 
-// supportedFieldSelectorKeys are the metadata fields matchesFields (and
-// fieldsAdapter, below) actually filter on; filterItemsStrict rejects any
+// supportedFieldSelectorKeys are the metadata fields MatchesFields (and
+// fieldsAdapter, below) actually filter on; FilterItemsStrict rejects any
 // other key.
 var supportedFieldSelectorKeys = map[string]bool{
 	"metadata.name":      true,
 	"metadata.namespace": true,
 }
 
-// fieldsAdapter exposes a k8sObject's supported field-selector keys through
+// fieldsAdapter exposes a K8sObject's supported field-selector keys through
 // k8s.io/apimachinery/pkg/fields.Fields, so fields.Selector.Matches can
 // evaluate it directly.
-type fieldsAdapter struct{ obj *k8sObject }
+type fieldsAdapter struct{ obj *K8sObject }
 
 func (f fieldsAdapter) Has(field string) bool { return supportedFieldSelectorKeys[field] }
 
@@ -247,23 +247,23 @@ func (f fieldsAdapter) Get(field string) string {
 	}
 }
 
-// filterItemsStrict filters items for deletecollection using
+// FilterItemsStrict filters items for deletecollection using
 // k8s.io/apimachinery's own label/field selector grammar and matching
-// (labels.Parse, fields.ParseSelector) instead of filterItems' best-effort,
+// (labels.Parse, fields.ParseSelector) instead of FilterItems' best-effort,
 // hand-rolled parser. Multiple rounds of review turned up ever-more-specific
 // ways the hand-rolled parser leniently accepted a malformed selector as
 // "matches everything" (empty keys, empty segments, unbalanced set syntax,
 // invalid key characters, ...) — using the real, exhaustively-validated
 // parser closes off that entire class of gaps at once rather than patching
-// one shape of malformed input at a time. The read path (applySelectors,
-// filterTableRows) is unaffected — it keeps its existing best-effort
-// filterItems, where "matches more than intended" only affects display
+// one shape of malformed input at a time. The read path (ApplySelectors,
+// FilterTableRows) is unaffected — it keeps its existing best-effort
+// FilterItems, where "matches more than intended" only affects display
 // fidelity, not what gets deleted.
 //
 // Returns an error message suitable for a 400 response (with items nil), or
 // ("", filtered) on success — filtered is items unchanged if both selectors
 // are empty.
-func filterItemsStrict(items []json.RawMessage, labelSelector, fieldSelector string) (string, []json.RawMessage) {
+func FilterItemsStrict(items []json.RawMessage, labelSelector, fieldSelector string) (string, []json.RawMessage) {
 	var labelSel labels.Selector
 	if labelSelector != "" {
 		sel, err := labels.Parse(labelSelector)
@@ -305,9 +305,9 @@ func filterItemsStrict(items []json.RawMessage, labelSelector, fieldSelector str
 
 	filtered := items[:0]
 	for _, raw := range items {
-		var obj k8sObject
+		var obj K8sObject
 		if err := json.Unmarshal(raw, &obj); err != nil {
-			filtered = append(filtered, raw) // can't parse — keep, don't hide (matches filterItems' convention)
+			filtered = append(filtered, raw) // can't parse — keep, don't hide (matches FilterItems' convention)
 			continue
 		}
 		if labelSel != nil && !labelSel.Matches(labels.Set(obj.Metadata.Labels)) {
@@ -321,9 +321,9 @@ func filterItemsStrict(items []json.RawMessage, labelSelector, fieldSelector str
 	return "", filtered
 }
 
-// matchesFields returns true if the object satisfies all field selector requirements.
+// MatchesFields returns true if the object satisfies all field selector requirements.
 // Only metadata.name and metadata.namespace are supported.
-func matchesFields(obj *k8sObject, reqs []fieldSelectorReq) bool {
+func MatchesFields(obj *K8sObject, reqs []fieldSelectorReq) bool {
 	for _, r := range reqs {
 		var actual string
 		switch r.field {
@@ -349,20 +349,20 @@ func matchesFields(obj *k8sObject, reqs []fieldSelectorReq) bool {
 	return true
 }
 
-// filterTableRows applies label/field selectors to a Table-format response,
+// FilterTableRows applies label/field selectors to a Table-format response,
 // keeping only rows whose embedded object satisfies both selectors. Returns the
 // original body unchanged if selectors are empty, the body cannot be decoded as
 // a Table, or the rows array is absent.
-func filterTableRows(tableBody []byte, labelSelector, fieldSelector string) ([]byte, error) {
+func FilterTableRows(tableBody []byte, labelSelector, fieldSelector string) ([]byte, error) {
 	if labelSelector == "" && fieldSelector == "" {
 		return tableBody, nil
 	}
 
-	labelReqs, err := parseRequirements(labelSelector)
+	labelReqs, err := ParseRequirements(labelSelector)
 	if err != nil {
 		return tableBody, nil // malformed selector — serve unfiltered (best-effort)
 	}
-	fieldReqs := parseFieldSelector(fieldSelector)
+	fieldReqs := ParseFieldSelector(fieldSelector)
 
 	var table struct {
 		APIVersion        json.RawMessage   `json:"apiVersion"`
@@ -378,13 +378,13 @@ func filterTableRows(tableBody []byte, labelSelector, fieldSelector string) ([]b
 	filtered := make([]json.RawMessage, 0, len(table.Rows))
 	for _, row := range table.Rows {
 		var r struct {
-			Object k8sObject `json:"object"`
+			Object K8sObject `json:"object"`
 		}
 		if err := json.Unmarshal(row, &r); err != nil {
 			filtered = append(filtered, row) // can't inspect — include to avoid data loss
 			continue
 		}
-		if matchesLabels(&r.Object, labelReqs) && matchesFields(&r.Object, fieldReqs) {
+		if MatchesLabels(&r.Object, labelReqs) && MatchesFields(&r.Object, fieldReqs) {
 			filtered = append(filtered, row)
 		}
 	}
@@ -392,43 +392,43 @@ func filterTableRows(tableBody []byte, labelSelector, fieldSelector string) ([]b
 	return json.Marshal(table)
 }
 
-// filterItems returns the subset of items matching both labelSelector and
-// fieldSelector. Best-effort, matching applySelectors (the only caller): a
+// FilterItems returns the subset of items matching both labelSelector and
+// fieldSelector. Best-effort, matching ApplySelectors (the only caller): a
 // malformed labelSelector returns items unfiltered rather than erroring, and
 // an item that fails to unmarshal is kept (never silently hidden) — safe for
 // a read, where "matches more than intended" only affects display fidelity.
-// The writable overlay's deletecollection uses the stricter filterItemsStrict
+// The writable overlay's deletecollection uses the stricter FilterItemsStrict
 // instead (below), where the same leniency would risk deleting more than the
 // caller asked for.
-func filterItems(items []json.RawMessage, labelSelector, fieldSelector string) []json.RawMessage {
+func FilterItems(items []json.RawMessage, labelSelector, fieldSelector string) []json.RawMessage {
 	if labelSelector == "" && fieldSelector == "" {
 		return items
 	}
-	labelReqs, err := parseRequirements(labelSelector)
+	labelReqs, err := ParseRequirements(labelSelector)
 	if err != nil {
-		return items // malformed selector — best-effort, same as applySelectors
+		return items // malformed selector — best-effort, same as ApplySelectors
 	}
-	fieldReqs := parseFieldSelector(fieldSelector)
+	fieldReqs := ParseFieldSelector(fieldSelector)
 
 	filtered := items[:0]
 	for _, raw := range items {
-		var obj k8sObject
+		var obj K8sObject
 		if err := json.Unmarshal(raw, &obj); err != nil {
 			// Can't parse this item; include it to avoid hiding data.
 			filtered = append(filtered, raw)
 			continue
 		}
-		if matchesLabels(&obj, labelReqs) && matchesFields(&obj, fieldReqs) {
+		if MatchesLabels(&obj, labelReqs) && MatchesFields(&obj, fieldReqs) {
 			filtered = append(filtered, raw)
 		}
 	}
 	return filtered
 }
 
-// applySelectors filters a JSON list body keeping only items that match both
+// ApplySelectors filters a JSON list body keeping only items that match both
 // labelSelector and fieldSelector. Returns the original body unchanged if
 // both selectors are empty or if the body is not a list.
-func applySelectors(body []byte, labelSelector, fieldSelector string) ([]byte, error) {
+func ApplySelectors(body []byte, labelSelector, fieldSelector string) ([]byte, error) {
 	if labelSelector == "" && fieldSelector == "" {
 		return body, nil
 	}
@@ -445,6 +445,6 @@ func applySelectors(body []byte, labelSelector, fieldSelector string) ([]byte, e
 		return body, nil
 	}
 
-	list.Items = filterItems(list.Items, labelSelector, fieldSelector)
+	list.Items = FilterItems(list.Items, labelSelector, fieldSelector)
 	return json.Marshal(list)
 }

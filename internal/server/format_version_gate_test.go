@@ -74,7 +74,7 @@ func TestAllReaders_RejectFutureFormatVersion(t *testing.T) {
 
 	t.Run("archive.Open", func(t *testing.T) {
 		// archive.Open enforces the format-version gate directly (#233), so
-		// every caller below — including server.LoadStore's, which used to
+		// every caller below — including store.LoadStore's, which used to
 		// be exercised as its own subtest — actually rejects the archive
 		// here, before ever reaching its own logic. Pinned explicitly since
 		// it's the thing this test now fundamentally relies on.

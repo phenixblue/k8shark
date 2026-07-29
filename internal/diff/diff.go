@@ -12,7 +12,7 @@ import (
 	archivepkg "github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/capture"
 	"github.com/phenixblue/k8shark/internal/k8spath"
-	"github.com/phenixblue/k8shark/internal/server"
+	"github.com/phenixblue/k8shark/internal/store"
 	"github.com/pmezard/go-difflib/difflib"
 )
 
@@ -132,7 +132,7 @@ func RenderText(result *Result, color bool) (string, error) {
 
 type archiveSnapshot struct {
 	ar       *archivepkg.Archive
-	store    *server.CaptureStore
+	store    *store.CaptureStore
 	meta     capture.CaptureMetadata
 	snapshot map[string]json.RawMessage
 }
@@ -210,7 +210,7 @@ func loadArchiveSnapshot(archivePath string, at time.Time, identities []age.Iden
 	if err != nil {
 		return nil, fmt.Errorf("opening archive %q: %w", archivePath, err)
 	}
-	store, err := server.LoadStore(ar)
+	store, err := store.LoadStore(ar)
 	if err != nil {
 		_ = ar.Close()
 		return nil, fmt.Errorf("loading archive %q: %w", archivePath, err)

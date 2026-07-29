@@ -8,10 +8,10 @@ import (
 
 	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/capture"
-	"github.com/phenixblue/k8shark/internal/server"
+	"github.com/phenixblue/k8shark/internal/store"
 )
 
-func buildDiagStore(t *testing.T, bodies map[string]string) *server.CaptureStore {
+func buildDiagStore(t *testing.T, bodies map[string]string) *store.CaptureStore {
 	t.Helper()
 	now := time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC)
 	out := filepath.Join(t.TempDir(), "diag.kshrk")
@@ -41,7 +41,7 @@ func buildDiagStore(t *testing.T, bodies map[string]string) *server.CaptureStore
 		t.Fatalf("archive.Open: %v", err)
 	}
 	t.Cleanup(func() { ar.Close() })
-	store, err := server.LoadStore(ar)
+	store, err := store.LoadStore(ar)
 	if err != nil {
 		t.Fatalf("LoadStore: %v", err)
 	}

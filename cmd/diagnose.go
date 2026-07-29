@@ -9,7 +9,7 @@ import (
 
 	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/diagnose"
-	"github.com/phenixblue/k8shark/internal/server"
+	"github.com/phenixblue/k8shark/internal/store"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -65,7 +65,7 @@ func runDiagnose(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("opening archive: %w", err)
 	}
 	defer ar.Close()
-	store, err := server.LoadStore(ar)
+	store, err := store.LoadStore(ar)
 	if err != nil {
 		return fmt.Errorf("loading capture: %w", err)
 	}

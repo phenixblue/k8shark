@@ -11,6 +11,8 @@ import (
 
 	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/capture"
+
+	kstore "github.com/phenixblue/k8shark/internal/store"
 )
 
 // buildPollStore writes a capture with multiple snapshots for one path and NO
@@ -18,7 +20,7 @@ import (
 func buildPollStore(t *testing.T, apiPath string, snaps []struct {
 	at   time.Time
 	body string
-}) *CaptureStore {
+}) *kstore.CaptureStore {
 	t.Helper()
 	out := filepath.Join(t.TempDir(), "poll.kshrk")
 	sw, err := archive.NewStreamWriter(out)
@@ -48,9 +50,9 @@ func buildPollStore(t *testing.T, apiPath string, snaps []struct {
 		t.Fatalf("archive.Open: %v", err)
 	}
 	t.Cleanup(func() { ar.Close() })
-	store, err := LoadStore(ar)
+	store, err := kstore.LoadStore(ar)
 	if err != nil {
-		t.Fatalf("LoadStore: %v", err)
+		t.Fatalf("kstore.LoadStore: %v", err)
 	}
 	return store
 }
@@ -250,7 +252,7 @@ func TestReplayWatch_PollOnly(t *testing.T) {
 	if len(store.WatchIndex) != 0 {
 		t.Fatalf("expected poll-only store (no watch index), got %d entries", len(store.WatchIndex))
 	}
-	tl := store.buildReplayTimeline(path)
+	tl := buildReplayTimeline(store, path)
 	if len(tl) != 2 {
 		t.Fatalf("inferred timeline length = %d, want 2 (pod-a, pod-b ADDED)", len(tl))
 	}

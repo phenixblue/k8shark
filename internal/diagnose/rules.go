@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/phenixblue/k8shark/internal/server"
+	"github.com/phenixblue/k8shark/internal/store"
 )
 
 // ── workload: pod health ─────────────────────────────────────────────────────
@@ -37,7 +37,7 @@ func reasonRule(reason string) (ruleID, severity, title, suggestion string, ok b
 	}
 }
 
-func podHealthFindings(store *server.CaptureStore, at time.Time) []Finding {
+func podHealthFindings(store *store.CaptureStore, at time.Time) []Finding {
 	g := newGrouper()
 	forEachResource(store, at, "pods", func(ns, path string, items []json.RawMessage) {
 		for _, raw := range items {
@@ -76,7 +76,7 @@ func sanitizeReason(s string) string {
 
 // ── scheduling: unschedulable pods ───────────────────────────────────────────
 
-func schedulingFindings(store *server.CaptureStore, at time.Time) []Finding {
+func schedulingFindings(store *store.CaptureStore, at time.Time) []Finding {
 	g := newGrouper()
 	forEachResource(store, at, "pods", func(ns, path string, items []json.RawMessage) {
 		for _, raw := range items {
@@ -117,7 +117,7 @@ func schedulingFindings(store *server.CaptureStore, at time.Time) []Finding {
 
 // ── storage: unbound PVCs ────────────────────────────────────────────────────
 
-func pvcFindings(store *server.CaptureStore, at time.Time) []Finding {
+func pvcFindings(store *store.CaptureStore, at time.Time) []Finding {
 	g := newGrouper()
 	forEachResource(store, at, "persistentvolumeclaims", func(ns, path string, items []json.RawMessage) {
 		for _, raw := range items {
@@ -156,7 +156,7 @@ func pvcFindings(store *server.CaptureStore, at time.Time) []Finding {
 
 // ── cluster: control-plane / node version skew ───────────────────────────────
 
-func versionSkewFindings(store *server.CaptureStore, at time.Time) []Finding {
+func versionSkewFindings(store *store.CaptureStore, at time.Time) []Finding {
 	cpMinor, okCP := parseMinor(store.Metadata.KubernetesVersion)
 	if !okCP {
 		return nil

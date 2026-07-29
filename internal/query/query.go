@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/phenixblue/k8shark/internal/k8spath"
-	"github.com/phenixblue/k8shark/internal/server"
+	"github.com/phenixblue/k8shark/internal/store"
 	"k8s.io/client-go/util/jsonpath"
 )
 
@@ -49,7 +49,7 @@ type Result struct {
 // object — including zero-value results like "" or null, since those mean
 // the field exists. Objects that don't have the queried field at all produce
 // no results (via AllowMissingKeys) and are skipped, not treated as errors.
-func Run(store *server.CaptureStore, opts Options) (*Result, error) {
+func Run(store *store.CaptureStore, opts Options) (*Result, error) {
 	jp := jsonpath.New("query").AllowMissingKeys(true)
 	if err := jp.Parse(opts.Expression); err != nil {
 		return nil, fmt.Errorf("parsing jsonpath expression %q: %w", opts.Expression, err)

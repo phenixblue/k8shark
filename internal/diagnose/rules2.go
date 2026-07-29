@@ -6,12 +6,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/phenixblue/k8shark/internal/server"
+	"github.com/phenixblue/k8shark/internal/store"
 )
 
 // ── workload: missing resource requests/limits ───────────────────────────────
 
-func missingResourceFindings(store *server.CaptureStore, at time.Time) []Finding {
+func missingResourceFindings(store *store.CaptureStore, at time.Time) []Finding {
 	g := newGrouper()
 	forEachResource(store, at, "pods", func(ns, path string, items []json.RawMessage) {
 		for _, raw := range items {
@@ -64,7 +64,7 @@ func missingResourceFindings(store *server.CaptureStore, at time.Time) []Finding
 
 // ── workload: replica/availability shortfall ─────────────────────────────────
 
-func replicaFindings(store *server.CaptureStore, at time.Time) []Finding {
+func replicaFindings(store *store.CaptureStore, at time.Time) []Finding {
 	var out []Finding
 	for _, rk := range []struct{ resource, kind string }{
 		{"deployments", "Deployment"}, {"statefulsets", "StatefulSet"}, {"replicasets", "ReplicaSet"},
@@ -135,7 +135,7 @@ func replicaFindings(store *server.CaptureStore, at time.Time) []Finding {
 
 // ── node: conditions ─────────────────────────────────────────────────────────
 
-func nodeConditionFindings(store *server.CaptureStore, at time.Time) []Finding {
+func nodeConditionFindings(store *store.CaptureStore, at time.Time) []Finding {
 	var out []Finding
 	forEachResource(store, at, "nodes", func(_, path string, items []json.RawMessage) {
 		for _, raw := range items {
@@ -192,7 +192,7 @@ var deprecatedGroupVersions = map[string]string{
 	"storage.k8s.io/v1beta1":            "deprecated; use storage.k8s.io/v1",
 }
 
-func deprecatedAPIFindings(store *server.CaptureStore) []Finding {
+func deprecatedAPIFindings(store *store.CaptureStore) []Finding {
 	seen := map[string]bool{}
 	var out []Finding
 	for path := range store.Index {

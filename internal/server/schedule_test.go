@@ -10,12 +10,14 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	kstore "github.com/phenixblue/k8shark/internal/store"
 )
 
 // newWritableServerSched is newWritableServer with the pod-scheduling shim
 // enabled (as production --writable enables it). The default newWritableServer
 // leaves it off so the many existing pod-create tests aren't perturbed.
-func newWritableServerSched(t *testing.T, store *CaptureStore, clock *ReplayClock) *httptest.Server {
+func newWritableServerSched(t *testing.T, store *kstore.CaptureStore, clock *ReplayClock) *httptest.Server {
 	t.Helper()
 	h := newHandler(store, time.Time{}, false)
 	h.clock = clock
@@ -38,7 +40,7 @@ func nodeList(names ...string) string {
 	return `{"apiVersion":"v1","kind":"NodeList","metadata":{"resourceVersion":"1"},"items":[` + items + `]}`
 }
 
-func schedStore(t *testing.T, from time.Time, nodes ...string) *CaptureStore {
+func schedStore(t *testing.T, from time.Time, nodes ...string) *kstore.CaptureStore {
 	t.Helper()
 	snaps := map[string]watchTestRecord{podsPath: {id: "p", at: from, body: emptyPodList}}
 	if nodes != nil {

@@ -6,20 +6,35 @@ package v2
 
 import (
 	"embed"
+	"encoding/json"
 	"io/fs"
 	"net/http"
 	"sync"
 	"time"
 
 	"github.com/phenixblue/k8shark/internal/server"
+	"github.com/phenixblue/k8shark/internal/store"
 )
 
 //go:embed static
 var staticFS embed.FS
 
+// OverlayReader is the read-only subset of *server.Server's overlay
+// accessors the v2 dashboard depends on, so Handler.Overlay can be satisfied
+// by anything providing overlay reads/merges instead of requiring the
+// concrete HTTP mock apiserver type (#234).
+type OverlayReader interface {
+	// OverlayScopes returns every distinct group/version/resource/namespace
+	// scope with at least one live overlay entry.
+	OverlayScopes() []server.OverlayScope
+	// MergeOverlayList merges overlay writes for (group, version, resource,
+	// namespace) over base, "overlay wins".
+	MergeOverlayList(group, version, resource, namespace string, base []json.RawMessage) []json.RawMessage
+}
+
 // Handler holds the shared state for v2 endpoints.
 type Handler struct {
-	Store       *server.CaptureStore
+	Store       *store.CaptureStore
 	At          time.Time
 	ArchivePath string
 	Verbose     bool
@@ -34,7 +49,7 @@ type Handler struct {
 	// *Server (plain `open`, or a caller that didn't wire one up) and a
 	// Server without a writable overlay — callers here can call them on
 	// h.Overlay directly without checking either case first.
-	Overlay *server.Server
+	Overlay OverlayReader
 
 	// discoveryMetaOnce/discoveryMetaCache memoize discoveryResourceMeta
 	// (objects.go): it's derived purely from the capture's own discovery

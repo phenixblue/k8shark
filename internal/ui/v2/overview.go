@@ -10,7 +10,7 @@ import (
 
 	"github.com/phenixblue/k8shark/internal/capture"
 	"github.com/phenixblue/k8shark/internal/k8spath"
-	"github.com/phenixblue/k8shark/internal/server"
+	"github.com/phenixblue/k8shark/internal/store"
 )
 
 const (
@@ -97,9 +97,11 @@ func (h *Handler) buildOverview(at time.Time) (*Overview, error) {
 	// Fold in resource kinds/namespaces that exist only because of overlay
 	// writes (a CRD's custom resources, or a namespace + its contents created
 	// mid-replay) — the index-based counts above never see these.
-	if scopes := h.Overlay.OverlayScopes(); len(scopes) > 0 {
-		mergeOverlayNamespaceCounts(counts, scopes)
-		mergeOverlayClusterCounts(clusterCounts, scopes)
+	if h.Overlay != nil {
+		if scopes := h.Overlay.OverlayScopes(); len(scopes) > 0 {
+			mergeOverlayNamespaceCounts(counts, scopes)
+			mergeOverlayClusterCounts(clusterCounts, scopes)
+		}
 	}
 
 	// Aggregate KPIs + per-resource totals.
@@ -319,7 +321,7 @@ func latestIndex(entry *capture.IndexEntry, at time.Time) int {
 
 // buildSparkline groups watch-event timestamps into sparkBucketCount equal
 // buckets across the capture window.
-func buildSparkline(store *server.CaptureStore, _ time.Time, buckets int) SparklineData {
+func buildSparkline(store *store.CaptureStore, _ time.Time, buckets int) SparklineData {
 	start := store.Metadata.CapturedAt.UTC()
 	end := store.Metadata.CapturedUntil.UTC()
 	if !end.After(start) || buckets <= 0 {
@@ -376,7 +378,7 @@ func buildSparkline(store *server.CaptureStore, _ time.Time, buckets int) Sparkl
 
 // recentTransitions returns the last `n` watch events captured anywhere in
 // the archive (across all paths), most recent first.
-func recentTransitions(store *server.CaptureStore, at time.Time, n int) []Transition {
+func recentTransitions(store *store.CaptureStore, at time.Time, n int) []Transition {
 	type entry struct {
 		t         time.Time
 		eventType string

@@ -11,12 +11,14 @@ import (
 	"time"
 
 	"k8s.io/apimachinery/pkg/runtime/schema"
+
+	kstore "github.com/phenixblue/k8shark/internal/store"
 )
 
 const podsPath = "/api/v1/namespaces/default/pods"
 
 // newWritableServer builds a writable replay handler over the given store/clock.
-func newWritableServer(t *testing.T, store *CaptureStore, clock *ReplayClock) *httptest.Server {
+func newWritableServer(t *testing.T, store *kstore.CaptureStore, clock *ReplayClock) *httptest.Server {
 	t.Helper()
 	h := newHandler(store, time.Time{}, false)
 	h.clock = clock
@@ -77,7 +79,7 @@ func contains(ss []string, want string) bool {
 	return false
 }
 
-func writableTestStore(t *testing.T, from time.Time) *CaptureStore {
+func writableTestStore(t *testing.T, from time.Time) *kstore.CaptureStore {
 	return buildTestStoreWithWatch(t,
 		map[string]watchTestRecord{podsPath: {id: "s", at: from, body: podList("pod-base")}},
 		nil)
@@ -1774,7 +1776,7 @@ func TestOverlay_DeleteCollection_LabelSelectorFilters(t *testing.T) {
 
 // TestOverlay_DeleteCollection_SetBasedSelectorFilters verifies well-formed
 // set-based ("in"/"notin") labelSelectors still work for deletecollection —
-// filterItemsStrict's strict parsing must reject malformed set syntax without
+// kstore.FilterItemsStrict's strict parsing must reject malformed set syntax without
 // breaking legitimate use.
 func TestOverlay_DeleteCollection_SetBasedSelectorFilters(t *testing.T) {
 	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
@@ -1963,9 +1965,9 @@ func TestOverlay_DeleteCollection_AggregateAcrossNamespacesFallback(t *testing.T
 
 // TestOverlay_DeleteCollection_InvalidSelectorRejected verifies deletecollection
 // rejects a malformed or unsupported labelSelector/fieldSelector with 400
-// (filterItemsStrict, backed by k8s.io/apimachinery's labels.Parse and
+// (kstore.FilterItemsStrict, backed by k8s.io/apimachinery's labels.Parse and
 // fields.ParseSelector) rather than the read path's best-effort leniency
-// (filterItems/applySelectors) — which for a mutating deletecollection would
+// (kstore.FilterItems/kstore.ApplySelectors) — which for a mutating deletecollection would
 // mean "delete more than the caller asked for," not just "display more than
 // intended."
 func TestOverlay_DeleteCollection_InvalidSelectorRejected(t *testing.T) {
@@ -1985,7 +1987,7 @@ func TestOverlay_DeleteCollection_InvalidSelectorRejected(t *testing.T) {
 		// An unclosed "notin (" is a syntax error in the real grammar.
 		{"unclosed notin paren", "?labelSelector=app+notin+%28"},
 		// fields.ParseSelector is lenient about a stray comma (parses to an
-		// Empty selector rather than erroring) — caught by filterItemsStrict's
+		// Empty selector rather than erroring) — caught by kstore.FilterItemsStrict's
 		// explicit Empty() check instead.
 		{"empty fieldSelector segment", "?fieldSelector=%2C"},
 		// Whitespace-only selectors parse successfully to an Empty selector in
@@ -2014,7 +2016,7 @@ func TestOverlay_DeleteCollection_InvalidSelectorRejected(t *testing.T) {
 // TestOverlay_DeleteCollection_NonListCaptureBodyIsBestEffort verifies
 // deletecollection doesn't hard-fail when the captured body at the list path
 // isn't list-shaped (e.g. a Table-format snapshot) — it's treated as zero
-// captured items (best-effort, matching CaptureStore.ReconstructAt's own
+// captured items (best-effort, matching kstore.CaptureStore.ReconstructAt's own
 // tolerance of non-list bodies), and overlay-owned items still delete cleanly.
 func TestOverlay_DeleteCollection_NonListCaptureBodyIsBestEffort(t *testing.T) {
 	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
@@ -2206,7 +2208,7 @@ func TestOverlay_CRDMergesIntoCapturedDiscovery(t *testing.T) {
 			{"name":"gateways","namespaced":true,"kind":"Gateway","verbs":["create","delete","get","list","patch","update","watch"]}
 		]}`),
 	})
-	store.discoveryEnrichmentDone.Wait() // deterministically wait for the async enrichment pass
+	store.Close() // deterministically wait for the async enrichment pass
 
 	// No fake replay clock here: buildTestStore stamps captured records with
 	// the real wall-clock time, so a clock pinned to an arbitrary past instant
@@ -2289,7 +2291,7 @@ func TestOverlay_CRDNewVersionMergesIntoCapturedGroup(t *testing.T) {
 			{"name":"gateways","namespaced":true,"kind":"Gateway"}
 		]}`),
 	})
-	store.discoveryEnrichmentDone.Wait()
+	store.Close()
 
 	h := newHandler(store, time.Time{}, false) // see TestOverlay_CRDMergesIntoCapturedDiscovery for why no fake clock
 	h.overlay = newOverlay()
@@ -2355,7 +2357,7 @@ func TestOverlay_CRDNewVersionMergesIntoCapturedGroup(t *testing.T) {
 // spec.names.kind is missing (a malformed body a real apiserver's OpenAPI
 // validation would reject, but registerCRDResourceInfo is deliberately
 // best-effort) doesn't get registered in discovery at all — falling through
-// to mergeResourceInfo's resourceToKind heuristic would guess a Kind that's
+// to mergeResourceInfo's kstore.ResourceToKind heuristic would guess a Kind that's
 // almost certainly wrong for a CRD (the heuristic is only reliable for
 // built-in types), polluting discovery with bad data. Found via Copilot
 // review.
@@ -2386,8 +2388,8 @@ func TestOverlay_CRDMissingKindSkipsDiscoveryRegistration(t *testing.T) {
 // TestOverlay_CRDRegistersDiscoveryOnCreate verifies a freshly created CRD is
 // immediately visible via the discovery endpoints (/apis and
 // /apis/<group>/<version>), not just via a plain object read (`kubectl get
-// crd`). CaptureStore.resourceInfo is otherwise a snapshot built once from the
-// capture archive at startup (see LoadStore/buildResourceInfo), so without
+// crd`). kstore.CaptureStore.resourceInfo is otherwise a snapshot built once from the
+// capture archive at startup (see kstore.LoadStore/buildResourceInfo), so without
 // registering the CRD's defined type on create, a CRD applied at runtime
 // (e.g. `istioctl install`) never shows up in `kubectl api-resources` or
 // `istioctl analyze`, both of which walk discovery rather than reading the

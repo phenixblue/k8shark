@@ -7,6 +7,8 @@ import (
 
 	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/capture"
+
+	kstore "github.com/phenixblue/k8shark/internal/store"
 )
 
 func TestLoadStore_FormatVersionGuard(t *testing.T) {
@@ -22,12 +24,12 @@ func TestLoadStore_FormatVersionGuard(t *testing.T) {
 	})
 	t.Run("newer is rejected", func(t *testing.T) {
 		if _, err := loadStoreWithVersion(t, capture.CurrentFormatVersion+1); err == nil {
-			t.Error("expected LoadStore to reject a newer format version")
+			t.Error("expected kstore.LoadStore to reject a newer format version")
 		}
 	})
 }
 
-func loadStoreWithVersion(t *testing.T, version int) (*CaptureStore, error) {
+func loadStoreWithVersion(t *testing.T, version int) (*kstore.CaptureStore, error) {
 	t.Helper()
 	now := time.Date(2026, 4, 9, 8, 0, 0, 0, time.UTC)
 	body := []byte(`{"apiVersion":"v1","kind":"PodList","items":[{"metadata":{"name":"p","namespace":"default"}}]}`)
@@ -49,7 +51,7 @@ func loadStoreWithVersion(t *testing.T, version int) (*CaptureStore, error) {
 		t.Fatalf("Finish: %v", err)
 	}
 	// archive.Open itself enforces the format-version gate (#233), so a
-	// too-new archive is rejected here rather than by LoadStore below —
+	// too-new archive is rejected here rather than by kstore.LoadStore below —
 	// propagate the error instead of failing the test so the "newer is
 	// rejected" case can assert on it regardless of which layer catches it.
 	ar, err := archive.Open(out)
@@ -57,5 +59,5 @@ func loadStoreWithVersion(t *testing.T, version int) (*CaptureStore, error) {
 		return nil, err
 	}
 	t.Cleanup(func() { ar.Close() })
-	return LoadStore(ar)
+	return kstore.LoadStore(ar)
 }
