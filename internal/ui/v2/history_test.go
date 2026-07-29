@@ -66,6 +66,7 @@ func buildV2WatchStore(t *testing.T, events []v2WatchEvent, captureStart time.Ti
 	if err != nil {
 		t.Fatalf("LoadStore: %v", err)
 	}
+	t.Cleanup(cs.Close)
 	return cs
 }
 

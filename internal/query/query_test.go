@@ -45,6 +45,7 @@ func buildQueryStore(t *testing.T, bodies map[string]string) *store.CaptureStore
 	if err != nil {
 		t.Fatalf("LoadStore: %v", err)
 	}
+	t.Cleanup(cs.Close)
 	return cs
 }
 

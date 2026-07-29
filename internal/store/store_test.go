@@ -201,6 +201,7 @@ func buildTestStore(t *testing.T, records map[string][]byte) *CaptureStore {
 	if err != nil {
 		t.Fatalf("LoadStore: %v", err)
 	}
+	t.Cleanup(store.Close)
 	return store
 }
 
@@ -577,6 +578,7 @@ func TestStore_Latest_AtTimestamp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadStore: %v", err)
 	}
+	t.Cleanup(store.Close)
 
 	body, code, err := store.Latest(path, t1.Add(time.Minute))
 	if err != nil {
@@ -697,6 +699,7 @@ func buildTestStoreWithWatch(t *testing.T, snapshots map[string]watchTestRecord,
 	if err != nil {
 		t.Fatalf("LoadStore: %v", err)
 	}
+	t.Cleanup(store.Close)
 	return store
 }
 

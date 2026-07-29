@@ -281,5 +281,6 @@ func buildV2TestStore(t *testing.T, recs []*capture.Record, idx capture.Index, m
 	if err != nil {
 		t.Fatalf("LoadStore: %v", err)
 	}
+	t.Cleanup(cs.Close)
 	return cs
 }
