@@ -73,6 +73,7 @@ func buildBenchStore(b *testing.B, n int) *kstore.CaptureStore {
 	if err != nil {
 		b.Fatalf("kstore.LoadStore: %v", err)
 	}
+	b.Cleanup(store.Close)
 	return store
 }
 

@@ -54,6 +54,7 @@ func buildPollStore(t *testing.T, apiPath string, snaps []struct {
 	if err != nil {
 		t.Fatalf("kstore.LoadStore: %v", err)
 	}
+	t.Cleanup(store.Close)
 	return store
 }
 

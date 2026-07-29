@@ -70,6 +70,7 @@ func buildTestStore(t *testing.T, records map[string][]byte) *kstore.CaptureStor
 	if err != nil {
 		t.Fatalf("LoadStore: %v", err)
 	}
+	t.Cleanup(store.Close)
 	return store
 }
 
@@ -231,5 +232,6 @@ func buildTestStoreWithWatch(t *testing.T, snapshots map[string]watchTestRecord,
 	if err != nil {
 		t.Fatalf("LoadStore: %v", err)
 	}
+	t.Cleanup(store.Close)
 	return store
 }

@@ -59,5 +59,10 @@ func loadStoreWithVersion(t *testing.T, version int) (*kstore.CaptureStore, erro
 		return nil, err
 	}
 	t.Cleanup(func() { ar.Close() })
-	return kstore.LoadStore(ar)
+	store, err := kstore.LoadStore(ar)
+	if err != nil {
+		return nil, err
+	}
+	t.Cleanup(store.Close)
+	return store, nil
 }

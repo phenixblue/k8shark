@@ -657,6 +657,7 @@ func TestHandler_ReplayAtTimestamp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("kstore.LoadStore: %v", err)
 	}
+	t.Cleanup(store.Close)
 	h := newHandler(store, t1.Add(time.Minute), false)
 
 	req := httptest.NewRequest(http.MethodGet, path, nil)

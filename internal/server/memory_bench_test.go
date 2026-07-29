@@ -151,6 +151,7 @@ func BenchmarkServeLargeCapture(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
+	b.Cleanup(store.Close)
 	end := store.Metadata.CapturedUntil
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -192,6 +193,7 @@ func TestLargeCaptureMemory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer store.Close()
 
 	// Warm caches the way open/ui would: sweep every path at a few timestamps.
 	for _, frac := range []float64{0.25, 0.5, 0.75, 1.0} {
