@@ -33,7 +33,7 @@ Open the printed address in a browser. The **dashboard** is served at `/` (it re
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--port` | from config, else random | Port for the local web UI server |
+| `--ui-port` | from config, else random | Port for the local web UI server |
 | `--api-port` | from config, else random | Port for the mock Kubernetes API server |
 | `--kubeconfig-out` | `~/.kube/k8shark-<id>.yaml` | Where to write the generated kubeconfig |
 | `--at` | latest records | Pin UI data to a specific timestamp (RFC3339 or relative duration, e.g. `-2m`) |

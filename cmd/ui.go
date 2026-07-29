@@ -20,13 +20,13 @@ var uiCmd = &cobra.Command{
 	Long: `Starts a local web UI for browsing a k8shark capture — namespaces,
 workloads, pods, object YAML/JSON, relationships, and a watch-event timeline —
 and also runs the mock Kubernetes API server with generated kubeconfig output.
-Ports default to random; pin them with --port / --api-port (or a ui: block in
-the config file).`,
+Ports default to random; pin them with --ui-port / --api-port (or a ui: block
+in the config file).`,
 	Example: `  # Browse a capture in the web UI
   kshrk ui capture.kshrk
 
   # Pin the UI and mock API server ports
-  kshrk ui capture.kshrk --port 8080 --api-port 8081
+  kshrk ui capture.kshrk --ui-port 8080 --api-port 8081
 
   # Open the UI pinned to a point in time
   kshrk ui capture.kshrk --at -5m
@@ -40,7 +40,7 @@ the config file).`,
 
 func init() {
 	rootCmd.AddCommand(uiCmd)
-	uiCmd.Flags().String("port", "0", "port for the local UI server (0 = random available port)")
+	uiCmd.Flags().String("ui-port", "0", "port for the local UI server (0 = random available port)")
 	uiCmd.Flags().String("api-port", "0", "port for the mock API server (0 = random available port)")
 	uiCmd.Flags().String("kubeconfig-out", "", "where to write the generated kubeconfig (default: ~/.kube/k8shark-<id>)")
 	uiCmd.Flags().String("at", "", "pin UI data to a specific timestamp (RFC3339 or relative duration like -5m)")
@@ -58,7 +58,7 @@ func init() {
 
 func runUI(cmd *cobra.Command, args []string) error {
 	archivePath := args[0]
-	uiPort, _ := cmd.Flags().GetString("port")
+	uiPort, _ := cmd.Flags().GetString("ui-port")
 	apiPort, _ := cmd.Flags().GetString("api-port")
 	kubeconfigOut, _ := cmd.Flags().GetString("kubeconfig-out")
 	at, _ := cmd.Flags().GetString("at")
@@ -67,7 +67,7 @@ func runUI(cmd *cobra.Command, args []string) error {
 	// Fall back to config-file ui.port / ui.apiPort when the flags were left at
 	// their default; an explicitly-passed flag always wins.
 	if cfg, err := config.Load(viper.ConfigFileUsed()); err == nil && cfg != nil {
-		if !cmd.Flags().Changed("port") && cfg.UI.Port != "" {
+		if !cmd.Flags().Changed("ui-port") && cfg.UI.Port != "" {
 			uiPort = cfg.UI.Port
 		}
 		if !cmd.Flags().Changed("api-port") && cfg.UI.APIPort != "" {

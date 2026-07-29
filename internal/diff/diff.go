@@ -13,6 +13,7 @@ import (
 	"github.com/phenixblue/k8shark/internal/capture"
 	"github.com/phenixblue/k8shark/internal/k8spath"
 	"github.com/phenixblue/k8shark/internal/store"
+	"github.com/phenixblue/k8shark/internal/timewindow"
 	"github.com/pmezard/go-difflib/difflib"
 )
 
@@ -20,10 +21,12 @@ type Options struct {
 	BeforeArchive string
 	AfterArchive  string
 	Archive       string
-	BeforeAt      string
-	AfterAt       string
-	Resource      string
-	Namespace     string
+	// From/To are the before/after snapshot times for the --archive
+	// (single-archive) mode: RFC3339 or a relative duration like -5m.
+	From      string
+	To        string
+	Resource  string
+	Namespace string
 	// Identities decrypts encrypted archive(s); ignored for plaintext ones.
 	// A single key source is shared across both archives in the two-archive
 	// mode (a documented v1.0 limitation).
@@ -156,8 +159,8 @@ func loadSnapshots(opts Options) (*archiveSnapshot, *archiveSnapshot, error) {
 		if opts.BeforeArchive == "" || opts.AfterArchive == "" {
 			return nil, nil, fmt.Errorf("both --before and --after are required when comparing two archives")
 		}
-		if opts.Archive != "" || opts.BeforeAt != "" || opts.AfterAt != "" {
-			return nil, nil, fmt.Errorf("use either --before/--after or --archive with --before-at/--after-at")
+		if opts.Archive != "" || opts.From != "" || opts.To != "" {
+			return nil, nil, fmt.Errorf("use either --before/--after or --archive with --from/--to")
 		}
 		before, err := loadArchiveSnapshot(opts.BeforeArchive, time.Time{}, opts.Identities)
 		if err != nil {
@@ -170,19 +173,19 @@ func loadSnapshots(opts Options) (*archiveSnapshot, *archiveSnapshot, error) {
 		}
 		return before, after, nil
 	case opts.Archive != "":
-		if opts.BeforeAt == "" || opts.AfterAt == "" {
-			return nil, nil, fmt.Errorf("--before-at and --after-at are required with --archive")
+		if opts.From == "" || opts.To == "" {
+			return nil, nil, fmt.Errorf("--from and --to are required with --archive")
 		}
 		base, err := loadArchiveSnapshot(opts.Archive, time.Time{}, opts.Identities)
 		if err != nil {
 			return nil, nil, err
 		}
-		beforeAt, err := parseSnapshotTime(base.meta, opts.BeforeAt)
+		beforeAt, err := timewindow.ParseAt(opts.From, base.meta.CapturedAt, base.meta.CapturedUntil, "--from")
 		if err != nil {
 			base.cleanup()
 			return nil, nil, err
 		}
-		afterAt, err := parseSnapshotTime(base.meta, opts.AfterAt)
+		afterAt, err := timewindow.ParseAt(opts.To, base.meta.CapturedAt, base.meta.CapturedUntil, "--to")
 		if err != nil {
 			base.cleanup()
 			return nil, nil, err
@@ -201,7 +204,7 @@ func loadSnapshots(opts Options) (*archiveSnapshot, *archiveSnapshot, error) {
 		base.cleanup()
 		return before, after, nil
 	default:
-		return nil, nil, fmt.Errorf("provide either --before and --after, or --archive with --before-at and --after-at")
+		return nil, nil, fmt.Errorf("provide either --before and --after, or --archive with --from and --to")
 	}
 }
 
@@ -236,24 +239,6 @@ func loadArchiveSnapshot(archivePath string, at time.Time, identities []age.Iden
 		shot.snapshot[path] = append(json.RawMessage(nil), body...)
 	}
 	return shot, nil
-}
-
-func parseSnapshotTime(meta capture.CaptureMetadata, raw string) (time.Time, error) {
-	at, err := time.Parse(time.RFC3339, raw)
-	if err != nil {
-		d, derr := time.ParseDuration(raw)
-		if derr != nil {
-			return time.Time{}, fmt.Errorf("parsing time %q: must be RFC3339 or a relative duration like -5m", raw)
-		}
-		at = meta.CapturedUntil.Add(d)
-	}
-	if !meta.CapturedAt.IsZero() && at.Before(meta.CapturedAt) {
-		return time.Time{}, fmt.Errorf("parsing time %q: requested time %s is before capture start %s", raw, at.Format(time.RFC3339), meta.CapturedAt.Format(time.RFC3339))
-	}
-	if !meta.CapturedUntil.IsZero() && at.After(meta.CapturedUntil) {
-		return time.Time{}, fmt.Errorf("parsing time %q: requested time %s is after capture end %s", raw, at.Format(time.RFC3339), meta.CapturedUntil.Format(time.RFC3339))
-	}
-	return at, nil
 }
 
 func matchesFilters(path, resource, namespace string) bool {

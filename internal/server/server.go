@@ -16,8 +16,8 @@ import (
 	"filippo.io/age"
 	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/capture"
-
 	kstore "github.com/phenixblue/k8shark/internal/store"
+	"github.com/phenixblue/k8shark/internal/timewindow"
 )
 
 // OpenOptions holds parameters for opening a capture archive.
@@ -326,70 +326,14 @@ func (s *Server) teardown() {
 }
 
 func parseReplayAt(meta capture.CaptureMetadata, raw string) (time.Time, error) {
-	return parseReplayTime(meta, raw, "--at")
-}
-
-// parseReplayTime parses an RFC3339 timestamp or a duration relative to the
-// capture end (e.g. -5m), validating it lies within the capture window. flag is
-// the CLI flag name used in error messages so callers report the right flag.
-func parseReplayTime(meta capture.CaptureMetadata, raw, flag string) (time.Time, error) {
-	if raw == "" {
-		return time.Time{}, nil
-	}
-
-	at, err := time.Parse(time.RFC3339, raw)
-	if err != nil {
-		d, derr := time.ParseDuration(raw)
-		if derr != nil {
-			return time.Time{}, fmt.Errorf("parsing %s %q: must be RFC3339 or a relative duration like -5m", flag, raw)
-		}
-		// Relative durations are anchored to the capture end; without one we'd
-		// silently resolve against year 0001, so require an absolute time instead.
-		if meta.CapturedUntil.IsZero() {
-			return time.Time{}, fmt.Errorf("parsing %s %q: capture end time is unknown; use an absolute RFC3339 time", flag, raw)
-		}
-		at = meta.CapturedUntil.Add(d)
-	}
-
-	if !meta.CapturedAt.IsZero() && at.Before(meta.CapturedAt) {
-		return time.Time{}, fmt.Errorf("parsing %s %q: requested replay time %s is before capture start %s", flag, raw, at.Format(time.RFC3339), meta.CapturedAt.Format(time.RFC3339))
-	}
-	if !meta.CapturedUntil.IsZero() && at.After(meta.CapturedUntil) {
-		return time.Time{}, fmt.Errorf("parsing %s %q: requested replay time %s is after capture end %s", flag, raw, at.Format(time.RFC3339), meta.CapturedUntil.Format(time.RFC3339))
-	}
-
-	return at, nil
+	return timewindow.ParseAt(raw, meta.CapturedAt, meta.CapturedUntil, "--at")
 }
 
 // parseReplayWindow resolves the [from, to] replay window. Empty from/to default
 // to the capture bounds; non-empty values are RFC3339 timestamps or durations
 // relative to the capture end (e.g. -10m), validated to lie within the capture.
+// Delegates to the shared internal/timewindow parser (also used by cmd and
+// internal/diff) so this validation isn't duplicated per command (#221).
 func parseReplayWindow(meta capture.CaptureMetadata, fromRaw, toRaw string) (from, to time.Time, err error) {
-	from = meta.CapturedAt
-	to = meta.CapturedUntil
-
-	if fromRaw != "" {
-		from, err = parseReplayTime(meta, fromRaw, "--from")
-		if err != nil {
-			return time.Time{}, time.Time{}, err
-		}
-	}
-	if toRaw != "" {
-		to, err = parseReplayTime(meta, toRaw, "--to")
-		if err != nil {
-			return time.Time{}, time.Time{}, err
-		}
-	}
-	// If the capture metadata lacks bounds (absent/corrupt) and the caller didn't
-	// supply them, report that clearly instead of comparing zero times.
-	if from.IsZero() {
-		return time.Time{}, time.Time{}, fmt.Errorf("capture start time is unknown; specify an explicit --from")
-	}
-	if to.IsZero() {
-		return time.Time{}, time.Time{}, fmt.Errorf("capture end time is unknown; specify an explicit --to")
-	}
-	if !to.After(from) {
-		return time.Time{}, time.Time{}, fmt.Errorf("--to %s must be after --from %s", to.Format(time.RFC3339), from.Format(time.RFC3339))
-	}
-	return from, to, nil
+	return timewindow.ParseWindow(fromRaw, toRaw, meta.CapturedAt, meta.CapturedUntil)
 }

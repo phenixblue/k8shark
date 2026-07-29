@@ -54,7 +54,7 @@ ui:
 | `ui.port` | string | `0` (random) | Port for the local web UI. |
 | `ui.apiPort` | string | `0` (random) | Port for the mock Kubernetes API server. (Legacy alias: `ui.api_port`.) |
 
-The `--port` and `--api-port` flags on `kshrk ui` override these when provided.
+The `--ui-port` and `--api-port` flags on `kshrk ui` override these when provided.
 
 ## Resource entry fields
 

@@ -348,7 +348,7 @@ The server stays running until `Ctrl+C`.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--port` | random | Port for the mock API server |
+| `--api-port` | random | Port for the mock API server |
 | `--kubeconfig-out` | `~/.kube/k8shark-<id>.yaml` | Where to write the generated kubeconfig |
 | `--at` | latest records | Pin replay to a specific timestamp (see below) |
 | `--verbose` / `-v` | false | Log every request the server receives |
@@ -429,7 +429,7 @@ The primary use case is **local development and testing of controllers/operators
 | `--schedule-pods` | true | Bind unscheduled pods to a node on create (the scheduler replay lacks); `--writable` only |
 | `--with-kwok` | false | Also run a detected `kwok` binary against the server to drive pod/node lifecycle (implies `--writable`) — see [KWOK](kwok.md) |
 | `--with-controller-manager` | false | Also run kube-controller-manager (downloaded/built to match the capture's Kubernetes version) against the server, with a curated controller set, to reconcile Deployments/ReplicaSets/DaemonSets/StatefulSets/Jobs/CronJobs/Endpoints (implies `--writable`) — see [KWOK](kwok.md#closing-more-of-the-loop-with-controller-manager) |
-| `--port` | random | Port for the mock API server |
+| `--api-port` | random | Port for the mock API server |
 | `--kubeconfig-out` | `~/.kube/k8shark-<id>.yaml` | Where to write the generated kubeconfig |
 | `--verbose` / `-v` | false | Log every request the server receives |
 
@@ -523,7 +523,7 @@ screenshots, see **[docs/web-ui.md](web-ui.md)**.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--port` | from config (`ui.port`), else random | Port for the local UI server |
+| `--ui-port` | from config (`ui.port`), else random | Port for the local UI server |
 | `--api-port` | from config (`ui.apiPort`), else random | Port for the mock API server |
 | `--kubeconfig-out` | `~/.kube/k8shark-<id>.yaml` | Where to write the generated kubeconfig |
 | `--at` | latest records | Pin UI data to a specific timestamp (RFC3339 or relative duration) |
@@ -547,8 +547,8 @@ Compare two points within one archive:
 
 ```sh
 kshrk diff --archive capture.kshrk \
-  --before-at 2026-04-09T10:40:00Z \
-  --after-at -1m
+  --from 2026-04-09T10:40:00Z \
+  --to -1m
 ```
 
 Scope the output:
@@ -571,8 +571,8 @@ kshrk diff --before before.kshrk --after after.kshrk --output json
 | `--before` | | Before archive path |
 | `--after` | | After archive path |
 | `--archive` | | Single archive path for intra-archive diff |
-| `--before-at` | | Before snapshot time (RFC3339 or relative duration) |
-| `--after-at` | | After snapshot time (RFC3339 or relative duration) |
+| `--from` | | Before snapshot time, with `--archive` (RFC3339 or relative duration) |
+| `--to` | | After snapshot time, with `--archive` (RFC3339 or relative duration) |
 | `--resource` | | Limit diff to one resource type |
 | `--namespace` | | Limit diff to one namespace |
 | `--output`, `-o` | `text` | Output format: `text` or `json` |
