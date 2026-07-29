@@ -30,7 +30,7 @@ archive you already have (e.g. before sharing it), as an alternative to
   kshrk encrypt capture.kshrk --encrypt-recipient age1abc...
 
   # Choose the output path explicitly
-  kshrk encrypt capture.kshrk --output shared.kshrk --encrypt-recipient age1abc...`,
+  kshrk encrypt capture.kshrk --out shared.kshrk --encrypt-recipient age1abc...`,
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeArchiveArg,
 	RunE:              runEncrypt,
@@ -38,14 +38,14 @@ archive you already have (e.g. before sharing it), as an alternative to
 
 func init() {
 	rootCmd.AddCommand(encryptCmd)
-	encryptCmd.Flags().StringP("output", "o", "", "output archive path (default: <in>-encrypted.kshrk)")
-	_ = encryptCmd.MarkFlagFilename("output", captureExt)
+	encryptCmd.Flags().String("out", "", "output archive path (default: <in>-encrypted.kshrk)")
+	_ = encryptCmd.MarkFlagFilename("out", captureExt)
 	addEncryptFlags(encryptCmd)
 }
 
 func runEncrypt(cmd *cobra.Command, args []string) error {
 	in := args[0]
-	out, _ := cmd.Flags().GetString("output")
+	out, _ := cmd.Flags().GetString("out")
 	if out == "" {
 		out = defaultCryptOutput(in, "encrypted")
 	}

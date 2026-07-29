@@ -27,7 +27,7 @@ re-encrypting to a different key/recipient set.`,
   kshrk decrypt capture.kshrk --decrypt-identity-file ./key.txt
 
   # Choose the output path explicitly
-  kshrk decrypt capture.kshrk --output plain.kshrk --decrypt-passphrase-file ./pass.txt`,
+  kshrk decrypt capture.kshrk --out plain.kshrk --decrypt-passphrase-file ./pass.txt`,
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeArchiveArg,
 	RunE:              runDecrypt,
@@ -35,13 +35,13 @@ re-encrypting to a different key/recipient set.`,
 
 func init() {
 	rootCmd.AddCommand(decryptCmd)
-	decryptCmd.Flags().StringP("output", "o", "", "output archive path (default: <in>-decrypted.kshrk)")
-	_ = decryptCmd.MarkFlagFilename("output", captureExt)
+	decryptCmd.Flags().String("out", "", "output archive path (default: <in>-decrypted.kshrk)")
+	_ = decryptCmd.MarkFlagFilename("out", captureExt)
 }
 
 func runDecrypt(cmd *cobra.Command, args []string) error {
 	in := args[0]
-	out, _ := cmd.Flags().GetString("output")
+	out, _ := cmd.Flags().GetString("out")
 	if out == "" {
 		out = defaultCryptOutput(in, "decrypted")
 	}

@@ -195,7 +195,7 @@ printf '    kubectl get ns -l k8shark.io/suite=scale\n'
 printf '    kubectl get pods -A -l k8shark.io/suite=scale -o wide\n\n'
 info "Capture it with k8shark:"
 printf '    make build\n'
-printf '    ./kshrk capture --kubeconfig %s --auto-discover --duration 5m -o scale.kshrk\n\n' "$KIND_KUBECONFIG"
+printf '    ./kshrk capture --kubeconfig %s --auto-discover --duration 5m --out scale.kshrk\n\n' "$KIND_KUBECONFIG"
 info "Then explore the capture (UI on 18080/18081):"
 printf '    ./kshrk ui scale.kshrk --port 18080 --api-port 18081\n\n'
 info "Tear down when finished:"

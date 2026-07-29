@@ -63,7 +63,10 @@ func TestCompleteArchiveArg(t *testing.T) {
 }
 
 func TestPositionalArchiveCompletionRegistered(t *testing.T) {
-	for _, name := range []string{"inspect", "open", "ui", "transitions"} {
+	// redact switched from a --in flag to a positional archive argument in
+	// this change (#215); cover it here so a regression in its Args/
+	// ValidArgsFunction wiring is caught the same way as the others.
+	for _, name := range []string{"inspect", "open", "ui", "transitions", "redact"} {
 		comps, directive := runCompletion(t, name, "")
 		if !contains(comps, captureExt) {
 			t.Errorf("%s positional completion = %v, want it to include %q", name, comps, captureExt)
@@ -94,16 +97,14 @@ func TestOutputFlagEnumCompletion(t *testing.T) {
 }
 
 func TestArchiveFlagFilenameCompletion(t *testing.T) {
-	// diff's --before/--after/--archive, redact's --in/--out, and capture's
-	// --output are scoped to *.kshrk, which yields a file-extension-filter
-	// directive.
+	// diff's --before/--after/--archive, redact's --out, and capture's --out
+	// are scoped to *.kshrk, which yields a file-extension-filter directive.
 	for _, c := range [][2]string{
 		{"diff", "--before"},
 		{"diff", "--after"},
 		{"diff", "--archive"},
-		{"redact", "--in"},
 		{"redact", "--out"},
-		{"capture", "--output"},
+		{"capture", "--out"},
 	} {
 		comps, directive := runCompletion(t, c[0], c[1], "")
 		if !contains(comps, captureExt) {
@@ -120,12 +121,12 @@ func TestCaptureOutputCompletesStdout(t *testing.T) {
 	// typing it, even though plain completion is scoped to *.kshrk files.
 	// A dash-prefixed flag value is completed via the "--flag=value" form
 	// (Cobra can't tell a space-separated "-" from the start of a new flag).
-	comps, directive := runCompletion(t, "capture", "--output=-")
+	comps, directive := runCompletion(t, "capture", "--out=-")
 	if !contains(comps, "-") {
-		t.Errorf("capture --output completion = %v, want it to include %q", comps, "-")
+		t.Errorf("capture --out completion = %v, want it to include %q", comps, "-")
 	}
 	if directive&cobra.ShellCompDirectiveNoFileComp == 0 {
-		t.Errorf("capture --output - directive = %d, want the NoFileComp bit set", directive)
+		t.Errorf("capture --out - directive = %d, want the NoFileComp bit set", directive)
 	}
 }
 

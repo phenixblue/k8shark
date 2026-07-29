@@ -415,7 +415,7 @@ INLINE_REDACTED_FILE="${CAPTURE_FILE%.tar.gz}-inline-redacted.tar.gz"
 "$BINARY" --config "$CAPTURE_CONFIG" capture \
   --redact-secrets \
   --allow-secret "k8shark-test/app-secret" \
-  --output "$INLINE_REDACTED_FILE"
+  --out "$INLINE_REDACTED_FILE"
 
 if [[ -s "$INLINE_REDACTED_FILE" ]]; then
   pass "capture --redact-secrets: output archive created"
@@ -500,7 +500,7 @@ INLINE_FIELD_SERVER_PID=""
 # untouched so we can assert field-level selectivity.
 "$BINARY" --config "$CAPTURE_CONFIG" capture \
   --redact-field "data.env:ConfigMap:REDACTED" \
-  --output "$INLINE_FIELD_FILE"
+  --out "$INLINE_FIELD_FILE"
 
 if [[ -s "$INLINE_FIELD_FILE" ]]; then
   pass "capture --redact-field: output archive created"
@@ -697,8 +697,7 @@ REDACTED_SERVER_PID=""
 
 # Run redact on the original (un-redacted) capture without an allowlist so
 # all secrets (including app-secret) are redacted.
-redact_out=$("$BINARY" redact \
-  --in "$CAPTURE_FILE" \
+redact_out=$("$BINARY" redact "$CAPTURE_FILE" \
   --out "$REDACTED_FILE" \
   --redact-secrets 2>&1) || true
 assert_contains "redact: success message present"       "$redact_out" "Redacted"
@@ -777,8 +776,7 @@ FIELD_REDACTED_KC="/tmp/k8shark-field-redacted-kc-$$.yaml"
 FIELD_REDACTED_SERVER_PID=""
 
 # Target only data.env in ConfigMaps; leave data.log-level and all secrets alone.
-field_redact_out=$("$BINARY" redact \
-  --in "$CAPTURE_FILE" \
+field_redact_out=$("$BINARY" redact "$CAPTURE_FILE" \
   --out "$FIELD_REDACTED_FILE" \
   --redact-field "data.env:ConfigMap:REDACTED" \
   2>&1) || true
@@ -876,8 +874,7 @@ redaction:
 YAML
 pass "config-redact: redaction config written"
 
-cfg_redact_out=$("$BINARY" redact \
-  --in "$CAPTURE_FILE" \
+cfg_redact_out=$("$BINARY" redact "$CAPTURE_FILE" \
   --out "$CFGREDACT_FILE" \
   --config "$CFGREDACT_CONFIG" \
   2>&1) || true
@@ -1101,7 +1098,7 @@ echo "definitely-the-wrong-passphrase" >"$ENC_WRONG_PASS_FILE"
 ENC_FILE="/tmp/k8shark-e2e-encrypted-$$.kshrk"
 "$BINARY" --config "$CAPTURE_CONFIG" capture \
   --encrypt-passphrase-file "$ENC_PASS_FILE" \
-  --output "$ENC_FILE"
+  --out "$ENC_FILE"
 if [[ -s "$ENC_FILE" ]]; then
   pass "capture --encrypt-passphrase-file: encrypted archive created"
 else
@@ -1122,7 +1119,7 @@ assert_contains "inspect (correct passphrase): succeeds" "$out" "Capture ID:"
 
 # kshrk decrypt to a standalone plaintext archive.
 DEC_FILE="/tmp/k8shark-e2e-decrypted-$$.kshrk"
-"$BINARY" decrypt "$ENC_FILE" --decrypt-passphrase-file "$ENC_PASS_FILE" --output "$DEC_FILE"
+"$BINARY" decrypt "$ENC_FILE" --decrypt-passphrase-file "$ENC_PASS_FILE" --out "$DEC_FILE"
 if [[ -s "$DEC_FILE" ]]; then
   pass "kshrk decrypt: plaintext archive created"
 else
@@ -1255,7 +1252,7 @@ GOEOF
     ENC_RECIPIENT_FILE="/tmp/k8shark-e2e-encrypted-recipient-$$.kshrk"
     "$BINARY" --config "$CAPTURE_CONFIG" capture \
       --encrypt-recipient "$AGE_RECIPIENT" \
-      --output "$ENC_RECIPIENT_FILE"
+      --out "$ENC_RECIPIENT_FILE"
     if [[ -s "$ENC_RECIPIENT_FILE" ]]; then
       pass "capture --encrypt-recipient: encrypted archive created"
     else
@@ -1265,7 +1262,7 @@ GOEOF
     DEC_RECIPIENT_FILE="/tmp/k8shark-e2e-decrypted-recipient-$$.kshrk"
     "$BINARY" decrypt "$ENC_RECIPIENT_FILE" \
       --decrypt-identity-file "$AGE_IDENTITY_FILE" \
-      --output "$DEC_RECIPIENT_FILE"
+      --out "$DEC_RECIPIENT_FILE"
     if [[ -s "$DEC_RECIPIENT_FILE" ]]; then
       pass "kshrk decrypt --decrypt-identity-file: plaintext archive created"
     else

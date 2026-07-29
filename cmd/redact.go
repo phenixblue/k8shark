@@ -3,7 +3,6 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/phenixblue/k8shark/internal/archive"
@@ -13,7 +12,7 @@ import (
 )
 
 var redactCmd = &cobra.Command{
-	Use:   "redact --in <capture.kshrk> [--out <redacted.kshrk>]",
+	Use:   "redact <capture.kshrk> [--out <redacted.kshrk>]",
 	Short: "Redact Secret data and arbitrary fields from a capture archive",
 	Long: `Produces a new capture archive with Kubernetes Secret data replaced by
 "REDACTED" and any configured field-level redaction rules applied. The original
@@ -24,30 +23,29 @@ Field rules can be supplied via --redact-field (repeatable) with the format:
 
 Rules may also be loaded from a config file's redaction.rules block via --config.`,
 	Example: `  # Redact all Secret data and stringData values
-  kshrk redact --in capture.kshrk --redact-secrets
+  kshrk redact capture.kshrk --redact-secrets
 
   # Apply a single field-level redaction rule
-  kshrk redact --in capture.kshrk --redact-field "data.api-key:ConfigMap:REDACTED"
+  kshrk redact capture.kshrk --redact-field "data.api-key:ConfigMap:REDACTED"
 
   # Use redaction.rules from a config file, writing to a chosen path
-  kshrk redact --in capture.kshrk --out safe.kshrk --config k8shark.yaml
+  kshrk redact capture.kshrk --out safe.kshrk --config k8shark.yaml
 
   # Redact and encrypt the output to an age recipient (decrypt an encrypted
   # source with --decrypt-passphrase-file / --decrypt-identity-file)
-  kshrk redact --in capture.kshrk --redact-secrets --encrypt-recipient age1abc...`,
-	RunE: runRedact,
+  kshrk redact capture.kshrk --redact-secrets --encrypt-recipient age1abc...`,
+	Args:              cobra.ExactArgs(1),
+	ValidArgsFunction: completeArchiveArg,
+	RunE:              runRedact,
 }
 
 func init() {
 	rootCmd.AddCommand(redactCmd)
-	redactCmd.Flags().String("in", "", "source capture archive (required)")
 	redactCmd.Flags().String("out", "", "output archive path (default: <in>-redacted.kshrk)")
 	redactCmd.Flags().Bool("redact-secrets", false, "redact all Kubernetes Secret data and stringData values")
 	redactCmd.Flags().StringArray("allow-secret", nil, "namespace/name of secret to preserve (repeatable)")
 	redactCmd.Flags().StringArray("redact-field", nil, "field redaction rule: <fieldPath>:<Kind>:<replacement>[:<valueType>] (repeatable)")
 	redactCmd.Flags().String("config", "", "capture config file whose redaction.rules block is applied")
-	_ = redactCmd.MarkFlagRequired("in")
-	_ = redactCmd.MarkFlagFilename("in", captureExt)
 	_ = redactCmd.MarkFlagFilename("out", captureExt)
 	_ = redactCmd.MarkFlagFilename("config", configExts...)
 	// Write-side encryption for the redacted output (read-side --decrypt-* are
@@ -73,8 +71,8 @@ func parseRedactField(s string) (config.RedactionRule, error) {
 	return rule, nil
 }
 
-func runRedact(cmd *cobra.Command, _ []string) error {
-	in, _ := cmd.Flags().GetString("in")
+func runRedact(cmd *cobra.Command, args []string) error {
+	in := args[0]
 	out, _ := cmd.Flags().GetString("out")
 	doRedactSecrets, _ := cmd.Flags().GetBool("redact-secrets")
 	allows, _ := cmd.Flags().GetStringArray("allow-secret")
@@ -90,10 +88,8 @@ func runRedact(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Refuse to overwrite the source.
-	inAbs, _ := filepath.Abs(in)
-	outAbs, _ := filepath.Abs(out)
-	if inAbs == outAbs {
-		return fmt.Errorf("--out must differ from --in")
+	if err := rejectSamePath(in, out); err != nil {
+		return err
 	}
 
 	allowList := make(map[string]bool, len(allows))

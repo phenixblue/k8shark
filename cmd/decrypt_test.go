@@ -12,7 +12,7 @@ import (
 
 func newTestDecryptCmdCommand() *cobra.Command {
 	cmd := &cobra.Command{}
-	cmd.Flags().StringP("output", "o", "", "")
+	cmd.Flags().String("out", "", "")
 	addDecryptFlags(cmd)
 	// PersistentFlags on a standalone command aren't merged into Flags() until
 	// execution via cmd.Execute(); tests call runDecrypt directly, so merge
@@ -94,7 +94,7 @@ func TestRunDecrypt_SameOutputRejected(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	cmd := newTestDecryptCmdCommand()
-	if err := cmd.Flags().Set("output", in); err != nil {
+	if err := cmd.Flags().Set("out", in); err != nil {
 		t.Fatalf("set flag: %v", err)
 	}
 	if err := cmd.Flags().Set("decrypt-passphrase-file", passFile); err != nil {
@@ -102,6 +102,6 @@ func TestRunDecrypt_SameOutputRejected(t *testing.T) {
 	}
 
 	if err := runDecrypt(cmd, []string{in}); err == nil {
-		t.Fatal("expected an error when --output equals the input path")
+		t.Fatal("expected an error when --out equals the input path")
 	}
 }

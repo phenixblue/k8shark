@@ -260,7 +260,7 @@ usable with `kshrk open` — `kubectl get secret` will show the secret names and
 types, but all values will be `REDACTED`.
 
 ```sh
-kshrk redact --in capture.kshrk --out capture-redacted.kshrk
+kshrk redact capture.kshrk --out capture-redacted.kshrk
 ```
 
 ## Encryption
@@ -314,16 +314,16 @@ with the manual ZIP/Zstd commands shown below.
 
 ## Streaming mode (NDJSON stdout)
 
-When `output: "-"` is set in the configuration (or `--output -` on the command line), k8shark writes records to stdout in **newline-delimited JSON (NDJSON)** format instead of writing a `.kshrk` file. Each line is a complete JSON record object identical to the individual record files described above.
+When `output: "-"` is set in the configuration (or `--out -` on the command line), k8shark writes records to stdout in **newline-delimited JSON (NDJSON)** format instead of writing a `.kshrk` file. Each line is a complete JSON record object identical to the individual record files described above.
 
 ```sh
-kshrk capture --config capture.yaml --output - | jq 'select(.api_path == "/api/v1/namespaces/default/pods")'
+kshrk capture --config capture.yaml --out - | jq 'select(.api_path == "/api/v1/namespaces/default/pods")'
 ```
 
 No `metadata.json` or `index.json` is written in streaming mode — only the raw record stream. Pipe to a file or processing tool:
 
 ```sh
-kshrk capture --config capture.yaml --output - > records.ndjson
+kshrk capture --config capture.yaml --out - > records.ndjson
 ```
 
 In streaming mode, SIGTERM or SIGINT causes the engine to stop polling and flush all in-flight records before exiting. Every line in the stream is a complete JSON object.

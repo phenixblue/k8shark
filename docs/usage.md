@@ -49,9 +49,9 @@ make build
 
 `kshrk` ships tab-completion for `bash`, `zsh`, `fish`, and PowerShell. It
 completes subcommand and `--flag` names, scopes positional and archive-valued
-flags (`--in`, `--out`, `--before`, `--after`, `--archive`, and `capture
---output`) to `*.kshrk` files, restricts `--config` to YAML files, and offers
-the valid choices for output formats (e.g. `-o table|json|yaml`).
+flags (`--out`, `--before`, `--after`, `--archive`, and `capture --out`) to
+`*.kshrk` files, restricts `--config` to YAML files, and offers the valid
+choices for output formats (e.g. `-o table|json|yaml`).
 
 Generate the script for your shell with `kshrk completion <shell>`:
 
@@ -106,7 +106,7 @@ Capture complete
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--config` | | `./config.yaml`, then `~/.config/kshrk/config.yaml` | Path to config file |
-| `--output` | `-o` | `./k8shark-<timestamp>.kshrk` | Output archive path |
+| `--out` | | `./k8shark-<timestamp>.kshrk` | Output archive path |
 | `--duration` | | from config | Override capture duration (e.g. `5m`) |
 | `--kubeconfig` | | `$KUBECONFIG` / `~/.kube/config` | Source cluster kubeconfig |
 | `--auto-discover` | | false | Auto-discover and capture all available API resources |
@@ -669,18 +669,18 @@ Produces a **new** archive with Kubernetes Secret data replaced and any configur
 
 ```sh
 # Redact secrets only
-kshrk redact --in capture.kshrk --redact-secrets
+kshrk redact capture.kshrk --redact-secrets
 
 # Redact secrets + specific fields via CLI flags
-kshrk redact --in capture.kshrk --redact-secrets \
+kshrk redact capture.kshrk --redact-secrets \
   --redact-field "data.api-key:ConfigMap:REDACTED" \
   --redact-field "spec.containers[*].env[*].value:Pod:REDACTED:string"
 
 # Reuse the redaction rules from your capture config
-kshrk redact --in capture.kshrk --out safe-capture.kshrk --config k8shark.yaml
+kshrk redact capture.kshrk --out safe-capture.kshrk --config k8shark.yaml
 
 # Preserve specific secrets from redaction
-kshrk redact --in capture.kshrk --redact-secrets \
+kshrk redact capture.kshrk --redact-secrets \
   --allow-secret default/pull-secret \
   --allow-secret kube-system/bootstrap-token
 ```
@@ -727,14 +727,14 @@ Examples:
 
 | Flag | Command | Default | Description |
 |------|---------|---------|-------------|
-| `--in` | `redact` | (required) | Source capture archive |
+| *(positional)* | `redact` | (required) | Source capture archive, e.g. `kshrk redact capture.kshrk` |
 | `--out` | `redact` | `<in>-redacted.kshrk` | Output archive path |
 | `--redact-secrets` | both | `false` | Redact all Secret `data`/`stringData` values |
 | `--allow-secret` | both | | `namespace/name` of secret to preserve (repeatable) |
 | `--redact-field` | both | | Field redaction rule (repeatable). Format: `<path>:<Kind>:<replacement>[:<type>]` |
 | `--config` | `redact` | | Capture config file — applies `redaction.rules` and `redaction.redactSecrets` |
 | `--encrypt`, `--encrypt-passphrase-file`, `--encrypt-recipient`, `--encrypt-recipients-file` | `redact` | | Encrypt the output archive — see [Encryption](#encryption) |
-| `--decrypt-passphrase-file`, `--decrypt-identity-file` | `redact` | | Decrypt an encrypted `--in` archive — see [Encryption](#encryption) |
+| `--decrypt-passphrase-file`, `--decrypt-identity-file` | `redact` | | Decrypt an encrypted source archive — see [Encryption](#encryption) |
 
 Secret metadata (name, namespace, labels, annotations, type) is always preserved so you can still count and identify secrets by kind.
 
@@ -816,7 +816,7 @@ key`), not a raw crypto failure.
 re-encrypt the output with `--encrypt-*`:
 
 ```sh
-kshrk redact --in capture.kshrk --redact-secrets \
+kshrk redact capture.kshrk --redact-secrets \
   --decrypt-passphrase-file old-pass.txt \
   --encrypt-recipient age1abc...
 ```
@@ -847,8 +847,8 @@ kshrk encrypt capture.kshrk --encrypt-recipient age1abc...
 kshrk decrypt capture-encrypted.kshrk --decrypt-passphrase-file ./pass.txt
 
 # Rotate from a passphrase to a recipient key
-kshrk decrypt old.kshrk --decrypt-passphrase-file old-pass.txt --output plain.kshrk
-kshrk encrypt plain.kshrk --encrypt-recipient age1new... --output new.kshrk
+kshrk decrypt old.kshrk --decrypt-passphrase-file old-pass.txt --out plain.kshrk
+kshrk encrypt plain.kshrk --encrypt-recipient age1new... --out new.kshrk
 ```
 
 `kshrk encrypt` refuses to run against an archive that's already encrypted,
