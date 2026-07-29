@@ -52,7 +52,10 @@ func TestLoad_NoConfigFile(t *testing.T) {
 		t.Fatalf("Load(\"\"): %v", err)
 	}
 	if cfg.DurationRaw != "" || cfg.Output != "" || len(cfg.Resources) != 0 {
-		t.Errorf("expected a zero-value config, got %+v", cfg)
+		t.Errorf("expected every file-sourced field to stay at its zero value, got %+v", cfg)
+	}
+	if cfg.Version != 1 {
+		t.Errorf("Version = %d, want 1 (the implicit default when there's no config file at all)", cfg.Version)
 	}
 }
 
@@ -173,6 +176,34 @@ func TestLoad_MissingVersionDefaultsToOne(t *testing.T) {
 	}
 	if cfg.Version != 1 {
 		t.Errorf("Version = %d, want 1 (the implicit default for a config with no version: key)", cfg.Version)
+	}
+}
+
+func TestLoad_ExplicitVersionZeroRejected(t *testing.T) {
+	path := writeConfigFile(t, `
+version: 0
+duration: 5m
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected an error for an explicit version: 0 (0 is not a valid schema version)")
+	}
+	if !strings.Contains(err.Error(), "invalid") {
+		t.Errorf("error = %v, want it to say the version is invalid", err)
+	}
+}
+
+func TestLoad_NegativeVersionRejected(t *testing.T) {
+	path := writeConfigFile(t, `
+version: -1
+duration: 5m
+`)
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected an error for a negative version")
+	}
+	if !strings.Contains(err.Error(), "invalid") {
+		t.Errorf("error = %v, want it to say the version is invalid", err)
 	}
 }
 

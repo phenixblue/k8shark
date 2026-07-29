@@ -189,6 +189,14 @@ func Load(configFile string) (*Config, error) {
 		if err := mapstructure.Decode(raw, &cfg); err != nil {
 			return nil, fmt.Errorf("parsing config file %q: %w", configFile, err)
 		}
+		// An explicit version: key must be a positive schema version — 0 (or
+		// negative) is never valid, even though an *absent* key defaults to 1
+		// below. Catch it here, while we can still tell "key present" apart
+		// from "key absent", rather than let it fall through and silently be
+		// normalized to 1 like a predates-versioning config.
+		if v, ok := raw["version"]; ok && cfg.Version <= 0 {
+			return nil, fmt.Errorf("config file %q: version %v is invalid — version must be a positive integer", configFile, v)
+		}
 	}
 
 	// Layer KSHRK_-prefixed environment variable overrides on top of the file
