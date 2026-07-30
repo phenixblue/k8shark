@@ -78,6 +78,11 @@ func run() error {
 	if err := f.Close(); err != nil {
 		return err
 	}
+	// os.CreateTemp creates the file 0600; restore the normal 0644 a
+	// checked-in doc should have before it replaces the tracked file.
+	if err := os.Chmod(tmpPath, 0o644); err != nil {
+		return err
+	}
 	return os.Rename(tmpPath, outPath)
 }
 
