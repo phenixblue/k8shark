@@ -2632,3 +2632,107 @@ func TestEnsureSchedulableNode_NodelessCaptureSynthesizes(t *testing.T) {
 		t.Errorf("nodeless capture should synthesize %s", defaultSyntheticNode)
 	}
 }
+
+// TestOverlayWrite_MissingObjectGetsNotFoundReason guards a follow-up to
+// #255: PUT/PATCH/DELETE (and a scale write) against an object that doesn't
+// exist in the overlay or replay state is an ordinary "the object isn't
+// there" 404, not the "resource unknown to the capture" case — so it must
+// carry reason: "NotFound" (via notFoundStatus), not the bare, reason-less
+// statusObj those two cases used to share.
+func TestOverlayWrite_MissingObjectGetsNotFoundReason(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	cases := []struct {
+		name   string
+		method string
+		url    string
+		ctype  string
+		body   string
+	}{
+		{"PUT missing object", http.MethodPut, srv.URL + podsPath + "/ghost", "application/json", podBody("ghost")},
+		{"PATCH missing object", http.MethodPatch, srv.URL + podsPath + "/ghost", "application/merge-patch+json", `{"spec":{}}`},
+		{"DELETE missing object", http.MethodDelete, srv.URL + podsPath + "/ghost", "", ""},
+		{"scale write on missing object", http.MethodPut,
+			srv.URL + "/apis/apps/v1/namespaces/default/deployments/ghost/scale", "application/json",
+			`{"apiVersion":"autoscaling/v1","kind":"Scale","spec":{"replicas":2}}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			code, body := doReq(t, c.method, c.url, c.ctype, c.body)
+			assertNotFoundReason(t, code, body)
+		})
+	}
+}
+
+// assertNotFoundReason asserts code is 404 and body is a Status object with
+// reason: "NotFound".
+func assertNotFoundReason(t *testing.T, code int, body []byte) {
+	t.Helper()
+	if code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", code)
+	}
+	var status struct {
+		Reason string `json:"reason"`
+	}
+	if err := json.Unmarshal(body, &status); err != nil {
+		t.Fatalf("expected a JSON Status body: %v", err)
+	}
+	if status.Reason != "NotFound" {
+		t.Errorf("reason = %q, want %q", status.Reason, "NotFound")
+	}
+}
+
+// TestOverlayRead_DeletedObjectAndNamespaceGetNotFoundReason guards two more
+// follow-ups to #255, both on the read path (internal/server/handler.go's
+// serveResource): a single-object GET for an object explicitly tombstoned
+// in the overlay (created then deleted), and a single-object GET for a
+// resource whose namespace itself was deleted (cascade) — both are ordinary
+// "the object isn't there" 404s and must carry reason: "NotFound".
+func TestOverlayRead_DeletedObjectAndNamespaceGetNotFoundReason(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	t.Run("GET a tombstoned object", func(t *testing.T) {
+		doReq(t, http.MethodPost, srv.URL+podsPath, "application/json", podBody("pod-gone"))
+		doReq(t, http.MethodDelete, srv.URL+podsPath+"/pod-gone", "", "")
+		code, body := doReq(t, http.MethodGet, srv.URL+podsPath+"/pod-gone", "", "")
+		assertNotFoundReason(t, code, body)
+	})
+
+	t.Run("GET an object in a deleted namespace", func(t *testing.T) {
+		doReq(t, http.MethodPost, srv.URL+"/api/v1/namespaces", "application/json",
+			`{"apiVersion":"v1","kind":"Namespace","metadata":{"name":"ns-gone"}}`)
+		doReq(t, http.MethodPost, srv.URL+"/api/v1/namespaces/ns-gone/configmaps", "application/json",
+			`{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"cm","namespace":"ns-gone"}}`)
+		doReq(t, http.MethodDelete, srv.URL+"/api/v1/namespaces/ns-gone", "", "")
+		code, body := doReq(t, http.MethodGet, srv.URL+"/api/v1/namespaces/ns-gone/configmaps/cm", "", "")
+		assertNotFoundReason(t, code, body)
+	})
+}
+
+// TestScale_NoScaleSubresourceGetsNotFoundReason guards a follow-up to #255:
+// a resource with no /scale subresource (a real apiserver never registers
+// that route for it) is an ordinary "the requested resource doesn't exist"
+// case, not the "unknown to the capture" case statusObj's 404 exclusion is
+// about — so both the GET and PUT paths must carry reason: "NotFound".
+func TestScale_NoScaleSubresourceGetsNotFoundReason(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	doReq(t, http.MethodPost, srv.URL+"/api/v1/namespaces/default/configmaps", "application/json",
+		`{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"cm","namespace":"default"}}`)
+
+	t.Run("GET .../scale", func(t *testing.T) {
+		code, body := doReq(t, http.MethodGet, srv.URL+"/api/v1/namespaces/default/configmaps/cm/scale", "", "")
+		assertNotFoundReason(t, code, body)
+	})
+	t.Run("PUT .../scale", func(t *testing.T) {
+		code, body := doReq(t, http.MethodPut, srv.URL+"/api/v1/namespaces/default/configmaps/cm/scale", "application/json",
+			`{"apiVersion":"autoscaling/v1","kind":"Scale","spec":{"replicas":2}}`)
+		assertNotFoundReason(t, code, body)
+	})
+}

@@ -33,7 +33,7 @@ func (h *handler) handleWrite(w http.ResponseWriter, r *http.Request, path strin
 	// namespace and everything in it are logically gone. Deleting the namespace
 	// object itself has namespace=="" here, so it isn't caught by this check.
 	if namespace != "" && h.overlay.isNamespaceDeleted(namespace) {
-		h.writeStatus(w, http.StatusNotFound, "namespace "+namespace+" was deleted in the writable overlay")
+		writeJSON(w, http.StatusNotFound, notFoundStatus("", "namespaces", namespace))
 		return
 	}
 
@@ -270,7 +270,7 @@ func (h *handler) overlayReplace(w http.ResponseWriter, r *http.Request, group, 
 	// matching the kube-apiserver.
 	current := h.currentObject(group, version, resource, namespace, name)
 	if current == nil {
-		h.writeStatus(w, http.StatusNotFound, "object not found: "+name)
+		writeJSON(w, http.StatusNotFound, notFoundStatus(group, resource, name))
 		return
 	}
 	var next json.RawMessage
@@ -318,7 +318,7 @@ func (h *handler) overlayPatch(w http.ResponseWriter, r *http.Request, group, ve
 			h.overlayApplyCreate(w, group, version, resource, namespace, name, patch)
 			return
 		}
-		h.writeStatus(w, http.StatusNotFound, "object not found: "+name)
+		writeJSON(w, http.StatusNotFound, notFoundStatus(group, resource, name))
 		return
 	}
 	next, perr := applyPatch(current, patch, r.Header.Get("Content-Type"), group, version, resource)
@@ -405,7 +405,7 @@ func (h *handler) deleteOneObject(group, version, resource, namespace, name stri
 func (h *handler) overlayDelete(w http.ResponseWriter, group, version, resource, namespace, name string) {
 	if h.deleteOneObject(group, version, resource, namespace, name,
 		h.replayFloorRV(group, version, resource, namespace)) == nil {
-		h.writeStatus(w, http.StatusNotFound, "object not found: "+name)
+		writeJSON(w, http.StatusNotFound, notFoundStatus(group, resource, name))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
