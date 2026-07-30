@@ -1,0 +1,87 @@
+name: release-check
+
+# Exercises the actual release pipeline (goreleaser check + a full snapshot
+# build) on every change that could break it, instead of only ever finding out
+# when a real tag is pushed (#225). This is exactly how #223 (cosign
+# certificate never emitted) and #224 (goreleaser check failing on deprecated
+# brews:) went undetected for as long as they did.
+on:
+  pull_request:
+    paths:
+      - ".goreleaser.yaml"
+      - ".github/workflows/release.yml"
+      - ".github/workflows/release-check.yml"
+  push:
+    branches: [main]
+    paths:
+      - ".goreleaser.yaml"
+      - ".github/workflows/release.yml"
+      - ".github/workflows/release-check.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  goreleaser-dry-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Setup Syft
+        uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+
+      - name: Install GoReleaser
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          install-only: true
+
+      - name: goreleaser check
+        run: goreleaser check
+
+      - name: goreleaser snapshot dry-run
+        # Same skip set as `make release-local`: no signing (no OIDC token
+        # available outside the real release job) and no publish.
+        run: goreleaser release --snapshot --clean --skip=sign,publish
+        env:
+          HOMEBREW_TAP_OWNER: phenixblue
+          HOMEBREW_TAP_NAME: homebrew-tap
+          # goreleaser renders the Homebrew cask templates (owner/name/token)
+          # even with --skip=publish, so this needs a non-empty value — never
+          # dereferenced over the network since publish is skipped.
+          HOMEBREW_TAP_GITHUB_TOKEN: unused-dry-run-token
+
+      - name: Verify expected artifact set
+        run: |
+          set -euo pipefail
+          for os_ext in "linux amd64 tar.gz" "linux arm64 tar.gz" "darwin amd64 tar.gz" "darwin arm64 tar.gz" "windows amd64 zip" "windows arm64 zip"; do
+            read -r os arch ext <<<"$os_ext"
+            archive=$(ls dist/*_${os}_${arch}.${ext} 2>/dev/null || true)
+            if [ -z "$archive" ]; then
+              echo "::error::missing expected archive for ${os}/${arch} (.${ext})"
+              exit 1
+            fi
+            echo "checking $archive"
+            if [ "$ext" = "zip" ]; then
+              listing=$(unzip -l "$archive")
+            else
+              listing=$(tar tzf "$archive")
+            fi
+            for want in LICENSE NOTICE README.md; do
+              if ! grep -q "$want" <<<"$listing"; then
+                echo "::error::$archive is missing $want"
+                exit 1
+              fi
+            done
+          done
+          echo "all archives contain the expected files"
