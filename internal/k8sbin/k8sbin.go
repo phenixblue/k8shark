@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -471,8 +472,18 @@ func extractTarGz(tarGzPath, destDir string) error {
 		// re-verifies containment on the joined result as a second,
 		// independent check before target is ever used in a filesystem
 		// operation below.
+		//
+		// path.IsAbs(hdr.Name) (checked on the raw, always-forward-slash tar
+		// name, before filepath.Clean rewrites it with the host separator) is
+		// deliberately in addition to filepath.IsAbs(cleanedName): a tar entry
+		// like "/etc/passwd" is unambiguously absolute by the tar format's own
+		// (Unix, forward-slash) convention, but filepath.IsAbs on Windows
+		// requires a drive letter or UNC prefix and doesn't consider a bare
+		// leading "/" absolute — so without this check that entry would slip
+		// past filepath.IsAbs and get silently remapped to destDir/etc/passwd
+		// instead of rejected.
 		cleanedName := filepath.Clean(hdr.Name)
-		if cleanedName == ".." || strings.HasPrefix(cleanedName, ".."+string(filepath.Separator)) || filepath.IsAbs(cleanedName) {
+		if cleanedName == ".." || strings.HasPrefix(cleanedName, ".."+string(filepath.Separator)) || filepath.IsAbs(cleanedName) || path.IsAbs(hdr.Name) {
 			continue
 		}
 		target := filepath.Join(cleanDestDir, cleanedName)
