@@ -428,9 +428,11 @@ const maxExtractedBytes = 4 << 30 // 4 GiB
 
 // extractTarGz extracts a gzip-compressed tar archive into destDir, which is
 // created if needed. Entries are path-sanitized so nothing can escape
-// destDir (no "..", no absolute paths), and only regular files and
-// directories are extracted — symlinks and other special entry types are
-// skipped rather than followed.
+// destDir ("Zip Slip"): an entry whose name contains a ".." path segment is
+// rejected with an error, absolute-path entries are skipped, and only
+// regular files and directories are extracted — symlinks and other special
+// entry types are skipped rather than followed, so a symlink entry can never
+// be used as an indirect escape for a later entry written "through" it.
 func extractTarGz(tarGzPath, destDir string) error {
 	f, err := os.Open(tarGzPath)
 	if err != nil {
@@ -462,16 +464,35 @@ func extractTarGz(tarGzPath, destDir string) error {
 
 		// hdr.Name comes from the archive and must never be trusted directly: a
 		// hostile ".."-laden or absolute name could otherwise write outside
-		// destDir ("Zip Slip"). filepath.Clean first normalizes harmless
-		// internal ".." segments that still resolve inside destDir (e.g.
-		// "foo/../bar" becomes "bar" — see TestExtractTarGz_PathTraversalRejected),
-		// but any name that still escapes destDir after cleaning (a leading
-		// "..", an absolute path) is rejected outright here — not remapped
-		// into destDir — so an escaping entry never silently lands somewhere
-		// surprising inside destDir instead of failing. filepath.Rel
-		// re-verifies containment on the joined result as a second,
-		// independent check before target is ever used in a filesystem
-		// operation below.
+		// destDir ("Zip Slip").
+		//
+		// First barrier: reject outright any name containing a ".." path
+		// segment, before the name is used to build a path at all. This is
+		// deliberately stricter than "clean it and check the result still
+		// lands inside destDir" — a legitimate Kubernetes source/binary
+		// tarball never contains a ".." segment, so there is nothing to gain
+		// from normalizing one and everything to gain from refusing to reason
+		// about it. It's an error rather than a skip (matching the
+		// negative-size case below) so a malformed archive fails loudly
+		// instead of silently omitting a source file that the build would
+		// then fail on for a confusing, unrelated-looking reason.
+		//
+		// Segments are split on both separators, not just the host's: tar
+		// names are forward-slash by the format's own convention regardless
+		// of the extracting host, so on Linux a "..\\..\\x" name must still
+		// be judged segment-wise by the backslash a Windows host would honor.
+		for _, seg := range strings.FieldsFunc(hdr.Name, func(r rune) bool { return r == '/' || r == '\\' }) {
+			if seg == ".." {
+				return fmt.Errorf("tar entry %q contains a %q path segment; rejecting as unsafe", hdr.Name, "..")
+			}
+		}
+
+		// Remaining barriers, kept as defense in depth: with no ".." segment
+		// reaching here, none of the checks below should ever fire, but they
+		// independently re-verify containment so a future change to the
+		// rejection above can't silently reopen the traversal. filepath.Rel
+		// re-verifies containment on the joined result before target is ever
+		// used in a filesystem operation.
 		//
 		// path.IsAbs(hdr.Name) is checked in addition to
 		// filepath.IsAbs(cleanedName), on the raw tar name rather than the
