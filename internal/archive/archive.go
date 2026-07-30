@@ -55,8 +55,8 @@ func pathDir(apiPath string) string {
 // every "\" as "\\", which turns an ordinary Windows path (built entirely of
 // backslashes) into visibly doubled separators in every error message. Only
 // the characters that would otherwise make the quoted output ambiguous or
-// multi-line (a literal '"' or a newline) are escaped; a backslash is never
-// touched, so the path renders exactly as passed in on any OS.
+// multi-line (a literal '"', '\n', or '\r') are escaped; a backslash is
+// never touched, so the path renders exactly as passed in on any OS.
 func quotePath(p string) string {
 	var b strings.Builder
 	b.Grow(len(p) + 2)
