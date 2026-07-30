@@ -10,13 +10,17 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// exitError signals that a command ran successfully but found something (a
+// diagnose --fail-on gate trip, a diff with differences) — exit code 1 per
+// the contract documented in root.go. It always carries that exit code (not
+// an arbitrary caller-supplied one) so a future call site can't accidentally
+// violate the 0/1/2 contract by passing an unrelated code.
 type exitError struct {
-	msg  string
-	code int
+	msg string
 }
 
 func (e exitError) Error() string { return e.msg }
-func (e exitError) ExitCode() int { return e.code }
+func (e exitError) ExitCode() int { return exitCodeFindings }
 
 var diffCmd = &cobra.Command{
 	Use:   "diff",
@@ -107,7 +111,7 @@ func runDiff(cmd *cobra.Command, _ []string) error {
 	}
 
 	if hasDiff {
-		return exitError{code: 1}
+		return exitError{}
 	}
 	return nil
 }

@@ -19,21 +19,61 @@ var rootCmd = &cobra.Command{
 	Long: `k8shark captures a Kubernetes cluster's state over time and replays
 it through a mock API server, letting support engineers query a customer's
 environment without direct connectivity.`,
+	// SilenceErrors/SilenceUsage on the root command suppress cobra's own
+	// "Error: ..." + usage-block printing for every subcommand (cobra checks
+	// both the executing command's and the root's flag — see ExecuteC), so
+	// Execute below is the single place that prints an error. Without this,
+	// a command whose exitError carries an empty message (a --fail-on gate
+	// trip with nothing more to say than "findings exist") printed a bare
+	// "Error: " followed by a full usage dump, and every other error printed
+	// twice (once by cobra, once here) (#217).
+	SilenceErrors: true,
+	SilenceUsage:  true,
 }
+
+// Exit codes follow the diff(1)/git diff --exit-code convention, so CI can
+// tell "the command ran and found something" apart from "the command
+// couldn't run at all" (#217):
+//
+//	0 - clean: no findings/differences
+//	1 - the command ran successfully and found something (a diagnose
+//	    --fail-on gate trip, a diff with differences)
+//	2 - the command failed (bad archive, invalid flags, I/O error, ...)
+//
+// A command signals exit code 1 by returning an exitError{} (see diff.go);
+// any other error (including a plain error from fmt.Errorf) falls through to
+// the exit code 2 case below.
+const (
+	exitCodeFindings = 1
+	exitCodeFailure  = 2
+)
 
 // Execute is the entry point called from main.
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
-		var exitErr interface{ ExitCode() int }
-		if errors.As(err, &exitErr) {
-			if err.Error() != "" {
-				fmt.Fprintln(os.Stderr, err)
-			}
-			os.Exit(exitErr.ExitCode())
+		code, printErr := exitCodeAndMessage(err)
+		if printErr {
+			fmt.Fprintln(os.Stderr, err)
 		}
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		os.Exit(code)
 	}
+}
+
+// exitCodeAndMessage decides the process exit code and whether err should be
+// printed to stderr, for a non-nil error returned by rootCmd.Execute(). It's
+// split out from Execute so the 0/1/2 dispatch contract is testable without
+// an actual os.Exit.
+func exitCodeAndMessage(err error) (code int, printErr bool) {
+	// Match specifically on the internal exitError type, not any error
+	// implementing ExitCode() int — os/exec.ExitError also satisfies that
+	// shape, and matching it here would let a failing subprocess (kwok,
+	// kube-controller-manager, ...) escape with an arbitrary exit code
+	// instead of the documented 0/1/2 contract.
+	var exitErr exitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode(), exitErr.msg != ""
+	}
+	return exitCodeFailure, true
 }
 
 func init() {

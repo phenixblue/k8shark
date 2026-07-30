@@ -97,7 +97,7 @@ func runDiagnose(cmd *cobra.Command, args []string) error {
 	if failOn != "" {
 		for _, f := range report.Findings {
 			if diagnose.SeverityAtLeast(f.Severity, failOn) {
-				return exitError{msg: "", code: 1}
+				return exitError{}
 			}
 		}
 	}
