@@ -31,14 +31,31 @@ flowchart LR
 # Install
 brew install --cask phenixblue/tap/k8shark
 
-# Capture cluster state for 10 minutes
-kshrk capture --config k8shark.yaml
+# Capture cluster state for 10 minutes (writes to ./capture.kshrk — see
+# examples/k8shark.yaml's `output:` field)
+kshrk capture --config examples/k8shark.yaml
 
-# Replay the capture
+# Replay the capture — prints the generated kubeconfig path
 kshrk open capture.kshrk
-export KUBECONFIG=~/.kube/k8shark-<id>.yaml
+export KUBECONFIG=~/.kube/k8shark-<id>.yaml   # <id> is printed by the command above
 kubectl get pods -A
 ```
+
+No cluster on hand? Skip straight to [Examples](#examples) below — five pre-recorded
+captures you can replay immediately, no live cluster required.
+
+## Examples
+
+`examples/` ships five self-contained, pre-recorded captures — a minimal first
+capture, multi-namespace, a `CrashLoopBackOff` investigation, a watch-driven
+rolling update, and full-cluster auto-discovery — each with its own `README.md`
+walking through what to try:
+
+```sh
+kshrk open examples/basic-workloads/capture.kshrk
+```
+
+See **[examples/README.md](examples/README.md)** for the full list.
 
 ## Web UI (Experimental)
 
@@ -62,6 +79,8 @@ timeline, and a time-travel scrubber. See **[docs/web-ui.md](docs/web-ui.md)** f
 | [docs/archive-format.md](docs/archive-format.md) | Internal `.kshrk` (ZIP+Zstd) layout, record and index JSON schemas, and the format-compatibility guarantee |
 | [docs/stability-policy.md](docs/stability-policy.md) | What's covered by semver from `v1.0.0` on — CLI surface, exit codes, JSON output, config schema, kubeconfig, deprecation and backport policy |
 | [docs/encryption-threat-model.md](docs/encryption-threat-model.md) | What `--encrypt` protects (and doesn't), key-handling rules, passphrase vs. recipient keys |
+| [docs/kwok.md](docs/kwok.md) | Closed-loop controller dev: `--writable` replay driven by KWOK and kube-controller-manager |
+| [docs/conformance.md](docs/conformance.md) | Mock-server conformance methodology and accepted divergences from a real API server |
 
 ## License
 
