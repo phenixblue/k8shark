@@ -2632,3 +2632,47 @@ func TestEnsureSchedulableNode_NodelessCaptureSynthesizes(t *testing.T) {
 		t.Errorf("nodeless capture should synthesize %s", defaultSyntheticNode)
 	}
 }
+
+// TestOverlayWrite_MissingObjectGetsNotFoundReason guards a follow-up to
+// #255: PUT/PATCH/DELETE (and a scale write) against an object that doesn't
+// exist in the overlay or replay state is an ordinary "the object isn't
+// there" 404, not the "resource unknown to the capture" case — so it must
+// carry reason: "NotFound" (via notFoundStatus), not the bare, reason-less
+// statusObj those two cases used to share.
+func TestOverlayWrite_MissingObjectGetsNotFoundReason(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	cases := []struct {
+		name   string
+		method string
+		url    string
+		ctype  string
+		body   string
+	}{
+		{"PUT missing object", http.MethodPut, srv.URL + podsPath + "/ghost", "application/json", podBody("ghost")},
+		{"PATCH missing object", http.MethodPatch, srv.URL + podsPath + "/ghost", "application/merge-patch+json", `{"spec":{}}`},
+		{"DELETE missing object", http.MethodDelete, srv.URL + podsPath + "/ghost", "", ""},
+		{"scale write on missing object", http.MethodPut,
+			srv.URL + "/apis/apps/v1/namespaces/default/deployments/ghost/scale", "application/json",
+			`{"apiVersion":"autoscaling/v1","kind":"Scale","spec":{"replicas":2}}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			code, body := doReq(t, c.method, c.url, c.ctype, c.body)
+			if code != http.StatusNotFound {
+				t.Fatalf("status = %d, want 404", code)
+			}
+			var status struct {
+				Reason string `json:"reason"`
+			}
+			if err := json.Unmarshal(body, &status); err != nil {
+				t.Fatalf("expected a JSON Status body: %v", err)
+			}
+			if status.Reason != "NotFound" {
+				t.Errorf("reason = %q, want %q", status.Reason, "NotFound")
+			}
+		})
+	}
+}

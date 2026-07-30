@@ -270,7 +270,7 @@ func (h *handler) overlayReplace(w http.ResponseWriter, r *http.Request, group, 
 	// matching the kube-apiserver.
 	current := h.currentObject(group, version, resource, namespace, name)
 	if current == nil {
-		h.writeStatus(w, http.StatusNotFound, "object not found: "+name)
+		writeJSON(w, http.StatusNotFound, notFoundStatus(group, resource, name))
 		return
 	}
 	var next json.RawMessage
@@ -318,7 +318,7 @@ func (h *handler) overlayPatch(w http.ResponseWriter, r *http.Request, group, ve
 			h.overlayApplyCreate(w, group, version, resource, namespace, name, patch)
 			return
 		}
-		h.writeStatus(w, http.StatusNotFound, "object not found: "+name)
+		writeJSON(w, http.StatusNotFound, notFoundStatus(group, resource, name))
 		return
 	}
 	next, perr := applyPatch(current, patch, r.Header.Get("Content-Type"), group, version, resource)
@@ -405,7 +405,7 @@ func (h *handler) deleteOneObject(group, version, resource, namespace, name stri
 func (h *handler) overlayDelete(w http.ResponseWriter, group, version, resource, namespace, name string) {
 	if h.deleteOneObject(group, version, resource, namespace, name,
 		h.replayFloorRV(group, version, resource, namespace)) == nil {
-		h.writeStatus(w, http.StatusNotFound, "object not found: "+name)
+		writeJSON(w, http.StatusNotFound, notFoundStatus(group, resource, name))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

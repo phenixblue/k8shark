@@ -165,7 +165,7 @@ func (h *handler) overlayScaleWrite(w http.ResponseWriter, r *http.Request, grou
 	}
 	current := h.currentObject(group, version, resource, namespace, name)
 	if current == nil {
-		h.writeStatus(w, http.StatusNotFound, "object not found: "+name)
+		writeJSON(w, http.StatusNotFound, notFoundStatus(group, resource, name))
 		return
 	}
 
