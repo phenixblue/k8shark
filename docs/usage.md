@@ -155,7 +155,7 @@ Errors exit 2 (see [exit codes](stability-policy.md#exit-codes)):
 resources[0]: 'resource' field is required
 ```
 
-Warnings are printed to stderr but do **not** cause a non-zero exit:
+Warnings are printed to stderr but do **not** cause a non-zero exit. For example (illustrative only — the exact indices and resources depend on your own config, not the `examples/k8shark.yaml` command above):
 
 ```
 warning: resources[5] (storageclasses): cluster-scoped resource has 'namespaces:' set — this will be ignored at capture time
