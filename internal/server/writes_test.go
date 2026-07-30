@@ -2712,3 +2712,27 @@ func TestOverlayRead_DeletedObjectAndNamespaceGetNotFoundReason(t *testing.T) {
 		assertNotFoundReason(t, code, body)
 	})
 }
+
+// TestScale_NoScaleSubresourceGetsNotFoundReason guards a follow-up to #255:
+// a resource with no /scale subresource (a real apiserver never registers
+// that route for it) is an ordinary "the requested resource doesn't exist"
+// case, not the "unknown to the capture" case statusObj's 404 exclusion is
+// about — so both the GET and PUT paths must carry reason: "NotFound".
+func TestScale_NoScaleSubresourceGetsNotFoundReason(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	doReq(t, http.MethodPost, srv.URL+"/api/v1/namespaces/default/configmaps", "application/json",
+		`{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"cm","namespace":"default"}}`)
+
+	t.Run("GET .../scale", func(t *testing.T) {
+		code, body := doReq(t, http.MethodGet, srv.URL+"/api/v1/namespaces/default/configmaps/cm/scale", "", "")
+		assertNotFoundReason(t, code, body)
+	})
+	t.Run("PUT .../scale", func(t *testing.T) {
+		code, body := doReq(t, http.MethodPut, srv.URL+"/api/v1/namespaces/default/configmaps/cm/scale", "application/json",
+			`{"apiVersion":"autoscaling/v1","kind":"Scale","spec":{"replicas":2}}`)
+		assertNotFoundReason(t, code, body)
+	})
+}

@@ -19,7 +19,7 @@ import (
 // objectForRead instead of currentObject.
 func (h *handler) serveScale(w http.ResponseWriter, group, version, resource, namespace, name string, at time.Time) {
 	if !scaleSubresourceResources[resource] {
-		h.writeStatus(w, http.StatusNotFound, resource+" has no scale subresource")
+		writeJSON(w, http.StatusNotFound, noScaleSubresourceStatus(resource))
 		return
 	}
 	obj, ok := h.objectForRead(group, version, resource, namespace, name, at)
@@ -43,6 +43,25 @@ var scaleSubresourceResources = map[string]bool{
 	"replicasets":            true,
 	"statefulsets":           true,
 	"replicationcontrollers": true,
+}
+
+// noScaleSubresourceStatus builds the 404 for a resource with no /scale
+// subresource. This is an ordinary "the requested resource doesn't exist"
+// case (a real apiserver never registers a /scale route for these kinds at
+// all), not the "unknown to the capture" case statusObj's 404 exclusion is
+// about — so, like notFoundStatus, it carries reason: "NotFound". Doesn't use
+// notFoundStatus directly: its message format ("<resource>.<group> \"<name>\"
+// not found") would misleadingly imply the object itself is missing, when
+// it's the subresource that doesn't exist.
+func noScaleSubresourceStatus(resource string) map[string]any {
+	return map[string]any{
+		"apiVersion": "v1",
+		"kind":       "Status",
+		"status":     "Failure",
+		"message":    resource + " has no scale subresource",
+		"reason":     "NotFound",
+		"code":       http.StatusNotFound,
+	}
 }
 
 // scaleSelectorString renders a resource's .spec.selector as the label-query
@@ -160,7 +179,7 @@ func setSpecReplicas(body json.RawMessage, replicas int32) json.RawMessage {
 // underlying resource's own body shape, not a Scale request.
 func (h *handler) overlayScaleWrite(w http.ResponseWriter, r *http.Request, group, version, resource, namespace, name string) {
 	if !scaleSubresourceResources[resource] {
-		h.writeStatus(w, http.StatusNotFound, resource+" has no scale subresource")
+		writeJSON(w, http.StatusNotFound, noScaleSubresourceStatus(resource))
 		return
 	}
 	current := h.currentObject(group, version, resource, namespace, name)
