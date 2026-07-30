@@ -46,7 +46,9 @@ func statusObj(code int, msg string) map[string]any {
 // statusReasonForCode maps an HTTP status code to the metav1.StatusReason
 // string a real apiserver would set, for the status codes this mock server
 // actually returns (see statusObj callers). Codes with no well-known reason
-// map to "" (metav1.StatusReasonUnknown), matching upstream.
+// return "" (metav1.StatusReasonUnknown), which statusObj treats as "omit
+// the reason field from the JSON body" rather than emitting reason:"" —
+// matching upstream, where metav1.Status.Reason is `json:",omitempty"` too.
 //
 // Deliberately excludes http.StatusNotFound. A plain writeStatus/statusObj
 // 404 is used for two different things, and only one of them should carry
