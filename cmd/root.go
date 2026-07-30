@@ -31,6 +31,11 @@ environment without direct connectivity.`,
 	SilenceUsage:  true,
 }
 
+// RootCmd returns the root command, for tooling that needs to walk the full
+// command tree (tools/gendocs, which generates docs/cli-reference.md) rather
+// than run it. Not for use by kshrk's own main.go, which calls Execute.
+func RootCmd() *cobra.Command { return rootCmd }
+
 // Exit codes follow the diff(1)/git diff --exit-code convention, so CI can
 // tell "the command ran and found something" apart from "the command
 // couldn't run at all" (#217):

@@ -39,6 +39,11 @@ jobs:
           gofmt -w .
           git diff --exit-code
 
+      - name: CLI reference drift check
+        run: |
+          make docs
+          git diff --exit-code docs/cli-reference.md
+
       - name: Vet
         run: go vet ./...
 

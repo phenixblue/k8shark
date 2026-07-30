@@ -1,5 +1,11 @@
 # Usage
 
+This is a curated, worked-example walkthrough of the commands most people
+reach for first. For the exhaustive, generated, always-accurate reference —
+every command, every flag, including ones this page doesn't cover in depth
+(`encrypt`, `decrypt`, `version`, `completion`) — see
+[docs/cli-reference.md](cli-reference.md).
+
 ## Compatibility matrix
 
 | Component | Supported |
