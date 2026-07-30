@@ -60,6 +60,7 @@ timeline, and a time-travel scrubber. See **[docs/web-ui.md](docs/web-ui.md)** f
 | [docs/releases.md](docs/releases.md) | How to cut a release, GoReleaser pipeline, signing, Homebrew tap |
 | [docs/development.md](docs/development.md) | Building, testing, linting, KinD dev cluster, E2E tests, package layout |
 | [docs/archive-format.md](docs/archive-format.md) | Internal `.kshrk` (ZIP+Zstd) layout, record and index JSON schemas, and the format-compatibility guarantee |
+| [docs/stability-policy.md](docs/stability-policy.md) | What's covered by semver from `v1.0.0` on — CLI surface, exit codes, JSON output, config schema, kubeconfig, deprecation and backport policy |
 | [docs/encryption-threat-model.md](docs/encryption-threat-model.md) | What `--encrypt` protects (and doesn't), key-handling rules, passphrase vs. recipient keys |
 
 ## License

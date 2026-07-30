@@ -5,18 +5,35 @@
 Releases are cut by pushing a version tag to `main`. The tag triggers the [release workflow](../.github/workflows/release.yml) which runs [GoReleaser](https://goreleaser.com) to build and publish everything.
 
 ```sh
-git tag v0.2.0-rc.1
-git push origin v0.2.0-rc.1
+git tag v1.0.0-rc.1
+git push origin v1.0.0-rc.1
 ```
 
-Use [semantic versioning](https://semver.org): `vMAJOR.MINOR.PATCH`. Tags that contain a pre-release identifier (e.g. `v0.2.0-rc.1`) are automatically marked as pre-release on GitHub.
+Use [semantic versioning](https://semver.org): `vMAJOR.MINOR.PATCH`. Tags that contain a pre-release identifier (e.g. `v1.0.0-rc.1`) are automatically marked as pre-release on GitHub.
 
-### Current versioning policy (pre-1.0)
+### Versioning policy
 
-While `k8shark` is pre-`v1.0.0`, backward-incompatible changes are released by bumping the **minor** version. The current line is:
+**Pre-`v1.0.0`** (every release up to and including the current `v0.x` line):
+backward-incompatible changes are released by bumping the **minor** version —
+there is no stability promise on any CLI-facing surface yet. The one
+exception is the `.kshrk` archive format, which already carries its own
+version-gated stability promise independent of the CLI's own version — see
+[docs/archive-format.md](archive-format.md#format-version--compatibility).
 
-- `v0.2.0-rc.N` for release candidates
-- `v0.2.0` for GA
+**`v1.0.0` and later**: what a MAJOR/MINOR/PATCH bump means, and exactly what
+is and isn't allowed to change without one, is defined in
+[docs/stability-policy.md](stability-policy.md) — see that page rather than
+this one for the compatibility contract itself. In short:
+
+- **PATCH** (`v1.0.1`) — bug fixes only, no *intentional* behavior change to
+  a documented surface (correcting a bug in one is what a patch is for).
+- **MINOR** (`v1.1.0`) — new, backward-compatible features (flags, config
+  keys, subcommands).
+- **MAJOR** (`v2.0.0`) — a breaking change to anything listed as a stable
+  surface in the stability policy.
+
+Only the latest minor receives patch releases; see the stability policy's
+[backport section](stability-policy.md#backport--patch-policy).
 
 ## What the release workflow does
 
@@ -54,7 +71,7 @@ The cosign signing uses GitHub's OIDC token — no additional secret is needed.
 
 ```sh
 # Download the release artifacts
-gh release download v0.2.0-rc.1 --repo phenixblue/k8shark
+gh release download v1.0.0-rc.1 --repo phenixblue/k8shark
 
 # Verify the cosign signature
 cosign verify-blob \
