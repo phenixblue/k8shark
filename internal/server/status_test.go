@@ -57,6 +57,9 @@ func TestStatusReasonForCode(t *testing.T) {
 		// Deliberately excluded, not just missing: a plain 404 must NOT get
 		// reason: "NotFound" — see statusReasonForCode's doc comment (#177).
 		http.StatusNotFound: "",
+		// Deliberately excluded: this server's one 410 (replay_rv.go's
+		// writeGone) is reason: "Expired", not the generic "Gone".
+		http.StatusGone: "",
 	}
 	for code, want := range cases {
 		if got := statusReasonForCode(code); got != want {
