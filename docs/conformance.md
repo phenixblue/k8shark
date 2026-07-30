@@ -71,8 +71,12 @@ Currently accepted divergences (all in `internal/server/handler.go`):
 
 | Key | What | Why it's accepted (for now) |
 |-----|------|------------------------------|
-| `errors::404 not-found Status object` | The 404 body omits `reason: "NotFound"` and `details`. | Cosmetic-ish; `code: 404` is present. Candidate fix. |
 | `errors::404 for unknown group/version` | Unknown `/apis/<g>/<v>` returns `200` + empty `APIResourceList` instead of `404`. | The router synthesizes a list for any group path. Candidate fix. |
 | `version::/version keys` | `/version` omits newer keys (`emulationMajor` etc.) and hard-codes `major`/`minor`. | `/version` is a stub; `gitVersion` is correct. Version-dependent. |
+
+The not-found Status object divergence (404 body missing `reason: "NotFound"`
+and `details`) was fixed in #177 for a real, captured resource type —
+`notFoundStatus` in `internal/server/handler.go` sets both — and no longer
+appears in the baseline.
 
 Removing an entry here (by fixing the underlying behavior) tightens the gate.
