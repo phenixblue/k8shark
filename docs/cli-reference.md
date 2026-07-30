@@ -689,7 +689,8 @@ matched.
 
 By default the expression is a kubectl-style JSONPath template. With --text
 or --regex, it's instead a plain substring or regular expression searched
-across every object body and captured pod log (current and --previous).
+across every object body and captured pod log (current and, if captured,
+previous-container).
 
 Limit the scope with --resource and --namespace, and pin the snapshot in time
 with --at.
