@@ -32,6 +32,15 @@ archives:
       - goos: windows
         formats: [zip]
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    # Explicit, since setting files: replaces GoReleaser's default file list
+    # (LICENSE*/README*/...) rather than adding to it. NOTICE isn't in that
+    # default list, but Apache-2.0 requires it to accompany binary
+    # distributions alongside LICENSE — found while wiring up the
+    # goreleaser-check-dry-run job's archive-contents assertion (#225).
+    files:
+      - LICENSE*
+      - NOTICE*
+      - README*
 
 checksum:
   name_template: checksums.txt
