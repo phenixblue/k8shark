@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -9,18 +10,24 @@ import (
 	"github.com/spf13/cobra"
 )
 
+func boolPtr(b bool) *bool { return &b }
+
 // newResolveRedactionCmd builds a bare *cobra.Command carrying exactly the
 // three flags resolveRedaction reads, mirroring captureCmd's registration
 // (cmd/capture.go's init) without sharing captureCmd's global flag state
-// across test cases.
-func newResolveRedactionCmd(t *testing.T, redactSecrets bool, allowSecret, redactField []string) *cobra.Command {
+// across test cases. redactSecrets is tri-state: nil leaves the flag unset
+// (its zero-value default), so a test case can distinguish "the user never
+// passed --redact-secrets" from "the user explicitly passed
+// --redact-secrets=false" — resolveRedaction's cfg.RedactSecrets precedence
+// could in principle behave differently for the two.
+func newResolveRedactionCmd(t *testing.T, redactSecrets *bool, allowSecret, redactField []string) *cobra.Command {
 	t.Helper()
 	cmd := &cobra.Command{}
 	cmd.Flags().Bool("redact-secrets", false, "")
 	cmd.Flags().StringArray("allow-secret", nil, "")
 	cmd.Flags().StringArray("redact-field", nil, "")
-	if redactSecrets {
-		if err := cmd.Flags().Set("redact-secrets", "true"); err != nil {
+	if redactSecrets != nil {
+		if err := cmd.Flags().Set("redact-secrets", strconv.FormatBool(*redactSecrets)); err != nil {
 			t.Fatalf("setting redact-secrets: %v", err)
 		}
 	}
@@ -40,7 +47,7 @@ func newResolveRedactionCmd(t *testing.T, redactSecrets bool, allowSecret, redac
 func TestResolveRedaction(t *testing.T) {
 	cases := []struct {
 		name              string
-		flagRedactSecrets bool
+		flagRedactSecrets *bool // nil = flag not passed at all
 		flagAllowSecret   []string
 		flagRedactField   []string
 		cfgRedaction      config.RedactionConfig
@@ -55,7 +62,7 @@ func TestResolveRedaction(t *testing.T) {
 		},
 		{
 			name:              "flag alone enables redaction",
-			flagRedactSecrets: true,
+			flagRedactSecrets: boolPtr(true),
 			wantDoRedact:      true,
 			wantAllowList:     map[string]bool{},
 		},
@@ -68,12 +75,14 @@ func TestResolveRedaction(t *testing.T) {
 		{
 			// Documents the asymmetry called out in #253: cfg.RedactSecrets
 			// can only turn redaction ON, never off. An explicit
-			// --redact-secrets=false against a config that enables it does
-			// nothing — this is the fail-safe direction (you can't
-			// accidentally disable redaction the config owner intended),
-			// so it's asserted here as intentional, not a bug.
+			// --redact-secrets=false (not just the flag's unset default —
+			// this case really does call Flags().Set("redact-secrets",
+			// "false")) against a config that enables it does nothing —
+			// this is the fail-safe direction (you can't accidentally
+			// disable redaction the config owner intended), so it's
+			// asserted here as intentional, not a bug.
 			name:              "config wins over an explicit flag=false (fail-safe direction)",
-			flagRedactSecrets: false,
+			flagRedactSecrets: boolPtr(false),
 			cfgRedaction:      config.RedactionConfig{RedactSecrets: true},
 			wantDoRedact:      true,
 			wantAllowList:     map[string]bool{},
@@ -170,7 +179,7 @@ func TestResolveRedaction(t *testing.T) {
 // out: a malformed --redact-field must return an error naming the flag, not
 // silently drop the rule and continue.
 func TestResolveRedaction_MalformedRedactFieldErrors(t *testing.T) {
-	cmd := newResolveRedactionCmd(t, false, nil, []string{"not-enough-parts"})
+	cmd := newResolveRedactionCmd(t, nil, nil, []string{"not-enough-parts"})
 	cfg := &config.Config{}
 
 	doRedact, allowList, fieldRules, err := resolveRedaction(cmd, cfg)
