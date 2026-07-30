@@ -129,6 +129,29 @@ type Engine struct {
 
 const maxConcurrentWatchStreams = 256
 
+// newEngineBase builds an Engine from already-constructed HTTP/dynamic
+// clients, initializing every other field. NewEngine and newEngineWith each
+// build their clients differently but must agree on everything else — this
+// is the one place that does, so adding a field here can't be forgotten in
+// one constructor and only done in the other (#238).
+func newEngineBase(cfg *config.Config, verbose bool, httpClient *http.Client, dynClient dynamic.Interface, baseURL string) *Engine {
+	return &Engine{
+		cfg:                       cfg,
+		verbose:                   verbose,
+		httpClient:                httpClient,
+		dynClient:                 dynClient,
+		baseURL:                   baseURL,
+		index:                     make(Index),
+		watchIndex:                make(WatchIndex),
+		discoveryCache:            make(map[string][]byte),
+		lastHash:                  make(map[string][32]byte),
+		warnedFallback:            make(map[string]bool),
+		fetchSem:                  make(chan struct{}, maxConcurrentFetches),
+		fetchTimeout:              perFetchTimeout,
+		clusterListNamespacesSeen: make(map[string]map[string]bool),
+	}
+}
+
 // NewEngine creates a capture Engine from validated config.
 func NewEngine(cfg *config.Config, verbose bool) (*Engine, error) {
 	var restCfg *rest.Config
@@ -161,21 +184,7 @@ func NewEngine(cfg *config.Config, verbose bool) (*Engine, error) {
 		return nil, fmt.Errorf("building dynamic client: %w", err)
 	}
 
-	return &Engine{
-		cfg:                       cfg,
-		verbose:                   verbose,
-		httpClient:                httpClient,
-		dynClient:                 dynClient,
-		baseURL:                   restCfg.Host,
-		index:                     make(Index),
-		watchIndex:                make(WatchIndex),
-		discoveryCache:            make(map[string][]byte),
-		lastHash:                  make(map[string][32]byte),
-		warnedFallback:            make(map[string]bool),
-		fetchSem:                  make(chan struct{}, maxConcurrentFetches),
-		fetchTimeout:              perFetchTimeout,
-		clusterListNamespacesSeen: make(map[string]map[string]bool),
-	}, nil
+	return newEngineBase(cfg, verbose, httpClient, dynClient, restCfg.Host), nil
 }
 
 // SetEncryption makes Run() write the output archive as an age-encrypted
@@ -194,21 +203,7 @@ func newEngineWith(cfg *config.Config, client *http.Client, baseURL string, verb
 	// the watch-streaming tests that need it construct against a valid baseURL;
 	// non-watch tests never touch dynClient.
 	dynClient, _ := dynamic.NewForConfigAndClient(&rest.Config{Host: baseURL}, client)
-	return &Engine{
-		cfg:                       cfg,
-		verbose:                   verbose,
-		httpClient:                client,
-		dynClient:                 dynClient,
-		baseURL:                   baseURL,
-		index:                     make(Index),
-		watchIndex:                make(WatchIndex),
-		discoveryCache:            make(map[string][]byte),
-		lastHash:                  make(map[string][32]byte),
-		warnedFallback:            make(map[string]bool),
-		fetchSem:                  make(chan struct{}, maxConcurrentFetches),
-		fetchTimeout:              perFetchTimeout,
-		clusterListNamespacesSeen: make(map[string]map[string]bool),
-	}
+	return newEngineBase(cfg, verbose, client, dynClient, baseURL)
 }
 
 // Run executes the capture and writes the output archive.
