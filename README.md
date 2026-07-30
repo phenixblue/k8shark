@@ -25,6 +25,10 @@ flowchart LR
 2. **Open** — `kshrk open capture.kshrk` reads the archive, starts a local mock HTTPS API server, and writes a kubeconfig. Set `KUBECONFIG` and use `kubectl` normally.
 3. **Diagnose** — `kshrk diagnose capture.kshrk` analyzes the capture offline and prints severity-ranked findings (crashing pods, unschedulable workloads, unbound PVCs, version skew, …). Also available in the web UI's Diagnostics tab.
 
+Which Kubernetes/kubectl versions and platforms are supported? See the
+[compatibility matrix](docs/usage.md#compatibility-matrix). Deciding what
+RBAC a capture needs? See the [RBAC guide](docs/rbac.md).
+
 ## Quick start
 
 ```sh
@@ -81,6 +85,7 @@ timeline, and a time-travel scrubber. See **[docs/web-ui.md](docs/web-ui.md)** f
 | [docs/encryption-threat-model.md](docs/encryption-threat-model.md) | What `--encrypt` protects (and doesn't), key-handling rules, passphrase vs. recipient keys |
 | [docs/kwok.md](docs/kwok.md) | Closed-loop controller dev: `--writable` replay driven by KWOK and kube-controller-manager |
 | [docs/conformance.md](docs/conformance.md) | Mock-server conformance methodology and accepted divergences from a real API server |
+| [docs/rbac.md](docs/rbac.md) | What RBAC permissions a capture needs — minimal explicit-resource grant, the broader `all: true` grant, and what a partial-permissions capture looks like |
 
 ## License
 
