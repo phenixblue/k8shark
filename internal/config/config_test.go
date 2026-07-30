@@ -362,6 +362,24 @@ func TestWarnings_OutputExists(t *testing.T) {
 	}
 }
 
+// TestWarnings_BuiltinGroupWithNamespaces_NoWarn locks in #240: apps/batch/etc.
+// are never CRD-backed, so a perfectly ordinary namespaced resource in one of
+// them (e.g. apps/v1 Deployments) must not trigger the CRD-namespace advisory
+// just because its group is non-core. This was firing for every non-core
+// built-in resource in the shipped examples/k8shark.yaml.
+func TestWarnings_BuiltinGroupWithNamespaces_NoWarn(t *testing.T) {
+	cfg := validatedCfg(t, "10m", []Resource{
+		{Group: "apps", Version: "v1", Resource: "deployments", IntervalRaw: "30s", Namespaces: []string{"default"}},
+		{Group: "batch", Version: "v1", Resource: "jobs", IntervalRaw: "30s", Namespaces: []string{"default"}},
+	})
+	ws := Warnings(cfg)
+	for _, w := range ws {
+		if contains(w, "non-core resource") {
+			t.Errorf("unexpected non-core advisory for a well-known built-in group: %s", w)
+		}
+	}
+}
+
 func TestIsClusterScoped(t *testing.T) {
 	for _, r := range []string{"nodes", "persistentvolumes", "storageclasses", "namespaces"} {
 		if !IsClusterScoped(r) {

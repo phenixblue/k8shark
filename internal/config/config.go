@@ -442,6 +442,34 @@ var knownClusterScoped = map[string]bool{
 // IsClusterScoped reports whether resource is a well-known cluster-scoped resource.
 func IsClusterScoped(resource string) bool { return knownClusterScoped[resource] }
 
+// knownBuiltinGroups are Kubernetes' own built-in API groups — never
+// CRD-backed, so a resource in one of these is never the "is this actually a
+// cluster-scoped CRD?" case Warnings' non-core-resource check exists for.
+// Mirrors internal/capture/engine.go's nativeAPIGroups (kept separate since
+// internal/capture already imports this package, so the reverse import would
+// cycle); update both if Kubernetes adds a new built-in group.
+var knownBuiltinGroups = map[string]bool{
+	"apps":                         true,
+	"batch":                        true,
+	"autoscaling":                  true,
+	"networking.k8s.io":            true,
+	"policy":                       true,
+	"rbac.authorization.k8s.io":    true,
+	"storage.k8s.io":               true,
+	"scheduling.k8s.io":            true,
+	"node.k8s.io":                  true,
+	"coordination.k8s.io":          true,
+	"certificates.k8s.io":          true,
+	"discovery.k8s.io":             true,
+	"events.k8s.io":                true,
+	"admissionregistration.k8s.io": true,
+	"apiextensions.k8s.io":         true,
+	"apiregistration.k8s.io":       true,
+	"authentication.k8s.io":        true,
+	"authorization.k8s.io":         true,
+	"flowcontrol.apiserver.k8s.io": true,
+}
+
 // Warnings returns a list of non-fatal advisory messages about cfg.
 // Validate must be called before Warnings so that Duration and Interval fields
 // are populated.
@@ -474,9 +502,14 @@ func Warnings(cfg *Config) []string {
 				"resources[%d] (%s): cluster-scoped resource has 'namespaces:' set — this will be ignored at capture time",
 				i, r.Resource))
 		}
-		// For non-core (CRD-backed) resources we cannot determine cluster-scope
-		// offline. Warn when 'namespaces:' is set so the user knows to verify.
-		if r.Group != "" && !knownClusterScoped[r.Resource] && len(r.Namespaces) > 0 {
+		// For a resource in an unrecognized (likely CRD-backed) group we
+		// cannot determine cluster-scope offline. Warn when 'namespaces:' is
+		// set so the user knows to verify. A group in knownBuiltinGroups is
+		// never CRD-backed, so it's excluded even though it's non-core —
+		// e.g. apps/v1 Deployments, batch/v1 Jobs — those are unambiguously
+		// namespaced and this warning firing for every one of them on a
+		// perfectly correct config was the bug (#240).
+		if r.Group != "" && !knownBuiltinGroups[r.Group] && !knownClusterScoped[r.Resource] && len(r.Namespaces) > 0 {
 			ws = append(ws, fmt.Sprintf(
 				"resources[%d] (%s): non-core resource with 'namespaces:' set — "+
 					"if this is a cluster-scoped CRD (e.g. ClusterIssuer, ClusterPolicy) "+
