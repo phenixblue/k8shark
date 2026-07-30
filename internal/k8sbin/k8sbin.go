@@ -487,10 +487,13 @@ func extractTarGz(tarGzPath, destDir string) error {
 			}
 		}
 
-		// Remaining barriers, kept as defense in depth: with no ".." segment
-		// reaching here, none of the checks below should ever fire, but they
-		// independently re-verify containment so a future change to the
-		// rejection above can't silently reopen the traversal. filepath.Rel
+		// Remaining barriers. The absolute-path checks below are load-bearing,
+		// not redundant: a name like "/etc/passwd" carries no ".." segment, so
+		// it passes the rejection above, reaches here, and is skipped by them.
+		// Only the ".."-containment checks alongside them (on cleanedName, and
+		// on filepath.Rel's result) are now redundant with that rejection;
+		// those are kept as defense in depth so a future change to it can't
+		// silently reopen the traversal. filepath.Rel independently
 		// re-verifies containment on the joined result before target is ever
 		// used in a filesystem operation.
 		//

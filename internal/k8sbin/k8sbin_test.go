@@ -127,7 +127,10 @@ func TestExtractTarGz_PathTraversalRejected(t *testing.T) {
 			// ".."s still lands under.
 			foundInside, foundOutside := false, false
 			_ = filepath.Walk(tmp, func(p string, info os.FileInfo, err error) error {
-				if err != nil || info.IsDir() {
+				// Regular files only — see the same note in
+				// TestExtractTarGz_AdversarialEntriesNeverEscape: os.ReadFile
+				// would follow a symlink out of the temp tree.
+				if err != nil || info == nil || !info.Mode().IsRegular() {
 					return nil
 				}
 				b, rerr := os.ReadFile(p)
@@ -227,8 +230,15 @@ func TestExtractTarGz_AdversarialEntriesNeverEscape(t *testing.T) {
 					}
 				}
 			}
-			tw.Close()
-			gz.Close()
+			// Fail fast on flush/close errors so the bytes handed to
+			// extractTarGz below are known-good — a silently truncated
+			// archive would make this test pass for the wrong reason.
+			if err := tw.Close(); err != nil {
+				t.Fatalf("closing tar writer: %v", err)
+			}
+			if err := gz.Close(); err != nil {
+				t.Fatalf("closing gzip writer: %v", err)
+			}
 
 			root := t.TempDir()
 			tarPath := filepath.Join(root, "archive.tar.gz")
@@ -252,7 +262,11 @@ func TestExtractTarGz_AdversarialEntriesNeverEscape(t *testing.T) {
 				t.Errorf("canary outside destDir was overwritten with %q", string(b))
 			}
 			_ = filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
-				if err != nil || info == nil || info.IsDir() || p == tarPath {
+				// Regular files only, not just "not a directory": if a
+				// regression ever made extractTarGz create a symlink,
+				// os.ReadFile would follow it and could report marker content
+				// read from entirely outside this temp tree.
+				if err != nil || info == nil || !info.Mode().IsRegular() || p == tarPath {
 					return nil
 				}
 				b, rerr := os.ReadFile(p)
