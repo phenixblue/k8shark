@@ -8,6 +8,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -36,11 +37,15 @@ func run() error {
 	root.InitDefaultCompletionCmd()
 	root.InitDefaultHelpCmd()
 
-	f, err := os.Create(outPath)
+	// Generate into a temp file in the same directory and rename into place
+	// only after a successful Flush/Close, so a failure partway through
+	// generation can't leave docs/cli-reference.md truncated.
+	f, err := os.CreateTemp(filepath.Dir(outPath), ".cli-reference-*.md.tmp")
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	tmpPath := f.Name()
+	defer os.Remove(tmpPath)
 	w := bufio.NewWriter(f)
 
 	fmt.Fprintln(w, "# CLI Reference")
@@ -60,7 +65,13 @@ func run() error {
 	if err := genCommand(w, root); err != nil {
 		return err
 	}
-	return w.Flush()
+	if err := w.Flush(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, outPath)
 }
 
 // linkHandler rewrites the cross-command links doc.GenMarkdown emits (e.g.
