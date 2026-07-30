@@ -61,8 +61,12 @@ func quotePath(p string) string {
 	var b strings.Builder
 	b.Grow(len(p) + 2)
 	b.WriteByte('"')
-	for _, r := range p {
-		switch r {
+	// Iterate bytes, not runes: a filesystem path isn't guaranteed to be
+	// valid UTF-8, and ranging over it as runes would replace any invalid
+	// byte sequence with U+FFFD — silently corrupting the very bytes this
+	// function's contract promises to render unchanged.
+	for i := 0; i < len(p); i++ {
+		switch p[i] {
 		case '"':
 			b.WriteString(`\"`)
 		case '\n':
@@ -70,7 +74,7 @@ func quotePath(p string) string {
 		case '\r':
 			b.WriteString(`\r`)
 		default:
-			b.WriteRune(r)
+			b.WriteByte(p[i])
 		}
 	}
 	b.WriteByte('"')
