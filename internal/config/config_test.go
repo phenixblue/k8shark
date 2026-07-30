@@ -338,6 +338,30 @@ func TestWarnings_ClusterScopedWithNamespaces(t *testing.T) {
 	}
 }
 
+// TestWarnings_BuiltinGroupClusterScopedWithNamespaces asserts that a
+// well-known built-in cluster-scoped resource (flowschemas) with
+// namespaces: set gets the clearer "cluster-scoped" advisory, and never the
+// "non-core resource, might be a CRD" advisory that's meant for resources
+// Warnings can't otherwise recognize as built-in.
+func TestWarnings_BuiltinGroupClusterScopedWithNamespaces(t *testing.T) {
+	cfg := validatedCfg(t, "10m", []Resource{
+		{Group: "flowcontrol.apiserver.k8s.io", Version: "v1", Resource: "flowschemas", IntervalRaw: "30s", Namespaces: []string{"default"}},
+	})
+	ws := Warnings(cfg)
+	found := false
+	for _, w := range ws {
+		if contains(w, "cluster-scoped") {
+			found = true
+		}
+		if contains(w, "non-core resource") {
+			t.Errorf("flowschemas is a known built-in resource, should not get the CRD advisory: %s", w)
+		}
+	}
+	if !found {
+		t.Errorf("expected cluster-scoped namespace warning for flowschemas, got: %v", ws)
+	}
+}
+
 func TestWarnings_OutputExists(t *testing.T) {
 	f, err := os.CreateTemp("", "k8shark-test-*.kshrk")
 	if err != nil {
@@ -359,6 +383,24 @@ func TestWarnings_OutputExists(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected output-already-exists warning, got: %v", ws)
+	}
+}
+
+// TestWarnings_BuiltinGroupWithNamespaces_NoWarn locks in #240: apps/batch/etc.
+// are never CRD-backed, so a perfectly ordinary namespaced resource in one of
+// them (e.g. apps/v1 Deployments) must not trigger the CRD-namespace advisory
+// just because its group is non-core. This was firing for every non-core
+// built-in resource in the shipped examples/k8shark.yaml.
+func TestWarnings_BuiltinGroupWithNamespaces_NoWarn(t *testing.T) {
+	cfg := validatedCfg(t, "10m", []Resource{
+		{Group: "apps", Version: "v1", Resource: "deployments", IntervalRaw: "30s", Namespaces: []string{"default"}},
+		{Group: "batch", Version: "v1", Resource: "jobs", IntervalRaw: "30s", Namespaces: []string{"default"}},
+	})
+	ws := Warnings(cfg)
+	for _, w := range ws {
+		if contains(w, "non-core resource") {
+			t.Errorf("unexpected non-core advisory for a well-known built-in group: %s", w)
+		}
 	}
 }
 
