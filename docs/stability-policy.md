@@ -31,8 +31,8 @@ series"). That page is the authority; this policy just points to it.
 
 ### CLI surface
 
-Every subcommand name, flag name and spelling, and flag semantic documented in
-[docs/usage.md](usage.md) is stable for the `1.x` line:
+Every subcommand name, flag name and spelling, and flag semantics documented in
+[docs/usage.md](usage.md) are stable for the `1.x` line:
 
 | Command | Purpose |
 |---------|---------|
@@ -109,8 +109,8 @@ understands version *N* or higher.
 standard Kubernetes client (`kubectl`, `client-go`, `k9s`, …). What's
 covered:
 
-- **Default path**: `~/.kube/k8shark-<capture-id>.yaml`, overridable with
-  `--kubeconfig-out`.
+- **Default path**: `~/.kube/k8shark-<id>.yaml`, where `<id>` is the
+  capture's ID, overridable with `--kubeconfig-out`.
 - **Validity**: the file is always a well-formed kubeconfig (`apiVersion:
   v1`, `kind: Config`) pointing at the locally-running mock server, usable
   without further edits.
