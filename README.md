@@ -29,7 +29,7 @@ flowchart LR
 
 ```sh
 # Install
-brew install phenixblue/tap/k8shark
+brew install --cask phenixblue/tap/k8shark
 
 # Capture cluster state for 10 minutes
 kshrk capture --config k8shark.yaml

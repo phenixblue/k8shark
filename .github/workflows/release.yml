@@ -53,7 +53,7 @@ jobs:
           HOMEBREW_TAP_NAME: homebrew-tap
           HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
 
-      - name: Attest release checksums
+      - name: Attest release archives
         uses: actions/attest-build-provenance@v4
         with:
-          subject-path: ./dist/checksums.txt
+          subject-path: dist/*.tar.gz,dist/*.zip
