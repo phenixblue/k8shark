@@ -1057,7 +1057,7 @@ YAML
   writable_addr=$(kubectl config --kubeconfig "$WRITABLE_KUBECONFIG" view \
     --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || echo "")
   delete_code=$(curl -sk -o /dev/null -w '%{http_code}' \
-    "${writable_addr}/api/v1/namespaces/e2e-writable/configmaps/smoke-cm")
+    "${writable_addr}/api/v1/namespaces/e2e-writable/configmaps/smoke-cm") || true
   assert_equals "writable overlay: delete removes the object (404 on re-GET)" "$delete_code" "404"
 fi
 
