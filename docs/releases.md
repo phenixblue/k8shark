@@ -15,7 +15,10 @@ Use [semantic versioning](https://semver.org): `vMAJOR.MINOR.PATCH`. Tags that c
 
 **Pre-`v1.0.0`** (every release up to and including the current `v0.x` line):
 backward-incompatible changes are released by bumping the **minor** version —
-there is no stability promise on any surface yet.
+there is no stability promise on any CLI-facing surface yet. The one
+exception is the `.kshrk` archive format, which already carries its own
+version-gated stability promise independent of the CLI's own version — see
+[docs/archive-format.md](archive-format.md#format-version--compatibility).
 
 **`v1.0.0` and later**: what a MAJOR/MINOR/PATCH bump means, and exactly what
 is and isn't allowed to change without one, is defined in

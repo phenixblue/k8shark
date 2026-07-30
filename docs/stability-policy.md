@@ -3,8 +3,13 @@
 This page states what `kshrk` promises to keep working, for how long, and what
 is explicitly exempt — so a script, CI pipeline, or muscle-memory habit built
 against one `1.x` release keeps working against the next. It takes effect at
-`v1.0.0`; everything below describes the `1.x` line. Before `v1.0.0`,
-backward-incompatible changes can land in any release.
+`v1.0.0`; everything below describes the `1.x` line. The one exception is the
+[archive format](#archive-format), which already carries its own
+version-gated stability promise today (see
+[docs/archive-format.md](archive-format.md#format-version--compatibility))
+and isn't affected by the CLI's own `v1.0.0` milestone. Every other surface
+below is unpromised before `v1.0.0` — backward-incompatible changes there can
+land in any pre-`1.0.0` release.
 
 k8shark follows [Semantic Versioning](https://semver.org): `vMAJOR.MINOR.PATCH`.
 
