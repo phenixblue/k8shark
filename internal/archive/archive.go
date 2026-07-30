@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
+	"path"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -48,6 +48,37 @@ type RecordSink interface {
 func pathDir(apiPath string) string {
 	sum := sha256.Sum256([]byte(apiPath))
 	return fmt.Sprintf("%x", sum[:8])
+}
+
+// quotePath wraps p in double quotes for a human-readable error message,
+// without treating it as a Go string literal the way %q does — %q escapes
+// every "\" as "\\", which turns an ordinary Windows path (built entirely of
+// backslashes) into visibly doubled separators in every error message. Only
+// the characters that would otherwise make the quoted output ambiguous or
+// multi-line (a literal '"', '\n', or '\r') are escaped; a backslash is
+// never touched, so the path renders exactly as passed in on any OS.
+func quotePath(p string) string {
+	var b strings.Builder
+	b.Grow(len(p) + 2)
+	b.WriteByte('"')
+	// Iterate bytes, not runes: a filesystem path isn't guaranteed to be
+	// valid UTF-8, and ranging over it as runes would replace any invalid
+	// byte sequence with U+FFFD — silently corrupting the very bytes this
+	// function's contract promises to render unchanged.
+	for i := 0; i < len(p); i++ {
+		switch p[i] {
+		case '"':
+			b.WriteString(`\"`)
+		case '\n':
+			b.WriteString(`\n`)
+		case '\r':
+			b.WriteString(`\r`)
+		default:
+			b.WriteByte(p[i])
+		}
+	}
+	b.WriteByte('"')
+	return b.String()
 }
 
 // zstdEncoder is a package-level encoder pool for compressing record data.
@@ -153,7 +184,7 @@ func NewEncryptedStreamWriter(outputPath string, recipients []age.Recipient) (*S
 func newStreamWriter(outputPath string, recipients []age.Recipient) (*StreamWriter, error) {
 	f, err := os.Create(outputPath)
 	if err != nil {
-		return nil, fmt.Errorf("creating output file %q: %w", outputPath, err)
+		return nil, fmt.Errorf("creating output file %s: %w", quotePath(outputPath), err)
 	}
 	sw := &StreamWriter{f: f, pathSeq: make(map[string]int)}
 	var dst io.Writer = f
@@ -198,7 +229,7 @@ func (w *StreamWriter) WriteRecord(rec *format.Record) (int, error) {
 	defer w.mu.Unlock()
 
 	seq := w.pathSeq[rec.APIPath]
-	entryName := filepath.Join("k8shark-capture", "records", dir, fmt.Sprintf("%d.json.zst", seq))
+	entryName := path.Join("k8shark-capture", "records", dir, fmt.Sprintf("%d.json.zst", seq))
 
 	if err := writeBytes(w.zw, entryName, compressed); err != nil {
 		return 0, err
@@ -227,7 +258,7 @@ func (w *StreamWriter) WriteRecordRaw(apiPath string, data any) (int, error) {
 
 	seq := w.pathSeq[apiPath]
 	w.pathSeq[apiPath] = seq + 1
-	entryName := filepath.Join("k8shark-capture", "records", dir, fmt.Sprintf("%d.json.zst", seq))
+	entryName := path.Join("k8shark-capture", "records", dir, fmt.Sprintf("%d.json.zst", seq))
 	if err := writeBytes(w.zw, entryName, compressed); err != nil {
 		return 0, err
 	}
@@ -432,25 +463,25 @@ func OpenWithIdentities(archivePath string, identities []age.Identity) (*Archive
 // stream before it's ever encrypted.
 func wrapZipFormatErr(archivePath string, err error) error {
 	if errors.Is(err, zip.ErrFormat) {
-		return fmt.Errorf("archive %q is corrupt or incomplete: not a valid zip file — this can happen if a capture was interrupted (e.g. Ctrl+C) or the file was truncated in transfer: %w", archivePath, err)
+		return fmt.Errorf("archive %s is corrupt or incomplete: not a valid zip file — this can happen if a capture was interrupted (e.g. Ctrl+C) or the file was truncated in transfer: %w", quotePath(archivePath), err)
 	}
-	return fmt.Errorf("opening zip archive %q: %w", archivePath, err)
+	return fmt.Errorf("opening zip archive %s: %w", quotePath(archivePath), err)
 }
 
 func openArchive(archivePath string, identities []age.Identity) (*Archive, error) {
 	fi, err := os.Stat(archivePath)
 	if err != nil {
-		return nil, fmt.Errorf("stat %q: %w", archivePath, err)
+		return nil, fmt.Errorf("stat %s: %w", quotePath(archivePath), err)
 	}
 	f, err := os.Open(archivePath)
 	if err != nil {
-		return nil, fmt.Errorf("opening archive %q: %w", archivePath, err)
+		return nil, fmt.Errorf("opening archive %s: %w", quotePath(archivePath), err)
 	}
 
 	encrypted, err := isAgeEncrypted(f)
 	if err != nil {
 		f.Close()
-		return nil, fmt.Errorf("reading %q: %w", archivePath, err)
+		return nil, fmt.Errorf("reading %s: %w", quotePath(archivePath), err)
 	}
 
 	var zr *zip.Reader
@@ -463,15 +494,15 @@ func openArchive(archivePath string, identities []age.Identity) (*Archive, error
 	} else {
 		if len(identities) == 0 {
 			f.Close()
-			return nil, fmt.Errorf("archive %q is encrypted: supply a decryption key", archivePath)
+			return nil, fmt.Errorf("archive %s is encrypted: supply a decryption key", quotePath(archivePath))
 		}
 		ra, plainSize, err := age.DecryptReaderAt(f, fi.Size(), identities...)
 		if err != nil {
 			f.Close()
 			if isNoIdentityMatch(err) {
-				return nil, fmt.Errorf("failed to decrypt archive %q: incorrect passphrase or key", archivePath)
+				return nil, fmt.Errorf("failed to decrypt archive %s: incorrect passphrase or key", quotePath(archivePath))
 			}
-			return nil, fmt.Errorf("decrypting archive %q: %w", archivePath, err)
+			return nil, fmt.Errorf("decrypting archive %s: %w", quotePath(archivePath), err)
 		}
 		zr, err = zip.NewReader(ra, plainSize)
 		if err != nil {
@@ -493,7 +524,7 @@ func openArchive(archivePath string, identities []age.Identity) (*Archive, error
 	}
 	if err := json.Unmarshal(metaData, &ar.meta); err != nil {
 		f.Close()
-		return nil, fmt.Errorf("parsing metadata.json in archive %q: %w", archivePath, err)
+		return nil, fmt.Errorf("parsing metadata.json in archive %s: %w", quotePath(archivePath), err)
 	}
 	if err := format.CheckFormatVersion(ar.meta); err != nil {
 		f.Close()
@@ -529,7 +560,7 @@ func (a *Archive) ReadIndex() (format.Index, error) {
 	}
 	var idx format.Index
 	if err := json.Unmarshal(data, &idx); err != nil {
-		return nil, fmt.Errorf("parsing index.json.zst in archive %q: %w", a.path, err)
+		return nil, fmt.Errorf("parsing index.json.zst in archive %s: %w", quotePath(a.path), err)
 	}
 	return idx, nil
 }
@@ -547,13 +578,13 @@ func (a *Archive) ReadWatchIndex() (format.WatchIndex, bool, error) {
 	}
 	var wi format.WatchIndex
 	if err := json.Unmarshal(data, &wi); err != nil {
-		return nil, true, fmt.Errorf("parsing watch-index.json.zst in archive %q: %w", a.path, err)
+		return nil, true, fmt.Errorf("parsing watch-index.json.zst in archive %s: %w", quotePath(a.path), err)
 	}
 	// The writer always emits at least "{}" (never a bare "null") for
 	// watch-index.json.zst, so a top-level JSON null here — which unmarshals
 	// to a nil map without error — is corrupt, not simply an empty index.
 	if wi == nil {
-		return nil, true, fmt.Errorf("parsing watch-index.json.zst in archive %q: top-level null", a.path)
+		return nil, true, fmt.Errorf("parsing watch-index.json.zst in archive %s: top-level null", quotePath(a.path))
 	}
 	// A well-formed watch-index.json never has a null entry for a path — the
 	// writer only ever inserts a populated *WatchIndexEntry. A null entry here
@@ -561,7 +592,7 @@ func (a *Archive) ReadWatchIndex() (format.WatchIndex, bool, error) {
 	// reader dereferences the entry (e.g. entry.Seqs) without a nil check.
 	for apiPath, entry := range wi {
 		if entry == nil {
-			return nil, true, fmt.Errorf("parsing watch-index.json.zst in archive %q: null entry for path %q", a.path, apiPath)
+			return nil, true, fmt.Errorf("parsing watch-index.json.zst in archive %s: null entry for path %q", quotePath(a.path), apiPath)
 		}
 	}
 	return wi, true, nil
@@ -571,7 +602,7 @@ func (a *Archive) ReadWatchIndex() (format.WatchIndex, bool, error) {
 // seq is 0-based and matches the order records were written for that path.
 func (a *Archive) ReadRecord(apiPath string, seq int) ([]byte, error) {
 	dir := pathDir(apiPath)
-	name := filepath.ToSlash(filepath.Join("k8shark-capture", "records", dir, fmt.Sprintf("%d.json.zst", seq)))
+	name := path.Join("k8shark-capture", "records", dir, fmt.Sprintf("%d.json.zst", seq))
 	data, err := a.readZstd(name)
 	if err != nil {
 		return nil, fmt.Errorf("reading record path=%s seq=%d: %w", apiPath, seq, err)
@@ -586,7 +617,7 @@ func (a *Archive) RecordsForPath(apiPath string) ([][]byte, error) {
 	dir := pathDir(apiPath)
 	var out [][]byte
 	for seq := 0; ; seq++ {
-		name := filepath.ToSlash(filepath.Join("k8shark-capture", "records", dir, fmt.Sprintf("%d.json.zst", seq)))
+		name := path.Join("k8shark-capture", "records", dir, fmt.Sprintf("%d.json.zst", seq))
 		if _, ok := a.byName[name]; !ok {
 			break
 		}
@@ -632,16 +663,16 @@ func PathDir(apiPath string) string { return pathDir(apiPath) }
 func (a *Archive) readRaw(name string) ([]byte, error) {
 	zf, ok := a.byName[name]
 	if !ok {
-		return nil, fmt.Errorf("entry %q not found in archive %q", name, a.path)
+		return nil, fmt.Errorf("entry %q not found in archive %s", name, quotePath(a.path))
 	}
 	rc, err := zf.Open()
 	if err != nil {
-		return nil, fmt.Errorf("opening entry %q in archive %q: %w", name, a.path, err)
+		return nil, fmt.Errorf("opening entry %q in archive %s: %w", name, quotePath(a.path), err)
 	}
 	defer rc.Close()
 	data, err := readAllLimited(rc, maxEntryBytes)
 	if err != nil {
-		return nil, fmt.Errorf("reading entry %q in archive %q: %w", name, a.path, err)
+		return nil, fmt.Errorf("reading entry %q in archive %s: %w", name, quotePath(a.path), err)
 	}
 	return data, nil
 }
@@ -654,7 +685,7 @@ func (a *Archive) readZstd(name string) ([]byte, error) {
 	}
 	data, err := zstdDecompress(compressed)
 	if err != nil {
-		return nil, fmt.Errorf("decompressing entry %q in archive %q: %w", name, a.path, err)
+		return nil, fmt.Errorf("decompressing entry %q in archive %s: %w", name, quotePath(a.path), err)
 	}
 	return data, nil
 }
