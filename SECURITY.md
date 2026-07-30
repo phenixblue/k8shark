@@ -47,5 +47,7 @@ relevant if they involve:
 
 ## Supported versions
 
-Only the latest released version (including release candidates) receives
-security fixes — see the [backport policy](docs/stability-policy.md#backport--patch-policy).
+Only the latest `1.x` minor line (including its release candidates) receives
+security fixes, delivered as a patch release on that line — there are no
+long-term-support branches. See the [backport
+policy](docs/stability-policy.md#backport--patch-policy).
