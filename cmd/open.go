@@ -30,7 +30,7 @@ specific point in the capture window.`,
 func init() {
 	rootCmd.AddCommand(openCmd)
 	openCmd.Flags().String("api-port", "0", "port for the mock API server (0 = random available port)")
-	openCmd.Flags().String("kubeconfig-out", "", "where to write the generated kubeconfig (default: ~/.kube/k8shark-<id>)")
+	openCmd.Flags().String("kubeconfig-out", "", "where to write the generated kubeconfig (default: ~/.kube/k8shark-<id>.yaml)")
 	openCmd.Flags().String("at", "", "pin replay to a specific timestamp (RFC3339) or relative duration like -5m")
 }
 

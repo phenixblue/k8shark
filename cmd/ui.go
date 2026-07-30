@@ -42,7 +42,7 @@ func init() {
 	rootCmd.AddCommand(uiCmd)
 	uiCmd.Flags().String("ui-port", "0", "port for the local UI server (0 = random available port)")
 	uiCmd.Flags().String("api-port", "0", "port for the mock API server (0 = random available port)")
-	uiCmd.Flags().String("kubeconfig-out", "", "where to write the generated kubeconfig (default: ~/.kube/k8shark-<id>)")
+	uiCmd.Flags().String("kubeconfig-out", "", "where to write the generated kubeconfig (default: ~/.kube/k8shark-<id>.yaml)")
 	uiCmd.Flags().String("at", "", "pin UI data to a specific timestamp (RFC3339 or relative duration like -5m)")
 	// Replay mode: when any of these is set, the dashboard becomes a VCR driven
 	// by a shared replay clock (kubectl follows the same clock).

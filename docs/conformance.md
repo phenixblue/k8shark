@@ -51,7 +51,7 @@ differential comparison above is the meaningful signal. (This was verified
 empirically; see #136.)
 
 Pairing a writable replay with `--with-kwok --with-controller-manager` (see
-[docs/kwok.md](kwok.md#closing-more-of-the-loop-with-controller-manager))
+[docs/kwok.md](kwok.md#closing-more-of-the-loop---with-controller-manager))
 gets past that specific setup blocker and clears a small slice of the suite —
 the pure CRUD/discovery/pod-static-lifecycle specs that don't need a real
 kubelet — but the bulk of the suite still needs a real container runtime and
