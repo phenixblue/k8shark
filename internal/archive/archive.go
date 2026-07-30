@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
+	"path"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -198,7 +198,7 @@ func (w *StreamWriter) WriteRecord(rec *format.Record) (int, error) {
 	defer w.mu.Unlock()
 
 	seq := w.pathSeq[rec.APIPath]
-	entryName := filepath.Join("k8shark-capture", "records", dir, fmt.Sprintf("%d.json.zst", seq))
+	entryName := path.Join("k8shark-capture", "records", dir, fmt.Sprintf("%d.json.zst", seq))
 
 	if err := writeBytes(w.zw, entryName, compressed); err != nil {
 		return 0, err
@@ -227,7 +227,7 @@ func (w *StreamWriter) WriteRecordRaw(apiPath string, data any) (int, error) {
 
 	seq := w.pathSeq[apiPath]
 	w.pathSeq[apiPath] = seq + 1
-	entryName := filepath.Join("k8shark-capture", "records", dir, fmt.Sprintf("%d.json.zst", seq))
+	entryName := path.Join("k8shark-capture", "records", dir, fmt.Sprintf("%d.json.zst", seq))
 	if err := writeBytes(w.zw, entryName, compressed); err != nil {
 		return 0, err
 	}
@@ -571,7 +571,7 @@ func (a *Archive) ReadWatchIndex() (format.WatchIndex, bool, error) {
 // seq is 0-based and matches the order records were written for that path.
 func (a *Archive) ReadRecord(apiPath string, seq int) ([]byte, error) {
 	dir := pathDir(apiPath)
-	name := filepath.ToSlash(filepath.Join("k8shark-capture", "records", dir, fmt.Sprintf("%d.json.zst", seq)))
+	name := path.Join("k8shark-capture", "records", dir, fmt.Sprintf("%d.json.zst", seq))
 	data, err := a.readZstd(name)
 	if err != nil {
 		return nil, fmt.Errorf("reading record path=%s seq=%d: %w", apiPath, seq, err)
@@ -586,7 +586,7 @@ func (a *Archive) RecordsForPath(apiPath string) ([][]byte, error) {
 	dir := pathDir(apiPath)
 	var out [][]byte
 	for seq := 0; ; seq++ {
-		name := filepath.ToSlash(filepath.Join("k8shark-capture", "records", dir, fmt.Sprintf("%d.json.zst", seq)))
+		name := path.Join("k8shark-capture", "records", dir, fmt.Sprintf("%d.json.zst", seq))
 		if _, ok := a.byName[name]; !ok {
 			break
 		}
