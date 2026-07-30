@@ -82,9 +82,9 @@ func isNoIdentityMatch(err error) bool {
 func classifyDecryptCopyError(srcPath string, err error) error {
 	var pathErr *fs.PathError
 	if errors.As(err, &pathErr) {
-		return fmt.Errorf("decrypting %q: %w", srcPath, err)
+		return fmt.Errorf("decrypting \"%s\": %w", srcPath, err)
 	}
-	return fmt.Errorf("decrypting %q: tampered or corrupt archive: %w", srcPath, err)
+	return fmt.Errorf("decrypting \"%s\": tampered or corrupt archive: %w", srcPath, err)
 }
 
 // createLike creates a fresh temporary file in dstPath's directory — never
@@ -119,17 +119,17 @@ func classifyDecryptCopyError(srcPath string, err error) error {
 func createLike(dstPath string, src *os.File) (dst *os.File, mode os.FileMode, commit func() error, err error) {
 	srcInfo, err := src.Stat()
 	if err != nil {
-		return nil, 0, nil, fmt.Errorf("stat %q: %w", src.Name(), err)
+		return nil, 0, nil, fmt.Errorf("stat \"%s\": %w", src.Name(), err)
 	}
 	mode = srcInfo.Mode().Perm()
 
 	switch existing, statErr := os.Lstat(dstPath); {
 	case statErr == nil:
 		if !existing.Mode().IsRegular() {
-			return nil, 0, nil, fmt.Errorf("output %q exists and is not a regular file (mode %s)", dstPath, existing.Mode())
+			return nil, 0, nil, fmt.Errorf("output \"%s\" exists and is not a regular file (mode %s)", dstPath, existing.Mode())
 		}
 		if os.SameFile(srcInfo, existing) {
-			return nil, 0, nil, fmt.Errorf("output %q must not be the same file as the input", dstPath)
+			return nil, 0, nil, fmt.Errorf("output \"%s\" must not be the same file as the input", dstPath)
 		}
 	case errors.Is(statErr, fs.ErrNotExist):
 		// The common case: no output exists yet, nothing to check.
@@ -138,12 +138,12 @@ func createLike(dstPath string, src *os.File) (dst *os.File, mode os.FileMode, c
 		// I/O error, ...) is a real failure — don't silently treat it the
 		// same as "doesn't exist" and proceed without having enforced the
 		// non-regular/same-file checks above.
-		return nil, 0, nil, fmt.Errorf("checking existing output %q: %w", dstPath, statErr)
+		return nil, 0, nil, fmt.Errorf("checking existing output \"%s\": %w", dstPath, statErr)
 	}
 
 	tmp, err := os.CreateTemp(filepath.Dir(dstPath), "."+filepath.Base(dstPath)+".tmp-*")
 	if err != nil {
-		return nil, 0, nil, fmt.Errorf("creating temporary file for %q: %w", dstPath, err)
+		return nil, 0, nil, fmt.Errorf("creating temporary file for \"%s\": %w", dstPath, err)
 	}
 	tmpPath := tmp.Name()
 	// Deliberately left at os.CreateTemp's default 0600 (not widened to
@@ -158,13 +158,13 @@ func createLike(dstPath string, src *os.File) (dst *os.File, mode os.FileMode, c
 
 	commit = func() error {
 		if err := tmp.Chmod(mode); err != nil {
-			return fmt.Errorf("setting permissions on %q: %w", tmpPath, err)
+			return fmt.Errorf("setting permissions on \"%s\": %w", tmpPath, err)
 		}
 		if err := tmp.Close(); err != nil {
-			return fmt.Errorf("closing %q: %w", tmpPath, err)
+			return fmt.Errorf("closing \"%s\": %w", tmpPath, err)
 		}
 		if err := os.Rename(tmpPath, dstPath); err != nil {
-			return fmt.Errorf("renaming temporary file into place as %q: %w", dstPath, err)
+			return fmt.Errorf("renaming temporary file into place as \"%s\": %w", dstPath, err)
 		}
 		return nil
 	}
@@ -182,10 +182,10 @@ func createLike(dstPath string, src *os.File) (dst *os.File, mode os.FileMode, c
 func EncryptFile(srcPath, dstPath string, recipients []age.Recipient) (err error) {
 	encrypted, err := IsEncrypted(srcPath)
 	if err != nil {
-		return fmt.Errorf("reading %q: %w", srcPath, err)
+		return fmt.Errorf("reading \"%s\": %w", srcPath, err)
 	}
 	if encrypted {
-		return fmt.Errorf("%q is already encrypted", srcPath)
+		return fmt.Errorf("\"%s\" is already encrypted", srcPath)
 	}
 	if len(recipients) == 0 {
 		return fmt.Errorf("archive encryption requires at least one recipient")
@@ -193,7 +193,7 @@ func EncryptFile(srcPath, dstPath string, recipients []age.Recipient) (err error
 
 	src, err := os.Open(srcPath)
 	if err != nil {
-		return fmt.Errorf("opening %q: %w", srcPath, err)
+		return fmt.Errorf("opening \"%s\": %w", srcPath, err)
 	}
 	defer src.Close()
 
@@ -218,10 +218,10 @@ func EncryptFile(srcPath, dstPath string, recipients []age.Recipient) (err error
 	}
 	if _, err = io.Copy(w, src); err != nil {
 		_ = w.Close() // best-effort: attempt to finalize before the deferred cleanup discards the temp file
-		return fmt.Errorf("encrypting %q: %w", srcPath, err)
+		return fmt.Errorf("encrypting \"%s\": %w", srcPath, err)
 	}
 	if err = w.Close(); err != nil {
-		return fmt.Errorf("finishing encryption of %q: %w", srcPath, err)
+		return fmt.Errorf("finishing encryption of \"%s\": %w", srcPath, err)
 	}
 	if err = commit(); err != nil {
 		return err
@@ -239,10 +239,10 @@ func EncryptFile(srcPath, dstPath string, recipients []age.Recipient) (err error
 func DecryptFile(srcPath, dstPath string, identities []age.Identity) (err error) {
 	encrypted, err := IsEncrypted(srcPath)
 	if err != nil {
-		return fmt.Errorf("reading %q: %w", srcPath, err)
+		return fmt.Errorf("reading \"%s\": %w", srcPath, err)
 	}
 	if !encrypted {
-		return fmt.Errorf("%q is not encrypted", srcPath)
+		return fmt.Errorf("\"%s\" is not encrypted", srcPath)
 	}
 	if len(identities) == 0 {
 		return fmt.Errorf("archive decryption requires at least one identity")
@@ -250,16 +250,16 @@ func DecryptFile(srcPath, dstPath string, identities []age.Identity) (err error)
 
 	src, err := os.Open(srcPath)
 	if err != nil {
-		return fmt.Errorf("opening %q: %w", srcPath, err)
+		return fmt.Errorf("opening \"%s\": %w", srcPath, err)
 	}
 	defer src.Close()
 
 	r, err := age.Decrypt(src, identities...)
 	if err != nil {
 		if isNoIdentityMatch(err) {
-			return fmt.Errorf("failed to decrypt %q: incorrect passphrase or key", srcPath)
+			return fmt.Errorf("failed to decrypt \"%s\": incorrect passphrase or key", srcPath)
 		}
-		return fmt.Errorf("decrypting %q: %w", srcPath, err)
+		return fmt.Errorf("decrypting \"%s\": %w", srcPath, err)
 	}
 
 	dst, _, commit, err := createLike(dstPath, src)
