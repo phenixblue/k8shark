@@ -1,5 +1,17 @@
 # Usage
 
+## Compatibility matrix
+
+| Component | Supported |
+|---|---|
+| **Kubernetes server** (for `capture`) | Tracked via `k8s.io/client-go` in `go.mod` (currently `v0.36.x`); actively validated each release against a pinned `kindest/node:v1.36.1` in the [conformance workflow](../.github/workflows/conformance.yml). k8shark captures through the generic REST/discovery surface rather than version-specific APIs, so other server versions generally work too — only the pinned minor is actively tested. |
+| **kubectl** (against `kshrk open`/`replay`) | Any reasonably recent version — the mock server speaks plain REST/JSON over HTTPS and doesn't depend on a specific `kubectl` release. |
+| **OS / architecture** (released binaries) | linux/amd64, linux/arm64, darwin/amd64, darwin/arm64, windows/amd64, windows/arm64 — see [docs/releases.md](releases.md#build-matrix). Unit tests run on all three OS families in CI. |
+| **KWOK / kube-controller-manager** (`replay --with-kwok --with-controller-manager`) | Matched to the *capture's* recorded Kubernetes version at replay time, not the version `kshrk` itself was built against — see [docs/kwok.md](kwok.md). |
+
+See [docs/stability-policy.md](stability-policy.md#supported-kubernetes--kubectl-version-window)
+for the full policy this matrix summarizes.
+
 ## Prerequisites
 
 - `kubectl` in your `PATH`
