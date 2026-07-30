@@ -31,6 +31,16 @@ explicit versions, **not `@latest`**, for reproducible runs. Dependabot's
 `github-actions` ecosystem only bumps `uses:` action refs, so these pins need
 manual bumps. Pin any new CI tool the same way.
 
+Every `uses:` line in `.github/workflows/` is pinned to a full 40-char commit
+SHA with a trailing `# vX.Y.Z` comment (not a floating major tag like `@v4`) —
+`release.yml` holds `contents: write`, `id-token: write`, `attestations: write`,
+and the `HOMEBREW_TAP_GITHUB_TOKEN` secret, so a compromised tag on any action
+it uses would get all of it, including the Sigstore signing identity (#229).
+Dependabot's `github-actions` ecosystem (already configured in
+`.github/dependabot.yml`) opens PRs to bump these SHAs and keeps the version
+comment in sync — no manual maintenance needed once pinned. Pin any new action
+the same way when adding one.
+
 ## Archive lifecycle (gotcha)
 
 `archive.Open` returns a `*zip.ReadCloser` that holds a real OS file handle, and
