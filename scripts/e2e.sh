@@ -93,12 +93,16 @@ DEC_RECIPIENT_FILE=""
 REC_SERVER_LOG=""
 REC_KC=""
 REC_SERVER_PID=""
+# Phase 8f (writable overlay) background server.
+WRITABLE_SERVER_LOG=""
+WRITABLE_KUBECONFIG=""
+WRITABLE_SERVER_PID=""
 cleanup() {
   if [[ -n "$SERVER_PID" ]]; then
     kill "$SERVER_PID" 2>/dev/null || true
     wait "$SERVER_PID" 2>/dev/null || true
   fi
-  for pid in "$ENC_DEC_SERVER_PID" "$ENC_OPEN_SERVER_PID" "$REC_SERVER_PID"; do
+  for pid in "$ENC_DEC_SERVER_PID" "$ENC_OPEN_SERVER_PID" "$REC_SERVER_PID" "$WRITABLE_SERVER_PID"; do
     if [[ -n "$pid" ]]; then
       kill "$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
@@ -113,7 +117,7 @@ cleanup() {
     "$ENC_PASS_FILE" "$ENC_WRONG_PASS_FILE" "$ENC_FILE" "$DEC_FILE"
     "$ENC_DEC_SERVER_LOG" "$ENC_DEC_KC" "$ENC_OPEN_SERVER_LOG" "$ENC_OPEN_KC"
     "$KEYGEN_SRC" "$AGE_IDENTITY_FILE" "$ENC_RECIPIENT_FILE" "$DEC_RECIPIENT_FILE"
-    "$REC_SERVER_LOG" "$REC_KC"
+    "$REC_SERVER_LOG" "$REC_KC" "$WRITABLE_SERVER_LOG" "$WRITABLE_KUBECONFIG"
   )
   for p in "${cleanup_paths[@]}"; do
     [[ -n "$p" ]] && rm -f "$p"
@@ -982,6 +986,86 @@ SERVER_ADDR=$(kubectl config --kubeconfig "$E2E_KUBECONFIG" view \
 stub_out=$(curl -sk "${SERVER_ADDR}/api/v1/namespaces/k8shark-test/pods/nonexistent-pod/log" 2>&1) || true
 assert_contains "kubectl logs: stub message mentions k8shark"       "$stub_out" "k8shark"
 assert_contains "kubectl logs: stub message mentions not captured" "$stub_out" "not captured"
+
+# ── Phase 8f: Writable overlay smoke test ──────────────────────────────────────
+# Exercises the write verbs (create/patch/apply/scale/delete) against
+# --writable on every PR, not just the workflow_dispatch-only e2e-kwok job
+# (#252) — kwok itself isn't needed for these, just the overlay.
+log "Testing writable overlay (create/patch/apply/scale/delete)"
+
+WRITABLE_KUBECONFIG="/tmp/k8shark-e2e-writable-$$.yaml"
+WRITABLE_SERVER_LOG="/tmp/k8shark-e2e-writable-server-$$.log"
+# No --loop: a loop wrap would reset the overlay mid-test.
+"$BINARY" replay "$CAPTURE_FILE" --writable --kubeconfig-out "$WRITABLE_KUBECONFIG" \
+  >"$WRITABLE_SERVER_LOG" 2>&1 &
+WRITABLE_SERVER_PID=$!
+
+WRITABLE_READY=false
+for i in $(seq 1 30); do
+  if [[ -s "$WRITABLE_KUBECONFIG" ]] && kubectl --kubeconfig "$WRITABLE_KUBECONFIG" \
+      --request-timeout=2s get namespaces &>/dev/null; then
+    WRITABLE_READY=true
+    break
+  fi
+  sleep 0.5
+done
+if [[ "$WRITABLE_READY" != "true" ]]; then
+  fail "writable overlay: server did not become ready within 15s"
+  info "log: $(cat "$WRITABLE_SERVER_LOG" 2>/dev/null)"
+else
+  WKC=(--kubeconfig "$WRITABLE_KUBECONFIG" --request-timeout=10s)
+
+  # create (namespace + configmap)
+  if kubectl "${WKC[@]}" create namespace e2e-writable >/dev/null 2>&1 &&
+     kubectl "${WKC[@]}" create configmap smoke-cm --from-literal=k=v1 -n e2e-writable >/dev/null 2>&1; then
+    pass "writable overlay: create namespace + configmap"
+  else
+    fail "writable overlay: create namespace + configmap"
+  fi
+
+  # patch
+  kubectl "${WKC[@]}" patch configmap smoke-cm -n e2e-writable \
+    --type=merge -p '{"data":{"k":"v2"}}' >/dev/null 2>&1 || true
+  patched_val=$(kubectl "${WKC[@]}" get configmap smoke-cm -n e2e-writable \
+    -o jsonpath='{.data.k}' 2>/dev/null || echo "")
+  assert_equals "writable overlay: patch updates configmap data" "$patched_val" "v2"
+
+  # apply (create-via-apply a new object)
+  kubectl "${WKC[@]}" apply -n e2e-writable -f - >/dev/null 2>&1 <<'YAML' || true
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: smoke-cm-applied }
+data: { via: apply }
+YAML
+  applied_val=$(kubectl "${WKC[@]}" get configmap smoke-cm-applied -n e2e-writable \
+    -o jsonpath='{.data.via}' 2>/dev/null || echo "")
+  assert_equals "writable overlay: apply creates a new object" "$applied_val" "apply"
+
+  # scale (against the captured nginx Deployment)
+  kubectl "${WKC[@]}" scale deployment/nginx -n k8shark-test --replicas=3 >/dev/null 2>&1 || true
+  scaled_replicas=$(kubectl "${WKC[@]}" get deployment nginx -n k8shark-test \
+    -o jsonpath='{.spec.replicas}' 2>/dev/null || echo "")
+  assert_equals "writable overlay: scale updates spec.replicas" "$scaled_replicas" "3"
+
+  # delete
+  kubectl "${WKC[@]}" delete configmap smoke-cm -n e2e-writable >/dev/null 2>&1 || true
+  # A broken server/kubeconfig would also make `get` fail, which a plain
+  # non-zero-exit check can't tell apart from a real delete. Check the raw
+  # HTTP status instead of kubectl's human-readable error text (which isn't
+  # guaranteed to contain any particular substring — a tombstoned overlay
+  # object 404s with "... was deleted in the writable overlay", not "NotFound").
+  writable_addr=$(kubectl config --kubeconfig "$WRITABLE_KUBECONFIG" view \
+    --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || echo "")
+  delete_code=$(curl -sk -o /dev/null -w '%{http_code}' \
+    "${writable_addr}/api/v1/namespaces/e2e-writable/configmaps/smoke-cm") || true
+  assert_equals "writable overlay: delete removes the object (404 on re-GET)" "$delete_code" "404"
+fi
+
+if [[ -n "$WRITABLE_SERVER_PID" ]]; then
+  kill "$WRITABLE_SERVER_PID" 2>/dev/null || true
+  wait "$WRITABLE_SERVER_PID" 2>/dev/null || true
+fi
+rm -f "$WRITABLE_KUBECONFIG" "$WRITABLE_SERVER_LOG"
 
 # ── Phase 9: Round-trip comparison (live cluster vs. mock server) ─────────────
 log "Round-trip comparison: live cluster vs. mock server"
