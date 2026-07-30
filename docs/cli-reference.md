@@ -660,7 +660,7 @@ kshrk open <capture.kshrk> [flags]
       --api-port string         port for the mock API server (0 = random available port) (default "0")
       --at string               pin replay to a specific timestamp (RFC3339) or relative duration like -5m
   -h, --help                    help for open
-      --kubeconfig-out string   where to write the generated kubeconfig (default: ~/.kube/k8shark-<id>)
+      --kubeconfig-out string   where to write the generated kubeconfig (default: ~/.kube/k8shark-<id>.yaml)
 ```
 
 ### Options inherited from parent commands
@@ -974,7 +974,7 @@ kshrk ui <capture.kshrk> [flags]
       --at string                 pin UI data to a specific timestamp (RFC3339 or relative duration like -5m)
       --from string               replay window start: RFC3339 or relative duration like -10m
   -h, --help                      help for ui
-      --kubeconfig-out string     where to write the generated kubeconfig (default: ~/.kube/k8shark-<id>)
+      --kubeconfig-out string     where to write the generated kubeconfig (default: ~/.kube/k8shark-<id>.yaml)
       --loop                      replay mode: restart from the window start when the end is reached
       --speed string              replay mode: playback speed factor, e.g. 2x, 3x, 0.5x (enables replay)
       --start-paused              replay mode: start paused (the UI defaults to this; pass --start-paused=false to auto-play)
