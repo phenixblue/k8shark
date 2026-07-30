@@ -63,7 +63,7 @@ CI tool or Action the same way.
   diff already shows what changed.
 - Squash-worthy fixup commits are fine locally; keep the final PR history
   reasonably clean.
-- Make sure `go test ./...` and `make lint-ci` pass locally before opening a
+- Make sure `make test` and `make lint-ci` pass locally before opening a
   PR — CI will run both, but catching it locally is faster.
 - Reference the issue a PR closes with `Closes #123` in the description so it
   auto-closes on merge.

@@ -9,5 +9,5 @@ Closes #<!-- issue number, if any -->
 <!-- How did you verify this? Commands run, tests added, manual steps taken. -->
 
 - [ ] `make fmt` (no diff)
-- [ ] `go test ./...` passes
-- [ ] `make lint-ci` passes (or `go vet ./...` at minimum)
+- [ ] `make test` passes
+- [ ] `make lint-ci` passes (or `make lint` at minimum)
