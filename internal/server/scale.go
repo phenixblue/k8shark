@@ -5,10 +5,35 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 )
+
+// serveScale handles GET .../scale: synthesizes an autoscaling/v1 Scale
+// representation of the underlying Deployment/ReplicaSet/StatefulSet/
+// ReplicationController — the only built-in Kinds with a real scale
+// subresource on a live apiserver. Works in read-only replay too (unlike
+// scale writes, which need --writable), by resolving the object via
+// objectForRead instead of currentObject.
+func (h *handler) serveScale(w http.ResponseWriter, group, version, resource, namespace, name string, at time.Time) {
+	if !scaleSubresourceResources[resource] {
+		h.writeStatus(w, http.StatusNotFound, resource+" has no scale subresource")
+		return
+	}
+	obj, ok := h.objectForRead(group, version, resource, namespace, name, at)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, notFoundStatus(group, resource, name))
+		return
+	}
+	scale, err := scaleObject(namespace, name, obj)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, statusObj(500, err.Error()))
+		return
+	}
+	writeJSON(w, http.StatusOK, json.RawMessage(scale))
+}
 
 // scaleSubresourceResources are the built-in Kinds with a real /scale
 // subresource on a live apiserver (Deployment, ReplicaSet, StatefulSet,
