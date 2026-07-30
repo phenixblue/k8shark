@@ -338,6 +338,31 @@ func TestWarnings_ClusterScopedWithNamespaces(t *testing.T) {
 	}
 }
 
+// TestWarnings_BuiltinGroupClusterScopedWithNamespaces guards a gap #240's
+// fix introduced: a cluster-scoped resource in a known builtin group (so it's
+// excluded from the "non-core resource, might be a CRD" advisory) but missing
+// from knownClusterScoped would otherwise get *no* warning at all for
+// namespaces: set — silently dropping the clearer cluster-scoped advisory
+// instead of falling through to it.
+func TestWarnings_BuiltinGroupClusterScopedWithNamespaces(t *testing.T) {
+	cfg := validatedCfg(t, "10m", []Resource{
+		{Group: "flowcontrol.apiserver.k8s.io", Version: "v1", Resource: "flowschemas", IntervalRaw: "30s", Namespaces: []string{"default"}},
+	})
+	ws := Warnings(cfg)
+	found := false
+	for _, w := range ws {
+		if contains(w, "cluster-scoped") {
+			found = true
+		}
+		if contains(w, "non-core resource") {
+			t.Errorf("flowschemas is a known built-in resource, should not get the CRD advisory: %s", w)
+		}
+	}
+	if !found {
+		t.Errorf("expected cluster-scoped namespace warning for flowschemas, got: %v", ws)
+	}
+}
+
 func TestWarnings_OutputExists(t *testing.T) {
 	f, err := os.CreateTemp("", "k8shark-test-*.kshrk")
 	if err != nil {
