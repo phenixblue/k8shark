@@ -1,0 +1,51 @@
+name: fuzz
+
+# Runs each fuzz target for a short, fixed duration on every PR/push touching
+# the fuzzed packages, catching regressions without the cost of a full
+# nightly/continuous fuzzing setup (issue #254). Any crasher gets its input
+# committed to testdata/fuzz/<target>/ (via `go test -fuzz` locally) and
+# replayed as a normal `go test` case from then on, alongside CI.
+
+on:
+  pull_request:
+    paths:
+      - 'internal/archive/**'
+      - 'internal/redact/**'
+      - 'internal/server/**'
+      - '.github/workflows/fuzz.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'internal/archive/**'
+      - 'internal/redact/**'
+      - 'internal/server/**'
+      - '.github/workflows/fuzz.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - pkg: ./internal/archive
+            target: FuzzOpenArchive
+          - pkg: ./internal/redact
+            target: FuzzApplyRules
+          - pkg: ./internal/server
+            target: FuzzApplyPatch
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Fuzz ${{ matrix.target }}
+        run: go test ${{ matrix.pkg }} -run=${{ matrix.target }} -fuzz=${{ matrix.target }} -fuzztime=30s
