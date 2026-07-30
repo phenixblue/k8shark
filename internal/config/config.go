@@ -449,9 +449,11 @@ func IsClusterScoped(resource string) bool { return knownClusterScoped[resource]
 // knownBuiltinGroups are Kubernetes' own built-in API groups — never
 // CRD-backed, so a resource in one of these is never the "is this actually a
 // cluster-scoped CRD?" case Warnings' non-core-resource check exists for.
-// Mirrors internal/capture/engine.go's nativeAPIGroups (kept separate since
-// internal/capture already imports this package, so the reverse import would
-// cycle); update both if Kubernetes adds a new built-in group.
+// Loosely mirrors internal/capture/engine.go's nativeAPIGroups (kept separate
+// since internal/capture already imports this package, so the reverse import
+// would cycle) — but deliberately omits the core group ("") that
+// nativeAPIGroups includes, since no resource here is ever checked against
+// an empty group string. Update both if Kubernetes adds a new built-in group.
 var knownBuiltinGroups = map[string]bool{
 	"apps":                         true,
 	"batch":                        true,

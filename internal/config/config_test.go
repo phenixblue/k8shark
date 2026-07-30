@@ -338,12 +338,11 @@ func TestWarnings_ClusterScopedWithNamespaces(t *testing.T) {
 	}
 }
 
-// TestWarnings_BuiltinGroupClusterScopedWithNamespaces guards a gap #240's
-// fix introduced: a cluster-scoped resource in a known builtin group (so it's
-// excluded from the "non-core resource, might be a CRD" advisory) but missing
-// from knownClusterScoped would otherwise get *no* warning at all for
-// namespaces: set — silently dropping the clearer cluster-scoped advisory
-// instead of falling through to it.
+// TestWarnings_BuiltinGroupClusterScopedWithNamespaces asserts that a
+// well-known built-in cluster-scoped resource (flowschemas) with
+// namespaces: set gets the clearer "cluster-scoped" advisory, and never the
+// "non-core resource, might be a CRD" advisory that's meant for resources
+// Warnings can't otherwise recognize as built-in.
 func TestWarnings_BuiltinGroupClusterScopedWithNamespaces(t *testing.T) {
 	cfg := validatedCfg(t, "10m", []Resource{
 		{Group: "flowcontrol.apiserver.k8s.io", Version: "v1", Resource: "flowschemas", IntervalRaw: "30s", Namespaces: []string{"default"}},
