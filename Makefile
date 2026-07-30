@@ -1,4 +1,4 @@
-.PHONY: build test test-race test-cover bench fmt lint lint-ci-install lint-ci e2e e2e-kwok kind-up kind-chaos kind-scale kind-down release-snapshot release-local clean help
+.PHONY: build test test-race test-cover bench fmt lint lint-ci-install lint-ci docs e2e e2e-kwok kind-up kind-chaos kind-scale kind-down release-snapshot release-local clean help
 
 BINARY  := kshrk
 VERSION ?= dev
@@ -33,6 +33,9 @@ lint-ci-install: ## Install the pinned golangci-lint version used in CI
 
 lint-ci: ## Run golangci-lint exactly like CI (requires lint-ci-install)
 	golangci-lint run
+
+docs: ## Regenerate docs/cli-reference.md from the live Cobra command tree
+	go run ./tools/gendocs
 
 e2e: build ## Build binary and run end-to-end tests (requires kind + kubectl)
 	./scripts/e2e.sh

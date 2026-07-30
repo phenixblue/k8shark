@@ -75,7 +75,8 @@ timeline, and a time-travel scrubber. See **[docs/web-ui.md](docs/web-ui.md)** f
 
 | Doc | Description |
 |-----|-------------|
-| [docs/usage.md](docs/usage.md) | Installation, capture and open workflows, all CLI flags, kubectl compatibility |
+| [docs/usage.md](docs/usage.md) | Installation, a curated per-command walkthrough with worked examples, kubectl compatibility |
+| [docs/cli-reference.md](docs/cli-reference.md) | Generated, always-accurate reference for every command and flag (`make docs`) |
 | [docs/web-ui.md](docs/web-ui.md) | Web UI tour — dashboard, namespaces/workloads/pods, object views, filtering, timeline, themes |
 | [docs/config.md](docs/config.md) | Config file reference, namespaced vs cluster-scoped resources, example configs |
 | [docs/releases.md](docs/releases.md) | How to cut a release, GoReleaser pipeline, signing, Homebrew tap |

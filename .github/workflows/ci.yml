@@ -7,6 +7,7 @@ on:
       - 'docs/**'
       - '.github/*.yml'
       - '.github/*.yaml'
+      - '!docs/cli-reference.md'
   push:
     branches:
       - main
@@ -15,6 +16,7 @@ on:
       - 'docs/**'
       - '.github/*.yml'
       - '.github/*.yaml'
+      - '!docs/cli-reference.md'
 
 permissions:
   contents: read
@@ -38,6 +40,11 @@ jobs:
         run: |
           gofmt -w .
           git diff --exit-code
+
+      - name: CLI reference drift check
+        run: |
+          make docs
+          git diff --exit-code docs/cli-reference.md
 
       - name: Vet
         run: go vet ./...
