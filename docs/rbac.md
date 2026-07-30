@@ -19,8 +19,13 @@ metadata:
   name: k8shark-capture
 rules:
   - apiGroups: [""]
-    resources: ["pods", "pods/log", "services"]
+    resources: ["pods", "services"]
     verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    # pods/log is only ever fetched one container at a time via a single GET
+    # (see fetchOnePodLog in internal/capture/engine.go) — never list/watch.
+    resources: ["pods/log"]
+    verbs: ["get"]
   - apiGroups: ["apps"]
     resources: ["deployments"]
     verbs: ["get", "list", "watch"]
@@ -103,9 +108,9 @@ gracefully, because the engine cannot proceed at all without them:
   server.
 - **Namespace discovery** — only when a resource uses a wildcard namespace
   (`namespaces: ['*']`) or `all: true`/`autoDiscover: true` needs to expand
-  namespaces itself; a `403` listing namespaces fails with "namespace
-  discovery failed: check cluster permissions" rather than silently
-  capturing zero namespaces.
+  namespaces itself; a `403` listing namespaces fails with a "namespace
+  discovery failed (HTTP 403): check cluster permissions" error rather than
+  silently capturing zero namespaces.
 
 In short: check `kshrk inspect <archive>` after a capture to confirm every
 resource you expected actually has real data, not a captured `403` — a

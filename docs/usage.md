@@ -2,7 +2,7 @@
 
 ## Compatibility matrix
 
-| | Supported |
+| Component | Supported |
 |---|---|
 | **Kubernetes server** (for `capture`) | Tracked via `k8s.io/client-go` in `go.mod` (currently `v0.36.x`); actively validated each release against a pinned `kindest/node:v1.36.1` in the [conformance workflow](../.github/workflows/conformance.yml). k8shark captures through the generic REST/discovery surface rather than version-specific APIs, so other server versions generally work too — only the pinned minor is actively tested. |
 | **kubectl** (against `kshrk open`/`replay`) | Any reasonably recent version — the mock server speaks plain REST/JSON over HTTPS and doesn't depend on a specific `kubectl` release. |
