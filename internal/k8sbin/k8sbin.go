@@ -473,15 +473,16 @@ func extractTarGz(tarGzPath, destDir string) error {
 		// independent check before target is ever used in a filesystem
 		// operation below.
 		//
-		// path.IsAbs(hdr.Name) (checked on the raw, always-forward-slash tar
-		// name, before filepath.Clean rewrites it with the host separator) is
-		// deliberately in addition to filepath.IsAbs(cleanedName): a tar entry
-		// like "/etc/passwd" is unambiguously absolute by the tar format's own
-		// (Unix, forward-slash) convention, but filepath.IsAbs on Windows
-		// requires a drive letter or UNC prefix and doesn't consider a bare
-		// leading "/" absolute — so without this check that entry would slip
-		// past filepath.IsAbs and get silently remapped to destDir/etc/passwd
-		// instead of rejected.
+		// path.IsAbs(hdr.Name) is checked in addition to
+		// filepath.IsAbs(cleanedName), on the raw tar name rather than the
+		// host-Clean'd one: tar entry names are always forward-slash by the
+		// format's own convention, regardless of the host OS extracting them,
+		// so a name like "/etc/passwd" must be judged absolute by that
+		// convention — not by whatever the host platform's own absolute-path
+		// rule happens to require (e.g. a drive letter). Without this check,
+		// an entry judged non-absolute by host rules alone could slip past
+		// and get silently remapped under destDir instead of rejected
+		// (caught by TestExtractTarGz_PathTraversalRejected on Windows CI).
 		cleanedName := filepath.Clean(hdr.Name)
 		if cleanedName == ".." || strings.HasPrefix(cleanedName, ".."+string(filepath.Separator)) || filepath.IsAbs(cleanedName) || path.IsAbs(hdr.Name) {
 			continue
