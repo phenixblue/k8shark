@@ -45,7 +45,14 @@ func run() error {
 		return err
 	}
 	tmpPath := f.Name()
+	// Deferred in this order (LIFO) so Close always runs before Remove: an
+	// error from genCommand/Flush before the explicit Close below would
+	// otherwise leak the file descriptor and, on Windows, block Remove
+	// entirely (an open file can't be removed there). Closing twice (here
+	// and on the success path below) is harmless — the second Close just
+	// returns an already-closed error, which is ignored.
 	defer os.Remove(tmpPath)
+	defer f.Close()
 	w := bufio.NewWriter(f)
 
 	fmt.Fprintln(w, "# CLI Reference")
