@@ -140,22 +140,22 @@ resources:
 `kshrk validate` parses and validates a capture config file without connecting to a cluster or making any API calls. Use it to catch mistakes before starting a capture.
 
 ```sh
-kshrk validate --config k8shark.yaml
+kshrk validate --config examples/k8shark.yaml
 ```
 
 On success it prints a summary:
 
 ```
-✓ Config valid (10 resources, 4 namespaces, duration 10m)
+✓ Config valid (11 resource(s), all namespaces, duration 10m0s)
 ```
 
-Errors exit non-zero:
+Errors exit 2 (see [exit codes](stability-policy.md#exit-codes)):
 
 ```
-error: resources[2] (pods): invalid interval "0s": must be > 0
+resources[0]: 'resource' field is required
 ```
 
-Warnings are printed to stderr but do **not** cause a non-zero exit:
+Warnings are printed to stderr but do **not** cause a non-zero exit. For example (illustrative only — the exact indices and resources depend on your own config, not the `examples/k8shark.yaml` command above):
 
 ```
 warning: resources[5] (storageclasses): cluster-scoped resource has 'namespaces:' set — this will be ignored at capture time
@@ -164,10 +164,17 @@ warning: resources[3] (events): interval 2s is very short and may produce a larg
 
 ### Checks performed
 
-**Hard errors** (exit 1):
-- Missing `resource` or `version` field
-- Unparseable `duration` or `interval` strings (e.g. `"0s"` interval)
+**Hard errors** (exit 2):
+- No `resources:` entries at all, and `autoDiscover` isn't set
+- Missing `resource` field (unless `all: true`)
+- Missing `version` field (unless `all: true`)
+- Invalid `scope` value with `all: true` (must be `namespaced`, `cluster`, or empty)
+- Unparseable `duration` or `interval` strings (e.g. a typo like `"5munites"`) —
+  note `"0s"` is *not* an error, it parses fine (see the short-interval warning below)
 - `logs` < 0
+- `duration` too short (< 5s) when using discovery/wildcard capture
+  (`autoDiscover: true`, an `all: true` entry, or a `namespaces: ['*']` entry) —
+  discovery needs time to enumerate resources before the capture window closes
 
 **Warnings** (exit 0, printed to stderr):
 - Capture `duration` > 2 h — may produce a very large archive
@@ -175,6 +182,9 @@ warning: resources[3] (events): interval 2s is very short and may produce a larg
 - Well-known cluster-scoped resource (`nodes`, `persistentvolumes`,
   `storageclasses`, `namespaces`, `clusterroles`, etc.) with `namespaces:` set
   — the capture engine auto-corrects this at runtime but it is likely a mistake
+- A resource in a group that isn't one of Kubernetes' own built-in API groups
+  (i.e. likely CRD-backed) with `namespaces:` set — verify it's actually
+  namespaced and not a cluster-scoped custom resource
 - `output` path already exists — the file will be overwritten
 
 ---
@@ -415,7 +425,7 @@ replaying 14:03:12Z (+2m18s / 10m) · 2x · 47 events emitted
 
 The primary use case is **local development and testing of controllers/operators**: point one at a replayed capture and watch how it reacts to a real (or reproduced-incident) sequence of changes. LIST and GET return state as-of the clock (the same time-travel semantics as `--at`), and the watch stream delivers events in timestamp order, paced by clock × speed.
 
-> **Read-only.** The mock server replays a captured timeline; a controller's writes won't persist or feed back into the replay. You observe "how my controller reacts to this sequence," not a closed loop.
+> **Read-only by default.** Without `--writable` (below), the mock server replays a captured timeline; a controller's writes won't persist or feed back into the replay. You observe "how my controller reacts to this sequence," not a closed loop. Pass `--writable` to accept writes into an in-memory overlay instead — see [Closed-loop controller dev with KWOK](kwok.md).
 >
 > **Watch events.** Replay streams the events recorded with `watch: true` (see [docs/config.md](config.md)) at full fidelity. A poll-only capture (no watch index) still replays: `kshrk replay` infers ADDED/MODIFIED/DELETED events by diffing consecutive snapshots, so you get an event stream bounded by the poll interval's resolution. Use `watch: true` when you need precise, higher-resolution events.
 >
@@ -435,7 +445,7 @@ The primary use case is **local development and testing of controllers/operators
 | `--writable` | false | Accept client writes into an in-memory overlay (closed-loop controller dev) |
 | `--schedule-pods` | true | Bind unscheduled pods to a node on create (the scheduler replay lacks); `--writable` only |
 | `--with-kwok` | false | Also run a detected `kwok` binary against the server to drive pod/node lifecycle (implies `--writable`) — see [KWOK](kwok.md) |
-| `--with-controller-manager` | false | Also run kube-controller-manager (downloaded/built to match the capture's Kubernetes version) against the server, with a curated controller set, to reconcile Deployments/ReplicaSets/DaemonSets/StatefulSets/Jobs/CronJobs/Endpoints (implies `--writable`) — see [KWOK](kwok.md#closing-more-of-the-loop-with-controller-manager) |
+| `--with-controller-manager` | false | Also run kube-controller-manager (downloaded/built to match the capture's Kubernetes version) against the server, with a curated controller set, to reconcile Deployments/ReplicaSets/DaemonSets/StatefulSets/Jobs/CronJobs/Endpoints (implies `--writable`) — see [KWOK](kwok.md#closing-more-of-the-loop---with-controller-manager) |
 | `--api-port` | random | Port for the mock API server |
 | `--kubeconfig-out` | `~/.kube/k8shark-<id>.yaml` | Where to write the generated kubeconfig |
 | `--verbose` / `-v` | false | Log every request the server receives |
@@ -667,6 +677,71 @@ For object matches, `LOCATION` is the JSON field path of the matched string (e.g
 
 ---
 
+## Transitions
+
+`kshrk transitions` lists the individual ADDED/MODIFIED/DELETED events a resource went through during the capture — the change history, in order — without starting a replay server.
+
+**`transitions` vs. `diff`:** both answer "what changed," but at different granularity. `kshrk diff` compares two snapshots (before/after, or two `--at` points in one archive) and shows the net difference between them — use it for "what's different between point A and point B." `kshrk transitions` shows every discrete event in between — use it for "what actually happened, and in what order" (e.g. a Deployment rolling through three intermediate states between the start and end of a rollout, which a two-point `diff` would collapse into a single net change).
+
+```sh
+kshrk transitions capture.kshrk --resource replicasets --namespace prod
+```
+
+```
+TIME                  EVENT     RESOURCE     NAMESPACE  NAME
+2026-07-22T21:19:15Z  ADDED     replicasets  prod       api-5c59c454f5
+2026-07-22T21:19:15Z  MODIFIED  replicasets  prod       api-5c59c454f5
+2026-07-22T21:19:18Z  MODIFIED  replicasets  prod       api-58dd68c5db
+```
+
+Add `--diff` to also show the field-level change for each `MODIFIED` event:
+
+```sh
+kshrk transitions capture.kshrk --resource replicasets --name api-5c59c454f5 --diff
+```
+
+```
+2026-07-22T21:19:15Z  ADDED     replicasets/prod/api-5c59c454f5
+2026-07-22T21:19:15Z  MODIFIED  replicasets/prod/api-5c59c454f5
+@@ -95,7 +95,7 @@
+-    "resourceVersion": "1172019",
++    "resourceVersion": "1172025",
+   "status": {
+-    "replicas": 0
++    "replicas": 1
+```
+
+### Transitions flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--output`, `-o` | `table` | Output format: `table` or `json` |
+| `--resource` | (all) | Filter by resource name fragment (e.g. `pods`, `deployments`) |
+| `--namespace` | (all) | Filter by exact namespace |
+| `--name` | (all) | Filter by exact object name |
+| `--from` | capture start | Start of the time window: RFC3339 or relative duration like `-10m` |
+| `--to` | capture end | End of the time window: RFC3339 or relative duration like `-1m` |
+| `--diff` | false | Show field-level changes for `MODIFIED` events |
+
+### Where events come from
+
+Each captured API path uses one of two detection modes, and a single `transitions` run can mix both across different resources in the same archive:
+
+- **Watch-enabled paths** (`watch: true` in the capture config for that resource): events are read directly from the watch-event index, with the exact `ADDED`/`MODIFIED`/`DELETED` label and timestamp captured live from the API server's watch stream.
+- **Poll-only paths**: `kshrk transitions` infers events by diffing each consecutive pair of polled snapshots for the same object. This still works with no special config, but its resolution is bounded by the resource's poll `interval` — a change that happens and reverts between two polls is invisible, and the inferred timestamp is the poll time, not the moment the change actually happened. Use `watch: true` (see [docs/config.md](config.md)) when you need precise, higher-resolution events.
+
+### Worked example
+
+The [rolling-update example](../examples/rolling-update) captures a 3-replica Deployment through a rolling image update, with `watch: true` enabled specifically so `transitions` sees the precise event sequence:
+
+```sh
+kshrk transitions examples/rolling-update/capture.kshrk --resource replicasets
+```
+
+This lists the old ReplicaSet scaling down and the new one scaling up, one `MODIFIED` event per replica-count change — the actual mechanics of the rollout, which `kshrk diff --archive ... --resource deployments` between the same two timestamps would only show as a single net "image changed" difference. See the example's own `README.md` for the full walkthrough, including a `kshrk diff` comparison of the same window.
+
+---
+
 ## Redact
 
 Sensitive values can be removed from a capture archive in two ways.
@@ -886,7 +961,7 @@ The mock server is designed to be a drop-in replacement for `kubectl`'s real ser
 | Label selectors (`-l app=foo`) | ✅ |
 | Field selectors (`--field-selector status.phase=Running`) | ✅ |
 | Watch (`-w`) | ✅ synthetic event stream |
-| Write operations (`apply`, `delete`, `edit`, …) | ⛔ returns `405 Method Not Allowed` — mock server is read-only |
+| Write operations (`apply`, `delete`, `edit`, …) | ⛔ returns `405 Method Not Allowed` — read-only by default; `kshrk replay --writable` accepts writes into an in-memory overlay instead |
 | `kubectl exec` / `kubectl cp` / `kubectl port-forward` / `kubectl attach` | ⛔ returns `405 Method Not Allowed` with a clear error referencing k8shark capture replay |
 | `kubectl logs` | ✅ if captured via `logs: N` in capture config; helpful stub returned when not captured |
 | `kubectl top` | ❌ metrics API not captured |
@@ -982,8 +1057,10 @@ This is intentional — it avoids confusing `Error from server:` output for reso
 ## Client compatibility
 
 The k8shark mock API server is designed to work with any read-only Kubernetes
-client, not just `kubectl`. This section documents what is supported, what
-requires special capture config, and what is intentionally unsupported.
+client, not just `kubectl` — this section describes that default, read-only
+mode. (`kshrk replay --writable` is the exception: see [Replay](#replay).)
+This section documents what is supported, what requires special capture
+config, and what is intentionally unsupported.
 
 ### Works out of the box
 
@@ -998,6 +1075,33 @@ These operations work against any k8shark archive with no special config:
 | `kubectl get --watch` | Synthetic watch stream; emits ADDED + BOOKMARK |
 | `helm list`, `helm status` | Reads Secrets for release state — works if captured |
 | `k9s` (read-only browsing) | Full support — API discovery + resource listing |
+
+### Protobuf negotiation
+
+`client-go` and `kubectl` default to requesting Kubernetes protobuf
+(`application/vnd.kubernetes.protobuf`) for built-in types, not JSON — so
+"will my controller/client work against this?" depends on the mock server
+handling that negotiation the same way a real API server does. It does, on
+both directions:
+
+- **Reads**: k8shark always builds responses as JSON internally. When a
+  request's `Accept` header selects protobuf over JSON (the negotiation
+  mirrors real apiserver behavior: highest `q`-value wins among acceptable
+  types, header order breaks ties), the response is transcoded to protobuf
+  before being sent — but only when the body is a built-in, scheme-known
+  Kubernetes type. A CRD/unstructured object, an OpenAPI document, or a Table
+  response has no protobuf representation and is always served as JSON,
+  exactly like a real API server (CRDs have no compiled protobuf schema).
+- **Writes** (`kshrk replay --writable`): a protobuf-encoded request body
+  (`Content-Type: application/vnd.kubernetes.protobuf`) is decoded to a typed
+  object and re-encoded as JSON before landing in the overlay — transparent
+  to the client, which never knows the overlay stores JSON internally.
+
+**Known gap**: watch streams are always served as JSON, never transcoded to
+protobuf, regardless of what the client's `Accept` header requests. This
+doesn't affect correctness — client-go's watch decoder falls back to JSON
+transparently — but a client asserting on the wire format of a watch
+response specifically would notice.
 
 ### Requires CRD resources to be captured
 
@@ -1027,7 +1131,7 @@ hanging or returning a confusing error.
 | Pod/service proxy (`/proxy/`) | Requires a running in-cluster service |
 | `istioctl proxy-status` | Requires gRPC connection to Istiod |
 | Istiod xDS / gRPC endpoints | Out of scope for a replay server |
-| All write operations (POST/PUT/PATCH/DELETE) | Replay is read-only |
+| All write operations (POST/PUT/PATCH/DELETE) | Read-only by default — `kshrk replay --writable` accepts writes into an in-memory overlay (see [Replay](#replay)) |
 
 ### Using non-kubectl clients with kshrk open
 
@@ -1038,20 +1142,20 @@ the mock server. Any tool that can be configured with a kubeconfig or a
 ```sh
 # Start the mock server
 kshrk open capture.kshrk
-# Note the printed kubeconfig path, e.g. /tmp/k8shark-kubeconfig-1234
+# Note the printed kubeconfig path, e.g. ~/.kube/k8shark-<id>.yaml
 
 # Use with istioctl
-istioctl analyze --kubeconfig /tmp/k8shark-kubeconfig-1234
+istioctl analyze --kubeconfig ~/.kube/k8shark-<id>.yaml
 
 # Use with helm
-helm list --kubeconfig /tmp/k8shark-kubeconfig-1234 --all-namespaces
+helm list --kubeconfig ~/.kube/k8shark-<id>.yaml --all-namespaces
 
 # Use with flux
-flux get all --kubeconfig /tmp/k8shark-kubeconfig-1234
+flux get all --kubeconfig ~/.kube/k8shark-<id>.yaml
 
 # Use with k9s
-k9s --kubeconfig /tmp/k8shark-kubeconfig-1234
+k9s --kubeconfig ~/.kube/k8shark-<id>.yaml
 ```
 
-> **Tip:** Export `KUBECONFIG=/tmp/k8shark-kubeconfig-1234` to make all tools
+> **Tip:** Export `KUBECONFIG=~/.kube/k8shark-<id>.yaml` to make all tools
 > in your shell session use the mock server automatically.
