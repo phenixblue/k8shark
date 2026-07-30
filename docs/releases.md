@@ -22,8 +22,8 @@ is and isn't allowed to change without one, is defined in
 [docs/stability-policy.md](stability-policy.md) — see that page rather than
 this one for the compatibility contract itself. In short:
 
-- **PATCH** (`v1.0.1`) — bug fixes only, no behavior change to a documented
-  surface.
+- **PATCH** (`v1.0.1`) — bug fixes only, no *intentional* behavior change to
+  a documented surface (correcting a bug in one is what a patch is for).
 - **MINOR** (`v1.1.0`) — new, backward-compatible features (flags, config
   keys, subcommands).
 - **MAJOR** (`v2.0.0`) — a breaking change to anything listed as a stable

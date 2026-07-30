@@ -12,8 +12,10 @@ k8shark follows [Semantic Versioning](https://semver.org): `vMAJOR.MINOR.PATCH`.
   [Stable surfaces](#stable-surfaces) below.
 - **MINOR** — new features, new flags, new config keys, new subcommands.
   Backward-compatible.
-- **PATCH** — bug fixes only. No new flags, no behavior changes to a
-  documented surface.
+- **PATCH** — bug fixes only. No new flags, no *intentional* behavior
+  change to a documented surface — correcting a bug in one (making it match
+  what's documented, or fixing an unambiguous defect) is exactly what a
+  patch release is for.
 
 This is a policy for **behavior**, not for source code: nothing in
 `internal/` is covered (see [What is NOT covered](#what-is-not-covered)),
@@ -67,14 +69,22 @@ Every command follows the `diff(1)`-style contract documented in
 
 | Code | Meaning |
 |------|---------|
-| `0` | Clean — the command ran and found nothing (or isn't a findings-style command) |
-| `1` | The command ran successfully and found something (`diagnose --fail-on`, `diff` with differences) |
+| `0` | The command ran and didn't trip a findings/differences gate (`diagnose` without `--fail-on`, or with `--fail-on` but nothing met that severity; `diff` with no differences) — or the command has no such gate at all |
+| `1` | The command ran and *did* trip a findings/differences gate (`diagnose --fail-on <severity>` matched, `diff` found differences) |
 | `2` | The command failed to run (bad archive, invalid flags, I/O error, …) |
 
-Only `diagnose` and `diff` currently ever exit `1`; every other command exits
-`0` or `2`. Adding exit code `1` to another command in a future minor is
-additive (a script that only checks `if err != nil` / `$? != 0` keeps
-working); repurposing what `1` or `2` mean is a major-version change.
+`diagnose` without `--fail-on` always exits `0` regardless of what it
+found — printing findings and gating on them are separate; exit `1` is
+opt-in via `--fail-on`. Only `diagnose` and `diff` currently ever exit `1`;
+every other command exits `0` or `2`.
+
+Giving another command an **opt-in** flag that can trigger exit `1` (the
+`diagnose --fail-on` pattern) is a minor-version change — a script that
+doesn't pass the new flag keeps seeing the command's existing exit codes.
+Making an *existing* command start exiting `1` unconditionally, or
+repurposing what `1` or `2` mean, is a major-version change — plenty of
+scripts treat any non-zero exit as failure, so silently turning some of a
+command's current successes into exit `1` would break them.
 
 ### Structured output (`-o json` / `-o yaml`)
 
