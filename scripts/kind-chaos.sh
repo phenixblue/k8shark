@@ -305,6 +305,6 @@ info "Capture it with k8shark (run for a few minutes so events keep flowing):"
 printf '    make build\n'
 printf '    ./kshrk capture --kubeconfig %s --auto-discover --duration 3m --out chaos.kshrk\n\n' "$KIND_KUBECONFIG"
 info "Then explore the capture (UI on 18080/18081):"
-printf '    ./kshrk ui chaos.kshrk --port 18080 --api-port 18081\n\n'
+printf '    ./kshrk ui chaos.kshrk --ui-port 18080 --api-port 18081\n\n'
 info "Tear down when finished:"
 printf '    make kind-down\n\n'

@@ -21,7 +21,7 @@ state, scoped to Deployments:
 
 ```sh
 kshrk diff --archive examples/rolling-update/capture.kshrk \
-  --before-at 2026-07-22T21:18:56Z --after-at 2026-07-22T21:20:24Z \
+  --from 2026-07-22T21:18:56Z --to 2026-07-22T21:20:24Z \
   --resource deployments
 ```
 

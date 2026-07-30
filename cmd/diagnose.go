@@ -10,6 +10,7 @@ import (
 	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/diagnose"
 	"github.com/phenixblue/k8shark/internal/store"
+	"github.com/phenixblue/k8shark/internal/timewindow"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -131,24 +132,9 @@ func printDiagnoseTable(cmd *cobra.Command, r diagnose.Report) {
 }
 
 // parseAtFlag resolves an --at flag: empty = latest; RFC3339 timestamp; or a
-// relative duration like -5m against the capture end.
+// relative duration like -5m against the capture end. Delegates to the
+// shared internal/timewindow parser (also used by internal/diff and
+// internal/server) so this validation isn't duplicated per command (#221).
 func parseAtFlag(raw string, start, end time.Time) (time.Time, error) {
-	if raw == "" {
-		return time.Time{}, nil
-	}
-	var at time.Time
-	if t, err := time.Parse(time.RFC3339, raw); err == nil {
-		at = t
-	} else if d, derr := time.ParseDuration(raw); derr == nil {
-		at = end.Add(d)
-	} else {
-		return time.Time{}, fmt.Errorf("parsing --at %q: must be RFC3339 or a relative duration like -5m", raw)
-	}
-	// Reject times outside the capture window — otherwise reconstruction returns
-	// 404s and diagnose would misleadingly report "No findings".
-	if (!start.IsZero() && at.Before(start)) || (!end.IsZero() && at.After(end)) {
-		return time.Time{}, fmt.Errorf("--at %q resolves to %s, outside the capture window %s..%s",
-			raw, at.UTC().Format(time.RFC3339), start.UTC().Format(time.RFC3339), end.UTC().Format(time.RFC3339))
-	}
-	return at, nil
+	return timewindow.ParseAt(raw, start, end, "--at")
 }

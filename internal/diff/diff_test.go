@@ -59,7 +59,7 @@ func TestRun_SameArchiveAtTimes(t *testing.T) {
 		},
 	})
 
-	result, err := Run(Options{Archive: archivePath, BeforeAt: "2026-04-09T10:01:00Z", AfterAt: "0s"})
+	result, err := Run(Options{Archive: archivePath, From: "2026-04-09T10:01:00Z", To: "0s"})
 	if err != nil {
 		t.Fatalf("Run() error: %v", err)
 	}

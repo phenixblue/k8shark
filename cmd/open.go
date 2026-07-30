@@ -21,7 +21,7 @@ specific point in the capture window.`,
   kshrk open capture.kshrk --at -5m
 
   # Replay at a specific timestamp, on a fixed port
-  kshrk open capture.kshrk --at 2026-04-09T10:30:00Z --port 8443`,
+  kshrk open capture.kshrk --at 2026-04-09T10:30:00Z --api-port 8443`,
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeArchiveArg,
 	RunE:              runOpen,
@@ -29,7 +29,7 @@ specific point in the capture window.`,
 
 func init() {
 	rootCmd.AddCommand(openCmd)
-	openCmd.Flags().String("port", "0", "port for the mock API server (0 = random available port)")
+	openCmd.Flags().String("api-port", "0", "port for the mock API server (0 = random available port)")
 	openCmd.Flags().String("kubeconfig-out", "", "where to write the generated kubeconfig (default: ~/.kube/k8shark-<id>)")
 	openCmd.Flags().String("at", "", "pin replay to a specific timestamp (RFC3339) or relative duration like -5m")
 }
@@ -37,7 +37,7 @@ func init() {
 func runOpen(cmd *cobra.Command, args []string) error {
 	archivePath := args[0]
 
-	port, _ := cmd.Flags().GetString("port")
+	port, _ := cmd.Flags().GetString("api-port")
 	kubeconfigOut, _ := cmd.Flags().GetString("kubeconfig-out")
 	at, _ := cmd.Flags().GetString("at")
 	verbose, _ := cmd.Root().PersistentFlags().GetBool("verbose")

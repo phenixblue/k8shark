@@ -9,7 +9,7 @@ import (
 func newTestOpenCommand() *cobra.Command {
 	cmd := &cobra.Command{}
 	cmd.PersistentFlags().BoolP("verbose", "v", false, "")
-	cmd.Flags().String("port", "0", "")
+	cmd.Flags().String("api-port", "0", "")
 	cmd.Flags().String("kubeconfig-out", "", "")
 	cmd.Flags().String("at", "", "")
 	return cmd

@@ -18,8 +18,8 @@ output: ./capture.kshrk
 # kubeconfig: ~/.kube/config
 
 # Web UI ("kshrk ui") server ports. Omit or "0" for a random free port; set
-# these to pin consistent ports across runs. The --port / --api-port CLI flags
-# override these when provided.
+# these to pin consistent ports across runs. The --ui-port / --api-port CLI
+# flags override these when provided.
 # ui:
 #   port: "8080"      # local web UI
 #   apiPort: "8081"   # mock Kubernetes API server

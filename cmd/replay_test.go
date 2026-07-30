@@ -11,7 +11,7 @@ import (
 
 func newTestReplayCommand() *cobra.Command {
 	cmd := &cobra.Command{}
-	cmd.Flags().String("port", "0", "")
+	cmd.Flags().String("api-port", "0", "")
 	cmd.Flags().String("kubeconfig-out", "", "")
 	cmd.Flags().String("speed", "1x", "")
 	cmd.Flags().String("from", "", "")

@@ -99,7 +99,7 @@ func TestAllReaders_RejectFutureFormatVersion(t *testing.T) {
 	})
 
 	t.Run("diff.Run", func(t *testing.T) {
-		_, err := diff.Run(diff.Options{Archive: path, BeforeAt: "0s", AfterAt: "0s"})
+		_, err := diff.Run(diff.Options{Archive: path, From: "0s", To: "0s"})
 		assertUpgradeError(t, err)
 	})
 }
