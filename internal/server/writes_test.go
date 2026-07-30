@@ -2661,18 +2661,54 @@ func TestOverlayWrite_MissingObjectGetsNotFoundReason(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			code, body := doReq(t, c.method, c.url, c.ctype, c.body)
-			if code != http.StatusNotFound {
-				t.Fatalf("status = %d, want 404", code)
-			}
-			var status struct {
-				Reason string `json:"reason"`
-			}
-			if err := json.Unmarshal(body, &status); err != nil {
-				t.Fatalf("expected a JSON Status body: %v", err)
-			}
-			if status.Reason != "NotFound" {
-				t.Errorf("reason = %q, want %q", status.Reason, "NotFound")
-			}
+			assertNotFoundReason(t, code, body)
 		})
 	}
+}
+
+// assertNotFoundReason asserts code is 404 and body is a Status object with
+// reason: "NotFound".
+func assertNotFoundReason(t *testing.T, code int, body []byte) {
+	t.Helper()
+	if code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", code)
+	}
+	var status struct {
+		Reason string `json:"reason"`
+	}
+	if err := json.Unmarshal(body, &status); err != nil {
+		t.Fatalf("expected a JSON Status body: %v", err)
+	}
+	if status.Reason != "NotFound" {
+		t.Errorf("reason = %q, want %q", status.Reason, "NotFound")
+	}
+}
+
+// TestOverlayRead_DeletedObjectAndNamespaceGetNotFoundReason guards two more
+// follow-ups to #255, both on the read path (internal/server/handler.go's
+// serveResource): a single-object GET for an object explicitly tombstoned
+// in the overlay (created then deleted), and a single-object GET for a
+// resource whose namespace itself was deleted (cascade) — both are ordinary
+// "the object isn't there" 404s and must carry reason: "NotFound".
+func TestOverlayRead_DeletedObjectAndNamespaceGetNotFoundReason(t *testing.T) {
+	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	clock, _ := newTestClock(t, from, from.Add(time.Minute), 1, false, false)
+	srv := newWritableServer(t, writableTestStore(t, from), clock)
+
+	t.Run("GET a tombstoned object", func(t *testing.T) {
+		doReq(t, http.MethodPost, srv.URL+podsPath, "application/json", podBody("pod-gone"))
+		doReq(t, http.MethodDelete, srv.URL+podsPath+"/pod-gone", "", "")
+		code, body := doReq(t, http.MethodGet, srv.URL+podsPath+"/pod-gone", "", "")
+		assertNotFoundReason(t, code, body)
+	})
+
+	t.Run("GET an object in a deleted namespace", func(t *testing.T) {
+		doReq(t, http.MethodPost, srv.URL+"/api/v1/namespaces", "application/json",
+			`{"apiVersion":"v1","kind":"Namespace","metadata":{"name":"ns-gone"}}`)
+		doReq(t, http.MethodPost, srv.URL+"/api/v1/namespaces/ns-gone/configmaps", "application/json",
+			`{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"cm","namespace":"ns-gone"}}`)
+		doReq(t, http.MethodDelete, srv.URL+"/api/v1/namespaces/ns-gone", "", "")
+		code, body := doReq(t, http.MethodGet, srv.URL+"/api/v1/namespaces/ns-gone/configmaps/cm", "", "")
+		assertNotFoundReason(t, code, body)
+	})
 }

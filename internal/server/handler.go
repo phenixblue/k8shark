@@ -261,8 +261,7 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 		// A single-object GET in a namespace deleted in the overlay is gone
 		// (cascade), even for captured objects.
 		if name != "" && h.overlay.isNamespaceDeleted(ns) {
-			h.writeStatus(w, http.StatusNotFound,
-				fmt.Sprintf("%q not found: namespace %q was deleted in the writable overlay", path, ns))
+			writeJSON(w, http.StatusNotFound, notFoundStatus("", "namespaces", ns))
 			return
 		}
 		// Serve overlay-owned objects for a single-object GET (and GET .../status,
@@ -270,7 +269,7 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 		if name != "" && (sub == "" || sub == "status") {
 			if e, ok := h.overlay.get(g, v, res, ns, name); ok {
 				if e.deleted {
-					h.writeStatus(w, http.StatusNotFound, fmt.Sprintf("%q was deleted in the writable overlay", path))
+					writeJSON(w, http.StatusNotFound, notFoundStatus(g, res, name))
 					return
 				}
 				// Honor Table format (kubectl get <name>) for overlay objects.

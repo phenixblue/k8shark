@@ -33,7 +33,7 @@ func (h *handler) handleWrite(w http.ResponseWriter, r *http.Request, path strin
 	// namespace and everything in it are logically gone. Deleting the namespace
 	// object itself has namespace=="" here, so it isn't caught by this check.
 	if namespace != "" && h.overlay.isNamespaceDeleted(namespace) {
-		h.writeStatus(w, http.StatusNotFound, "namespace "+namespace+" was deleted in the writable overlay")
+		writeJSON(w, http.StatusNotFound, notFoundStatus("", "namespaces", namespace))
 		return
 	}
 
