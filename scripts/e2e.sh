@@ -1049,11 +1049,16 @@ YAML
 
   # delete
   kubectl "${WKC[@]}" delete configmap smoke-cm -n e2e-writable >/dev/null 2>&1 || true
-  if kubectl "${WKC[@]}" get configmap smoke-cm -n e2e-writable >/dev/null 2>&1; then
-    fail "writable overlay: delete removes the object"
-  else
-    pass "writable overlay: delete removes the object"
-  fi
+  # A broken server/kubeconfig would also make `get` fail, which a plain
+  # non-zero-exit check can't tell apart from a real delete. Check the raw
+  # HTTP status instead of kubectl's human-readable error text (which isn't
+  # guaranteed to contain any particular substring — a tombstoned overlay
+  # object 404s with "... was deleted in the writable overlay", not "NotFound").
+  writable_addr=$(kubectl config --kubeconfig "$WRITABLE_KUBECONFIG" view \
+    --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || echo "")
+  delete_code=$(curl -sk -o /dev/null -w '%{http_code}' \
+    "${writable_addr}/api/v1/namespaces/e2e-writable/configmaps/smoke-cm")
+  assert_equals "writable overlay: delete removes the object (404 on re-GET)" "$delete_code" "404"
 fi
 
 if [[ -n "$WRITABLE_SERVER_PID" ]]; then
