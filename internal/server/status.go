@@ -23,13 +23,84 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	_, _ = w.Write(data)
 }
 
+// statusObj builds a generic Kubernetes Status object for an error response.
+// Includes reason (when code maps to one) alongside code — client-go's
+// apierrors helpers (IsForbidden, IsBadRequest, IsMethodNotSupported,
+// IsInternalError, ...) key off reason, not code, the same requirement
+// notFoundStatus already handles for 404 (#177). Any controller or operator
+// replayed against the mock depends on this to handle errors correctly.
 func statusObj(code int, msg string) map[string]any {
-	return map[string]any{
+	obj := map[string]any{
 		"apiVersion": "v1",
 		"kind":       "Status",
 		"status":     "Failure",
 		"message":    msg,
 		"code":       code,
+	}
+	if reason := statusReasonForCode(code); reason != "" {
+		obj["reason"] = reason
+	}
+	return obj
+}
+
+// statusReasonForCode maps an HTTP status code to the metav1.StatusReason
+// string a real apiserver would set, for the status codes this mock server
+// actually returns (see statusObj callers). Codes with no well-known reason
+// map to "" (metav1.StatusReasonUnknown), matching upstream.
+//
+// Deliberately excludes http.StatusNotFound. A plain writeStatus/statusObj
+// 404 is used for two different things, and only one of them should carry
+// reason: "NotFound":
+//   - A resource genuinely unknown to the capture (wrong group/resource
+//     entirely, not in discovery or the index) — this must NOT carry
+//     reason: "NotFound", or apierrors.IsNotFound() would treat a
+//     capture-config problem as an ordinary "object doesn't exist" (#177).
+//   - An ordinary missing object on a known resource (e.g. PUT/PATCH/DELETE
+//     against a name that doesn't exist in the overlay or replay state) —
+//     these should carry reason: "NotFound", so call sites for this case
+//     use the dedicated notFoundStatus instead of statusObj, which sets
+//     reason (and details) itself.
+//
+// If a new writeStatus(w, http.StatusNotFound, ...) call site is added,
+// decide which of the two it is and use notFoundStatus if it's the latter —
+// don't assume every 404 belongs to the "genuinely unknown" case above.
+//
+// Also deliberately excludes http.StatusGone: the one 410 this mock server
+// produces (a stale watch resourceVersion, replay_rv.go's writeGone) is
+// reason: "Expired" per real kube-apiserver semantics — not the generic
+// "Gone" — and it builds its own Status map directly rather than calling
+// statusObj. Mapping 410 to "Gone" here would be wrong the moment any
+// future statusObj(410, ...) call site is added for that case.
+func statusReasonForCode(code int) string {
+	switch code {
+	case http.StatusBadRequest:
+		return "BadRequest"
+	case http.StatusUnauthorized:
+		return "Unauthorized"
+	case http.StatusForbidden:
+		return "Forbidden"
+	case http.StatusConflict:
+		return "Conflict"
+	case http.StatusUnprocessableEntity:
+		return "Invalid"
+	case http.StatusMethodNotAllowed:
+		return "MethodNotAllowed"
+	case http.StatusNotAcceptable:
+		return "NotAcceptable"
+	case http.StatusRequestEntityTooLarge:
+		return "RequestEntityTooLarge"
+	case http.StatusUnsupportedMediaType:
+		return "UnsupportedMediaType"
+	case http.StatusInternalServerError:
+		return "InternalError"
+	case http.StatusServiceUnavailable:
+		return "ServiceUnavailable"
+	case http.StatusGatewayTimeout:
+		return "Timeout"
+	case http.StatusTooManyRequests:
+		return "TooManyRequests"
+	default:
+		return ""
 	}
 }
 
