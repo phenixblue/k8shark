@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/phenixblue/k8shark/security/advisories/new
+    about: Please do not report security vulnerabilities as a public issue — see SECURITY.md.
