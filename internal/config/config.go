@@ -6,10 +6,18 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/viper"
+	"gopkg.in/yaml.v3"
 )
 
 const minDiscoveryStartupDuration = 5 * time.Second
+
+// CurrentConfigVersion is the config schema version this build understands.
+// Bump only on a breaking, structurally-incompatible schema change — an
+// additive field never needs a bump (mirrors the .kshrk archive format's
+// CurrentFormatVersion convention; see internal/archive/format).
+const CurrentConfigVersion = 1
 
 // Resource describes a single Kubernetes resource type to capture.
 type Resource struct {
@@ -106,6 +114,11 @@ type RedactionConfig struct {
 
 // Config holds the full capture configuration.
 type Config struct {
+	// Version pins this config to a schema version, letting the schema
+	// evolve without silently misinterpreting an older or newer file. Omit
+	// for version 1 (the implicit default for every config predating this
+	// field). See CurrentConfigVersion.
+	Version int `mapstructure:"version"`
 	// DurationRaw is the human-readable total capture duration (e.g. "10m").
 	DurationRaw string `mapstructure:"duration"`
 	// Duration is parsed from DurationRaw.
@@ -119,12 +132,12 @@ type Config struct {
 	// AutoDiscover, when true, causes the capture engine to walk /apis at
 	// capture time and automatically add every discovered non-core resource
 	// type to the poll loop, supplementing any explicit Resources entries.
-	AutoDiscover bool `mapstructure:"auto_discover"`
+	AutoDiscover bool `mapstructure:"autoDiscover"`
 	// AutoDiscoverExcludeGroups is an optional list of API groups to skip
 	// during auto-discovery (e.g. "metrics.k8s.io"). System groups that
 	// produce noisy or unusable data are excluded by default regardless of
 	// this setting; see defaultAutoDiscoverExcludeGroups.
-	AutoDiscoverExcludeGroups []string `mapstructure:"auto_discover_exclude_groups"`
+	AutoDiscoverExcludeGroups []string `mapstructure:"autoDiscoverExcludeGroups"`
 	// Redaction holds field-level redaction rules applied during capture and
 	// post-capture redact workflows.
 	Redaction RedactionConfig `mapstructure:"redaction"`
@@ -140,25 +153,174 @@ type UIConfig struct {
 	// Port is the local web UI port. Empty or "0" means a random port.
 	Port string `mapstructure:"port"`
 	// APIPort is the mock Kubernetes API server port. Empty or "0" means random.
-	APIPort string `mapstructure:"api_port"`
+	APIPort string `mapstructure:"apiPort"`
 }
 
-// Load reads k8shark capture config. If configFile is empty, viper uses
-// whatever was already loaded via initConfig in cmd/.
+// Load reads k8shark capture config from configFile, an explicit source
+// (not the global viper singleton — see the override step below for the one
+// deliberate, narrow exception). An empty configFile means no config file
+// at all (e.g. an --auto-discover-only capture with no resources: list);
+// Load then returns a config built purely from env/flag overrides and
+// defaults.
 func Load(configFile string) (*Config, error) {
+	var cfg Config
+
 	if configFile != "" {
-		viper.SetConfigFile(configFile)
-		if err := viper.ReadInConfig(); err != nil {
+		data, err := os.ReadFile(configFile)
+		if err != nil {
 			return nil, fmt.Errorf("reading config file %q: %w", configFile, err)
+		}
+		var raw map[string]any
+		if err := yaml.Unmarshal(data, &raw); err != nil {
+			return nil, fmt.Errorf("parsing config file %q: %w", configFile, err)
+		}
+		applyLegacyKeyAliases(raw)
+
+		// Decode twice from the same alias-normalized map: once strictly, so
+		// a typo'd or misspelled key (e.g. "previouslogs" instead of
+		// "previousLogs") fails validation by name instead of being
+		// silently ignored (#220), and once tolerantly to actually populate
+		// cfg (case-insensitive, matching this package's historical
+		// leniency — safe here since the strict pass already proved every
+		// key is a known one spelled correctly).
+		if err := strictDecode(raw); err != nil {
+			return nil, fmt.Errorf("config file %q: %w", configFile, err)
+		}
+		if err := mapstructure.Decode(raw, &cfg); err != nil {
+			return nil, fmt.Errorf("parsing config file %q: %w", configFile, err)
+		}
+		// An explicit version: key must be a positive schema version — 0 (or
+		// negative) is never valid, even though an *absent* key defaults to 1
+		// below. Catch it here, while we can still tell "key present" apart
+		// from "key absent", rather than let it fall through and silently be
+		// normalized to 1 like a predates-versioning config.
+		if v, ok := raw["version"]; ok && cfg.Version <= 0 {
+			return nil, fmt.Errorf("config file %q: version %v is invalid — version must be a positive integer", configFile, v)
 		}
 	}
 
-	var cfg Config
-	if err := viper.Unmarshal(&cfg); err != nil {
-		return nil, fmt.Errorf("unmarshalling config: %w", err)
+	// Layer KSHRK_-prefixed environment variable overrides on top of the file
+	// (see cmd/root.go's initConfig for the SetEnvPrefix/AutomaticEnv setup).
+	// CLI flags are applied by each command after Load returns (see
+	// cmd/capture.go), so the effective precedence is flag > env > file >
+	// default. Deliberately reads the global viper singleton only for this
+	// narrow purpose — env/flag override resolution — not for the config
+	// file's own content, which is parsed directly above (#220).
+	if v := viper.GetString("output"); v != "" {
+		cfg.Output = v
+	}
+	if v := viper.GetString("kubeconfig"); v != "" {
+		cfg.Kubeconfig = v
+	}
+	if v := viper.GetString("duration"); v != "" {
+		cfg.DurationRaw = v
+	}
+	if viper.IsSet("autoDiscover") {
+		cfg.AutoDiscover = viper.GetBool("autoDiscover")
+	}
+
+	// A missing version: key means version 1, not 0 — normalize so the
+	// in-memory config matches what's documented, and so a future version 2
+	// can tell "predates versioning" apart from an explicit (invalid) 0.
+	if cfg.Version == 0 {
+		cfg.Version = 1
+	}
+	if cfg.Version > CurrentConfigVersion {
+		return nil, fmt.Errorf("config version %d is newer than this build of kshrk understands (max %d) — upgrade kshrk", cfg.Version, CurrentConfigVersion)
 	}
 
 	return &cfg, nil
+}
+
+// legacyConfigKeyAliases maps a deprecated config key (dot-path for a
+// nested section) to its current, camelCase replacement. Both spellings are
+// accepted for one minor release (#220); a future release will drop the
+// legacy spelling.
+var legacyConfigKeyAliases = map[string]string{
+	"auto_discover":                "autoDiscover",
+	"auto_discover_exclude_groups": "autoDiscoverExcludeGroups",
+	"ui.api_port":                  "ui.apiPort",
+}
+
+// applyLegacyKeyAliases renames every legacy key present in raw (see
+// legacyConfigKeyAliases) to its canonical spelling in place, preferring an
+// already-present canonical value if both are somehow set. raw's keys and
+// nesting come directly from yaml.Unmarshal, so casing is exactly as
+// written in the file (unlike viper's internal settings, which are
+// lowercased — see strictDecode's doc comment for why that matters). Keys
+// are dot-paths (e.g. "ui.api_port"); only one level of nesting is
+// supported, which is all legacyConfigKeyAliases currently needs.
+func applyLegacyKeyAliases(raw map[string]any) {
+	for legacyPath, canonicalPath := range legacyConfigKeyAliases {
+		m, legacy := resolveParent(raw, legacyPath)
+		if m == nil {
+			continue
+		}
+		v, ok := m[legacy]
+		if !ok {
+			continue
+		}
+		cm, canonical := ensureParent(raw, canonicalPath)
+		if _, exists := cm[canonical]; !exists {
+			cm[canonical] = v
+		}
+		delete(m, legacy)
+	}
+}
+
+// resolveParent walks a dot-path (e.g. "ui.apiPort") from raw and returns
+// the map holding the final segment plus that segment's own key, or (nil,
+// "") if an intermediate segment doesn't exist or isn't itself a map.
+func resolveParent(raw map[string]any, path string) (map[string]any, string) {
+	parts := strings.Split(path, ".")
+	m := raw
+	for _, p := range parts[:len(parts)-1] {
+		next, ok := m[p].(map[string]any)
+		if !ok {
+			return nil, ""
+		}
+		m = next
+	}
+	return m, parts[len(parts)-1]
+}
+
+// ensureParent is resolveParent, but creates any missing intermediate map
+// instead of failing — used for the canonical (destination) side of an
+// alias, where the legacy key's presence doesn't guarantee the canonical
+// key's parent section already exists in raw.
+func ensureParent(raw map[string]any, path string) (map[string]any, string) {
+	parts := strings.Split(path, ".")
+	m := raw
+	for _, p := range parts[:len(parts)-1] {
+		next, ok := m[p].(map[string]any)
+		if !ok {
+			next = map[string]any{}
+			m[p] = next
+		}
+		m = next
+	}
+	return m, parts[len(parts)-1]
+}
+
+// strictDecode decodes raw against a throwaway Config with ErrorUnused, so
+// an unknown key is reported by name, and with exact (case-sensitive) key
+// matching, so a wrongly-cased key like "previouslogs" is caught as unknown
+// too rather than silently case-folding onto "previousLogs" — mapstructure's
+// (and therefore viper's) default MatchName is case-insensitive, which would
+// otherwise defeat "one consistent naming convention" by quietly accepting
+// any casing. Deliberately does not use viper for this: viper lowercases
+// every key it reads, which would destroy the very case information this
+// check depends on.
+func strictDecode(raw map[string]any) error {
+	decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
+		ErrorUnused: true,
+		Result:      &Config{},
+		MatchName:   func(mapKey, fieldName string) bool { return mapKey == fieldName },
+	})
+	if err != nil {
+		return fmt.Errorf("building config decoder: %w", err)
+	}
+	return decoder.Decode(raw)
 }
 
 // Validate parses duration/interval raw strings and checks required fields.
@@ -184,12 +346,12 @@ func (c *Config) Validate() error {
 	}
 
 	if len(c.Resources) == 0 && !c.AutoDiscover {
-		return fmt.Errorf("no resources defined in config; add at least one entry under 'resources:' or set 'auto_discover: true'")
+		return fmt.Errorf("no resources defined in config; add at least one entry under 'resources:' or set 'autoDiscover: true'")
 	}
 
 	if c.requiresDiscoveryStartup() && c.Duration < minDiscoveryStartupDuration {
 		return fmt.Errorf(
-			"duration %q is too short when using discovery/wildcard capture; set duration >= %s or disable auto_discover, all=true, and namespaces ['*']",
+			"duration %q is too short when using discovery/wildcard capture; set duration >= %s or disable autoDiscover, all=true, and namespaces ['*']",
 			c.DurationRaw,
 			minDiscoveryStartupDuration,
 		)

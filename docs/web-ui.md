@@ -43,8 +43,8 @@ override the config:
 
 ```yaml
 ui:
-  port: "8080"       # local web UI
-  api_port: "8081"   # mock Kubernetes API server
+  port: "8080"      # local web UI
+  apiPort: "8081"   # mock Kubernetes API server
 ```
 
 See [docs/config.md](config.md#web-ui-ports) for details.

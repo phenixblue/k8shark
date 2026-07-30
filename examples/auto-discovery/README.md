@@ -4,7 +4,7 @@ A capture config with **zero** `group`/`version`/`resource` entries. A single
 `all: true` directive walks the cluster's API discovery at capture time and
 captures every resource type present in one namespace — built-in Kubernetes
 resources and a custom resource (CRD) alike — without listing any of them by
-name. Demonstrates the `all: true` / `auto_discover` config field described in
+name. Demonstrates the `all: true` / `autoDiscover` config field described in
 [docs/config.md](../../docs/config.md#simplified-discovery-with-all-true) and
 [Capturing CRD-backed resources](../../docs/config.md#capturing-crd-backed-resources).
 
@@ -102,5 +102,5 @@ a namespace you plan to share.
 
 This is the last stop in the example tour. From here,
 [docs/config.md](../../docs/config.md) covers the full config reference,
-including redaction rules and ecosystem-specific `auto_discover` recipes for
+including redaction rules and ecosystem-specific `autoDiscover` recipes for
 Flux, ArgoCD, and other CRD-heavy setups.

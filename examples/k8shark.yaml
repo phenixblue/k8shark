@@ -21,8 +21,8 @@ output: ./capture.kshrk
 # these to pin consistent ports across runs. The --port / --api-port CLI flags
 # override these when provided.
 # ui:
-#   port: "8080"       # local web UI
-#   api_port: "8081"   # mock Kubernetes API server
+#   port: "8080"      # local web UI
+#   apiPort: "8081"   # mock Kubernetes API server
 
 resources:
   # ── Core workloads ───────────────────────────────────────────────────────────

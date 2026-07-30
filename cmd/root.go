@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -60,6 +61,12 @@ func initConfig() {
 		viper.SetConfigName("config")
 		viper.SetConfigType("yaml")
 	}
+	// Environment variables must be namespaced under KSHRK_ — an unprefixed
+	// AutomaticEnv() claims common bare names like DURATION/OUTPUT/VERBOSE
+	// globally, which is indefensible in CI environments where those are
+	// already in use for something else (#218).
+	viper.SetEnvPrefix("KSHRK")
+	viper.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
 	viper.AutomaticEnv()
 	_ = viper.ReadInConfig()
 }

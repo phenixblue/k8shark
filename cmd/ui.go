@@ -64,7 +64,7 @@ func runUI(cmd *cobra.Command, args []string) error {
 	at, _ := cmd.Flags().GetString("at")
 	verbose, _ := cmd.Root().PersistentFlags().GetBool("verbose")
 
-	// Fall back to config-file ui.port / ui.api_port when the flags were left at
+	// Fall back to config-file ui.port / ui.apiPort when the flags were left at
 	// their default; an explicitly-passed flag always wins.
 	if cfg, err := config.Load(viper.ConfigFileUsed()); err == nil && cfg != nil {
 		if !cmd.Flags().Changed("port") && cfg.UI.Port != "" {
