@@ -81,8 +81,11 @@ if [ "$EXPECT_CONTRACT" = "1" ]; then
   # findings must be [] not null, so `jq '.findings[]'` works on a clean capture.
   if d=$("$BIN" diagnose "$BASIC" -o json 2>&1); then
     case "$d" in
+      # Match the opening bracket, so a findings that turned into an object or
+      # a string fails instead of passing as "present and not null".
+      *'"findings": ['*|*'"findings":['*) ok "diagnose findings is an array" ;;
       *'"findings": null'*|*'"findings":null'*) bad "diagnose findings is null, want []" ;;
-      *'"findings"'*) ok "diagnose findings is an array" ;;
+      *'"findings"'*) bad "diagnose findings is present but is not an array" ;;
       *) bad "diagnose output has no findings key" ;;
     esac
   else

@@ -123,11 +123,13 @@ release older than `v1.0.0` (the shapes were settled in #320, after
 `v1.0.0-rc.3`).
 
 The script is POSIX `sh`, not bash, so the same file runs on Alpine's busybox
-`ash` and in Windows Git Bash. Testing a linux binary locally on macOS:
+`ash` and in Windows Git Bash. Testing a linux binary locally on macOS, using
+the `linux_amd64` artifact extracted above — **`--platform` must match the
+artifact's `GOARCH`**, or the container can't execute it:
 
 ```sh
-docker run --rm --platform linux/arm64 \
-  -v "$PWD/kshrk:/kshrk:ro" -v "$PWD:/work:ro" alpine:3 \
+docker run --rm --platform linux/amd64 \
+  -v /tmp/ks/kshrk:/kshrk:ro -v "$PWD:/work:ro" alpine:3 \
   /bin/sh /work/scripts/artifact-smoke.sh /kshrk 1.0.0 /work
 ```
 
