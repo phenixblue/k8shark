@@ -186,12 +186,23 @@ even considered.
   plain REST/JSON over HTTPS; it doesn't depend on a specific `kubectl`
   release.
 - **Kubernetes server (for `capture`)**: tracked via `k8s.io/client-go` in
-  `go.mod` (currently `v0.36.x`) and validated against a pinned `kindest/node`
-  image in the [conformance workflow](../.github/workflows/conformance.yml).
-  k8shark captures via the generic REST/discovery surface rather than
-  version-specific APIs, so older and newer clusters than the pinned
-  conformance target generally work — but only the minor matching the
-  pinned `client-go` version is actively tested per release.
+  `go.mod` (currently `v0.36.x`). k8shark captures via the generic
+  REST/discovery surface rather than version-specific APIs, so support spans
+  a wide range. Two distinct claims, which are easy to conflate:
+  - **Continuously tested**: only the pinned minor
+    (`kindest/node:v1.36.1`), on every change, via the
+    [conformance workflow](../.github/workflows/conformance.yml).
+  - **Verified**: **v1.30 through v1.36** as of `v1.0.0` — the full e2e
+    suite (capture, redaction, encryption round-trip, replay, writable
+    overlay, `kubectl` round-trip) plus the mock-vs-live conformance
+    differential, run against v1.30.3 / v1.32.3 / v1.34.3 / v1.36.1. All
+    four passed 113/113 e2e assertions with zero new conformance
+    divergences. Reproduce with
+    `NODE_IMAGE=kindest/node:v1.32.3 ./scripts/e2e.sh`.
+
+  Versions outside that verified range are expected to work but carry no
+  evidence. v1.30 was the oldest version tested, not a discovered floor —
+  it passed cleanly, so the real floor is older.
 - **KWOK / kube-controller-manager** (`replay --with-kwok
   --with-controller-manager`): downloaded to match the *capture's* recorded
   Kubernetes version (see [docs/kwok.md](kwok.md)), not the version `kshrk`

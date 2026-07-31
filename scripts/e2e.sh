@@ -7,6 +7,7 @@
 #
 # Called automatically by:  make e2e
 # Can also be run directly: ./scripts/e2e.sh
+# Env:  NODE_IMAGE=kindest/node:v1.32.3   pin a Kubernetes version
 #
 # Prerequisites: kind, kubectl (must be in PATH)
 set -euo pipefail
@@ -19,6 +20,13 @@ CAPTURE_CONFIG="/tmp/k8shark-e2e-$$.yaml"
 KIND_KUBECONFIG="/tmp/k8shark-kind-$$.yaml"
 SERVER_LOG="/tmp/k8shark-server-$$.log"
 BINARY="${BINARY:-${PROJ_ROOT}/kshrk}"
+# Pin the Kubernetes version, e.g. NODE_IMAGE=kindest/node:v1.32.3. Empty means
+# whatever kind's own default is for the installed kind version. Same knob
+# scripts/conformance.sh already exposes — capture reads the generic
+# REST/discovery surface, so the interesting question this makes answerable is
+# "how far back does that actually hold", across the whole 100+ assertion suite
+# rather than just the conformance diff.
+NODE_IMAGE="${NODE_IMAGE:-}"
 PASS=0
 FAIL=0
 
@@ -141,12 +149,21 @@ else
 fi
 
 # ── Phase 2: KinD cluster ──────────────────────────────────────────────────────
-log "Creating KinD cluster '$CLUSTER_NAME'"
-kind create cluster \
-  --name "$CLUSTER_NAME" \
-  --kubeconfig "$KIND_KUBECONFIG" \
-  --wait 90s
+log "Creating KinD cluster '$CLUSTER_NAME'${NODE_IMAGE:+ (image $NODE_IMAGE)}"
+if [[ -n "$NODE_IMAGE" ]]; then
+  kind create cluster \
+    --name "$CLUSTER_NAME" \
+    --kubeconfig "$KIND_KUBECONFIG" \
+    --image "$NODE_IMAGE" \
+    --wait 90s
+else
+  kind create cluster \
+    --name "$CLUSTER_NAME" \
+    --kubeconfig "$KIND_KUBECONFIG" \
+    --wait 90s
+fi
 pass "KinD cluster ready"
+info "Kubernetes server: $(kubectl --kubeconfig "$KIND_KUBECONFIG" version -o json 2>/dev/null | jq -r '.serverVersion.gitVersion' 2>/dev/null || echo unknown)"
 
 KC=(--kubeconfig "$KIND_KUBECONFIG")
 

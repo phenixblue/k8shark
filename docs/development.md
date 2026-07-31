@@ -81,6 +81,22 @@ This runs `scripts/e2e.sh`, which:
 
 Prerequisites: `kind` and `kubectl` must be in your `PATH`, and the binary must already be built (`make build`).
 
+### Testing against a specific Kubernetes version
+
+`NODE_IMAGE` pins the KinD node image, so the whole suite can be pointed at any
+Kubernetes minor (`scripts/conformance.sh` takes the same variable):
+
+```sh
+NODE_IMAGE=kindest/node:v1.32.3 ./scripts/e2e.sh
+NODE_IMAGE=kindest/node:v1.32.3 ./scripts/conformance.sh
+```
+
+Each run logs the server `gitVersion` it actually reached, so a typo'd or
+unavailable tag can't quietly fall back to kind's default and make a version
+matrix look broader than it was. This is how the v1.30–v1.36 range in the
+[version window](stability-policy.md#supported-kubernetes--kubectl-version-window)
+was established; `make e2e` with no `NODE_IMAGE` uses kind's default.
+
 ## Make targets reference
 
 Run `make help` to print all targets:
