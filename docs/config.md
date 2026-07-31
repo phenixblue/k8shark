@@ -144,8 +144,11 @@ Use `"*"` as a namespace value to automatically capture from all namespaces disc
 ### `namespaces`, request volume, and archive shape
 
 Every poll of a resource issues **two GETs** — the normal list plus a
-Table-format list, so the mock server can replay `kubectl`'s column layout — and
-stores a record for each. The three forms differ in how that is multiplied:
+Table-format list, so the mock server can replay `kubectl`'s column layout. Each
+*can* store a record; [deduplication](#response-deduplication) is on by default
+and skips writing when a response body is byte-identical to the previous one, so
+the record counts below are upper bounds. The three forms differ in how those
+GETs are multiplied:
 
 | form | GETs per poll | list records per poll |
 |------|---------------|-----------------------|
@@ -171,6 +174,10 @@ records at all.
 
 Measured by counting `apiserver_request_total` on the source apiserver. The
 cluster had **55 namespaces**: 52 contained at least one pod, 8 contained a Job.
+Deduplication was left at its default and skipped nothing in these runs
+(`deduplicated_count` was 0 in every archive) — a live list body changes between
+polls, so the record counts below are also the actual ones. A genuinely static
+resource would produce fewer.
 
 | resource | form | GETs/poll | plain records/poll |
 |----------|------|----------:|-------------------:|
