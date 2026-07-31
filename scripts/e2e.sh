@@ -7,8 +7,9 @@
 #
 # Called automatically by:  make e2e
 # Can also be run directly: ./scripts/e2e.sh
+# Env:  NODE_IMAGE=kindest/node:v1.32.3   pin a Kubernetes version
 #
-# Prerequisites: kind, kubectl (must be in PATH)
+# Prerequisites: kind, kubectl, jq (must be in PATH)
 set -euo pipefail
 
 # ── Configuration ──────────────────────────────────────────────────────────────
@@ -19,6 +20,13 @@ CAPTURE_CONFIG="/tmp/k8shark-e2e-$$.yaml"
 KIND_KUBECONFIG="/tmp/k8shark-kind-$$.yaml"
 SERVER_LOG="/tmp/k8shark-server-$$.log"
 BINARY="${BINARY:-${PROJ_ROOT}/kshrk}"
+# Pin the Kubernetes version, e.g. NODE_IMAGE=kindest/node:v1.32.3. Empty means
+# whatever kind's own default is for the installed kind version. Same knob
+# scripts/conformance.sh already exposes — capture reads the generic
+# REST/discovery surface, so the interesting question this makes answerable is
+# "how far back does that actually hold", across the whole 100+ assertion suite
+# rather than just the conformance diff.
+NODE_IMAGE="${NODE_IMAGE:-}"
 PASS=0
 FAIL=0
 
@@ -28,6 +36,11 @@ info() { printf '    %s\n' "$*"; }
 pass() { printf '  \033[1;32m[OK]   %s\033[0m\n' "$*"; PASS=$((PASS + 1)); }
 fail() { printf '  \033[1;31m[FAIL] %s\033[0m\n' "$*"; FAIL=$((FAIL + 1)); }
 die()  { printf '\n\033[1;31mFATAL: %s\033[0m\n' "$*" >&2; exit 1; }
+
+# assert_node_image_version — shared with scripts/conformance.sh so both
+# enforce NODE_IMAGE identically (see docs/development.md).
+# shellcheck source=scripts/lib/kube-version.sh
+source "${PROJ_ROOT}/scripts/lib/kube-version.sh"
 
 assert_contains() {
   local desc="$1" haystack="$2" needle="$3"
@@ -127,7 +140,11 @@ trap cleanup EXIT
 
 # ── Phase 1: Prerequisites ─────────────────────────────────────────────────────
 log "Checking prerequisites"
-for tool in kind kubectl; do
+# jq is required by the `-o json` assertions (Phases 6b, 8f). It's checked here
+# rather than at first use because those call sites fall back to an empty string
+# on jq failure, which would otherwise surface as a misleading assertion failure
+# blaming kshrk for a missing tool.
+for tool in kind kubectl jq; do
   if command -v "$tool" >/dev/null 2>&1; then
     pass "$tool found at $(command -v "$tool")"
   else
@@ -141,12 +158,26 @@ else
 fi
 
 # ── Phase 2: KinD cluster ──────────────────────────────────────────────────────
-log "Creating KinD cluster '$CLUSTER_NAME'"
-kind create cluster \
-  --name "$CLUSTER_NAME" \
-  --kubeconfig "$KIND_KUBECONFIG" \
-  --wait 90s
+log "Creating KinD cluster '$CLUSTER_NAME'${NODE_IMAGE:+ (image $NODE_IMAGE)}"
+if [[ -n "$NODE_IMAGE" ]]; then
+  kind create cluster \
+    --name "$CLUSTER_NAME" \
+    --kubeconfig "$KIND_KUBECONFIG" \
+    --image "$NODE_IMAGE" \
+    --wait 90s
+else
+  kind create cluster \
+    --name "$CLUSTER_NAME" \
+    --kubeconfig "$KIND_KUBECONFIG" \
+    --wait 90s
+fi
 pass "KinD cluster ready"
+
+# Record the Kubernetes version actually reached, and — when NODE_IMAGE asked
+# for a specific one — hold the cluster to it. See scripts/lib/kube-version.sh.
+SERVER_VERSION=$(kubectl --kubeconfig "$KIND_KUBECONFIG" version -o json 2>/dev/null | jq -r '.serverVersion.gitVersion // empty' 2>/dev/null || true)
+info "Kubernetes server: ${SERVER_VERSION:-unknown}"
+assert_node_image_version "$NODE_IMAGE" "$SERVER_VERSION"
 
 KC=(--kubeconfig "$KIND_KUBECONFIG")
 
