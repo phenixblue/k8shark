@@ -135,13 +135,21 @@ make release-local
 
 Both commands place output in `./dist/`. Requires `goreleaser` in your PATH (`go install github.com/goreleaser/goreleaser/v2@latest`).
 
-**Run one of these before pushing a release tag.** A tag is effectively
-un-publishable once pushed, and the CI dry-run
-([release-check.yml](../.github/workflows/release-check.yml)) skips the signing
-step — it has no OIDC token — so signing is otherwise first exercised by the
-real release. That gap is exactly how a cosign v3 incompatibility survived
-until a tag was about to be cut: `release-snapshot` reproduces it locally,
-`release-local` does not.
+Signing is also covered in CI:
+[release-check.yml](../.github/workflows/release-check.yml) runs the full
+snapshot with `--skip=publish` only — it signs for real (using the same pinned
+cosign as the release job) and verifies the resulting
+`checksums.txt.bundle` round-trips — on every change to `.goreleaser.yaml` or
+either release workflow. It didn't always: it used to skip signing, and that
+gap is exactly how a cosign v3 incompatibility survived until a `v1.0.0-rc.3`
+tag was about to be cut.
+
+Two caveats keep the local check useful. That job only triggers on
+release-config paths, so a change elsewhere that somehow affects packaging
+still isn't signed-tested until the tag; and it skips signing on pull requests
+from forks, which can't obtain an OIDC token. `make release-snapshot`
+reproduces the full signing path locally for extra assurance before a release;
+`make release-local` does not.
 
 ## CI pipeline (non-release)
 
