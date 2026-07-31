@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -335,5 +336,73 @@ func TestRun_404ProbePathsDoNotImplyNamespaced(t *testing.T) {
 	// The successful cluster-scoped fallback is still counted.
 	if nodes.Items != 2 {
 		t.Errorf("nodes: item_count = %d, want 2 from the cluster-scoped fallback", nodes.Items)
+	}
+}
+
+// TestRun_EmptyListUsesDiscoveryForNamespaced covers a namespaced resource whose
+// list came back empty.
+//
+// With zero items there are no item namespaces to observe, and a cluster-wide
+// capture has no /namespaces/ path segment either — so inference alone reported
+// namespaced=false for a resource that is namespaced by API definition.
+// Reproduced against a real cluster with `ingresses` (0 objects): inspect said
+// false while the same archive's /apis/networking.k8s.io/v1 discovery document
+// said true.
+//
+// The captured discovery document is authoritative and needs no format change,
+// so it wins when present. The other tests in this file deliberately omit
+// discovery paths, which keeps the inference fallback covered.
+func TestRun_EmptyListUsesDiscoveryForNamespaced(t *testing.T) {
+	now := time.Date(2026, 7, 31, 11, 0, 0, 0, time.UTC)
+	path := buildArchive(t, []*capture.Record{
+		{
+			// Discovery: the apiserver's own answer.
+			ID: "disco", CapturedAt: now, APIPath: "/apis/networking.k8s.io/v1",
+			HTTPMethod: "GET", ResponseCode: 200,
+			ResponseBody: json.RawMessage(`{"kind":"APIResourceList","groupVersion":"networking.k8s.io/v1","resources":[
+				{"name":"ingresses","namespaced":true,"kind":"Ingress"},
+				{"name":"ingresses/status","namespaced":true,"kind":"Ingress"},
+				{"name":"ingressclasses","namespaced":false,"kind":"IngressClass"}
+			]}`),
+		},
+		{
+			// An empty cluster-wide list: nothing to infer from.
+			ID: "ing-0", CapturedAt: now, APIPath: "/apis/networking.k8s.io/v1/ingresses",
+			HTTPMethod: "GET", ResponseCode: 200,
+			ResponseBody: json.RawMessage(`{"kind":"IngressList","apiVersion":"networking.k8s.io/v1","items":[]}`),
+		},
+		{
+			ID: "ingc-0", CapturedAt: now, APIPath: "/apis/networking.k8s.io/v1/ingressclasses",
+			HTTPMethod: "GET", ResponseCode: 200,
+			ResponseBody: json.RawMessage(`{"kind":"IngressClassList","apiVersion":"networking.k8s.io/v1","items":[]}`),
+		},
+	})
+
+	rep, err := Run(path, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	get := func(resource string) *ResourceSummary {
+		for i := range rep.Resources {
+			if rep.Resources[i].Resource == resource {
+				return &rep.Resources[i]
+			}
+		}
+		t.Fatalf("no summary for %q; got %+v", resource, rep.Resources)
+		return nil
+	}
+
+	if ing := get("ingresses"); !ing.Namespaced {
+		t.Error("ingresses: namespaced=false on an empty list; discovery says true")
+	}
+	// The same discovery document must not promote a cluster-scoped sibling.
+	if ingc := get("ingressclasses"); ingc.Namespaced {
+		t.Error("ingressclasses: namespaced=true; discovery says false")
+	}
+	// A subresource entry ("ingresses/status") must not become its own summary.
+	for _, r := range rep.Resources {
+		if strings.Contains(r.Resource, "/") {
+			t.Errorf("subresource leaked into the summary: %q", r.Resource)
+		}
 	}
 }
