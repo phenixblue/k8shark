@@ -28,7 +28,11 @@ FAIL=0
 ok()   { printf '  [OK]   %s\n' "$1"; PASS=$((PASS + 1)); }
 bad()  { printf '  [FAIL] %s\n' "$1"; FAIL=$((FAIL + 1)); }
 
-printf -- '--- %s/%s  kshrk=%s ---\n' "$(uname -s)" "$(uname -m)" "$BIN"
+# %s format rather than a literal leading "---": POSIX printf takes no options,
+# so `printf -- ...` relies on an unspecified extension to protect a format
+# beginning with a dash. Every shell tested handles it, but this script's whole
+# point is not depending on that.
+printf '%s\n' "--- $(uname -s)/$(uname -m)  kshrk=$BIN ---"
 
 # ── Portability: does the shipped binary run at all, everywhere? ──────────────
 # Catches the class of defect this script exists for: a dynamically-linked
