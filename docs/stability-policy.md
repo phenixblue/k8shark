@@ -196,9 +196,10 @@ even considered.
     suite (capture, redaction, encryption round-trip, replay, writable
     overlay, `kubectl` round-trip) plus the mock-vs-live conformance
     differential, run against v1.30.3 / v1.32.3 / v1.34.3 / v1.36.1. All
-    four passed 113/113 e2e assertions with zero new conformance
-    divergences. Reproducing the claim takes both harnesses — the e2e suite
-    and the conformance differential are what the two halves of it rest on:
+    four passed every e2e assertion with zero failures and zero new
+    conformance divergences. Reproducing the claim takes both harnesses —
+    the e2e suite and the conformance differential are what its two halves
+    rest on:
 
     ```sh
     make build
