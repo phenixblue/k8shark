@@ -40,7 +40,7 @@ Only the latest minor receives patch releases; see the stability policy's
 1. **Tests** — runs `go test ./...` against the tagged commit. The release is blocked if tests fail.
 2. **GoReleaser** — builds cross-platform binaries, packages archives, generates a checksum file, and publishes the GitHub Release.
 3. **SBOM** — [Syft](https://github.com/anchore/syft) generates a Software Bill of Materials for each archive artifact.
-4. **Signing** — the `checksums.txt` file is signed with [cosign](https://github.com/sigstore/cosign) using keyless OIDC signing (no long-lived keys). The signature and certificate are attached to the release.
+4. **Signing** — the `checksums.txt` file is signed with [cosign](https://github.com/sigstore/cosign) using keyless OIDC signing (no long-lived keys). The signature and certificate are attached to the release together, as a single `checksums.txt.bundle`.
 5. **Attestation** — GitHub's `attest-build-provenance` action attaches a build provenance attestation to each release archive (`.tar.gz`/`.zip`).
 6. **Homebrew tap** — GoReleaser pushes an updated cask to `phenixblue/homebrew-tap`, so `brew upgrade --cask k8shark` picks up the new version automatically.
 
@@ -71,16 +71,39 @@ The cosign signing uses GitHub's OIDC token — no additional secret is needed.
 
 ```sh
 # Download the release artifacts
-gh release download v1.0.0-rc.1 --repo phenixblue/k8shark
+gh release download v1.0.0-rc.3 --repo phenixblue/k8shark
 
 # Verify the cosign signature
 cosign verify-blob \
-  --certificate checksums.txt.pem \
-  --signature checksums.txt.sig \
-  --certificate-identity-regexp 'https://github.com/phenixblue/k8shark/.github/workflows/release.yml' \
+  --bundle checksums.txt.bundle \
+  --certificate-identity-regexp '^https://github\.com/phenixblue/k8shark/\.github/workflows/release\.yml@refs/tags/v.+$' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
   checksums.txt
 ```
+
+**The identity regexp is anchored on purpose — don't loosen it.**
+`--certificate-identity-regexp` is an unanchored search, so a bare
+`https://github.com/phenixblue/k8shark/.github/workflows/release.yml` would
+also match any identity that merely *contains* that string (say
+`.../evil/x/.github/workflows/release.yml@refs/tags/v9?u=<the real one>`),
+which defeats the point of checking it. `^`/`$` plus escaped dots plus the
+required `@refs/tags/v…` suffix pins it to this repo's release workflow run
+from a version tag. The signing identity looks like
+`https://github.com/phenixblue/k8shark/.github/workflows/release.yml@refs/tags/v1.0.0-rc.2`
+(read off that release's own certificate).
+
+The signature and certificate live together in a single `checksums.txt.bundle`
+(cosign's newer bundle format), which is what `--bundle` above reads. Releases
+are signed by the cosign version pinned in `release.yml` — v3.x, via
+`cosign-installer` v4.x — so verifying with a v3.x cosign is the tested
+combination.
+
+Releases before `v1.0.0-rc.3` instead carry separate `checksums.txt.sig` and
+`checksums.txt.pem`. Verify those by swapping `--bundle` for `--signature
+checksums.txt.sig --certificate checksums.txt.pem`. Those two flags are
+deprecated in cosign v3 but still functional (it prints a warning), so a
+single v3 cosign verifies both the old and new layouts — you don't need an
+older cosign for older releases.
 
 ### Verify a binary checksum
 
@@ -100,14 +123,25 @@ gh attestation verify k8shark_<version>_linux_amd64.tar.gz \
 You can build a release locally without publishing using `make`:
 
 ```sh
-# Snapshot build (no signing, no publish)
+# Full pipeline including signing, but no publish.
+# Signing is keyless, so this needs an OIDC identity: expect the cosign step
+# to prompt for a browser login, or to fail if you're headless.
 make release-snapshot
 
-# Dry-run with SBOM + Homebrew output but no signing or publishing
+# Dry-run with SBOM + Homebrew output, skipping BOTH signing and publishing.
+# This is the one to use for a quick local check.
 make release-local
 ```
 
 Both commands place output in `./dist/`. Requires `goreleaser` in your PATH (`go install github.com/goreleaser/goreleaser/v2@latest`).
+
+**Run one of these before pushing a release tag.** A tag is effectively
+un-publishable once pushed, and the CI dry-run
+([release-check.yml](../.github/workflows/release-check.yml)) skips the signing
+step — it has no OIDC token — so signing is otherwise first exercised by the
+real release. That gap is exactly how a cosign v3 incompatibility survived
+until a tag was about to be cut: `release-snapshot` reproduces it locally,
+`release-local` does not.
 
 ## CI pipeline (non-release)
 

@@ -51,16 +51,28 @@ changelog:
 sboms:
   - artifacts: archive
 
+# cosign v3 (installed by cosign-installer v4.x — see release.yml) removed
+# sign-blob's --output-signature/--output-certificate in favor of a single
+# --bundle file that carries both the signature and the certificate. Passing
+# the old flags is a hard error on v3 ("must specify --bundle with
+# --new-bundle-format"), not a warning, so this block must use --bundle.
+#
+# `signature:` is how goreleaser learns which file the signing command
+# produced so it gets uploaded with the release; pointing it at the bundle
+# (and dropping `certificate:`, which no longer has a separate output) keeps
+# exactly one signing artifact attached: checksums.txt.bundle.
+#
+# Verifying this shape is `cosign verify-blob --bundle checksums.txt.bundle
+# ... checksums.txt` — see docs/releases.md, which must stay in step with it.
 signs:
   - artifacts: checksum
     cmd: cosign
-    certificate: '${artifact}.pem'
+    signature: '${artifact}.bundle'
     output: true
     args:
       - sign-blob
       - --yes
-      - --output-signature=${signature}
-      - --output-certificate=${certificate}
+      - --bundle=${signature}
       - ${artifact}
 
 homebrew_casks:
