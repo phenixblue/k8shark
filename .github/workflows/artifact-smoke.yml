@@ -69,7 +69,12 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          EXPLICIT: ${{ inputs.tag || github.event.release.tag_name }}
+          # github.event.inputs.* rather than inputs.*: the latter is documented as
+          # a workflow_dispatch/workflow_call context. It does resolve to empty on
+          # other events in practice (verified on a pull_request run), but the
+          # release path is both the one that matters here and the least
+          # exercised, so don't lean on undocumented behavior for it.
+          EXPLICIT: ${{ github.event.inputs.tag || github.event.release.tag_name }}
         run: |
           set -euo pipefail
           tag="$EXPLICIT"
@@ -117,7 +122,10 @@ jobs:
           # the contract (#320 landed after v1.0.0-rc.3) — so the PR run proves
           # the harness works end-to-end on all six platforms, and the shape
           # assertions are enforced where the version is known to have them.
-          EXPECT_CONTRACT: ${{ (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.expect_contract)) && '1' || '0' }}
+          # Compared to the string 'true' on purpose: github.event.inputs values
+          # are strings, so a bare truthiness check would read the literal
+          # "false" as true — every non-empty string is truthy here.
+          EXPECT_CONTRACT: ${{ (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.event.inputs.expect_contract == 'true')) && '1' || '0' }}
         run: |
           set -euo pipefail
           bin=bin/kshrk
