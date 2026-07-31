@@ -95,7 +95,7 @@ Run `make help` to print all targets:
   e2e             Build binary and run end-to-end tests (requires kind + kubectl)
   kind-up         Create a dev KinD cluster with test resources (use --reset to recreate)
   kind-down       Delete the dev KinD cluster (k8shark-dev)
-  release-snapshot  Build a local release snapshot without publishing (no signing)
+  release-snapshot  Build a local release snapshot without publishing (DOES sign: needs OIDC)
   release-local   Dry-run release with SBOM + Homebrew output but no publish
   clean           Remove build artifacts
   help            Print available targets
