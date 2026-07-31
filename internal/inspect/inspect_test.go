@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -206,6 +207,202 @@ func TestRun_SortedOutput(t *testing.T) {
 		sb := b.Group + "/" + b.Version + "/" + b.Resource
 		if sa > sb {
 			t.Errorf("resources not sorted: %q > %q", sa, sb)
+		}
+	}
+}
+
+// TestRun_NamespacedFromItems_NotPathShape covers a namespaced resource captured
+// via the *cluster-wide* path (/api/v1/pods rather than
+// /api/v1/namespaces/x/pods).
+//
+// That is a normal way to capture a large cluster: one cluster-wide LIST
+// returns objects from every namespace, and it is what omitting `namespaces:`
+// produces (see docs/config.md for the cost model). Namespacedness was derived
+// from whether the request path contained a /namespaces/ segment, so this form
+// reported `"namespaced": false` for every namespaced resource and omitted
+// `namespaces` entirely. Found against a real 80-namespace cluster, where 9 of
+// 11 captured resources were mislabeled.
+func TestRun_NamespacedFromItems_NotPathShape(t *testing.T) {
+	now := time.Date(2026, 7, 31, 9, 0, 0, 0, time.UTC)
+	path := buildArchive(t, []*capture.Record{
+		{
+			// Cluster-wide pods LIST: no namespace in the path, but every item
+			// carries one.
+			ID: "pods-0", CapturedAt: now, APIPath: "/api/v1/pods",
+			HTTPMethod: "GET", ResponseCode: 200,
+			ResponseBody: json.RawMessage(`{"kind":"PodList","apiVersion":"v1","items":[
+				{"metadata":{"name":"a","namespace":"team-one"}},
+				{"metadata":{"name":"b","namespace":"team-two"}},
+				{"metadata":{"name":"c","namespace":"team-one"}}
+			]}`),
+		},
+		{
+			// A genuinely cluster-scoped resource must stay namespaced=false.
+			ID: "nodes-0", CapturedAt: now, APIPath: "/api/v1/nodes",
+			HTTPMethod: "GET", ResponseCode: 200,
+			ResponseBody: json.RawMessage(`{"kind":"NodeList","apiVersion":"v1","items":[
+				{"metadata":{"name":"node-1"}}
+			]}`),
+		},
+	})
+
+	rep, err := Run(path, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	find := func(resource string) *ResourceSummary {
+		for i := range rep.Resources {
+			if rep.Resources[i].Resource == resource {
+				return &rep.Resources[i]
+			}
+		}
+		t.Fatalf("no summary for %q; got %+v", resource, rep.Resources)
+		return nil
+	}
+
+	pods := find("pods")
+	if !pods.Namespaced {
+		t.Error("pods: namespaced=false for a cluster-wide LIST whose items all carry a namespace")
+	}
+	if len(pods.Namespaces) != 2 || pods.Namespaces[0] != "team-one" || pods.Namespaces[1] != "team-two" {
+		t.Errorf("pods: namespaces = %v, want [team-one team-two] deduped and sorted", pods.Namespaces)
+	}
+	if pods.Items != 3 {
+		t.Errorf("pods: item_count = %d, want 3", pods.Items)
+	}
+
+	nodes := find("nodes")
+	if nodes.Namespaced {
+		t.Error("nodes: namespaced=true for a cluster-scoped resource whose items carry no namespace")
+	}
+	if len(nodes.Namespaces) != 0 {
+		t.Errorf("nodes: namespaces = %v, want empty", nodes.Namespaces)
+	}
+}
+
+// TestRun_404ProbePathsDoNotImplyNamespaced covers a cluster-scoped resource
+// configured with `namespaces:` by mistake.
+//
+// The capture engine probes the namespaced endpoints, gets 404s, warns, and
+// falls back to the cluster-scoped path (fetchResource in
+// internal/capture/poll.go) — but the 404 records stay in the archive. Reading
+// the namespace out of a /namespaces/<ns>/ path without checking the response
+// code reported nodes as namespaced=true with two invented namespaces.
+func TestRun_404ProbePathsDoNotImplyNamespaced(t *testing.T) {
+	now := time.Date(2026, 7, 31, 10, 0, 0, 0, time.UTC)
+	notFound := json.RawMessage(`{"kind":"Status","apiVersion":"v1","status":"Failure","code":404}`)
+	path := buildArchive(t, []*capture.Record{
+		{
+			ID: "probe-default", CapturedAt: now,
+			APIPath:    "/api/v1/namespaces/default/nodes",
+			HTTPMethod: "GET", ResponseCode: 404, ResponseBody: notFound,
+		},
+		{
+			ID: "probe-kube-system", CapturedAt: now,
+			APIPath:    "/api/v1/namespaces/kube-system/nodes",
+			HTTPMethod: "GET", ResponseCode: 404, ResponseBody: notFound,
+		},
+		{
+			// The cluster-scoped fallback the engine also captures.
+			ID: "nodes-fallback", CapturedAt: now, APIPath: "/api/v1/nodes",
+			HTTPMethod: "GET", ResponseCode: 200,
+			ResponseBody: json.RawMessage(`{"kind":"NodeList","apiVersion":"v1","items":[
+				{"metadata":{"name":"node-1"}},{"metadata":{"name":"node-2"}}
+			]}`),
+		},
+	})
+
+	rep, err := Run(path, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var nodes *ResourceSummary
+	for i := range rep.Resources {
+		if rep.Resources[i].Resource == "nodes" {
+			nodes = &rep.Resources[i]
+		}
+	}
+	if nodes == nil {
+		t.Fatalf("no nodes summary; got %+v", rep.Resources)
+	}
+	if nodes.Namespaced {
+		t.Error("nodes: namespaced=true, derived from 404 probe paths rather than a successful response")
+	}
+	if len(nodes.Namespaces) != 0 {
+		t.Errorf("nodes: namespaces = %v, want empty — those came from 404 probes", nodes.Namespaces)
+	}
+	// The successful cluster-scoped fallback is still counted.
+	if nodes.Items != 2 {
+		t.Errorf("nodes: item_count = %d, want 2 from the cluster-scoped fallback", nodes.Items)
+	}
+}
+
+// TestRun_EmptyListUsesDiscoveryForNamespaced covers a namespaced resource whose
+// list came back empty.
+//
+// With zero items there are no item namespaces to observe, and a cluster-wide
+// capture has no /namespaces/ path segment either — so inference alone reported
+// namespaced=false for a resource that is namespaced by API definition.
+// Reproduced against a real cluster with `ingresses` (0 objects): inspect said
+// false while the same archive's /apis/networking.k8s.io/v1 discovery document
+// said true.
+//
+// The captured discovery document is authoritative and needs no format change,
+// so it wins when present. The other tests in this file deliberately omit
+// discovery paths, which keeps the inference fallback covered.
+func TestRun_EmptyListUsesDiscoveryForNamespaced(t *testing.T) {
+	now := time.Date(2026, 7, 31, 11, 0, 0, 0, time.UTC)
+	path := buildArchive(t, []*capture.Record{
+		{
+			// Discovery: the apiserver's own answer.
+			ID: "disco", CapturedAt: now, APIPath: "/apis/networking.k8s.io/v1",
+			HTTPMethod: "GET", ResponseCode: 200,
+			ResponseBody: json.RawMessage(`{"kind":"APIResourceList","groupVersion":"networking.k8s.io/v1","resources":[
+				{"name":"ingresses","namespaced":true,"kind":"Ingress"},
+				{"name":"ingresses/status","namespaced":true,"kind":"Ingress"},
+				{"name":"ingressclasses","namespaced":false,"kind":"IngressClass"}
+			]}`),
+		},
+		{
+			// An empty cluster-wide list: nothing to infer from.
+			ID: "ing-0", CapturedAt: now, APIPath: "/apis/networking.k8s.io/v1/ingresses",
+			HTTPMethod: "GET", ResponseCode: 200,
+			ResponseBody: json.RawMessage(`{"kind":"IngressList","apiVersion":"networking.k8s.io/v1","items":[]}`),
+		},
+		{
+			ID: "ingc-0", CapturedAt: now, APIPath: "/apis/networking.k8s.io/v1/ingressclasses",
+			HTTPMethod: "GET", ResponseCode: 200,
+			ResponseBody: json.RawMessage(`{"kind":"IngressClassList","apiVersion":"networking.k8s.io/v1","items":[]}`),
+		},
+	})
+
+	rep, err := Run(path, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	get := func(resource string) *ResourceSummary {
+		for i := range rep.Resources {
+			if rep.Resources[i].Resource == resource {
+				return &rep.Resources[i]
+			}
+		}
+		t.Fatalf("no summary for %q; got %+v", resource, rep.Resources)
+		return nil
+	}
+
+	if ing := get("ingresses"); !ing.Namespaced {
+		t.Error("ingresses: namespaced=false on an empty list; discovery says true")
+	}
+	// The same discovery document must not promote a cluster-scoped sibling.
+	if ingc := get("ingressclasses"); ingc.Namespaced {
+		t.Error("ingressclasses: namespaced=true; discovery says false")
+	}
+	// A subresource entry ("ingresses/status") must not become its own summary.
+	for _, r := range rep.Resources {
+		if strings.Contains(r.Resource, "/") {
+			t.Errorf("subresource leaked into the summary: %q", r.Resource)
 		}
 	}
 }

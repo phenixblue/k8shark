@@ -118,7 +118,7 @@ resources:
 
 ### Namespaced vs. cluster-scoped resources
 
-- **Namespaced resources** (pods, deployments, services, PVCs, etc.): specify `namespaces:` with a list of namespaces to capture. Without `namespaces:`, the resource is skipped.
+- **Namespaced resources** (pods, deployments, services, PVCs, etc.): specify `namespaces:` with a list of namespaces to capture. Omitting `namespaces:` does *not* skip the resource — it is fetched from the cluster-wide path (e.g. `/api/v1/pods`), which returns objects from every namespace in a single request. See [namespaces, request volume, and archive shape](#namespaces-request-volume-and-archive-shape).
 - **Cluster-scoped resources** (nodes, persistentvolumes, storageclasses, namespaces, clusterroles, etc.): **do not include `namespaces:`**. k8shark fetches these from the cluster root path (e.g. `/api/v1/nodes`).
 
 > **Warning**: if you include `namespaces:` for a cluster-scoped resource, k8shark will warn during capture and automatically fall back to the correct cluster-scoped path.
@@ -140,6 +140,70 @@ Use `"*"` as a namespace value to automatically capture from all namespaces disc
 - Mixed lists such as `namespaces: ["production", "*"]` are supported — explicit namespaces appear first, then all remaining discovered namespaces are appended, deduplicated.
 - If namespace discovery fails (e.g. RBAC permissions), the capture exits with a clear error.
 - A well-known cluster-scoped resource (nodes, persistentvolumes, etc.) with `namespaces: ["*"]` emits a warning and falls back to a cluster-scoped fetch.
+
+### `namespaces`, request volume, and archive shape
+
+Every poll of a resource issues **two GETs** — the normal list plus a
+Table-format list, so the mock server can replay `kubectl`'s column layout. Each
+*can* store a record; [deduplication](#response-deduplication) is on by default
+and skips writing when a response body is byte-identical to the previous one, so
+the record counts below are upper bounds. The three forms differ in how those
+GETs are multiplied:
+
+| form | GETs per poll | list records per poll |
+|------|---------------|-----------------------|
+| `namespaces:` omitted | 2 (cluster-wide) | 1 |
+| `namespaces: ["*"]` | 2 (cluster-wide) | 1 per namespace with items, plus any that just emptied |
+| `namespaces: [a, b, c]` | **2 per listed namespace** | 1 per listed namespace |
+
+Counts in the right-hand column are **plain-list records**, which is what `kshrk
+inspect` reports per resource — it skips `?as=Table` paths. Each plain record has
+a Table companion stored alongside it, so the archive's total record count runs
+roughly double the per-resource figures, plus discovery and OpenAPI paths.
+
+`["*"]` does *not* poll each namespace separately. The engine fetches the
+cluster-wide endpoint and demultiplexes the response into per-namespace records
+(`fetchResourceClusterWide` in `internal/capture/poll.go`), so the mock server
+can answer per-namespace paths on replay. It costs archive space, not cluster
+load.
+
+The demux writes a record for each namespace present in the response, plus an
+empty-list record for any namespace that had items on a previous poll and no
+longer does — so a namespace that never contains the resource produces no
+records at all.
+
+Measured by counting `apiserver_request_total` on the source apiserver. The
+cluster had **55 namespaces**: 52 contained at least one pod, 8 contained a Job.
+Deduplication was left at its default and skipped nothing in these runs
+(`deduplicated_count` was 0 in every archive) — a live list body changes between
+polls, so the record counts below are also the actual ones. A genuinely static
+resource would produce fewer.
+
+| resource | form | GETs/poll | plain records/poll |
+|----------|------|----------:|-------------------:|
+| pods (in 52 of 55 namespaces) | omitted | 2 | 1 |
+| pods | `["*"]` | 2 | 52 |
+| pods | explicit list of 10 namespaces | 20 | 10 |
+| jobs (in 8 of 55 namespaces) | `["*"]` | 2 | 8 |
+
+Each form captured the same objects. Two rows worth reading twice: `["*"]` on
+jobs produced **8** records, not 55, because the demux only writes namespaces
+that have items; and the explicit 10-namespace list is the only form whose GET
+count grew.
+
+For a concrete archive-total comparison over three polls of pods and
+deployments: the `["*"]` archive held 755 records (312 of them plain per-resource
+list records) at 2.48 MB, against 140 records (6 plain) at 1.15 MB for the
+cluster-wide form — the same 140 pods and 94 deployments either way.
+
+**Guidance:**
+- Want every namespace? Use `["*"]`, or omit `namespaces:` if you don't need
+  per-namespace records. Both are two GETs per poll regardless of cluster size.
+- Want a few specific namespaces? An explicit list is precise, and its request
+  cost grows linearly with the list — a long explicit list is the one form worth
+  avoiding on a large cluster.
+- `--auto-discover` uses `["*"]` for namespaced resources, so it inherits the
+  cheap cluster-wide path.
 
 ### Response deduplication
 

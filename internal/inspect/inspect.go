@@ -90,10 +90,70 @@ func Run(archivePath string, identities []age.Identity) (*Report, error) {
 	}, nil
 }
 
+// gvrKey identifies a resource type within an archive.
+type gvrKey struct{ group, version, resource string }
+
+// discoveryNamespaced reads the captured API discovery documents (/api/<version>
+// and /apis/<group>/<version>) and returns each resource type's namespaced flag
+// as the apiserver reported it.
+//
+// This is the authoritative answer, and it is the only one available when a
+// resource's list came back empty: a namespaced resource with zero objects has
+// no item namespaces to observe and no /namespaces/ path segment when captured
+// cluster-wide, yet it is still namespaced by API definition. Returns an empty
+// map when a capture didn't include discovery paths, in which case callers fall
+// back to inferring from the data.
+func discoveryNamespaced(ar *archive.Archive, idx capture.Index) map[gvrKey]bool {
+	out := map[gvrKey]bool{}
+
+	for path, entry := range idx {
+		if strings.Contains(path, "?") || len(entry.Seqs) == 0 {
+			continue
+		}
+		// /api/v1 -> group "", version v1.  /apis/apps/v1 -> group apps.
+		var group, version string
+		switch parts := strings.Split(strings.Trim(path, "/"), "/"); {
+		case len(parts) == 2 && parts[0] == "api":
+			version = parts[1]
+		case len(parts) == 3 && parts[0] == "apis":
+			group, version = parts[1], parts[2]
+		default:
+			continue
+		}
+
+		data, err := ar.ReadRecord(path, entry.Seqs[len(entry.Seqs)-1])
+		if err != nil {
+			continue
+		}
+		var rec capture.Record
+		if err := json.Unmarshal(data, &rec); err != nil || rec.ResponseCode != 200 {
+			continue
+		}
+		var list struct {
+			Resources []struct {
+				Name       string `json:"name"`
+				Namespaced bool   `json:"namespaced"`
+			} `json:"resources"`
+		}
+		if err := json.Unmarshal(rec.ResponseBody, &list); err != nil {
+			continue
+		}
+		for _, r := range list.Resources {
+			// Skip subresources ("pods/log"); they aren't summarized.
+			if strings.Contains(r.Name, "/") {
+				continue
+			}
+			out[gvrKey{group, version, r.Name}] = r.Namespaced
+		}
+	}
+	return out
+}
+
 // summarizeResources aggregates per-resource information from the index.
 // Item counts are read from the latest record for each path directly from the archive.
 func summarizeResources(ar *archive.Archive, idx capture.Index) []ResourceSummary {
-	type key struct{ group, version, resource string }
+	discovered := discoveryNamespaced(ar, idx)
+	type key = gvrKey
 	type accum struct {
 		namespaced bool
 		nsSeen     map[string]bool
@@ -117,10 +177,6 @@ func summarizeResources(ar *archive.Archive, idx capture.Index) []ResourceSummar
 			a = &accum{nsSeen: map[string]bool{}}
 			byKey[k] = a
 		}
-		if ns != "" {
-			a.namespaced = true
-			a.nsSeen[ns] = true
-		}
 		a.records += len(entry.Seqs)
 
 		// Count items in the latest record for this path.
@@ -129,11 +185,42 @@ func summarizeResources(ar *archive.Archive, idx capture.Index) []ResourceSummar
 			if data, err := ar.ReadRecord(path, latestSeq); err == nil {
 				var rec capture.Record
 				if jerr := json.Unmarshal(data, &rec); jerr == nil && rec.ResponseCode == 200 {
+					// A /namespaces/<ns>/ segment only means something on a
+					// successful response. When a cluster-scoped resource is
+					// configured with `namespaces:` by mistake, the engine
+					// probes the namespaced endpoints, gets 404s, and falls
+					// back to the cluster-scoped path (fetchResource in
+					// internal/capture/poll.go) — but those 404 records stay in
+					// the archive. Reading the namespace out of them reported
+					// nodes as namespaced=true with bogus namespaces entries.
+					if ns != "" {
+						a.namespaced = true
+						a.nsSeen[ns] = true
+					}
 					var list struct {
-						Items []json.RawMessage `json:"items"`
+						Items []struct {
+							Metadata struct {
+								Namespace string `json:"namespace"`
+							} `json:"metadata"`
+						} `json:"items"`
 					}
 					if jerr2 := json.Unmarshal(rec.ResponseBody, &list); jerr2 == nil {
 						a.items += len(list.Items)
+						// Namespacedness has to come from the items, not the
+						// request path. A namespaced resource fetched
+						// cluster-wide (/api/v1/pods rather than
+						// /api/v1/namespaces/x/pods) has no namespace segment
+						// to read, and that is the *recommended* way to capture
+						// a large cluster — it costs one LIST instead of one
+						// per namespace. Deriving it from the path alone
+						// reported namespaced=false for every namespaced
+						// resource in exactly that case.
+						for _, it := range list.Items {
+							if it.Metadata.Namespace != "" {
+								a.namespaced = true
+								a.nsSeen[it.Metadata.Namespace] = true
+							}
+						}
 					}
 				}
 			}
@@ -147,11 +234,18 @@ func summarizeResources(ar *archive.Archive, idx capture.Index) []ResourceSummar
 			nsList = append(nsList, ns)
 		}
 		sort.Strings(nsList)
+		// Discovery is authoritative when the capture recorded it; the observed
+		// inference below is the fallback for captures that didn't. The
+		// namespaces list always comes from what was actually captured.
+		namespaced := a.namespaced
+		if d, ok := discovered[k]; ok {
+			namespaced = d
+		}
 		summaries = append(summaries, ResourceSummary{
 			Group:      k.group,
 			Version:    k.version,
 			Resource:   k.resource,
-			Namespaced: a.namespaced,
+			Namespaced: namespaced,
 			Namespaces: nsList,
 			Records:    a.records,
 			Items:      a.items,
