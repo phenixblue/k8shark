@@ -142,8 +142,11 @@ make build
 ./kshrk transitions  /tmp/old-capture.kshrk -o json
 ./kshrk query        /tmp/old-capture.kshrk '{.metadata.name}' -o json
 ./kshrk open         /tmp/old-capture.kshrk --api-port 18081 --kubeconfig-out /tmp/mock.yaml &
+mock_pid=$!
+until [ -s /tmp/mock.yaml ]; do sleep 1; done
 kubectl --kubeconfig /tmp/mock.yaml get pods -A
 kubectl --kubeconfig /tmp/mock.yaml get nodes
+kill "$mock_pid"                       # don't leave a server bound to 18081
 
 # 5. Separately, run the old release's *shipped* config through the current
 #    validator — that's the config-schema half of the promise.

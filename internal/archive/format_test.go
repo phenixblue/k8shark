@@ -391,13 +391,21 @@ func TestReadMetadata_RealV051Shape(t *testing.T) {
 	defer func() { _ = sw.Abort() }()
 	capturedAt := time.Date(2026, 7, 31, 4, 30, 0, 0, time.UTC)
 	capturedUntil := capturedAt.Add(20 * time.Second)
-	rec := &format.Record{
-		ID: "rec-1", CapturedAt: capturedAt, APIPath: "/api/v1/nodes",
-		HTTPMethod: "GET", ResponseCode: 200,
-		ResponseBody: []byte(`{"apiVersion":"v1","kind":"NodeList","items":[]}`),
-	}
-	if _, err := sw.WriteRecord(rec); err != nil {
-		t.Fatalf("WriteRecord: %v", err)
+	// Two records at two seqs, so record_count, deduplicated_count and the
+	// index's seqs all agree with what was actually written. The real v0.5.1
+	// capture these values came from had 135 and 12; scaled down here, because
+	// an archive whose metadata contradicts its contents would break this test
+	// the day a reader starts cross-checking them — for a reason having nothing
+	// to do with metadata decoding.
+	for i, id := range []string{"rec-1", "rec-2"} {
+		rec := &format.Record{
+			ID: id, CapturedAt: capturedAt.Add(time.Duration(i) * 4 * time.Second),
+			APIPath: "/api/v1/nodes", HTTPMethod: "GET", ResponseCode: 200,
+			ResponseBody: []byte(`{"apiVersion":"v1","kind":"NodeList","items":[]}`),
+		}
+		if _, err := sw.WriteRecord(rec); err != nil {
+			t.Fatalf("WriteRecord(%s): %v", id, err)
+		}
 	}
 	// A bare map, not format.CaptureMetadata, so this stays pinned to the v1
 	// on-disk spelling even if the struct's tags are refactored later.
@@ -408,14 +416,14 @@ func TestReadMetadata_RealV051Shape(t *testing.T) {
 		"captured_until":     capturedUntil.Format(time.RFC3339Nano),
 		"kubernetes_version": "v1.36.1",
 		"server_address":     "https://127.0.0.1:57897",
-		"record_count":       135,
-		"deduplicated_count": 12,
+		"record_count":       2,
+		"deduplicated_count": 1,
 		"intervals":          []string{"4s"},
-		"uncompressed_bytes": 980157,
+		"uncompressed_bytes": 4096,
 	}
 	idx := map[string]any{
 		"/api/v1/nodes": map[string]any{
-			"api_path": "/api/v1/nodes", "seqs": []int{0},
+			"api_path": "/api/v1/nodes", "seqs": []int{0, 1},
 		},
 	}
 	if err := sw.Finish(meta, idx, nil); err != nil {
@@ -439,8 +447,8 @@ func TestReadMetadata_RealV051Shape(t *testing.T) {
 	if got.CaptureID != "8e04a3c4-f361-426a-9f3a-da1e261f7c5d" {
 		t.Errorf("CaptureID = %q", got.CaptureID)
 	}
-	if got.RecordCount != 135 {
-		t.Errorf("RecordCount = %d, want 135", got.RecordCount)
+	if got.RecordCount != 2 {
+		t.Errorf("RecordCount = %d, want 2", got.RecordCount)
 	}
 	// The seven fields golden-v1 never exercises.
 	if !got.CapturedAt.Equal(capturedAt) {
@@ -455,14 +463,14 @@ func TestReadMetadata_RealV051Shape(t *testing.T) {
 	if got.ServerAddress != "https://127.0.0.1:57897" {
 		t.Errorf("ServerAddress = %q", got.ServerAddress)
 	}
-	if got.DeduplicatedCount != 12 {
-		t.Errorf("DeduplicatedCount = %d, want 12", got.DeduplicatedCount)
+	if got.DeduplicatedCount != 1 {
+		t.Errorf("DeduplicatedCount = %d, want 1", got.DeduplicatedCount)
 	}
 	if len(got.Intervals) != 1 || got.Intervals[0] != "4s" {
 		t.Errorf("Intervals = %v, want [4s]", got.Intervals)
 	}
-	if got.UncompressedBytes != 980157 {
-		t.Errorf("UncompressedBytes = %d, want 980157", got.UncompressedBytes)
+	if got.UncompressedBytes != 4096 {
+		t.Errorf("UncompressedBytes = %d, want 4096", got.UncompressedBytes)
 	}
 	// Fields that postdate v0.5.1 must read as their zero value, not error.
 	if got.WatchEnabled || got.Encrypted || got.Redacted || got.AutoDiscovered {
