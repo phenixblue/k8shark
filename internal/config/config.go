@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -123,6 +124,10 @@ type Config struct {
 	DurationRaw string `mapstructure:"duration"`
 	// Duration is parsed from DurationRaw.
 	Duration time.Duration `mapstructure:"-"`
+
+	// Deprecations lists legacy config keys found while loading, populated by
+	// Load. Not a config key itself.
+	Deprecations []Deprecation `mapstructure:"-"`
 	// Output is the path to write the resulting .kshrk file.
 	Output string `mapstructure:"output"`
 	// Kubeconfig is the path to the kubeconfig to use. Empty = default resolution.
@@ -174,7 +179,7 @@ func Load(configFile string) (*Config, error) {
 		if err := yaml.Unmarshal(data, &raw); err != nil {
 			return nil, fmt.Errorf("parsing config file %q: %w", configFile, err)
 		}
-		applyLegacyKeyAliases(raw)
+		cfg.Deprecations = applyLegacyKeyAliases(raw)
 
 		// Decode twice from the same alias-normalized map: once strictly, so
 		// a typo'd or misspelled key (e.g. "previouslogs" instead of
@@ -236,6 +241,26 @@ func Load(configFile string) (*Config, error) {
 // nested section) to its current, camelCase replacement. Both spellings are
 // accepted for one minor release (#220); a future release will drop the
 // legacy spelling.
+// Deprecation records a legacy config key that was found and rewritten, so a
+// command can tell the user rather than migrating silently.
+//
+// docs/stability-policy.md defines deprecation as announce -> coexist -> remove.
+// Coexistence was implemented; the announcement only ever existed in release
+// notes, so a config using a legacy spelling validated completely clean and its
+// owner had no way to learn the spelling was on its way out — until a later
+// minor removed it (#324).
+type Deprecation struct {
+	// Key is the legacy spelling as written in the file (a dot-path for a
+	// nested key, e.g. "ui.api_port").
+	Key string
+	// Replacement is the canonical spelling to migrate to.
+	Replacement string
+	// Ignored is true when the canonical key was *also* set, so the legacy
+	// value was discarded rather than used. Worth saying out loud: the file
+	// contains a setting that has no effect.
+	Ignored bool
+}
+
 var legacyConfigKeyAliases = map[string]string{
 	"auto_discover":                "autoDiscover",
 	"auto_discover_exclude_groups": "autoDiscoverExcludeGroups",
@@ -250,7 +275,8 @@ var legacyConfigKeyAliases = map[string]string{
 // lowercased — see strictDecode's doc comment for why that matters). Keys
 // are dot-paths (e.g. "ui.api_port"); only one level of nesting is
 // supported, which is all legacyConfigKeyAliases currently needs.
-func applyLegacyKeyAliases(raw map[string]any) {
+func applyLegacyKeyAliases(raw map[string]any) []Deprecation {
+	var found []Deprecation
 	for legacyPath, canonicalPath := range legacyConfigKeyAliases {
 		m, legacy := resolveParent(raw, legacyPath)
 		if m == nil {
@@ -261,11 +287,21 @@ func applyLegacyKeyAliases(raw map[string]any) {
 			continue
 		}
 		cm, canonical := ensureParent(raw, canonicalPath)
-		if _, exists := cm[canonical]; !exists {
+		_, canonicalSet := cm[canonical]
+		if !canonicalSet {
 			cm[canonical] = v
 		}
 		delete(m, legacy)
+		found = append(found, Deprecation{
+			Key:         legacyPath,
+			Replacement: canonicalPath,
+			Ignored:     canonicalSet,
+		})
 	}
+	// Map iteration order is random; sort so the warnings a user sees are
+	// stable across runs.
+	sort.Slice(found, func(i, j int) bool { return found[i].Key < found[j].Key })
+	return found
 }
 
 // resolveParent walks a dot-path (e.g. "ui.apiPort") from raw and returns

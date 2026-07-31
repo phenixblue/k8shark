@@ -14,6 +14,21 @@ form. `kshrk validate` rejects any other unrecognized key by name — a typo
 like `previouslogs` (wrong case, not a legacy alias) fails validation
 instead of being silently ignored.
 
+Loading a config that uses a legacy spelling now prints a warning naming the
+replacement, on stderr, without changing the exit code:
+
+```console
+$ kshrk validate --config old.yaml
+⚠ config: "auto_discover" is deprecated; use "autoDiscover"
+⚠ config: "ui.api_port" is deprecated; use "ui.apiPort"
+  the legacy spellings still work, but will be removed in a future minor release — see docs/stability-policy.md#deprecation-policy
+✓ Config valid (11 resource(s), all namespaces, duration 10m0s)
+```
+
+`capture`, `redact`, and `ui` warn too, so you don't have to run `validate` to
+find out. Setting both spellings warns that the legacy one is being ignored —
+that key has no effect on the run.
+
 ## Top-level fields
 
 | Field | Type | Default | Description |

@@ -31,6 +31,7 @@ warnings (e.g. a very short interval) are printed but exit zero.`,
 		if err != nil {
 			return err
 		}
+		warnDeprecatedConfigKeys(cmd.ErrOrStderr(), cfg)
 		if err := cfg.Validate(); err != nil {
 			return err
 		}
