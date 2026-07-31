@@ -68,15 +68,24 @@ func TestExtractTarGz_PathTraversalRejected(t *testing.T) {
 	cases := []struct {
 		name     string
 		wantSafe bool
+		wantErr  bool
 	}{
-		{"go.mod", true},
-		{"cmd/kube-apiserver/main.go", true},
-		{"..", false},
-		{"../etc/passwd", false},
-		{"../../etc/passwd", false},
-		{"foo/../../bar", false},
-		{"/etc/passwd", false},
-		{"foo/../bar", true}, // cleans to "bar", still inside destDir
+		{name: "go.mod", wantSafe: true},
+		{name: "cmd/kube-apiserver/main.go", wantSafe: true},
+		// Any ".." path segment is rejected with an error, not normalized —
+		// including "foo/../bar", which would clean to the harmless "bar".
+		// A real Kubernetes tarball never contains one, so refusing to reason
+		// about it at all is strictly safer than cleaning it (see
+		// extractTarGz's first-barrier comment).
+		{name: "..", wantErr: true},
+		{name: "../etc/passwd", wantErr: true},
+		{name: "../../etc/passwd", wantErr: true},
+		{name: "foo/../../bar", wantErr: true},
+		{name: "foo/../bar", wantErr: true},
+		{name: `..\..\etc\passwd`, wantErr: true}, // backslash segments too, on every host
+		// Absolute paths are skipped rather than erroring (they carry no
+		// ".." segment to reject).
+		{name: "/etc/passwd"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -99,7 +108,15 @@ func TestExtractTarGz_PathTraversalRejected(t *testing.T) {
 				t.Fatal(err)
 			}
 			destDir := filepath.Join(tmp, "out")
-			if err := extractTarGz(tarPath, destDir); err != nil {
+			err := extractTarGz(tarPath, destDir)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("extractTarGz(%q) = nil, want an error", tc.name)
+				}
+				if !strings.Contains(err.Error(), "..") {
+					t.Errorf("error = %q, want it to name the %q segment", err.Error(), "..")
+				}
+			} else if err != nil {
 				t.Fatalf("extractTarGz: %v", err)
 			}
 
@@ -110,7 +127,10 @@ func TestExtractTarGz_PathTraversalRejected(t *testing.T) {
 			// ".."s still lands under.
 			foundInside, foundOutside := false, false
 			_ = filepath.Walk(tmp, func(p string, info os.FileInfo, err error) error {
-				if err != nil || info.IsDir() {
+				// Regular files only — see the same note in
+				// TestExtractTarGz_AdversarialEntriesNeverEscape: os.ReadFile
+				// would follow a symlink out of the temp tree.
+				if err != nil || info == nil || !info.Mode().IsRegular() {
 					return nil
 				}
 				b, rerr := os.ReadFile(p)
@@ -131,6 +151,149 @@ func TestExtractTarGz_PathTraversalRejected(t *testing.T) {
 			if foundInside != tc.wantSafe {
 				t.Errorf("entry %q extracted inside destDir = %v, want %v", tc.name, foundInside, tc.wantSafe)
 			}
+		})
+	}
+}
+
+// TestExtractTarGz_AdversarialEntriesNeverEscape is the belt-and-suspenders
+// counterpart to TestExtractTarGz_PathTraversalRejected: rather than
+// asserting a specific accept/reject decision per name, it checks an
+// invariant — whatever extractTarGz decides to do with an entry, nothing
+// lands outside destDir.
+//
+// Scope of that check, stated precisely: it plants a canary file as a direct
+// *sibling* of destDir and asserts the canary is never modified, then walks
+// the enclosing temp root and asserts no marker content appears anywhere
+// outside destDir. That covers where a traversal escaping destDir actually
+// goes (its parent tree, which every case here targets), but it is not a
+// filesystem-wide assertion: a write to an unrelated absolute path outside
+// the temp root would not be detected here. The absolute-path cases below
+// are therefore about "does it stay contained", with the accept/reject
+// contract for them pinned by TestExtractTarGz_PathTraversalRejected.
+//
+// It covers the Zip Slip variants that defeat a naive ".." substring check:
+//
+//   - a symlink entry followed by a file written "through" it (the classic
+//     two-entry indirect escape; extractTarGz skips symlinks, so the second
+//     entry lands in a real directory inside destDir)
+//   - a hard-link entry pointing outside destDir
+//   - backslash separators, which only the extracting host may honor
+//   - "....//" and "C:\", which look traversal-ish but aren't on a POSIX host
+//
+// This is the test that would catch a regression in the ".." rejection being
+// weakened or reordered, since it checks the invariant rather than the
+// mechanism (CodeQL alert #13).
+func TestExtractTarGz_AdversarialEntriesNeverEscape(t *testing.T) {
+	const marker = "ESCAPE-MARKER"
+	type entry struct {
+		name     string
+		typeflag byte
+		linkname string
+	}
+	cases := []struct {
+		desc    string
+		entries []entry
+	}{
+		// The direct escape vector, included here so this test fails loudly
+		// (not just the accept/reject table above) if the ".." rejection is
+		// ever removed.
+		{"plain parent traversal", []entry{{name: "../escaped.txt"}}},
+		{"backslash traversal", []entry{{name: `..\..\escaped.txt`}}},
+		{"dot-dot-dot-dot slash slash", []entry{{name: `....//escaped.txt`}}},
+		{"double-slash absolute", []entry{{name: "//etc/escaped.txt"}}},
+		{"windows drive letter", []entry{{name: `C:\escaped.txt`}}},
+		{"symlink to parent, then write through it", []entry{
+			{name: "link", typeflag: tar.TypeSymlink, linkname: ".."},
+			{name: "link/escaped.txt"},
+		}},
+		{"symlink to absolute dir, then write through it", []entry{
+			{name: "link", typeflag: tar.TypeSymlink, linkname: os.TempDir()},
+			{name: "link/escaped.txt"},
+		}},
+		{"hard link pointing outside", []entry{
+			{name: "hl", typeflag: tar.TypeLink, linkname: "../../escaped.txt"},
+		}},
+		{"deep traversal", []entry{{name: "a/b/c/../../../../../escaped.txt"}}},
+		{"trailing dotdot directory", []entry{{name: "sub/..", typeflag: tar.TypeDir}}},
+		{"leading ./..", []entry{{name: "./../escaped.txt"}}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.desc, func(t *testing.T) {
+			var buf bytes.Buffer
+			gz := gzip.NewWriter(&buf)
+			tw := tar.NewWriter(gz)
+			for _, e := range tc.entries {
+				tf := e.typeflag
+				if tf == 0 {
+					tf = tar.TypeReg
+				}
+				h := &tar.Header{Name: e.name, Mode: 0o644, Typeflag: tf, Linkname: e.linkname}
+				if tf == tar.TypeReg {
+					h.Size = int64(len(marker))
+				}
+				if err := tw.WriteHeader(h); err != nil {
+					t.Fatal(err)
+				}
+				if tf == tar.TypeReg {
+					if _, err := tw.Write([]byte(marker)); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			// Fail fast on flush/close errors so the bytes handed to
+			// extractTarGz below are known-good — a silently truncated
+			// archive would make this test pass for the wrong reason.
+			if err := tw.Close(); err != nil {
+				t.Fatalf("closing tar writer: %v", err)
+			}
+			if err := gz.Close(); err != nil {
+				t.Fatalf("closing gzip writer: %v", err)
+			}
+
+			root := t.TempDir()
+			tarPath := filepath.Join(root, "archive.tar.gz")
+			if err := os.WriteFile(tarPath, buf.Bytes(), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			// The canary sits directly alongside destDir, so a single "../"
+			// escape from inside destDir lands exactly on it.
+			canary := filepath.Join(root, "escaped.txt")
+			if err := os.WriteFile(canary, []byte("ORIGINAL"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			destDir := filepath.Join(root, "out")
+
+			// Either outcome is acceptable here (reject with an error, or
+			// extract somewhere safely inside destDir) — what must never
+			// happen is a write landing outside destDir.
+			_ = extractTarGz(tarPath, destDir)
+
+			if b, err := os.ReadFile(canary); err == nil && string(b) != "ORIGINAL" {
+				t.Errorf("canary outside destDir was overwritten with %q", string(b))
+			}
+			_ = filepath.Walk(root, func(p string, info os.FileInfo, err error) error {
+				// Regular files only, not just "not a directory": if a
+				// regression ever made extractTarGz create a symlink,
+				// os.ReadFile would follow it and could report marker content
+				// read from entirely outside this temp tree.
+				if err != nil || info == nil || !info.Mode().IsRegular() || p == tarPath {
+					return nil
+				}
+				b, rerr := os.ReadFile(p)
+				if rerr != nil || !strings.Contains(string(b), marker) {
+					return nil
+				}
+				// Compare against destDir with a separator boundary: a file
+				// legitimately *inside* destDir can itself be named
+				// "..\..\x" or "....", whose Rel result starts with the
+				// characters ".." without being an escape.
+				rel, rerr := filepath.Rel(destDir, p)
+				if rerr != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+					t.Errorf("entry content landed outside destDir at %s", p)
+				}
+				return nil
+			})
 		})
 	}
 }
