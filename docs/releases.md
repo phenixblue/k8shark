@@ -82,10 +82,17 @@ cosign verify-blob \
 ```
 
 The signature and certificate live together in a single `checksums.txt.bundle`
-(cosign's "new bundle format"). Releases signed before `v1.0.0-rc.3` instead
-carry a separate `checksums.txt.sig` and `checksums.txt.pem`; verify those
-with `--signature checksums.txt.sig --certificate checksums.txt.pem` in place
-of `--bundle`. Requires cosign v3+ (`--bundle` verification).
+(cosign's newer bundle format), which is what `--bundle` above reads. Releases
+are signed by the cosign version pinned in `release.yml` — v3.x, via
+`cosign-installer` v4.x — so verifying with a v3.x cosign is the tested
+combination.
+
+Releases before `v1.0.0-rc.3` instead carry separate `checksums.txt.sig` and
+`checksums.txt.pem`. Verify those by swapping `--bundle` for `--signature
+checksums.txt.sig --certificate checksums.txt.pem`. Those two flags are
+deprecated in cosign v3 but still functional (it prints a warning), so a
+single v3 cosign verifies both the old and new layouts — you don't need an
+older cosign for older releases.
 
 ### Verify a binary checksum
 
