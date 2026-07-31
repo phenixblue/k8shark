@@ -167,7 +167,38 @@ else
     --wait 90s
 fi
 pass "KinD cluster ready"
-info "Kubernetes server: $(kubectl --kubeconfig "$KIND_KUBECONFIG" version -o json 2>/dev/null | jq -r '.serverVersion.gitVersion' 2>/dev/null || echo unknown)"
+
+# Record the Kubernetes version actually reached. With NODE_IMAGE set this is
+# the evidence the run is worth anything: an unavailable or typo'd tag must not
+# quietly fall back to kind's default and make a version matrix look broader
+# than it was (see docs/development.md). So when a version was *requested*, a
+# version we can't determine — or one that doesn't match — is fatal rather than
+# an "unknown" line nobody reads.
+SERVER_VERSION=$(kubectl --kubeconfig "$KIND_KUBECONFIG" version -o json 2>/dev/null | jq -r '.serverVersion.gitVersion // empty' 2>/dev/null || true)
+
+if [[ -z "$SERVER_VERSION" ]]; then
+  if [[ -n "$NODE_IMAGE" ]]; then
+    die "Could not determine the server version, but NODE_IMAGE=$NODE_IMAGE requested one. Refusing to report a version-matrix result that can't be verified."
+  fi
+  info "Kubernetes server: unknown"
+else
+  info "Kubernetes server: $SERVER_VERSION"
+fi
+
+if [[ -n "$NODE_IMAGE" && -n "$SERVER_VERSION" ]]; then
+  # kindest/node:v1.32.3, optionally carrying an @sha256:… digest.
+  want_tag="${NODE_IMAGE%%@*}"
+  want_tag="${want_tag##*:}"
+  if [[ "$want_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    if [[ "$SERVER_VERSION" == "$want_tag"* ]]; then
+      pass "Requested Kubernetes version reached ($want_tag)"
+    else
+      die "NODE_IMAGE=$NODE_IMAGE requested $want_tag but the cluster is running $SERVER_VERSION."
+    fi
+  else
+    info "NODE_IMAGE tag '$want_tag' isn't a plain vX.Y.Z; skipping the version-match check"
+  fi
+fi
 
 KC=(--kubeconfig "$KIND_KUBECONFIG")
 
