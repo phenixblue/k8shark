@@ -151,7 +151,7 @@ result:
 | form | GETs per poll | records per poll |
 |------|---------------|------------------|
 | `namespaces:` omitted | 2 (cluster-wide) | 1 |
-| `namespaces: ["*"]` | 2 (cluster-wide) | 1 per namespace *that has items* |
+| `namespaces: ["*"]` | 2 (cluster-wide) | 1 per namespace with items, plus any that just emptied |
 | `namespaces: [a, b, c]` | **2 per listed namespace** | 1 per listed namespace |
 
 `["*"]` does *not* poll each namespace separately. The engine fetches the

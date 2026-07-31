@@ -214,13 +214,13 @@ func TestRun_SortedOutput(t *testing.T) {
 // via the *cluster-wide* path (/api/v1/pods rather than
 // /api/v1/namespaces/x/pods).
 //
-// That form is the one to use on a large cluster — it costs a single LIST
-// instead of one per namespace, which on an 80-namespace cluster is a 44x
-// difference in request volume. Namespacedness was derived from whether the
-// request path contained a /namespaces/ segment, so precisely the recommended
-// configuration reported `"namespaced": false` for every namespaced resource,
-// and omitted `namespaces` entirely. Found against a real 80-namespace cluster,
-// where 9 of 11 captured resources were mislabeled.
+// That is a normal way to capture a large cluster: one cluster-wide LIST
+// returns objects from every namespace, and it is what omitting `namespaces:`
+// produces (see docs/config.md for the cost model). Namespacedness was derived
+// from whether the request path contained a /namespaces/ segment, so this form
+// reported `"namespaced": false` for every namespaced resource and omitted
+// `namespaces` entirely. Found against a real 80-namespace cluster, where 9 of
+// 11 captured resources were mislabeled.
 func TestRun_NamespacedFromItems_NotPathShape(t *testing.T) {
 	now := time.Date(2026, 7, 31, 9, 0, 0, 0, time.UTC)
 	path := buildArchive(t, []*capture.Record{
