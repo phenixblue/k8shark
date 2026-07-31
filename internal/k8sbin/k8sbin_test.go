@@ -157,10 +157,21 @@ func TestExtractTarGz_PathTraversalRejected(t *testing.T) {
 
 // TestExtractTarGz_AdversarialEntriesNeverEscape is the belt-and-suspenders
 // counterpart to TestExtractTarGz_PathTraversalRejected: rather than
-// asserting a specific accept/reject decision per name, it plants a canary
-// file as a *sibling* of destDir and proves that — whatever extractTarGz
-// decides to do — no entry ever writes outside destDir. It covers the Zip
-// Slip variants that defeat a naive ".." substring check:
+// asserting a specific accept/reject decision per name, it checks an
+// invariant — whatever extractTarGz decides to do with an entry, nothing
+// lands outside destDir.
+//
+// Scope of that check, stated precisely: it plants a canary file as a direct
+// *sibling* of destDir and asserts the canary is never modified, then walks
+// the enclosing temp root and asserts no marker content appears anywhere
+// outside destDir. That covers where a traversal escaping destDir actually
+// goes (its parent tree, which every case here targets), but it is not a
+// filesystem-wide assertion: a write to an unrelated absolute path outside
+// the temp root would not be detected here. The absolute-path cases below
+// are therefore about "does it stay contained", with the accept/reject
+// contract for them pinned by TestExtractTarGz_PathTraversalRejected.
+//
+// It covers the Zip Slip variants that defeat a naive ".." substring check:
 //
 //   - a symlink entry followed by a file written "through" it (the classic
 //     two-entry indirect escape; extractTarGz skips symlinks, so the second
