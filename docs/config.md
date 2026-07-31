@@ -141,6 +141,47 @@ Use `"*"` as a namespace value to automatically capture from all namespaces disc
 - If namespace discovery fails (e.g. RBAC permissions), the capture exits with a clear error.
 - A well-known cluster-scoped resource (nodes, persistentvolumes, etc.) with `namespaces: ["*"]` emits a warning and falls back to a cluster-scoped fetch.
 
+### Omitting `namespaces` costs far less on a large cluster
+
+`namespaces: ["*"]` issues **one LIST per namespace**. Omitting `namespaces`
+entirely for a namespaced resource issues **one cluster-wide LIST** that returns
+objects from every namespace — the same data, at a fraction of the request
+volume.
+
+Measured against a real 80-namespace cluster with 175 listable namespaced
+resource types:
+
+| form | LIST calls per poll interval |
+|------|----------------------------:|
+| omitted (cluster-wide) | 315 |
+| `namespaces: ["*"]` | 14,140 |
+
+That is a **44× difference**, and at the 30s default it is the difference
+between ~10 and ~470 requests per second sustained against the apiserver. A
+smaller check on a 52-namespace cluster captured byte-identical object sets
+either way — 140 pods and 94 deployments — while the wildcard form produced 5×
+the records and a 2.2× larger archive for no extra information.
+
+```yaml
+# Prefer this on a large cluster: one LIST, all namespaces.
+- group: ""
+  version: v1
+  resource: pods
+  interval: 30s
+
+# Use "*" only when you need per-namespace *records* (separate archive entries
+# per namespace), or when combined with a short explicit namespace list.
+```
+
+Reach for `namespaces: ["*"]` when you want each namespace recorded as its own
+archive entry, or when narrowing to a handful of named namespaces. For "capture
+everything everywhere", omit the field.
+
+> **`--auto-discover` currently uses the wildcard form** for every namespaced
+> resource it finds, so on a large cluster it inherits the multiplication above.
+> Scope it with an explicit `namespaces:` list on the `all: true` entry when
+> pointing it at a big cluster.
+
 ### Response deduplication
 
 By default, k8shark writes the first poll result for each API path and skips

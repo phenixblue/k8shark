@@ -130,10 +130,29 @@ func summarizeResources(ar *archive.Archive, idx capture.Index) []ResourceSummar
 				var rec capture.Record
 				if jerr := json.Unmarshal(data, &rec); jerr == nil && rec.ResponseCode == 200 {
 					var list struct {
-						Items []json.RawMessage `json:"items"`
+						Items []struct {
+							Metadata struct {
+								Namespace string `json:"namespace"`
+							} `json:"metadata"`
+						} `json:"items"`
 					}
 					if jerr2 := json.Unmarshal(rec.ResponseBody, &list); jerr2 == nil {
 						a.items += len(list.Items)
+						// Namespacedness has to come from the items, not the
+						// request path. A namespaced resource fetched
+						// cluster-wide (/api/v1/pods rather than
+						// /api/v1/namespaces/x/pods) has no namespace segment
+						// to read, and that is the *recommended* way to capture
+						// a large cluster — it costs one LIST instead of one
+						// per namespace. Deriving it from the path alone
+						// reported namespaced=false for every namespaced
+						// resource in exactly that case.
+						for _, it := range list.Items {
+							if it.Metadata.Namespace != "" {
+								a.namespaced = true
+								a.nsSeen[it.Metadata.Namespace] = true
+							}
+						}
 					}
 				}
 			}

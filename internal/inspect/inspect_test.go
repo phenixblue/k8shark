@@ -209,3 +209,73 @@ func TestRun_SortedOutput(t *testing.T) {
 		}
 	}
 }
+
+// TestRun_NamespacedFromItems_NotPathShape covers a namespaced resource captured
+// via the *cluster-wide* path (/api/v1/pods rather than
+// /api/v1/namespaces/x/pods).
+//
+// That form is the one to use on a large cluster — it costs a single LIST
+// instead of one per namespace, which on an 80-namespace cluster is a 44x
+// difference in request volume. Namespacedness was derived from whether the
+// request path contained a /namespaces/ segment, so precisely the recommended
+// configuration reported `"namespaced": false` for every namespaced resource,
+// and omitted `namespaces` entirely. Found against a real 80-namespace cluster,
+// where 9 of 11 captured resources were mislabeled.
+func TestRun_NamespacedFromItems_NotPathShape(t *testing.T) {
+	now := time.Date(2026, 7, 31, 9, 0, 0, 0, time.UTC)
+	path := buildArchive(t, []*capture.Record{
+		{
+			// Cluster-wide pods LIST: no namespace in the path, but every item
+			// carries one.
+			ID: "pods-0", CapturedAt: now, APIPath: "/api/v1/pods",
+			HTTPMethod: "GET", ResponseCode: 200,
+			ResponseBody: json.RawMessage(`{"kind":"PodList","apiVersion":"v1","items":[
+				{"metadata":{"name":"a","namespace":"team-one"}},
+				{"metadata":{"name":"b","namespace":"team-two"}},
+				{"metadata":{"name":"c","namespace":"team-one"}}
+			]}`),
+		},
+		{
+			// A genuinely cluster-scoped resource must stay namespaced=false.
+			ID: "nodes-0", CapturedAt: now, APIPath: "/api/v1/nodes",
+			HTTPMethod: "GET", ResponseCode: 200,
+			ResponseBody: json.RawMessage(`{"kind":"NodeList","apiVersion":"v1","items":[
+				{"metadata":{"name":"node-1"}}
+			]}`),
+		},
+	})
+
+	rep, err := Run(path, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	find := func(resource string) *ResourceSummary {
+		for i := range rep.Resources {
+			if rep.Resources[i].Resource == resource {
+				return &rep.Resources[i]
+			}
+		}
+		t.Fatalf("no summary for %q; got %+v", resource, rep.Resources)
+		return nil
+	}
+
+	pods := find("pods")
+	if !pods.Namespaced {
+		t.Error("pods: namespaced=false for a cluster-wide LIST whose items all carry a namespace")
+	}
+	if len(pods.Namespaces) != 2 || pods.Namespaces[0] != "team-one" || pods.Namespaces[1] != "team-two" {
+		t.Errorf("pods: namespaces = %v, want [team-one team-two] deduped and sorted", pods.Namespaces)
+	}
+	if pods.Items != 3 {
+		t.Errorf("pods: item_count = %d, want 3", pods.Items)
+	}
+
+	nodes := find("nodes")
+	if nodes.Namespaced {
+		t.Error("nodes: namespaced=true for a cluster-scoped resource whose items carry no namespace")
+	}
+	if len(nodes.Namespaces) != 0 {
+		t.Errorf("nodes: namespaces = %v, want empty", nodes.Namespaces)
+	}
+}
