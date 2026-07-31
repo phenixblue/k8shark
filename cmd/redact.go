@@ -105,6 +105,7 @@ func runRedact(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("loading config: %w", err)
 		}
+		warnDeprecatedConfigKeys(cmd.ErrOrStderr(), cfg)
 		if cfg.Redaction.RedactSecrets {
 			doRedactSecrets = true
 		}
