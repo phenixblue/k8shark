@@ -37,6 +37,11 @@ pass() { printf '  \033[1;32m[OK]   %s\033[0m\n' "$*"; PASS=$((PASS + 1)); }
 fail() { printf '  \033[1;31m[FAIL] %s\033[0m\n' "$*"; FAIL=$((FAIL + 1)); }
 die()  { printf '\n\033[1;31mFATAL: %s\033[0m\n' "$*" >&2; exit 1; }
 
+# assert_node_image_version — shared with scripts/conformance.sh so both
+# enforce NODE_IMAGE identically (see docs/development.md).
+# shellcheck source=scripts/lib/kube-version.sh
+source "${PROJ_ROOT}/scripts/lib/kube-version.sh"
+
 assert_contains() {
   local desc="$1" haystack="$2" needle="$3"
   if echo "$haystack" | grep -q "$needle"; then
@@ -168,37 +173,11 @@ else
 fi
 pass "KinD cluster ready"
 
-# Record the Kubernetes version actually reached. With NODE_IMAGE set this is
-# the evidence the run is worth anything: an unavailable or typo'd tag must not
-# quietly fall back to kind's default and make a version matrix look broader
-# than it was (see docs/development.md). So when a version was *requested*, a
-# version we can't determine — or one that doesn't match — is fatal rather than
-# an "unknown" line nobody reads.
+# Record the Kubernetes version actually reached, and — when NODE_IMAGE asked
+# for a specific one — hold the cluster to it. See scripts/lib/kube-version.sh.
 SERVER_VERSION=$(kubectl --kubeconfig "$KIND_KUBECONFIG" version -o json 2>/dev/null | jq -r '.serverVersion.gitVersion // empty' 2>/dev/null || true)
-
-if [[ -z "$SERVER_VERSION" ]]; then
-  if [[ -n "$NODE_IMAGE" ]]; then
-    die "Could not determine the server version, but NODE_IMAGE=$NODE_IMAGE requested one. Refusing to report a version-matrix result that can't be verified."
-  fi
-  info "Kubernetes server: unknown"
-else
-  info "Kubernetes server: $SERVER_VERSION"
-fi
-
-if [[ -n "$NODE_IMAGE" && -n "$SERVER_VERSION" ]]; then
-  # kindest/node:v1.32.3, optionally carrying an @sha256:… digest.
-  want_tag="${NODE_IMAGE%%@*}"
-  want_tag="${want_tag##*:}"
-  if [[ "$want_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    if [[ "$SERVER_VERSION" == "$want_tag"* ]]; then
-      pass "Requested Kubernetes version reached ($want_tag)"
-    else
-      die "NODE_IMAGE=$NODE_IMAGE requested $want_tag but the cluster is running $SERVER_VERSION."
-    fi
-  else
-    info "NODE_IMAGE tag '$want_tag' isn't a plain vX.Y.Z; skipping the version-match check"
-  fi
-fi
+info "Kubernetes server: ${SERVER_VERSION:-unknown}"
+assert_node_image_version "$NODE_IMAGE" "$SERVER_VERSION"
 
 KC=(--kubeconfig "$KIND_KUBECONFIG")
 

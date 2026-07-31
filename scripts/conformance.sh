@@ -43,6 +43,11 @@ log()  { printf '\n\033[1;34m==> %s\033[0m\n' "$*"; }
 info() { printf '    %s\n' "$*"; }
 die()  { printf '\n\033[1;31mFATAL: %s\033[0m\n' "$*" >&2; exit 1; }
 
+# assert_node_image_version — shared with scripts/e2e.sh so both enforce
+# NODE_IMAGE identically (see docs/development.md).
+# shellcheck source=scripts/lib/kube-version.sh
+source "${PROJ_ROOT}/scripts/lib/kube-version.sh"
+
 cleanup() {
   if [[ "${KEEP:-}" == "1" ]]; then
     info "KEEP=1 — leaving cluster '$CLUSTER_NAME' and mock (pid $SERVER_PID) running"
@@ -78,6 +83,9 @@ fi
 KC=(--kubeconfig "$KIND_KUBECONFIG")
 K8S_VERSION=$(kubectl "${KC[@]}" version -o json | jq -r '.serverVersion.gitVersion')
 info "cluster ready ($K8S_VERSION)"
+# K8S_VERSION is handed to conformance_diff.py below, so a cluster that isn't
+# the requested version would diff the mock against the wrong upstream.
+assert_node_image_version "$NODE_IMAGE" "$K8S_VERSION"
 
 # ── Deploy a spread of resources across core / apps / batch groups ────────────
 log "Deploying test resources"
