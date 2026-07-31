@@ -37,13 +37,32 @@ on:
 permissions:
   contents: read
   # Required for cosign's keyless signing to obtain an OIDC token. This job
-  # publishes nothing — contents stays read-only.
+  # publishes nothing — contents stays read-only. See CAN_SIGN below: signing
+  # is gated so PR-authored code from a fork never mints a token bearing this
+  # repository's identity.
   id-token: write
 
 jobs:
   goreleaser-dry-run:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      # Sign only on pushes to main and on same-repo PRs — never on a fork PR.
+      # Two reasons, and the gate is worth having even if only one holds:
+      #
+      #   1. Privilege. id-token: write on a pull_request-triggered workflow is
+      #      a permission grant evaluated against PR-authored code. Fork PRs
+      #      are not expected to be able to mint an OIDC token carrying this
+      #      repo's identity, but gating explicitly means the guarantee doesn't
+      #      rest on that being true (or staying true).
+      #   2. It would fail anyway. Without a usable token the cosign step
+      #      errors, so an external contributor touching .goreleaser.yaml would
+      #      get a red check they cannot fix.
+      #
+      # Fork PRs still run the whole build and every artifact assertion — only
+      # the signing step and its bundle verification are skipped. Same
+      # same-repo test conformance.yml uses to gate its PR-comment step.
+      CAN_SIGN: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -62,6 +81,7 @@ jobs:
       # the whole value of signing here is validating the exact cosign version
       # the real release will use.
       - name: Setup Cosign
+        if: env.CAN_SIGN == 'true'
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       - name: Install GoReleaser
@@ -75,10 +95,17 @@ jobs:
         run: goreleaser check
 
       - name: goreleaser snapshot dry-run
-        # Only publish is skipped — signing runs for real, so a cosign/config
+        # Signing runs for real when CAN_SIGN, so a cosign/config
         # incompatibility fails here rather than at a release tag. See the
         # header comment.
-        run: goreleaser release --snapshot --clean --skip=publish
+        run: |
+          set -euo pipefail
+          if [ "$CAN_SIGN" = "true" ]; then
+            goreleaser release --snapshot --clean --skip=publish
+          else
+            echo "::notice title=signing not exercised::fork PR — running unsigned (no OIDC token available to a fork). Build and artifact checks still run; the signing path is validated on push to main."
+            goreleaser release --snapshot --clean --skip=sign,publish
+          fi
         env:
           HOMEBREW_TAP_OWNER: phenixblue
           HOMEBREW_TAP_NAME: homebrew-tap
@@ -94,6 +121,7 @@ jobs:
       # back — would slip past a pass/fail-only check. So assert the exact
       # filename docs/releases.md tells users to fetch, then round-trip it.
       - name: Verify the signature bundle round-trips
+        if: env.CAN_SIGN == 'true'
         run: |
           set -euo pipefail
           if [ ! -f dist/checksums.txt.bundle ]; then

@@ -144,10 +144,12 @@ either release workflow. It didn't always: it used to skip signing, and that
 gap is exactly how a cosign v3 incompatibility survived until a `v1.0.0-rc.3`
 tag was about to be cut.
 
-Because that job only triggers on release-config paths, a change elsewhere
-that somehow affects packaging still won't be signed-tested until the tag.
-`make release-snapshot` reproduces the full signing path locally if you want
-belt-and-braces before a release; `make release-local` does not.
+Two caveats keep the local check useful. That job only triggers on
+release-config paths, so a change elsewhere that somehow affects packaging
+still isn't signed-tested until the tag; and it skips signing on pull requests
+from forks, which can't obtain an OIDC token. `make release-snapshot`
+reproduces the full signing path locally for extra assurance before a release;
+`make release-local` does not.
 
 ## CI pipeline (non-release)
 
