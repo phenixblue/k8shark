@@ -109,29 +109,50 @@ makes a similar promise for config files. The golden fixtures in
 against what an old release actually wrote:
 
 ```sh
-# 1. Get the old binary.
+# 1. Get the old binary. (Swap darwin_arm64 for your platform.)
 gh release download v0.5.1 --repo phenixblue/k8shark -p 'k8shark_*_darwin_arm64.tar.gz'
 mkdir -p /tmp/old && tar xzf k8shark_0.5.1_darwin_arm64.tar.gz -C /tmp/old
 
-# 2. Capture with it against a live cluster.
+# 2. Write a short capture config. The old release's own examples/k8shark.yaml
+#    runs for 10m over 11 resources; this is the same schema, just quicker.
+cat > /tmp/old-capture.yaml <<'YAML'
+duration: 20s
+output: /tmp/old-capture.kshrk
+resources:
+  - group: ""
+    version: v1
+    resource: pods
+    namespaces: ["*"]
+    interval: 5s
+  - group: ""
+    version: v1
+    resource: nodes
+    interval: 10s
+YAML
+
+# 3. Capture with the OLD binary against a live cluster.
 make kind-up
-KUBECONFIG=~/.kube/k8shark-dev.yaml /tmp/old/kshrk capture --config old.yaml
+KUBECONFIG=~/.kube/k8shark-dev.yaml /tmp/old/kshrk capture --config /tmp/old-capture.yaml
 
-# 3. Read it with the current build — every command, plus the mock server.
+# 4. Read that archive with the CURRENT build — every command, plus the mock
+#    server. A high API port keeps this from colliding with a real run.
 make build
-./kshrk inspect old.kshrk -o json
-./kshrk diagnose old.kshrk -o json
-./kshrk transitions old.kshrk -o json
-./kshrk open old.kshrk --api-port 18081 --kubeconfig-out /tmp/mock.yaml &
+./kshrk inspect      /tmp/old-capture.kshrk -o json
+./kshrk diagnose     /tmp/old-capture.kshrk -o json
+./kshrk transitions  /tmp/old-capture.kshrk -o json
+./kshrk query        /tmp/old-capture.kshrk '{.metadata.name}' -o json
+./kshrk open         /tmp/old-capture.kshrk --api-port 18081 --kubeconfig-out /tmp/mock.yaml &
 kubectl --kubeconfig /tmp/mock.yaml get pods -A
+kubectl --kubeconfig /tmp/mock.yaml get nodes
 
-# 4. And run the old release's shipped config through the current validator.
-git show v0.5.1:examples/k8shark.yaml > /tmp/v051.yaml
-./kshrk validate --config /tmp/v051.yaml
+# 5. Separately, run the old release's *shipped* config through the current
+#    validator — that's the config-schema half of the promise.
+git show v0.5.1:examples/k8shark.yaml > /tmp/v051-shipped.yaml
+./kshrk validate --config /tmp/v051-shipped.yaml
 ```
 
-Use a high API port (`18081`) rather than the default so a test run can't
-collide with a real one.
+Expect `inspect -o json` to report `"archive_format_version": 1`, and every
+command in step 4 to exit 0.
 
 Worth knowing: a v0.5.1 capture of a *single* resource still lands at ~1 MB
 because discovery and OpenAPI paths are captured alongside it, so a real old
