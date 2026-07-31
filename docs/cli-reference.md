@@ -843,6 +843,7 @@ kshrk replay <capture.kshrk> [flags]
 
 ```
       --api-port string           port for the mock API server (0 = random available port) (default "0")
+      --controller-log string     destination for kube-controller-manager's own output when --with-controller-manager is set: a file path, or "-" to stream it inline (default: a temp file whose path is printed at startup)
       --from string               replay window start: RFC3339 or relative duration like -10m (default: capture start)
   -h, --help                      help for replay
       --kubeconfig-out string     where to write the generated kubeconfig (default: ~/.kube/k8shark-<id>.yaml)
@@ -972,6 +973,7 @@ kshrk ui <capture.kshrk> [flags]
 ```
       --api-port string           port for the mock API server (0 = random available port) (default "0")
       --at string                 pin UI data to a specific timestamp (RFC3339 or relative duration like -5m)
+      --controller-log string     destination for kube-controller-manager's own output when --with-controller-manager is set: a file path, or "-" to stream it inline (default: a temp file whose path is printed at startup)
       --from string               replay window start: RFC3339 or relative duration like -10m
   -h, --help                      help for ui
       --kubeconfig-out string     where to write the generated kubeconfig (default: ~/.kube/k8shark-<id>.yaml)

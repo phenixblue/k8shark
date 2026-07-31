@@ -79,4 +79,14 @@ and `details`) was fixed in #177 for a real, captured resource type —
 `notFoundStatus` in `internal/server/handler.go` sets both — and no longer
 appears in the baseline.
 
+`Accept: …;as=PartialObjectMetadata;g=meta.k8s.io` was a divergence the
+differential never covered, because nothing in the read surface it compares
+requests a metadata-only projection — the mock returned the full object, which a
+client decoding strictly against `PartialObjectMetadata` rejects outright. That
+surfaced only when `replay --with-controller-manager` was run end to end and
+kube-controller-manager's garbagecollector, which walks `ownerReferences` with a
+metadata client, failed to sync any item and retried forever (#329). It is now
+projected in `internal/store/responses_codec.go`; a `Status` body is deliberately
+passed through unprojected so a 404 stays decodable as `Status`.
+
 Removing an entry here (by fixing the underlying behavior) tightens the gate.

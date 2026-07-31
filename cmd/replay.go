@@ -53,6 +53,7 @@ func init() {
 	replayCmd.Flags().Bool("schedule-pods", true, "bind unscheduled pods to a node on create (the scheduler replay lacks); --writable only")
 	replayCmd.Flags().Bool("with-kwok", false, "also run a detected 'kwok' binary against the server to drive pod/node lifecycle (implies --writable)")
 	replayCmd.Flags().Bool("with-controller-manager", false, controllerManagerFlagHelp)
+	replayCmd.Flags().String("controller-log", "", controllerLogFlagHelp)
 }
 
 func runReplay(cmd *cobra.Command, args []string) error {
@@ -67,6 +68,7 @@ func runReplay(cmd *cobra.Command, args []string) error {
 	schedulePods, _ := cmd.Flags().GetBool("schedule-pods")
 	withKwok, _ := cmd.Flags().GetBool("with-kwok")
 	withControllerManager, _ := cmd.Flags().GetBool("with-controller-manager")
+	controllerLog, _ := cmd.Flags().GetString("controller-log")
 	verbose, _ := cmd.Root().PersistentFlags().GetBool("verbose")
 
 	if err := validateKwokFlags(withKwok, schedulePods); err != nil {
@@ -124,7 +126,7 @@ func runReplay(cmd *cobra.Command, args []string) error {
 
 	var controllerManagerCleanup func()
 	if withControllerManager {
-		controllerManagerCleanup, err = startControllerManager(srv.KubeconfigPath(), srv.KubernetesVersion())
+		controllerManagerCleanup, err = startControllerManager(srv.KubeconfigPath(), srv.KubernetesVersion(), controllerLog)
 		if err != nil {
 			if kwokCleanup != nil {
 				kwokCleanup()

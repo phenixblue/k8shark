@@ -2,6 +2,7 @@ package store
 
 import (
 	"bytes"
+	"encoding/json"
 	"mime"
 	"net/http"
 	"strconv"
@@ -149,4 +150,164 @@ func (p *ProtobufResponseWriter) Flush() {
 	}
 	p.ResponseWriter.WriteHeader(status)
 	_, _ = p.ResponseWriter.Write(body)
+}
+
+// ── PartialObjectMetadata projection (issue #329) ────────────────────────────
+//
+// kube-controller-manager's garbagecollector walks ownerReferences using a
+// metadata-only client, requesting `as=PartialObjectMetadata`. Ignoring that
+// parameter and returning the full object doesn't merely waste bytes — the
+// client decodes strictly against the negotiated type and fails outright:
+//
+//	unable to decode returned object as PartialObjectMetadata:
+//	invalid character 'k' looking for beginning of value
+//
+// which left the GC unable to sync any item and retrying forever. Projecting the
+// body down to apiVersion/kind/metadata is what a real apiserver does for this
+// Accept parameter, and it's cheap: the metadata is already in the response.
+
+const (
+	partialMetadataKind     = "PartialObjectMetadata"
+	partialMetadataListKind = "PartialObjectMetadataList"
+	metaGroup               = "meta.k8s.io"
+)
+
+// WantsPartialObjectMetadata reports whether the client's Accept header asks for
+// a metadata-only projection, and returns the meta.k8s.io version to answer in
+// (v1 or v1beta1). Only `g=meta.k8s.io` counts: `as=Table` uses the same
+// parameter style and is handled separately.
+func WantsPartialObjectMetadata(r *http.Request) (string, bool) {
+	accept := r.Header.Get("Accept")
+	if accept == "" {
+		return "", false
+	}
+	for _, part := range strings.Split(accept, ",") {
+		_, params, err := mime.ParseMediaType(strings.TrimSpace(part))
+		if err != nil {
+			continue
+		}
+		if params["as"] != partialMetadataKind || params["g"] != metaGroup {
+			continue
+		}
+		v := params["v"]
+		if v == "" {
+			v = "v1"
+		}
+		return v, true
+	}
+	return "", false
+}
+
+// PartialMetadataResponseWriter buffers a response so a JSON object or list body
+// can be projected to PartialObjectMetadata(List) on flush.
+//
+// Anything that isn't a recognizable object or list — a Status from a 404, an
+// OpenAPI document, plain text — passes through untouched. That matters: error
+// responses must stay decodable as Status, or a client would see a decode
+// failure instead of the NotFound it was told to expect.
+type PartialMetadataResponseWriter struct {
+	http.ResponseWriter
+	metaVersion string
+	status      int
+	buf         bytes.Buffer
+}
+
+func NewPartialMetadataResponseWriter(w http.ResponseWriter, metaVersion string) *PartialMetadataResponseWriter {
+	return &PartialMetadataResponseWriter{ResponseWriter: w, metaVersion: metaVersion}
+}
+
+func (p *PartialMetadataResponseWriter) WriteHeader(code int) { p.status = code }
+
+func (p *PartialMetadataResponseWriter) Write(b []byte) (int, error) { return p.buf.Write(b) }
+
+// Flush writes the buffered response, projecting a JSON body to metadata-only
+// when it is a Kubernetes object or list; otherwise it passes through unchanged.
+func (p *PartialMetadataResponseWriter) Flush() {
+	status := p.status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	body := p.buf.Bytes()
+
+	// The representation depends on Accept, so it must not be cached across
+	// differing Accept headers.
+	p.Header().Add("Vary", "Accept")
+
+	if strings.HasPrefix(p.Header().Get("Content-Type"), "application/json") {
+		if projected, ok := projectPartialMetadata(body, p.metaVersion); ok {
+			p.Header().Del("Content-Length") // length changed
+			p.ResponseWriter.WriteHeader(status)
+			_, _ = p.ResponseWriter.Write(projected)
+			return
+		}
+	}
+	p.ResponseWriter.WriteHeader(status)
+	_, _ = p.ResponseWriter.Write(body)
+}
+
+// projectPartialMetadata rewrites a Kubernetes object or list JSON body as
+// PartialObjectMetadata or PartialObjectMetadataList. It reports false for
+// anything it doesn't recognize — a Status, a non-object, malformed JSON — so
+// the caller passes those through.
+func projectPartialMetadata(body []byte, metaVersion string) ([]byte, bool) {
+	var probe struct {
+		Kind     string            `json:"kind"`
+		Metadata json.RawMessage   `json:"metadata"`
+		Items    []json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(body, &probe); err != nil {
+		return nil, false
+	}
+	// A Status is an error/result envelope, not an object to project. Leaving it
+	// alone keeps 404s decodable as Status.
+	if probe.Kind == "" || probe.Kind == "Status" {
+		return nil, false
+	}
+	apiVersion := metaGroup + "/" + metaVersion
+
+	// List: project each item, preserving the list's own metadata
+	// (resourceVersion/continue) so watch bookmarks and paging still line up.
+	if strings.HasSuffix(probe.Kind, "List") {
+		out := map[string]any{
+			"kind":       partialMetadataListKind,
+			"apiVersion": apiVersion,
+		}
+		if len(probe.Metadata) > 0 {
+			out["metadata"] = probe.Metadata
+		}
+		items := make([]map[string]any, 0, len(probe.Items))
+		for _, raw := range probe.Items {
+			var it struct {
+				Metadata json.RawMessage `json:"metadata"`
+			}
+			if err := json.Unmarshal(raw, &it); err != nil || len(it.Metadata) == 0 {
+				continue
+			}
+			items = append(items, map[string]any{
+				"kind":       partialMetadataKind,
+				"apiVersion": apiVersion,
+				"metadata":   it.Metadata,
+			})
+		}
+		out["items"] = items
+		encoded, err := json.Marshal(out)
+		if err != nil {
+			return nil, false
+		}
+		return encoded, true
+	}
+
+	// Single object.
+	if len(probe.Metadata) == 0 {
+		return nil, false
+	}
+	encoded, err := json.Marshal(map[string]any{
+		"kind":       partialMetadataKind,
+		"apiVersion": apiVersion,
+		"metadata":   probe.Metadata,
+	})
+	if err != nil {
+		return nil, false
+	}
+	return encoded, true
 }
