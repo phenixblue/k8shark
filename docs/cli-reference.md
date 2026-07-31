@@ -854,7 +854,7 @@ kshrk replay <capture.kshrk> [flags]
       --to string                 replay window end: RFC3339 or relative duration like -1m (default: capture end)
       --ui                        also start the web dashboard as a replay transport (VCR)
       --ui-port string            port for the dashboard when --ui is set (0 = random) (default "0")
-      --with-controller-manager   also run kube-controller-manager (downloaded/built to match the capture's Kubernetes version) against the server, reconciling a curated set of controllers (namespace, serviceaccount, resourcequota, garbagecollector, daemonset, deployment, replicaset, statefulset, job, cronjob, endpoint, endpointslice, endpointslicemirroring, disruption) — see docs/kwok.md (implies --writable)
+      --with-controller-manager   also run kube-controller-manager (downloaded/built to match the capture's Kubernetes version) against the server, reconciling a curated set of controllers (namespace, serviceaccount, resourcequota, daemonset, deployment, replicaset, statefulset, job, cronjob, endpoint, endpointslice, endpointslicemirroring, disruption) — see docs/kwok.md (implies --writable)
       --with-kwok                 also run a detected 'kwok' binary against the server to drive pod/node lifecycle (implies --writable)
       --writable                  accept client writes into an in-memory overlay (closed-loop controller dev)
 ```
@@ -982,7 +982,7 @@ kshrk ui <capture.kshrk> [flags]
       --start-paused              replay mode: start paused (the UI defaults to this; pass --start-paused=false to auto-play)
       --to string                 replay window end: RFC3339 or relative duration like -1m
       --ui-port string            port for the local UI server (0 = random available port) (default "0")
-      --with-controller-manager   also run kube-controller-manager (downloaded/built to match the capture's Kubernetes version) against the server, reconciling a curated set of controllers (namespace, serviceaccount, resourcequota, garbagecollector, daemonset, deployment, replicaset, statefulset, job, cronjob, endpoint, endpointslice, endpointslicemirroring, disruption) — see docs/kwok.md (implies --writable)
+      --with-controller-manager   also run kube-controller-manager (downloaded/built to match the capture's Kubernetes version) against the server, reconciling a curated set of controllers (namespace, serviceaccount, resourcequota, daemonset, deployment, replicaset, statefulset, job, cronjob, endpoint, endpointslice, endpointslicemirroring, disruption) — see docs/kwok.md (implies --writable)
       --with-kwok                 replay mode: also run a detected 'kwok' binary against the server to drive pod/node lifecycle (implies --writable)
       --writable                  replay mode: accept client writes into an in-memory overlay
 ```

@@ -176,26 +176,58 @@ const (
 // a metadata-only projection, and returns the meta.k8s.io version to answer in
 // (v1 or v1beta1). Only `g=meta.k8s.io` counts: `as=Table` uses the same
 // parameter style and is handled separately.
+//
+// q-values are honored the same way WantsProtobuf honors them — highest q wins,
+// header order breaks ties, q=0 means "not acceptable". Returning on the first
+// syntactic match instead would project even when the client explicitly
+// de-prioritized or disabled that clause, e.g.
+// `application/json, application/json;as=PartialObjectMetadata;g=meta.k8s.io;v=v1;q=0`.
 func WantsPartialObjectMetadata(r *http.Request) (string, bool) {
 	accept := r.Header.Get("Accept")
 	if accept == "" {
 		return "", false
 	}
+	bestQ := 0.0
+	bestVersion := ""
+	bestIsPartial := false
 	for _, part := range strings.Split(accept, ",") {
-		_, params, err := mime.ParseMediaType(strings.TrimSpace(part))
+		mt, params, err := mime.ParseMediaType(strings.TrimSpace(part))
 		if err != nil {
 			continue
 		}
-		if params["as"] != partialMetadataKind || params["g"] != metaGroup {
+		// Only clauses in a representation we can actually serve compete; an
+		// unrelated media type shouldn't outrank a metadata clause.
+		switch mt {
+		case ProtobufMediaType, "application/json", "application/*", "*/*":
+		default:
 			continue
 		}
-		v := params["v"]
-		if v == "" {
-			v = "v1"
+		q := 1.0
+		if qs, ok := params["q"]; ok {
+			if v, perr := strconv.ParseFloat(qs, 64); perr == nil {
+				q = v
+			}
 		}
-		return v, true
+		if q <= 0 {
+			continue
+		}
+		isPartial := params["as"] == partialMetadataKind && params["g"] == metaGroup
+		if q > bestQ { // strictly greater; equal q keeps the earlier clause
+			bestQ = q
+			bestIsPartial = isPartial
+			if isPartial {
+				if bestVersion = params["v"]; bestVersion == "" {
+					bestVersion = "v1"
+				}
+			} else {
+				bestVersion = ""
+			}
+		}
 	}
-	return "", false
+	if !bestIsPartial {
+		return "", false
+	}
+	return bestVersion, true
 }
 
 // PartialMetadataResponseWriter buffers a response so a JSON object or list body

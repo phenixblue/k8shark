@@ -26,6 +26,15 @@ func TestWantsPartialObjectMetadata(t *testing.T) {
 		{"wrong group", "application/json;as=PartialObjectMetadata;g=example.com;v=v1", "", false},
 		{"plain json", "application/json", "", false},
 		{"empty", "", "", false},
+
+		// q-values, mirroring WantsProtobuf. Returning on the first syntactic
+		// match would project even where the client said not to.
+		{"metadata clause disabled with q=0", "application/json, application/json;as=PartialObjectMetadata;g=meta.k8s.io;v=v1;q=0", "", false},
+		{"metadata outranked by a higher-q plain clause", "application/json;as=PartialObjectMetadata;g=meta.k8s.io;v=v1;q=0.5, application/json;q=0.9", "", false},
+		{"metadata wins on higher q despite coming second", "application/json;q=0.5, application/json;as=PartialObjectMetadata;g=meta.k8s.io;v=v1;q=0.9", "v1", true},
+		{"equal q keeps the earlier clause (plain first)", "application/json;q=0.8, application/json;as=PartialObjectMetadata;g=meta.k8s.io;v=v1;q=0.8", "", false},
+		{"equal q keeps the earlier clause (metadata first)", "application/json;as=PartialObjectMetadata;g=meta.k8s.io;v=v1;q=0.8, application/json;q=0.8", "v1", true},
+		{"unrelated media type does not outrank", "text/plain;q=1.0, application/json;as=PartialObjectMetadata;g=meta.k8s.io;v=v1;q=0.5", "v1", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

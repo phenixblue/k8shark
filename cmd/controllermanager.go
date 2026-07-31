@@ -10,6 +10,21 @@ import (
 	"github.com/phenixblue/k8shark/internal/k8sbin"
 )
 
+// garbagecollector is deliberately NOT in this list. It is the one controller
+// whose job is fundamentally incompatible with replaying a *partial* capture: it
+// deletes objects whose owners no longer exist, and in a capture that recorded
+// some resource types and not others, plenty of owners legitimately don't exist.
+// Enabled against a real 80-namespace capture it removed most of the replayed
+// state within a minute — namespaces 80 -> 30, pods 460 -> 148 — and the
+// daemonset controller then started failing on namespaces the GC had eaten.
+//
+// It previously appeared to be harmless only because it was broken: the mock
+// ignored as=PartialObjectMetadata, so the GC could not decode its
+// ownerReference lookups and never got as far as deleting anything (#329).
+// Honoring that negotiation is still correct on its own merits — any
+// metadata-only client needs it — but it turned a silently broken controller
+// into a destructive one, so the controller itself has to go.
+//
 // controllerManagerControllers is the curated set of kube-controller-manager
 // controllers --with-controller-manager enables: pure API-object reconcilers
 // that only need the writable overlay's CRUD+watch surface, not a real
@@ -21,7 +36,6 @@ var controllerManagerControllers = []string{
 	"namespace",
 	"serviceaccount",
 	"resourcequota",
-	"garbagecollector",
 	"daemonset",
 	"deployment",
 	"replicaset",
