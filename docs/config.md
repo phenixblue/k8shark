@@ -143,38 +143,47 @@ Use `"*"` as a namespace value to automatically capture from all namespaces disc
 
 ### `namespaces`, request volume, and archive shape
 
-The three forms differ in **archive shape**, and only one of them scales its
-request volume with the number of namespaces:
+Every poll of a resource issues **two GETs** — the normal list plus a
+Table-format list, so the mock server can replay `kubectl`'s column layout. The
+three forms differ in how that is multiplied, and in how many archive records
+result:
 
-| form | requests per poll | records per poll |
-|------|-------------------|------------------|
-| `namespaces:` omitted | 1 cluster-wide LIST | 1 |
-| `namespaces: ["*"]` | 1 cluster-wide LIST | 1 per namespace |
-| `namespaces: [a, b, c]` | **1 LIST per listed namespace** | 1 per namespace |
+| form | GETs per poll | records per poll |
+|------|---------------|------------------|
+| `namespaces:` omitted | 2 (cluster-wide) | 1 |
+| `namespaces: ["*"]` | 2 (cluster-wide) | 1 per namespace *that has items* |
+| `namespaces: [a, b, c]` | **2 per listed namespace** | 1 per listed namespace |
 
 `["*"]` does *not* poll each namespace separately. The engine fetches the
-cluster-wide endpoint once and demultiplexes the response into per-namespace
-records (`fetchResourceClusterWide` in `internal/capture/poll.go`), so the mock
-server can answer per-namespace paths on replay. It costs archive space, not
-cluster load.
+cluster-wide endpoint and demultiplexes the response into per-namespace records
+(`fetchResourceClusterWide` in `internal/capture/poll.go`), so the mock server
+can answer per-namespace paths on replay. It costs archive space, not cluster
+load.
 
-Measured on a 52-namespace cluster, pods over three polls, counting
-`apiserver_request_total` on the source apiserver:
+The demux writes a record for each namespace present in the response, plus an
+empty-list record for any namespace that had items on a previous poll and no
+longer does — so a namespace that never contains the resource produces no
+records at all.
 
-| form | pod LIST requests | records | archive |
-|------|------------------:|--------:|--------:|
-| omitted | 6 | 3 | 1.15 MB |
-| `["*"]` | 7 | 156 | 2.48 MB |
-| explicit list of 10 namespaces | 61 | 30 | — |
+Measured by counting `apiserver_request_total` on the source apiserver, on a
+55-namespace cluster:
 
-All three captured the same 140 pods.
+| resource | form | GETs/poll | records/poll |
+|----------|------|----------:|-------------:|
+| pods (present in every namespace) | omitted | 2 | 1 |
+| pods | `["*"]` | 2 | 52 |
+| pods | explicit list of 10 namespaces | 20 | 10 |
+| jobs (present in 8 of 55 namespaces) | `["*"]` | 2 | 8 |
+
+Each form captured the same objects. Note the jobs row: `["*"]` produced 8
+records, not 55.
 
 **Guidance:**
 - Want every namespace? Use `["*"]`, or omit `namespaces:` if you don't need
-  per-namespace records. Both are one request per poll.
-- Want a few specific namespaces? An explicit list is fine and precise — just
-  know its request cost grows linearly with the list, so a long explicit list is
-  the one form worth avoiding on a large cluster.
+  per-namespace records. Both are two GETs per poll regardless of cluster size.
+- Want a few specific namespaces? An explicit list is precise, and its request
+  cost grows linearly with the list — a long explicit list is the one form worth
+  avoiding on a large cluster.
 - `--auto-discover` uses `["*"]` for namespaced resources, so it inherits the
   cheap cluster-wide path.
 
