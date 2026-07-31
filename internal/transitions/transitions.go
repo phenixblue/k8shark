@@ -41,9 +41,12 @@ const SchemaVersion = 1
 // bare top-level array couldn't. Transitions is always a non-nil slice, so
 // consumers can iterate it unconditionally even on an empty result.
 type Report struct {
-	SchemaVersion int          `json:"schema_version"`
-	CaptureID     string       `json:"capture_id,omitempty"`
-	Transitions   []Transition `json:"transitions"`
+	SchemaVersion int `json:"schema_version"`
+	// CaptureID is not omitempty on purpose: metadata.json always carries a
+	// capture_id, so dropping the key on an empty value would make the frozen
+	// top-level key set non-deterministic for no benefit.
+	CaptureID   string       `json:"capture_id"`
+	Transitions []Transition `json:"transitions"`
 }
 
 // FilterOpts narrows which transitions are returned by LoadTransitions.
@@ -134,8 +137,12 @@ func LoadReport(archivePath string, opts FilterOpts, identities []age.Identity) 
 }
 
 // LoadTransitions is LoadReport without the output envelope: just the matching
-// transitions, sorted by time. Callers that render their own output (replay,
-// the table renderer, tests) want this; only `-o json` needs the envelope.
+// transitions, sorted by time, for callers that don't need the JSON wrapper.
+//
+// It delegates to LoadReport rather than duplicating the scan, so it does the
+// same work — it's a convenience, not a cheaper path. cmd/transitions.go
+// deliberately calls LoadReport for both output modes and passes
+// rep.Transitions to the table renderer, keeping one load path.
 func LoadTransitions(archivePath string, opts FilterOpts, identities []age.Identity) ([]Transition, error) {
 	rep, err := LoadReport(archivePath, opts, identities)
 	if err != nil {

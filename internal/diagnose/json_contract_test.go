@@ -13,7 +13,11 @@ import (
 func TestReport_JSONContract_TopLevelKeys(t *testing.T) {
 	// Populated, not zero-value: a zero Report marshals "findings": null and
 	// "schema_version": 0 and would still satisfy key-presence checks.
-	b, err := json.Marshal(Report{SchemaVersion: SchemaVersion, Findings: make([]Finding, 0)})
+	b, err := json.Marshal(Report{
+		SchemaVersion: SchemaVersion,
+		CaptureID:     "550e8400-e29b-41d4-a716-446655440000",
+		Findings:      make([]Finding, 0),
+	})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -21,8 +25,9 @@ func TestReport_JSONContract_TopLevelKeys(t *testing.T) {
 	if err := json.Unmarshal(b, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	// capture_id and at are omitempty, so they're absent on a zero Report.
-	for _, k := range []string{"schema_version", "summary", "findings"} {
+	// `at` stays omitempty — it's only set when --at was passed — so it is
+	// deliberately not in the always-present set.
+	for _, k := range []string{"schema_version", "capture_id", "summary", "findings"} {
 		if _, ok := got[k]; !ok {
 			t.Errorf("missing frozen top-level key %q; got %s", k, b)
 		}

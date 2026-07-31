@@ -10,7 +10,11 @@ import (
 // to grow — no schema_version, no summary, no paging — without a breaking
 // change. The envelope is the extension point, so it must stay an object.
 func TestReport_IsObjectNotArray(t *testing.T) {
-	b, err := json.Marshal(&Report{SchemaVersion: SchemaVersion, Transitions: make([]Transition, 0)})
+	b, err := json.Marshal(&Report{
+		SchemaVersion: SchemaVersion,
+		CaptureID:     "550e8400-e29b-41d4-a716-446655440000",
+		Transitions:   make([]Transition, 0),
+	})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -26,7 +30,7 @@ func TestReport_IsObjectNotArray(t *testing.T) {
 	if err := json.Unmarshal(b, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	for _, k := range []string{"schema_version", "transitions"} {
+	for _, k := range []string{"schema_version", "capture_id", "transitions"} {
 		if _, ok := got[k]; !ok {
 			t.Errorf("missing frozen top-level key %q", k)
 		}

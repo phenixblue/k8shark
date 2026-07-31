@@ -129,7 +129,11 @@ are per-command and independent: `diagnose`'s `schema_version` moving to 2
 says nothing about `query`'s.
 
 Collection fields are always arrays, never `null` — an empty result is `[]`,
-so `jq '.findings[]'` and friends work without a guard.
+so `jq '.findings[]'` and friends work without a guard. Fields that are always
+knowable (`schema_version`, `capture_id`) are always emitted rather than
+dropped when empty, so the top-level key set is the same on every run;
+genuinely conditional fields (`diagnose`'s `at`, set only with `--at`) are the
+exception and are documented as such.
 
 #### Embedded Kubernetes objects are passthrough, not covered
 
