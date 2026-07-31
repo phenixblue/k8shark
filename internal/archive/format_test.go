@@ -356,3 +356,110 @@ func TestGoldenV2(t *testing.T) {
 		t.Fatalf("record JSON invalid: %v", err)
 	}
 }
+
+// TestReadMetadata_RealV051Shape covers the metadata payload a real v0.5.x
+// archive actually carries, which the golden-v1 fixture does not.
+//
+// golden-v1.kshrk is deliberately minimal — sampleArchive writes exactly three
+// metadata keys (format_version, capture_id, record_count) — so it pins the v1
+// *envelope* but exercises none of the fields a real capture fills in. A
+// capture taken with the released v0.5.1 binary against a live cluster writes
+// ten:
+//
+//	capture_id captured_at captured_until deduplicated_count format_version
+//	intervals kubernetes_version record_count server_address uncompressed_bytes
+//
+// The seven the golden omits are the ones with teeth: captured_at and
+// captured_until drive every time-window path (--from/--to, --at, replay
+// positioning), and intervals is a []string that a bad decode would silently
+// drop. docs/archive-format.md promises the 1.x line reads all version-1
+// archives for the life of the series, so those fields have to survive a read,
+// not just parse.
+//
+// The key set and value shapes here were read off an archive produced by the
+// real v0.5.1 release, not invented.
+func TestReadMetadata_RealV051Shape(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "v051-shape.kshrk")
+
+	sw, err := NewStreamWriter(path)
+	if err != nil {
+		t.Fatalf("NewStreamWriter: %v", err)
+	}
+	capturedAt := time.Date(2026, 7, 31, 4, 30, 0, 0, time.UTC)
+	capturedUntil := capturedAt.Add(20 * time.Second)
+	rec := &format.Record{
+		ID: "rec-1", CapturedAt: capturedAt, APIPath: "/api/v1/nodes",
+		HTTPMethod: "GET", ResponseCode: 200,
+		ResponseBody: []byte(`{"apiVersion":"v1","kind":"NodeList","items":[]}`),
+	}
+	if _, err := sw.WriteRecord(rec); err != nil {
+		t.Fatalf("WriteRecord: %v", err)
+	}
+	// A bare map, not format.CaptureMetadata, so this stays pinned to the v1
+	// on-disk spelling even if the struct's tags are refactored later.
+	meta := map[string]any{
+		"format_version":     1,
+		"capture_id":         "8e04a3c4-f361-426a-9f3a-da1e261f7c5d",
+		"captured_at":        capturedAt.Format(time.RFC3339Nano),
+		"captured_until":     capturedUntil.Format(time.RFC3339Nano),
+		"kubernetes_version": "v1.36.1",
+		"server_address":     "https://127.0.0.1:57897",
+		"record_count":       135,
+		"deduplicated_count": 12,
+		"intervals":          []string{"4s"},
+		"uncompressed_bytes": 980157,
+	}
+	idx := map[string]any{
+		"/api/v1/nodes": map[string]any{
+			"api_path": "/api/v1/nodes", "seqs": []int{0},
+		},
+	}
+	if err := sw.Finish(meta, idx, nil); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+
+	ar, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer ar.Close()
+
+	got, err := ar.ReadMetadata()
+	if err != nil {
+		t.Fatalf("ReadMetadata: %v", err)
+	}
+
+	if got.FormatVersion != 1 {
+		t.Errorf("FormatVersion = %d, want 1", got.FormatVersion)
+	}
+	if got.CaptureID != "8e04a3c4-f361-426a-9f3a-da1e261f7c5d" {
+		t.Errorf("CaptureID = %q", got.CaptureID)
+	}
+	// The seven fields golden-v1 never exercises.
+	if !got.CapturedAt.Equal(capturedAt) {
+		t.Errorf("CapturedAt = %v, want %v", got.CapturedAt, capturedAt)
+	}
+	if !got.CapturedUntil.Equal(capturedUntil) {
+		t.Errorf("CapturedUntil = %v, want %v", got.CapturedUntil, capturedUntil)
+	}
+	if got.KubernetesVersion != "v1.36.1" {
+		t.Errorf("KubernetesVersion = %q, want v1.36.1", got.KubernetesVersion)
+	}
+	if got.ServerAddress != "https://127.0.0.1:57897" {
+		t.Errorf("ServerAddress = %q", got.ServerAddress)
+	}
+	if got.DeduplicatedCount != 12 {
+		t.Errorf("DeduplicatedCount = %d, want 12", got.DeduplicatedCount)
+	}
+	if len(got.Intervals) != 1 || got.Intervals[0] != "4s" {
+		t.Errorf("Intervals = %v, want [4s]", got.Intervals)
+	}
+	if got.UncompressedBytes != 980157 {
+		t.Errorf("UncompressedBytes = %d, want 980157", got.UncompressedBytes)
+	}
+	// Fields that postdate v0.5.1 must read as their zero value, not error.
+	if got.WatchEnabled || got.Encrypted || got.Redacted || got.AutoDiscovered {
+		t.Errorf("post-v0.5.1 flags should be false on a v0.5.1 archive: watch=%v enc=%v redacted=%v auto=%v",
+			got.WatchEnabled, got.Encrypted, got.Redacted, got.AutoDiscovered)
+	}
+}

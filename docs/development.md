@@ -99,6 +99,47 @@ This is how the v1.30–v1.36 range in the
 [version window](stability-policy.md#supported-kubernetes--kubectl-version-window)
 was established; `make e2e` with no `NODE_IMAGE` uses kind's default.
 
+## Verifying backward compatibility against a real old release
+
+[docs/archive-format.md](archive-format.md#format-version--compatibility)
+promises the `1.x` line reads every version-1 archive for the life of the
+series, and [docs/stability-policy.md](stability-policy.md#config-file-schema)
+makes a similar promise for config files. The golden fixtures in
+`internal/archive/testdata/` pin the *format*; this is how to check the promise
+against what an old release actually wrote:
+
+```sh
+# 1. Get the old binary.
+gh release download v0.5.1 --repo phenixblue/k8shark -p 'k8shark_*_darwin_arm64.tar.gz'
+tar xzf k8shark_0.5.1_darwin_arm64.tar.gz -C /tmp/old
+
+# 2. Capture with it against a live cluster.
+make kind-up
+KUBECONFIG=~/.kube/k8shark-dev.yaml /tmp/old/kshrk capture --config old.yaml
+
+# 3. Read it with the current build — every command, plus the mock server.
+make build
+./kshrk inspect old.kshrk -o json
+./kshrk diagnose old.kshrk -o json
+./kshrk transitions old.kshrk -o json
+./kshrk open old.kshrk --api-port 18081 --kubeconfig-out /tmp/mock.yaml &
+kubectl --kubeconfig /tmp/mock.yaml get pods -A
+
+# 4. And run the old release's shipped config through the current validator.
+git show v0.5.1:examples/k8shark.yaml > /tmp/v051.yaml
+./kshrk validate --config /tmp/v051.yaml
+```
+
+Use a high API port (`18081`) rather than the default so a test run can't
+collide with a real one.
+
+Worth knowing: a v0.5.1 capture of a *single* resource still lands at ~1 MB
+because discovery and OpenAPI paths are captured alongside it, so a real old
+archive is too heavy to check in as a fixture. `TestReadMetadata_RealV051Shape`
+in `internal/archive/format_test.go` instead encodes the metadata key set and
+value shapes observed from a real v0.5.1 capture, which is the part the golden
+fixture leaves uncovered.
+
 ## Make targets reference
 
 Run `make help` to print all targets:
