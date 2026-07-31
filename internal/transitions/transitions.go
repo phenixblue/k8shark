@@ -28,6 +28,27 @@ type Transition struct {
 	After     json.RawMessage `json:"after,omitempty"`  // new body  (ADDED,   MODIFIED)
 }
 
+// SchemaVersion is the version of the `kshrk transitions -o json` output
+// shape. Bumped only on a breaking change to Report's own fields — not for
+// changes to the passthrough Kubernetes objects under Transition.Before /
+// Transition.After, whose field names belong to the cluster's API, not to
+// k8shark (see docs/stability-policy.md).
+const SchemaVersion = 1
+
+// Report is the top-level `kshrk transitions -o json` output.
+//
+// The envelope exists so the output can gain fields in a minor release; a
+// bare top-level array couldn't. Transitions is always a non-nil slice, so
+// consumers can iterate it unconditionally even on an empty result.
+type Report struct {
+	SchemaVersion int `json:"schema_version"`
+	// CaptureID is not omitempty on purpose: metadata.json always carries a
+	// capture_id, so dropping the key on an empty value would make the frozen
+	// top-level key set non-deterministic for no benefit.
+	CaptureID   string       `json:"capture_id"`
+	Transitions []Transition `json:"transitions"`
+}
+
 // FilterOpts narrows which transitions are returned by LoadTransitions.
 type FilterOpts struct {
 	Resource  string    // substring match against the resource name (e.g. "pods")
@@ -37,8 +58,9 @@ type FilterOpts struct {
 	Until     time.Time // inclusive upper bound on event time (zero = unbounded)
 }
 
-// LoadTransitions opens archivePath, discovers all state-change events that
-// match opts, and returns them sorted by time.
+// LoadReport opens archivePath, discovers all state-change events that match
+// opts, and returns them sorted by time, wrapped in the Report envelope that
+// `kshrk transitions -o json` emits.
 //
 // Detection modes:
 //   - Watch-enabled paths: events are read directly from watch-index.json
@@ -48,12 +70,17 @@ type FilterOpts struct {
 //
 // identities decrypts an encrypted archive; it is ignored for plaintext
 // archives, so callers may pass nil.
-func LoadTransitions(archivePath string, opts FilterOpts, identities []age.Identity) ([]Transition, error) {
+func LoadReport(archivePath string, opts FilterOpts, identities []age.Identity) (*Report, error) {
 	ar, err := archive.OpenWithIdentities(archivePath, identities)
 	if err != nil {
 		return nil, fmt.Errorf("opening archive: %w", err)
 	}
 	defer ar.Close()
+
+	meta, err := ar.ReadMetadata()
+	if err != nil {
+		return nil, fmt.Errorf("reading metadata: %w", err)
+	}
 
 	idx, err := ar.ReadIndex()
 	if err != nil {
@@ -68,7 +95,7 @@ func LoadTransitions(archivePath string, opts FilterOpts, identities []age.Ident
 		return nil, fmt.Errorf("reading watch index: %w", err)
 	}
 
-	var all []Transition
+	all := make([]Transition, 0)
 
 	for apiPath, entry := range idx {
 		// Skip Table-format query parameters.
@@ -102,7 +129,26 @@ func LoadTransitions(archivePath string, opts FilterOpts, identities []age.Ident
 		return all[i].Time.Before(all[j].Time)
 	})
 
-	return all, nil
+	return &Report{
+		SchemaVersion: SchemaVersion,
+		CaptureID:     meta.CaptureID,
+		Transitions:   all,
+	}, nil
+}
+
+// LoadTransitions is LoadReport without the output envelope: just the matching
+// transitions, sorted by time, for callers that don't need the JSON wrapper.
+//
+// It delegates to LoadReport rather than duplicating the scan, so it does the
+// same work — it's a convenience, not a cheaper path. cmd/transitions.go
+// deliberately calls LoadReport for both output modes and passes
+// rep.Transitions to the table renderer, keeping one load path.
+func LoadTransitions(archivePath string, opts FilterOpts, identities []age.Identity) ([]Transition, error) {
+	rep, err := LoadReport(archivePath, opts, identities)
+	if err != nil {
+		return nil, err
+	}
+	return rep.Transitions, nil
 }
 
 // InferPollTransitions synthesizes ADDED/MODIFIED/DELETED transitions for a

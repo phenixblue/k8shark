@@ -46,7 +46,11 @@ func Run(store *store.CaptureStore, opts Options) Report {
 	if min == "" {
 		min = SeverityInfo
 	}
-	filtered := fs[:0:0]
+	// make, not fs[:0:0] — when no rule fired, fs is nil and nil[:0:0] stays
+	// nil, which marshals to `"findings": null` and breaks the most natural
+	// consumer pattern (`jq '.findings[]'` errors on null). Findings is
+	// documented as an array, so it has to be one even when empty.
+	filtered := make([]Finding, 0, len(fs))
 	for _, f := range fs {
 		if !SeverityAtLeast(f.Severity, min) {
 			continue

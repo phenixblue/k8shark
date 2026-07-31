@@ -54,11 +54,14 @@ type Finding struct {
 
 // Report is the top-level diagnose output.
 type Report struct {
-	SchemaVersion int       `json:"schema_version"`
-	CaptureID     string    `json:"capture_id,omitempty"`
-	At            string    `json:"at,omitempty"`
-	Summary       Summary   `json:"summary"`
-	Findings      []Finding `json:"findings"`
+	SchemaVersion int `json:"schema_version"`
+	// Not omitempty: a capture always has an ID, so dropping the key would
+	// make the frozen top-level key set non-deterministic. (At stays
+	// omitempty — it's only set when --at was passed.)
+	CaptureID string    `json:"capture_id"`
+	At        string    `json:"at,omitempty"`
+	Summary   Summary   `json:"summary"`
+	Findings  []Finding `json:"findings"`
 }
 
 // Summary counts findings by severity.

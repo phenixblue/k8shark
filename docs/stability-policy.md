@@ -38,8 +38,9 @@ series"). That page is the authority; this policy just points to it.
 
 ### CLI surface
 
-Every subcommand name, flag name and spelling, and flag semantics documented in
-[docs/usage.md](usage.md) are stable for the `1.x` line:
+Every subcommand name, flag name and spelling, and flag semantics listed in
+[docs/cli-reference.md](cli-reference.md) are stable for the `1.x` line, with
+the exceptions called out [below](#flags-explicitly-not-covered):
 
 | Command | Purpose |
 |---------|---------|
@@ -63,9 +64,27 @@ going through [deprecation](#deprecation-policy) first. Flags may gain new
 optional values or new sibling flags in a minor release; a required flag never
 becomes optional-with-different-default (or vice versa) without a major bump.
 
-`docs/usage.md` is the single source of truth for the current flag list —
-this policy intentionally doesn't duplicate it, to avoid the two drifting
-out of sync.
+[docs/cli-reference.md](cli-reference.md) is the single source of truth for
+the current flag list — this policy intentionally doesn't duplicate it, to
+avoid the two drifting out of sync. That page is **generated from the Cobra
+command definitions and drift-checked in CI**, so it can't fall behind the
+binary; `docs/usage.md` is a narrative guide that covers the common paths and
+deliberately doesn't enumerate every flag.
+
+#### Flags explicitly not covered
+
+The replay-orchestration and writable-overlay flags are **exempt** — their
+names and semantics may change in any release, including a patch:
+
+`--with-kwok`, `--with-controller-manager`, `--schedule-pods`, `--writable`,
+`--start-paused`, `--loop`, `--speed`
+
+These drive the newest and least-exercised parts of the mock server (KWOK and
+kube-controller-manager orchestration, the writable overlay, replay timing),
+where the shape of the feature is still likely to move. Everything else in
+`docs/cli-reference.md` is covered. Promoting one of these to covered is a
+minor-version change (widening coverage); the reverse would not be, which is
+why the exemption is being written down now rather than assumed.
 
 ### Exit codes
 
@@ -102,6 +121,48 @@ rule as the archive format:
   fields they don't recognize.
 - Removing a field, renaming a field, or changing a field's type/meaning is
   a major-version change.
+
+Every one of the five emits a JSON **object** at the top level (never a bare
+array) carrying its own `schema_version`, so the envelope can always gain
+fields and a consumer can always tell what shape it's parsing. The versions
+are per-command and independent: `diagnose`'s `schema_version` moving to 2
+says nothing about `query`'s.
+
+Collection fields are always arrays, never `null` — an empty result is `[]`,
+so `jq '.findings[]'` and friends work without a guard.
+
+Each command's top-level key set is the same on every run: a field a command
+carries is emitted even when empty, rather than dropped. The key sets differ
+*between* commands, though — only `inspect`, `diagnose`, and `transitions`
+carry a `capture_id`. `query` doesn't, and `diff` deliberately doesn't, since
+it compares two archives and a single capture ID wouldn't identify either.
+
+The one deliberately conditional field is `diagnose`'s `at`, present only when
+`--at` was passed.
+
+#### Embedded Kubernetes objects are passthrough, not covered
+
+`diff` and `transitions` embed whole captured Kubernetes objects under
+`before` / `after`, and `query`'s `matches[].value` returns whatever the
+JSONPath expression selected. **Those payloads are passthrough of what the
+cluster returned; their field names and types belong to the Kubernetes API,
+not to k8shark**, and they vary with the captured cluster's version. The
+add-only rule above cannot sensibly apply to them and does not:
+
+- **Covered**: the wrapper each one sits in — `changes[].{path, group,
+  version, resource, namespace, before, after}` for `diff`,
+  `transitions[].{time, event_type, api_path, group, version, resource,
+  namespace, name, before, after}` for `transitions`, and
+  `matches[].{path, group, version, resource, namespace, name, value}` for
+  `query`.
+- **Not covered**: anything *inside* `before`, `after`, or `value`.
+
+`matches[].value` in particular is **polymorphic by design** — it is
+whatever JSON type the selected field holds, so `{.spec.replicas}` yields a
+number, `{.metadata.name}` a string, `{.metadata.labels}` an object, and
+`{.spec.containers}` an array. Consumers must type-switch on it rather than
+assume a type. This is not something a future release will "fix": the field
+mirrors the queried document.
 
 Table/text output (the human-facing default, no `-o` flag) is explicitly
 **not** covered — column layout, spacing, and wording can change in any

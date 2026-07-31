@@ -741,6 +741,37 @@ kshrk transitions capture.kshrk --resource replicasets --name api-5c59c454f5 --d
 | `--to` | capture end | End of the time window: RFC3339 or relative duration like `-1m` |
 | `--diff` | false | Show field-level changes for `MODIFIED` events |
 
+### JSON output schema
+
+`-o json` emits an object carrying `schema_version` and the event list. The
+wrapper fields are a stable contract; `before`/`after` hold the captured
+Kubernetes objects verbatim, so their contents follow the cluster's API rather
+than k8shark's own compatibility promise (see
+[docs/stability-policy.md](stability-policy.md#embedded-kubernetes-objects-are-passthrough-not-covered)).
+
+```json
+{
+  "schema_version": 1,
+  "capture_id": "550e8400-…",
+  "transitions": [
+    {
+      "time": "2026-04-09T10:03:12Z",
+      "event_type": "MODIFIED",
+      "api_path": "/apis/apps/v1/namespaces/prod/replicasets",
+      "group": "apps",
+      "version": "v1",
+      "resource": "replicasets",
+      "namespace": "prod",
+      "name": "api-5c59c454f5",
+      "before": { "…": "the prior object body" },
+      "after":  { "…": "the new object body" }
+    }
+  ]
+}
+```
+
+`transitions` is always an array — an empty result is `[]`, not `null`.
+
 ### Where events come from
 
 Each captured API path uses one of two detection modes, and a single `transitions` run can mix both across different resources in the same archive:

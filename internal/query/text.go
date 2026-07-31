@@ -59,7 +59,8 @@ type TextMatch struct {
 
 // TextResult is the full set of matches for one full-text search.
 type TextResult struct {
-	Matches []TextMatch `json:"matches"`
+	SchemaVersion int         `json:"schema_version"`
+	Matches       []TextMatch `json:"matches"`
 }
 
 // SearchText finds opts.Pattern across every captured object body and pod
@@ -126,7 +127,7 @@ func SearchText(store *store.CaptureStore, opts TextOptions) (*TextResult, error
 			})
 		}
 	}
-	return &TextResult{Matches: matches}, nil
+	return &TextResult{SchemaVersion: SchemaVersion, Matches: matches}, nil
 }
 
 func searchLogPath(store *store.CaptureStore, path string, at time.Time, find finder, opts TextOptions) ([]TextMatch, bool) {

@@ -99,7 +99,7 @@ func runTransitions(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	ts, err := transitions.LoadTransitions(args[0], opts, identities)
+	rep, err := transitions.LoadReport(args[0], opts, identities)
 	if err != nil {
 		return err
 	}
@@ -108,9 +108,9 @@ func runTransitions(cmd *cobra.Command, args []string) error {
 	case "json":
 		enc := json.NewEncoder(cmd.OutOrStdout())
 		enc.SetIndent("", "  ")
-		return enc.Encode(ts)
+		return enc.Encode(rep)
 	default:
-		return printTransitionTable(cmd, ts, showDiff)
+		return printTransitionTable(cmd, rep.Transitions, showDiff)
 	}
 }
 
