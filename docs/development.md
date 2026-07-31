@@ -99,6 +99,48 @@ This is how the v1.30–v1.36 range in the
 [version window](stability-policy.md#supported-kubernetes--kubectl-version-window)
 was established; `make e2e` with no `NODE_IMAGE` uses kind's default.
 
+## Release-artifact smoke test
+
+`make e2e`, `make test`, and the CI matrix all build from source. Nothing among
+them executes a **published release artifact**, so a packaging or
+cross-compilation defect present only in the shipped binary would go unnoticed
+until a user hit it.
+
+[`scripts/artifact-smoke.sh`](../scripts/artifact-smoke.sh) closes that: point it
+at an extracted binary and it checks the binary runs, reports the expected
+version, reads a real `.kshrk` archive, honors the exit-code contract, and emits
+the frozen `-o json` shapes.
+
+```sh
+# Against a published release, by hand:
+gh release download v1.0.0 --repo phenixblue/k8shark -p 'k8shark_*_linux_amd64.tar.gz'
+mkdir -p /tmp/ks && tar xzf k8shark_1.0.0_linux_amd64.tar.gz -C /tmp/ks
+./scripts/artifact-smoke.sh /tmp/ks/kshrk 1.0.0 .
+```
+
+Set `EXPECT_CONTRACT=0` to skip the `-o json` shape assertions when testing a
+release older than `v1.0.0` (the shapes were settled in #320, after
+`v1.0.0-rc.3`).
+
+The script is POSIX `sh`, not bash, so the same file runs on Alpine's busybox
+`ash` and in Windows Git Bash. Testing a linux binary locally on macOS, using
+the `linux_amd64` artifact extracted above — **`--platform` must match the
+artifact's `GOARCH`**, or the container can't execute it:
+
+```sh
+docker run --rm --platform linux/amd64 \
+  -v /tmp/ks/kshrk:/kshrk:ro -v "$PWD:/work:ro" alpine:3 \
+  /bin/sh /work/scripts/artifact-smoke.sh /kshrk 1.0.0 /work
+```
+
+Running it under both `debian:stable-slim` and `alpine:3` is worth the extra
+minute: the binaries are built `CGO_ENABLED=0`, and musl is where a stray libc
+dependency would surface.
+
+[artifact-smoke.yml](../.github/workflows/artifact-smoke.yml) runs it
+automatically on every published release across all six shipped platforms
+(linux/darwin/windows × amd64/arm64), verifying each archive's checksum before
+executing it. It can also be dispatched manually against any existing tag.
 ## Verifying backward compatibility against a real old release
 
 [docs/archive-format.md](archive-format.md#format-version--compatibility)

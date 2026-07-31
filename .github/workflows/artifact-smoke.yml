@@ -1,0 +1,143 @@
+name: artifact-smoke
+
+# Runs the bytes users actually download, on the platform they download them
+# for. The CI test matrix builds from source and runs `go test`; it never
+# executes a release artifact, so a packaging or cross-compilation defect
+# present only in the shipped binary would not be caught there.
+#
+# Triggers on a published release (so every tag is covered automatically), and
+# on demand against any existing tag via workflow_dispatch.
+
+on:
+  release:
+    types: [published]
+  # Mirrors release-check.yml (#315): exercise a change to this workflow or the
+  # smoke script in the PR that makes it, rather than discovering it broke at
+  # the next tag. Falls back to the latest published release as the subject.
+  pull_request:
+    paths:
+      - ".github/workflows/artifact-smoke.yml"
+      - "scripts/artifact-smoke.sh"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to smoke-test (e.g. v1.0.0)'
+        required: true
+        type: string
+      expect_contract:
+        description: 'Assert the v1.0 -o json shapes (off for releases before #320, e.g. v1.0.0-rc.3)'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            goos: linux
+            goarch: amd64
+          - runner: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+          - runner: macos-latest
+            goos: darwin
+            goarch: arm64
+          # macos-15-intel, not macos-13: the macOS 13 image was retired in
+          # December 2025, and a job targeting a retired label doesn't fail —
+          # it queues forever waiting for a runner that will never come.
+          # macos-15-intel is GitHub's last x86_64 macOS image and goes away
+          # when macOS 15 retires (Fall 2027). After that, run the amd64 binary
+          # on an arm64 runner under Rosetta: verified locally that an Apple
+          # Silicon mac executes the shipped darwin/amd64 binary fine.
+          - runner: macos-15-intel
+            goos: darwin
+            goarch: amd64
+          - runner: windows-latest
+            goos: windows
+            goarch: amd64
+          - runner: windows-11-arm
+            goos: windows
+            goarch: arm64
+    runs-on: ${{ matrix.runner }}
+    # Each leg is 6-24s in practice; this only bounds a hang.
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        # Needed for scripts/artifact-smoke.sh and the examples/*.kshrk fixtures
+        # the smoke test reads.
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Resolve the tag
+        id: tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # github.event.inputs.* rather than inputs.*: the latter is documented as
+          # a workflow_dispatch/workflow_call context. It does resolve to empty on
+          # other events in practice (verified on a pull_request run), but the
+          # release path is both the one that matters here and the least
+          # exercised, so don't lean on undocumented behavior for it.
+          EXPLICIT: ${{ github.event.inputs.tag || github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          tag="$EXPLICIT"
+          if [ -z "$tag" ]; then
+            # pull_request: no release payload, so test the latest release.
+            tag=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 1 --json tagName --jq '.[0].tagName')
+            echo "no tag given; using the latest release: $tag"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Download and verify the artifact
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          ext=tar.gz
+          if [ "${{ matrix.goos }}" = "windows" ]; then ext=zip; fi
+          # Release assets carry the version without the leading v.
+          asset="k8shark_${TAG#v}_${{ matrix.goos }}_${{ matrix.goarch }}.${ext}"
+          echo "asset: $asset"
+
+          mkdir -p dl && cd dl
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" -p "$asset" -p checksums.txt
+
+          # Verify the checksum before trusting the bytes. --ignore-missing so
+          # the single-asset download doesn't fail on the other entries.
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum --check --ignore-missing checksums.txt
+          else
+            shasum -a 256 --check --ignore-missing checksums.txt
+          fi
+
+          mkdir -p ../bin
+          if [ "$ext" = "zip" ]; then unzip -oq "$asset" -d ../bin; else tar xzf "$asset" -C ../bin; fi
+          ls -l ../bin
+
+      - name: Smoke-test the binary
+        shell: bash
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          # On a real release, enforce the frozen -o json shapes. On a PR the
+          # subject is whichever release happens to be latest, which may predate
+          # the contract (#320 landed after v1.0.0-rc.3) — so the PR run proves
+          # the harness works end-to-end on all six platforms, and the shape
+          # assertions are enforced where the version is known to have them.
+          # Compared to the string 'true' on purpose: github.event.inputs values
+          # are strings, so a bare truthiness check would read the literal
+          # "false" as true — every non-empty string is truthy here.
+          EXPECT_CONTRACT: ${{ (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.event.inputs.expect_contract == 'true')) && '1' || '0' }}
+        run: |
+          set -euo pipefail
+          bin=bin/kshrk
+          if [ "${{ matrix.goos }}" = "windows" ]; then bin=bin/kshrk.exe; fi
+          chmod +x "$bin" || true
+          sh scripts/artifact-smoke.sh "$bin" "${TAG#v}" .
