@@ -40,7 +40,7 @@ Only the latest minor receives patch releases; see the stability policy's
 1. **Tests** — runs `go test ./...` against the tagged commit. The release is blocked if tests fail.
 2. **GoReleaser** — builds cross-platform binaries, packages archives, generates a checksum file, and publishes the GitHub Release.
 3. **SBOM** — [Syft](https://github.com/anchore/syft) generates a Software Bill of Materials for each archive artifact.
-4. **Signing** — the `checksums.txt` file is signed with [cosign](https://github.com/sigstore/cosign) using keyless OIDC signing (no long-lived keys). The signature and certificate are attached to the release.
+4. **Signing** — the `checksums.txt` file is signed with [cosign](https://github.com/sigstore/cosign) using keyless OIDC signing (no long-lived keys). The signature and certificate are attached to the release together, as a single `checksums.txt.bundle`.
 5. **Attestation** — GitHub's `attest-build-provenance` action attaches a build provenance attestation to each release archive (`.tar.gz`/`.zip`).
 6. **Homebrew tap** — GoReleaser pushes an updated cask to `phenixblue/homebrew-tap`, so `brew upgrade --cask k8shark` picks up the new version automatically.
 
@@ -71,16 +71,21 @@ The cosign signing uses GitHub's OIDC token — no additional secret is needed.
 
 ```sh
 # Download the release artifacts
-gh release download v1.0.0-rc.1 --repo phenixblue/k8shark
+gh release download v1.0.0-rc.3 --repo phenixblue/k8shark
 
 # Verify the cosign signature
 cosign verify-blob \
-  --certificate checksums.txt.pem \
-  --signature checksums.txt.sig \
+  --bundle checksums.txt.bundle \
   --certificate-identity-regexp 'https://github.com/phenixblue/k8shark/.github/workflows/release.yml' \
   --certificate-oidc-issuer 'https://token.actions.githubusercontent.com' \
   checksums.txt
 ```
+
+The signature and certificate live together in a single `checksums.txt.bundle`
+(cosign's "new bundle format"). Releases signed before `v1.0.0-rc.3` instead
+carry a separate `checksums.txt.sig` and `checksums.txt.pem`; verify those
+with `--signature checksums.txt.sig --certificate checksums.txt.pem` in place
+of `--bundle`. Requires cosign v3+ (`--bundle` verification).
 
 ### Verify a binary checksum
 

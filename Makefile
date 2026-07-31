@@ -60,7 +60,7 @@ kind-down: ## Delete the dev KinD clusters (k8shark-dev and k8shark-scale)
 clean: ## Remove build artifacts
 	rm -f $(BINARY) coverage.out coverage.html
 
-release-snapshot: ## Build a local release snapshot without publishing (no signing)
+release-snapshot: ## Build a local release snapshot without publishing (DOES sign: needs OIDC)
 	goreleaser release --snapshot --clean
 
 release-local: ## Dry-run release with SBOM + Homebrew output but no publish
