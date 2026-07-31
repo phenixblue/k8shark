@@ -136,7 +136,7 @@ func (p *ProtobufResponseWriter) Flush() {
 
 	// The chosen representation depends on Accept, so caches/intermediaries must
 	// not reuse it across differing Accept headers.
-	p.Header().Add("Vary", "Accept")
+	addVaryAccept(p.Header())
 
 	ct := p.Header().Get("Content-Type")
 	if strings.HasPrefix(ct, "application/json") {
@@ -171,6 +171,27 @@ const (
 	partialMetadataListKind = "PartialObjectMetadataList"
 	metaGroup               = "meta.k8s.io"
 )
+
+// partialMetadataVersions are the meta.k8s.io versions this projection can
+// answer in. A clause naming anything else isn't a representation we can serve,
+// so it loses negotiation rather than being echoed into the response — emitting
+// `apiVersion: meta.k8s.io/<typo>` would hand the client a body it can't decode
+// while claiming we honored its request.
+var partialMetadataVersions = map[string]bool{"v1": true, "v1beta1": true}
+
+// addVaryAccept records that the representation depends on Accept, without
+// duplicating the header when response writers stack (the protobuf and metadata
+// wrappers can both wrap the same response).
+func addVaryAccept(h http.Header) {
+	for _, v := range h.Values("Vary") {
+		for _, field := range strings.Split(v, ",") {
+			if strings.EqualFold(strings.TrimSpace(field), "Accept") {
+				return
+			}
+		}
+	}
+	h.Add("Vary", "Accept")
+}
 
 // WantsPartialObjectMetadata reports whether the client's Accept header asks for
 // a metadata-only projection, and returns the meta.k8s.io version to answer in
@@ -211,14 +232,25 @@ func WantsPartialObjectMetadata(r *http.Request) (string, bool) {
 		if q <= 0 {
 			continue
 		}
+		version := params["v"]
+		if version == "" {
+			version = "v1"
+		}
 		isPartial := params["as"] == partialMetadataKind && params["g"] == metaGroup
+		if isPartial && !partialMetadataVersions[version] {
+			// A metadata projection in a version we can't produce isn't a
+			// representation we can serve, so it's skipped rather than allowed to
+			// win — otherwise a high-q clause naming an unknown version would
+			// consume the negotiation and shadow a lower-q clause we *can*
+			// answer. Same reason WantsProtobuf skips media types outright
+			// instead of ranking them.
+			continue
+		}
 		if q > bestQ { // strictly greater; equal q keeps the earlier clause
 			bestQ = q
 			bestIsPartial = isPartial
 			if isPartial {
-				if bestVersion = params["v"]; bestVersion == "" {
-					bestVersion = "v1"
-				}
+				bestVersion = version
 			} else {
 				bestVersion = ""
 			}
@@ -263,7 +295,7 @@ func (p *PartialMetadataResponseWriter) Flush() {
 
 	// The representation depends on Accept, so it must not be cached across
 	// differing Accept headers.
-	p.Header().Add("Vary", "Accept")
+	addVaryAccept(p.Header())
 
 	if strings.HasPrefix(p.Header().Get("Content-Type"), "application/json") {
 		if projected, ok := projectPartialMetadata(body, p.metaVersion); ok {

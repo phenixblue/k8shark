@@ -35,6 +35,13 @@ func TestWantsPartialObjectMetadata(t *testing.T) {
 		{"equal q keeps the earlier clause (plain first)", "application/json;q=0.8, application/json;as=PartialObjectMetadata;g=meta.k8s.io;v=v1;q=0.8", "", false},
 		{"equal q keeps the earlier clause (metadata first)", "application/json;as=PartialObjectMetadata;g=meta.k8s.io;v=v1;q=0.8, application/json;q=0.8", "v1", true},
 		{"unrelated media type does not outrank", "text/plain;q=1.0, application/json;as=PartialObjectMetadata;g=meta.k8s.io;v=v1;q=0.5", "v1", true},
+
+		// Only versions we can name are servable. Echoing an unknown v= into
+		// apiVersion would hand back `meta.k8s.io/<typo>` while claiming the
+		// request was honored.
+		{"unknown version loses negotiation", "application/json;as=PartialObjectMetadata;g=meta.k8s.io;v=v99", "", false},
+		{"typo'd version loses negotiation", "application/json;as=PartialObjectMetadata;g=meta.k8s.io;v=v1beta", "", false},
+		{"unknown version does not shadow a good clause", "application/json;as=PartialObjectMetadata;g=meta.k8s.io;v=v99;q=0.9, application/json;as=PartialObjectMetadata;g=meta.k8s.io;v=v1;q=0.5", "v1", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -181,6 +188,33 @@ func TestProjectPartialMetadata_EmptyList(t *testing.T) {
 	}
 	if out.Items == nil {
 		t.Error("items is null; it must be [] so clients can iterate it")
+	}
+}
+
+// Vary: Accept must appear once even when both negotiation wrappers stack, which
+// happens when a client prefers protobuf *and* asks for a metadata projection.
+func TestVaryAccept_NotDuplicatedWhenWritersStack(t *testing.T) {
+	rec := httptest.NewRecorder()
+	inner := NewProtobufResponseWriter(rec)
+	outer := NewPartialMetadataResponseWriter(inner, "v1")
+
+	outer.Header().Set("Content-Type", "application/json")
+	outer.WriteHeader(http.StatusOK)
+	_, _ = outer.Write([]byte(`{"apiVersion":"v1","kind":"ConfigMap","metadata":{"name":"cm"},"data":{"k":"v"}}`))
+	// Same order as the handler's LIFO defers: projection, then protobuf.
+	outer.Flush()
+	inner.Flush()
+
+	var accepts int
+	for _, v := range rec.Header().Values("Vary") {
+		for _, field := range strings.Split(v, ",") {
+			if strings.EqualFold(strings.TrimSpace(field), "Accept") {
+				accepts++
+			}
+		}
+	}
+	if accepts != 1 {
+		t.Errorf("Vary lists Accept %d times, want exactly 1; got %v", accepts, rec.Header().Values("Vary"))
 	}
 }
 
