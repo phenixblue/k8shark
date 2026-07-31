@@ -144,15 +144,19 @@ Use `"*"` as a namespace value to automatically capture from all namespaces disc
 ### `namespaces`, request volume, and archive shape
 
 Every poll of a resource issues **two GETs** — the normal list plus a
-Table-format list, so the mock server can replay `kubectl`'s column layout. The
-three forms differ in how that is multiplied, and in how many archive records
-result:
+Table-format list, so the mock server can replay `kubectl`'s column layout — and
+stores a record for each. The three forms differ in how that is multiplied:
 
-| form | GETs per poll | records per poll |
-|------|---------------|------------------|
+| form | GETs per poll | list records per poll |
+|------|---------------|-----------------------|
 | `namespaces:` omitted | 2 (cluster-wide) | 1 |
 | `namespaces: ["*"]` | 2 (cluster-wide) | 1 per namespace with items, plus any that just emptied |
 | `namespaces: [a, b, c]` | **2 per listed namespace** | 1 per listed namespace |
+
+Counts in the right-hand column are **plain-list records**, which is what `kshrk
+inspect` reports per resource — it skips `?as=Table` paths. Each plain record has
+a Table companion stored alongside it, so the archive's total record count runs
+roughly double the per-resource figures, plus discovery and OpenAPI paths.
 
 `["*"]` does *not* poll each namespace separately. The engine fetches the
 cluster-wide endpoint and demultiplexes the response into per-namespace records
@@ -165,18 +169,25 @@ empty-list record for any namespace that had items on a previous poll and no
 longer does — so a namespace that never contains the resource produces no
 records at all.
 
-Measured by counting `apiserver_request_total` on the source apiserver, on a
-55-namespace cluster:
+Measured by counting `apiserver_request_total` on the source apiserver. The
+cluster had **55 namespaces**: 52 contained at least one pod, 8 contained a Job.
 
-| resource | form | GETs/poll | records/poll |
-|----------|------|----------:|-------------:|
-| pods (present in every namespace) | omitted | 2 | 1 |
+| resource | form | GETs/poll | plain records/poll |
+|----------|------|----------:|-------------------:|
+| pods (in 52 of 55 namespaces) | omitted | 2 | 1 |
 | pods | `["*"]` | 2 | 52 |
 | pods | explicit list of 10 namespaces | 20 | 10 |
-| jobs (present in 8 of 55 namespaces) | `["*"]` | 2 | 8 |
+| jobs (in 8 of 55 namespaces) | `["*"]` | 2 | 8 |
 
-Each form captured the same objects. Note the jobs row: `["*"]` produced 8
-records, not 55.
+Each form captured the same objects. Two rows worth reading twice: `["*"]` on
+jobs produced **8** records, not 55, because the demux only writes namespaces
+that have items; and the explicit 10-namespace list is the only form whose GET
+count grew.
+
+For a concrete archive-total comparison over three polls of pods and
+deployments: the `["*"]` archive held 755 records (312 of them plain per-resource
+list records) at 2.48 MB, against 140 records (6 plain) at 1.15 MB for the
+cluster-wide form — the same 140 pods and 94 deployments either way.
 
 **Guidance:**
 - Want every namespace? Use `["*"]`, or omit `namespaces:` if you don't need
