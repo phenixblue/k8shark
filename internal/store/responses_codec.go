@@ -281,7 +281,14 @@ func projectPartialMetadata(body []byte, metaVersion string) ([]byte, bool) {
 				Metadata json.RawMessage `json:"metadata"`
 			}
 			if err := json.Unmarshal(raw, &it); err != nil || len(it.Metadata) == 0 {
-				continue
+				// Refuse the whole projection rather than emit a shorter list.
+				// Dropping an item would change the response's meaning, and the
+				// caller most likely to ask for this projection is the garbage
+				// collector — for which a silently missing item can read as "the
+				// owner is gone". Passing the original list through is the
+				// fail-safe: the client sees real data it can't project, not
+				// projected data that lies about what exists.
+				return nil, false
 			}
 			items = append(items, map[string]any{
 				"kind":       partialMetadataKind,

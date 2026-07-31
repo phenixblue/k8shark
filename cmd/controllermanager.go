@@ -63,7 +63,12 @@ var controllerLogFlagHelp = "destination for kube-controller-manager's own outpu
 // was one controller retrying — interleaved with replay's progress line. The
 // output is diagnostic, so the default is a file whose path is printed once;
 // silently discarding it would make a misbehaving controller impossible to
-// debug. "-" restores the old inline streaming.
+// debug.
+//
+// "-" streams inline again, but sends both the child's stdout and stderr to
+// *stderr* rather than restoring the previous stdout->stdout split: that keeps
+// kshrk's own stdout clean for anything parsing it. In practice nothing is lost,
+// because kube-controller-manager logs through klog, which writes to stderr.
 func resolveControllerLog(dest string) (w io.Writer, closeFn func(), shown string, err error) {
 	if dest == "-" {
 		return os.Stderr, func() {}, "stderr", nil

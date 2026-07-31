@@ -120,6 +120,61 @@ func TestProjectPartialMetadata_PassesThroughStatusAndNonObjects(t *testing.T) {
 	}
 }
 
+// A list containing an item that can't be projected must pass through whole
+// rather than come back shorter. The garbagecollector is the main consumer of
+// this projection, and an item silently missing from its input can read as "the
+// owner is gone" — so a lossy projection is worse than none.
+func TestProjectPartialMetadata_ListRefusesRatherThanDropItems(t *testing.T) {
+	cases := map[string]string{
+		"item missing metadata": `{"kind":"PodList","apiVersion":"v1","items":[
+			{"metadata":{"name":"a","namespace":"ns"}},
+			{"spec":{"nodeName":"n2"}}
+		]}`,
+		"item is not an object": `{"kind":"PodList","apiVersion":"v1","items":[
+			{"metadata":{"name":"a","namespace":"ns"}},
+			"not-an-object"
+		]}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got, ok := projectPartialMetadata([]byte(body), "v1"); ok {
+				t.Errorf("projected a list with an unprojectable item instead of passing it through; got %s", got)
+			}
+		})
+	}
+
+	// Sanity: a fully projectable list of the same shape still projects.
+	good := `{"kind":"PodList","apiVersion":"v1","items":[
+		{"metadata":{"name":"a","namespace":"ns"}},
+		{"metadata":{"name":"b","namespace":"ns"}}
+	]}`
+	if _, ok := projectPartialMetadata([]byte(good), "v1"); !ok {
+		t.Error("refused a list whose items are all projectable")
+	}
+}
+
+// An empty list is projectable — there is nothing to drop, and returning
+// PartialObjectMetadataList with zero items is what a real apiserver does.
+func TestProjectPartialMetadata_EmptyList(t *testing.T) {
+	got, ok := projectPartialMetadata([]byte(`{"kind":"PodList","apiVersion":"v1","items":[]}`), "v1")
+	if !ok {
+		t.Fatal("refused an empty list")
+	}
+	var out struct {
+		Kind  string           `json:"kind"`
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(got, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.Kind != "PartialObjectMetadataList" || len(out.Items) != 0 {
+		t.Errorf("kind=%s items=%d, want PartialObjectMetadataList with 0 items", out.Kind, len(out.Items))
+	}
+	if out.Items == nil {
+		t.Error("items is null; it must be [] so clients can iterate it")
+	}
+}
+
 // The writer must leave a non-JSON content type alone.
 func TestPartialMetadataResponseWriter_NonJSONPassesThrough(t *testing.T) {
 	rec := httptest.NewRecorder()
