@@ -123,10 +123,22 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// and for endpoints that never return a protobuf object and may be large or
 	// streamed (OpenAPI docs, pod logs), to avoid buffering them pointlessly.
 	watchParam := r.URL.Query().Get("watch")
-	if kstore.WantsProtobuf(r) && watchParam != "1" && watchParam != "true" && !kstore.IsNonProtobufPath(path) {
+	isWatch := watchParam == "1" || watchParam == "true"
+	if kstore.WantsProtobuf(r) && !isWatch && !kstore.IsNonProtobufPath(path) {
 		pw := kstore.NewProtobufResponseWriter(w)
 		defer pw.Flush()
 		w = pw
+	}
+
+	// Metadata-only projection (as=PartialObjectMetadata), used by
+	// kube-controller-manager's garbagecollector to walk ownerReferences (#329).
+	// Installed *after* the protobuf wrapper so its deferred Flush runs first
+	// (defers are LIFO): the body is projected to metadata, and protobuf
+	// encoding then sees the projected object rather than the full one.
+	if mv, ok := kstore.WantsPartialObjectMetadata(r); ok && !isWatch && !kstore.IsNonProtobufPath(path) {
+		mw := kstore.NewPartialMetadataResponseWriter(w, mv)
+		defer mw.Flush()
+		w = mw
 	}
 
 	// Replay transport controls live under a reserved prefix that can't collide

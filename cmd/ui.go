@@ -54,6 +54,7 @@ func init() {
 	uiCmd.Flags().Bool("writable", false, "replay mode: accept client writes into an in-memory overlay")
 	uiCmd.Flags().Bool("with-kwok", false, "replay mode: also run a detected 'kwok' binary against the server to drive pod/node lifecycle (implies --writable)")
 	uiCmd.Flags().Bool("with-controller-manager", false, controllerManagerFlagHelp)
+	uiCmd.Flags().String("controller-log", "", controllerLogFlagHelp)
 }
 
 func runUI(cmd *cobra.Command, args []string) error {
@@ -85,6 +86,7 @@ func runUI(cmd *cobra.Command, args []string) error {
 	writable, _ := cmd.Flags().GetBool("writable")
 	withKwok, _ := cmd.Flags().GetBool("with-kwok")
 	withControllerManager, _ := cmd.Flags().GetBool("with-controller-manager")
+	controllerLog, _ := cmd.Flags().GetString("controller-log")
 	// --with-kwok and --with-controller-manager both drive the overlay from a
 	// live process, so either implies --writable (and replay mode).
 	if withKwok || withControllerManager {
@@ -143,7 +145,7 @@ func runUI(cmd *cobra.Command, args []string) error {
 		}
 	}
 	if withControllerManager {
-		controllerManagerCleanup, err = startControllerManager(mockSrv.KubeconfigPath(), mockSrv.KubernetesVersion())
+		controllerManagerCleanup, err = startControllerManager(mockSrv.KubeconfigPath(), mockSrv.KubernetesVersion(), controllerLog)
 		if err != nil {
 			if kwokCleanup != nil {
 				kwokCleanup()

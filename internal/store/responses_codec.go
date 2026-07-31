@@ -2,6 +2,7 @@ package store
 
 import (
 	"bytes"
+	"encoding/json"
 	"mime"
 	"net/http"
 	"strconv"
@@ -135,7 +136,7 @@ func (p *ProtobufResponseWriter) Flush() {
 
 	// The chosen representation depends on Accept, so caches/intermediaries must
 	// not reuse it across differing Accept headers.
-	p.Header().Add("Vary", "Accept")
+	addVaryAccept(p.Header())
 
 	ct := p.Header().Get("Content-Type")
 	if strings.HasPrefix(ct, "application/json") {
@@ -149,4 +150,246 @@ func (p *ProtobufResponseWriter) Flush() {
 	}
 	p.ResponseWriter.WriteHeader(status)
 	_, _ = p.ResponseWriter.Write(body)
+}
+
+// ── PartialObjectMetadata projection (issue #329) ────────────────────────────
+//
+// kube-controller-manager's garbagecollector walks ownerReferences using a
+// metadata-only client, requesting `as=PartialObjectMetadata`. Ignoring that
+// parameter and returning the full object doesn't merely waste bytes — the
+// client decodes strictly against the negotiated type and fails outright:
+//
+//	unable to decode returned object as PartialObjectMetadata:
+//	invalid character 'k' looking for beginning of value
+//
+// which left the GC unable to sync any item and retrying forever. Projecting the
+// body down to apiVersion/kind/metadata is what a real apiserver does for this
+// Accept parameter, and it's cheap: the metadata is already in the response.
+
+const (
+	partialMetadataKind     = "PartialObjectMetadata"
+	partialMetadataListKind = "PartialObjectMetadataList"
+	metaGroup               = "meta.k8s.io"
+)
+
+// partialMetadataVersions are the meta.k8s.io versions this projection can
+// answer in. A clause naming anything else isn't a representation we can serve,
+// so it loses negotiation rather than being echoed into the response — emitting
+// `apiVersion: meta.k8s.io/<typo>` would hand the client a body it can't decode
+// while claiming we honored its request.
+var partialMetadataVersions = map[string]bool{"v1": true, "v1beta1": true}
+
+// addVaryAccept records that the representation depends on Accept, without
+// duplicating the header when response writers stack (the protobuf and metadata
+// wrappers can both wrap the same response).
+func addVaryAccept(h http.Header) {
+	for _, v := range h.Values("Vary") {
+		for _, field := range strings.Split(v, ",") {
+			if strings.EqualFold(strings.TrimSpace(field), "Accept") {
+				return
+			}
+		}
+	}
+	h.Add("Vary", "Accept")
+}
+
+// WantsPartialObjectMetadata reports whether the client's Accept header asks for
+// a metadata-only projection, and returns the meta.k8s.io version to answer in
+// (v1 or v1beta1). Only `g=meta.k8s.io` counts: `as=Table` uses the same
+// parameter style and is handled separately.
+//
+// q-values are honored the same way WantsProtobuf honors them — highest q wins,
+// header order breaks ties, q=0 means "not acceptable". Returning on the first
+// syntactic match instead would project even when the client explicitly
+// de-prioritized or disabled that clause, e.g.
+// `application/json, application/json;as=PartialObjectMetadata;g=meta.k8s.io;v=v1;q=0`.
+func WantsPartialObjectMetadata(r *http.Request) (string, bool) {
+	accept := r.Header.Get("Accept")
+	if accept == "" {
+		return "", false
+	}
+	bestQ := 0.0
+	bestVersion := ""
+	bestIsPartial := false
+	for _, part := range strings.Split(accept, ",") {
+		mt, params, err := mime.ParseMediaType(strings.TrimSpace(part))
+		if err != nil {
+			continue
+		}
+		// Only clauses in a representation we can actually serve compete; an
+		// unrelated media type shouldn't outrank a metadata clause.
+		switch mt {
+		case ProtobufMediaType, "application/json", "application/*", "*/*":
+		default:
+			continue
+		}
+		q := 1.0
+		if qs, ok := params["q"]; ok {
+			if v, perr := strconv.ParseFloat(qs, 64); perr == nil {
+				q = v
+			}
+		}
+		if q <= 0 {
+			continue
+		}
+		version := params["v"]
+		if version == "" {
+			version = "v1"
+		}
+		isPartial := params["as"] == partialMetadataKind && params["g"] == metaGroup
+		if isPartial && !partialMetadataVersions[version] {
+			// A metadata projection in a version we can't produce isn't a
+			// representation we can serve, so it's skipped rather than allowed to
+			// win — otherwise a high-q clause naming an unknown version would
+			// consume the negotiation and shadow a lower-q clause we *can*
+			// answer. Same reason WantsProtobuf skips media types outright
+			// instead of ranking them.
+			continue
+		}
+		if q > bestQ { // strictly greater; equal q keeps the earlier clause
+			bestQ = q
+			bestIsPartial = isPartial
+			if isPartial {
+				bestVersion = version
+			} else {
+				bestVersion = ""
+			}
+		}
+	}
+	if !bestIsPartial {
+		return "", false
+	}
+	return bestVersion, true
+}
+
+// PartialMetadataResponseWriter buffers a response so a JSON object or list body
+// can be projected to PartialObjectMetadata(List) on flush.
+//
+// Anything that isn't a recognizable object or list — a Status from a 404, an
+// OpenAPI document, plain text — passes through untouched. That matters: error
+// responses must stay decodable as Status, or a client would see a decode
+// failure instead of the NotFound it was told to expect.
+type PartialMetadataResponseWriter struct {
+	http.ResponseWriter
+	metaVersion string
+	status      int
+	buf         bytes.Buffer
+}
+
+func NewPartialMetadataResponseWriter(w http.ResponseWriter, metaVersion string) *PartialMetadataResponseWriter {
+	return &PartialMetadataResponseWriter{ResponseWriter: w, metaVersion: metaVersion}
+}
+
+func (p *PartialMetadataResponseWriter) WriteHeader(code int) { p.status = code }
+
+func (p *PartialMetadataResponseWriter) Write(b []byte) (int, error) { return p.buf.Write(b) }
+
+// Flush writes the buffered response, projecting a JSON body to metadata-only
+// when it is a Kubernetes object or list; otherwise it passes through unchanged.
+func (p *PartialMetadataResponseWriter) Flush() {
+	status := p.status
+	if status == 0 {
+		status = http.StatusOK
+	}
+	body := p.buf.Bytes()
+
+	// The representation depends on Accept, so it must not be cached across
+	// differing Accept headers.
+	addVaryAccept(p.Header())
+
+	if strings.HasPrefix(p.Header().Get("Content-Type"), "application/json") {
+		if projected, ok := projectPartialMetadata(body, p.metaVersion); ok {
+			p.Header().Del("Content-Length") // length changed
+			p.ResponseWriter.WriteHeader(status)
+			_, _ = p.ResponseWriter.Write(projected)
+			return
+		}
+	}
+	p.ResponseWriter.WriteHeader(status)
+	_, _ = p.ResponseWriter.Write(body)
+}
+
+// projectPartialMetadata rewrites a Kubernetes object or list JSON body as
+// PartialObjectMetadata or PartialObjectMetadataList. It reports false for
+// anything it doesn't recognize — a Status, a non-object, malformed JSON — so
+// the caller passes those through.
+func projectPartialMetadata(body []byte, metaVersion string) ([]byte, bool) {
+	var probe struct {
+		Kind     string          `json:"kind"`
+		Metadata json.RawMessage `json:"metadata"`
+		// Pointer so an absent `items` is distinguishable from `items: []`. A
+		// kind ending in "List" is not sufficient evidence of an object list:
+		// the discovery documents APIResourceList and APIGroupList also end in
+		// "List" but carry `resources`/`groups`. Projecting those produced an
+		// empty PartialObjectMetadataList and silently discarded discovery —
+		// /api/v1 went from 38 resources to 0, /apis from 93 groups to 0 — for
+		// any client that bootstrapped discovery with a metadata Accept header.
+		Items *[]json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(body, &probe); err != nil {
+		return nil, false
+	}
+	// A Status is an error/result envelope, not an object to project. Leaving it
+	// alone keeps 404s decodable as Status.
+	if probe.Kind == "" || probe.Kind == "Status" {
+		return nil, false
+	}
+	apiVersion := metaGroup + "/" + metaVersion
+
+	// List: project each item, preserving the list's own metadata
+	// (resourceVersion/continue) so watch bookmarks and paging still line up.
+	if strings.HasSuffix(probe.Kind, "List") {
+		if probe.Items == nil {
+			// "List" in the kind but no items field: not an object list.
+			return nil, false
+		}
+		out := map[string]any{
+			"kind":       partialMetadataListKind,
+			"apiVersion": apiVersion,
+		}
+		if len(probe.Metadata) > 0 {
+			out["metadata"] = probe.Metadata
+		}
+		items := make([]map[string]any, 0, len(*probe.Items))
+		for _, raw := range *probe.Items {
+			var it struct {
+				Metadata json.RawMessage `json:"metadata"`
+			}
+			if err := json.Unmarshal(raw, &it); err != nil || len(it.Metadata) == 0 {
+				// Refuse the whole projection rather than emit a shorter list.
+				// Dropping an item would change the response's meaning, and the
+				// caller most likely to ask for this projection is the garbage
+				// collector — for which a silently missing item can read as "the
+				// owner is gone". Passing the original list through is the
+				// fail-safe: the client sees real data it can't project, not
+				// projected data that lies about what exists.
+				return nil, false
+			}
+			items = append(items, map[string]any{
+				"kind":       partialMetadataKind,
+				"apiVersion": apiVersion,
+				"metadata":   it.Metadata,
+			})
+		}
+		out["items"] = items
+		encoded, err := json.Marshal(out)
+		if err != nil {
+			return nil, false
+		}
+		return encoded, true
+	}
+
+	// Single object.
+	if len(probe.Metadata) == 0 {
+		return nil, false
+	}
+	encoded, err := json.Marshal(map[string]any{
+		"kind":       partialMetadataKind,
+		"apiVersion": apiVersion,
+		"metadata":   probe.Metadata,
+	})
+	if err != nil {
+		return nil, false
+	}
+	return encoded, true
 }
