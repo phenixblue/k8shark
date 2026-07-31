@@ -191,6 +191,42 @@ func TestProjectPartialMetadata_EmptyList(t *testing.T) {
 	}
 }
 
+// A kind ending in "List" is not proof of an object list. The discovery
+// documents APIResourceList and APIGroupList end in "List" but carry
+// `resources`/`groups`, and projecting them emptied discovery outright: /api/v1
+// went from 38 resources to 0 and /apis from 93 groups to 0 for any client that
+// bootstrapped with a metadata Accept header.
+func TestProjectPartialMetadata_DiscoveryListsAreNotObjectLists(t *testing.T) {
+	for name, body := range map[string]string{
+		"APIResourceList": `{"kind":"APIResourceList","apiVersion":"v1","groupVersion":"v1","resources":[
+			{"name":"pods","namespaced":true,"kind":"Pod"},
+			{"name":"nodes","namespaced":false,"kind":"Node"}
+		]}`,
+		"APIGroupList": `{"kind":"APIGroupList","apiVersion":"v1","groups":[
+			{"name":"apps","versions":[{"groupVersion":"apps/v1","version":"v1"}]}
+		]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got, ok := projectPartialMetadata([]byte(body), "v1"); ok {
+				t.Errorf("projected a discovery document, discarding its payload; got %s", got)
+			}
+		})
+	}
+
+	// A genuine list with an items field still projects, including an empty one —
+	// the distinction is whether `items` is present, not whether it has entries.
+	for name, body := range map[string]string{
+		"populated": `{"kind":"PodList","apiVersion":"v1","items":[{"metadata":{"name":"a"}}]}`,
+		"empty":     `{"kind":"PodList","apiVersion":"v1","items":[]}`,
+	} {
+		t.Run("still projects/"+name, func(t *testing.T) {
+			if _, ok := projectPartialMetadata([]byte(body), "v1"); !ok {
+				t.Error("refused a genuine object list")
+			}
+		})
+	}
+}
+
 // Vary: Accept must appear once even when both negotiation wrappers stack, which
 // happens when a client prefers protobuf *and* asks for a metadata projection.
 func TestVaryAccept_NotDuplicatedWhenWritersStack(t *testing.T) {

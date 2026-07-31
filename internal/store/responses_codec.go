@@ -315,9 +315,16 @@ func (p *PartialMetadataResponseWriter) Flush() {
 // the caller passes those through.
 func projectPartialMetadata(body []byte, metaVersion string) ([]byte, bool) {
 	var probe struct {
-		Kind     string            `json:"kind"`
-		Metadata json.RawMessage   `json:"metadata"`
-		Items    []json.RawMessage `json:"items"`
+		Kind     string          `json:"kind"`
+		Metadata json.RawMessage `json:"metadata"`
+		// Pointer so an absent `items` is distinguishable from `items: []`. A
+		// kind ending in "List" is not sufficient evidence of an object list:
+		// the discovery documents APIResourceList and APIGroupList also end in
+		// "List" but carry `resources`/`groups`. Projecting those produced an
+		// empty PartialObjectMetadataList and silently discarded discovery —
+		// /api/v1 went from 38 resources to 0, /apis from 93 groups to 0 — for
+		// any client that bootstrapped discovery with a metadata Accept header.
+		Items *[]json.RawMessage `json:"items"`
 	}
 	if err := json.Unmarshal(body, &probe); err != nil {
 		return nil, false
@@ -332,6 +339,10 @@ func projectPartialMetadata(body []byte, metaVersion string) ([]byte, bool) {
 	// List: project each item, preserving the list's own metadata
 	// (resourceVersion/continue) so watch bookmarks and paging still line up.
 	if strings.HasSuffix(probe.Kind, "List") {
+		if probe.Items == nil {
+			// "List" in the kind but no items field: not an object list.
+			return nil, false
+		}
 		out := map[string]any{
 			"kind":       partialMetadataListKind,
 			"apiVersion": apiVersion,
@@ -339,8 +350,8 @@ func projectPartialMetadata(body []byte, metaVersion string) ([]byte, bool) {
 		if len(probe.Metadata) > 0 {
 			out["metadata"] = probe.Metadata
 		}
-		items := make([]map[string]any, 0, len(probe.Items))
-		for _, raw := range probe.Items {
+		items := make([]map[string]any, 0, len(*probe.Items))
+		for _, raw := range *probe.Items {
 			var it struct {
 				Metadata json.RawMessage `json:"metadata"`
 			}
