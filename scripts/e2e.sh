@@ -9,7 +9,7 @@
 # Can also be run directly: ./scripts/e2e.sh
 # Env:  NODE_IMAGE=kindest/node:v1.32.3   pin a Kubernetes version
 #
-# Prerequisites: kind, kubectl (must be in PATH)
+# Prerequisites: kind, kubectl, jq (must be in PATH)
 set -euo pipefail
 
 # ── Configuration ──────────────────────────────────────────────────────────────
@@ -135,7 +135,11 @@ trap cleanup EXIT
 
 # ── Phase 1: Prerequisites ─────────────────────────────────────────────────────
 log "Checking prerequisites"
-for tool in kind kubectl; do
+# jq is required by the `-o json` assertions (Phases 6b, 8f). It's checked here
+# rather than at first use because those call sites fall back to an empty string
+# on jq failure, which would otherwise surface as a misleading assertion failure
+# blaming kshrk for a missing tool.
+for tool in kind kubectl jq; do
   if command -v "$tool" >/dev/null 2>&1; then
     pass "$tool found at $(command -v "$tool")"
   else

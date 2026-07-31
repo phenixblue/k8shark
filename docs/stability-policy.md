@@ -197,8 +197,14 @@ even considered.
     overlay, `kubectl` round-trip) plus the mock-vs-live conformance
     differential, run against v1.30.3 / v1.32.3 / v1.34.3 / v1.36.1. All
     four passed 113/113 e2e assertions with zero new conformance
-    divergences. Reproduce with
-    `NODE_IMAGE=kindest/node:v1.32.3 ./scripts/e2e.sh`.
+    divergences. Reproducing the claim takes both harnesses — the e2e suite
+    and the conformance differential are what the two halves of it rest on:
+
+    ```sh
+    make build
+    NODE_IMAGE=kindest/node:v1.32.3 ./scripts/e2e.sh
+    NODE_IMAGE=kindest/node:v1.32.3 ./scripts/conformance.sh
+    ```
 
   Versions outside that verified range are expected to work but carry no
   evidence. v1.30 was the oldest version tested, not a discovered floor —
