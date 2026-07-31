@@ -37,6 +37,21 @@ func (s *sliceSink) WriteRecord(rec *Record) (int, error) {
 	s.pathSeq[rec.APIPath] = seq + 1
 	return seq, nil
 }
+
+// eventTypes returns the set of watch event types recorded so far. Safe to call
+// while a watch goroutine is still writing, unlike reading s.records directly.
+func (s *sliceSink) eventTypes() map[string]bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	seen := make(map[string]bool)
+	for _, rec := range s.records {
+		if rec.EventType != "" {
+			seen[rec.EventType] = true
+		}
+	}
+	return seen
+}
+
 func (s *sliceSink) Finish(_, _, _ any) error { return nil }
 func (s *sliceSink) RecordCount() int {
 	s.mu.Lock()
@@ -2368,9 +2383,15 @@ func TestWatchResource_Reconnects(t *testing.T) {
 		eng.watchResource(ctx, res)
 	}()
 
+	// Wait for what is actually asserted below, not just for the second
+	// connection to exist. MODIFIED is delivered *by* that second connection, so
+	// breaking out the moment watchConn hits 2 lets the cancel land before the
+	// event has been read and recorded — which is how this test flaked on loaded
+	// CI runners while passing locally (#327).
 	deadline := time.Now().Add(2500 * time.Millisecond)
 	for time.Now().Before(deadline) {
-		if atomic.LoadInt32(&watchConn) >= 2 {
+		seen := ss.eventTypes()
+		if atomic.LoadInt32(&watchConn) >= 2 && seen["ADDED"] && seen["MODIFIED"] {
 			break
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -2382,12 +2403,7 @@ func TestWatchResource_Reconnects(t *testing.T) {
 		t.Fatalf("expected watch reconnect (>=2 watch connections), got %d", watchConn)
 	}
 
-	seen := map[string]bool{}
-	for _, rec := range ss.records {
-		if rec.EventType != "" {
-			seen[rec.EventType] = true
-		}
-	}
+	seen := ss.eventTypes()
 	if !seen["ADDED"] || !seen["MODIFIED"] {
 		t.Fatalf("expected ADDED and MODIFIED watch events across reconnects, got %v", seen)
 	}
