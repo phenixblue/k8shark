@@ -99,6 +99,71 @@ This is how the v1.30–v1.36 range in the
 [version window](stability-policy.md#supported-kubernetes--kubectl-version-window)
 was established; `make e2e` with no `NODE_IMAGE` uses kind's default.
 
+## Verifying backward compatibility against a real old release
+
+[docs/archive-format.md](archive-format.md#format-version--compatibility)
+promises the `1.x` line reads every version-1 archive for the life of the
+series, and [docs/stability-policy.md](stability-policy.md#config-file-schema)
+makes a similar promise for config files. The golden fixtures in
+`internal/archive/testdata/` pin the *format*; this is how to check the promise
+against what an old release actually wrote:
+
+```sh
+# 1. Get the old binary. (Swap darwin_arm64 for your platform.)
+gh release download v0.5.1 --repo phenixblue/k8shark -p 'k8shark_*_darwin_arm64.tar.gz'
+mkdir -p /tmp/old && tar xzf k8shark_0.5.1_darwin_arm64.tar.gz -C /tmp/old
+
+# 2. Write a short capture config. The old release's own examples/k8shark.yaml
+#    runs for 10m over 11 resources; this is the same schema, just quicker.
+cat > /tmp/old-capture.yaml <<'YAML'
+duration: 20s
+output: /tmp/old-capture.kshrk
+resources:
+  - group: ""
+    version: v1
+    resource: pods
+    namespaces: ["*"]
+    interval: 5s
+  - group: ""
+    version: v1
+    resource: nodes
+    interval: 10s
+YAML
+
+# 3. Capture with the OLD binary against a live cluster.
+make kind-up
+KUBECONFIG=~/.kube/k8shark-dev.yaml /tmp/old/kshrk capture --config /tmp/old-capture.yaml
+
+# 4. Read that archive with the CURRENT build — every command, plus the mock
+#    server. A high API port keeps this from colliding with a real run.
+make build
+./kshrk inspect      /tmp/old-capture.kshrk -o json
+./kshrk diagnose     /tmp/old-capture.kshrk -o json
+./kshrk transitions  /tmp/old-capture.kshrk -o json
+./kshrk query        /tmp/old-capture.kshrk '{.metadata.name}' -o json
+./kshrk open         /tmp/old-capture.kshrk --api-port 18081 --kubeconfig-out /tmp/mock.yaml &
+mock_pid=$!
+until [ -s /tmp/mock.yaml ]; do sleep 1; done
+kubectl --kubeconfig /tmp/mock.yaml get pods -A
+kubectl --kubeconfig /tmp/mock.yaml get nodes
+kill "$mock_pid"                       # don't leave a server bound to 18081
+
+# 5. Separately, run the old release's *shipped* config through the current
+#    validator — that's the config-schema half of the promise.
+git show v0.5.1:examples/k8shark.yaml > /tmp/v051-shipped.yaml
+./kshrk validate --config /tmp/v051-shipped.yaml
+```
+
+Expect `inspect -o json` to report `"archive_format_version": 1`, and every
+command in step 4 to exit 0.
+
+Worth knowing: a v0.5.1 capture of a *single* resource still lands at ~1 MB
+because discovery and OpenAPI paths are captured alongside it, so a real old
+archive is too heavy to check in as a fixture. `TestReadMetadata_RealV051Shape`
+in `internal/archive/format_test.go` instead encodes the metadata key set and
+value shapes observed from a real v0.5.1 capture, which is the part the golden
+fixture leaves uncovered.
+
 ## Make targets reference
 
 Run `make help` to print all targets:
