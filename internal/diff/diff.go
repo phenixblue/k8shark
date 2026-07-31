@@ -33,8 +33,16 @@ type Options struct {
 	Identities []age.Identity
 }
 
+// SchemaVersion is the version of the `kshrk diff -o json` output shape.
+// Bumped only on a breaking change to Result/Change's own fields — not for
+// changes to the passthrough Kubernetes objects under Change.Before /
+// Change.After, whose field names belong to the cluster's API, not to k8shark
+// (see docs/stability-policy.md).
+const SchemaVersion = 1
+
 type Result struct {
-	Changes []Change `json:"changes"`
+	SchemaVersion int      `json:"schema_version"`
+	Changes       []Change `json:"changes"`
 }
 
 type Change struct {
@@ -93,7 +101,7 @@ func Run(opts Options) (*Result, error) {
 		})
 	}
 
-	return &Result{Changes: changes}, nil
+	return &Result{SchemaVersion: SchemaVersion, Changes: changes}, nil
 }
 
 func RenderText(result *Result, color bool) (string, error) {

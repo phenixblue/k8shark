@@ -13,18 +13,26 @@ import (
 	"github.com/phenixblue/k8shark/internal/k8spath"
 )
 
+// SchemaVersion is the version of the `kshrk inspect -o json` output shape.
+// Distinct from Report.ArchiveFormatVersion, which reports the version of the
+// .kshrk archive being inspected — the two evolve independently.
+const SchemaVersion = 1
+
 // Report summarizes the contents of a capture archive.
 type Report struct {
-	FormatVersion     int               `json:"format_version"`
-	CaptureID         string            `json:"capture_id"`
-	CapturedAt        time.Time         `json:"captured_at"`
-	CapturedUntil     time.Time         `json:"captured_until"`
-	KubernetesVersion string            `json:"kubernetes_version"`
-	ServerAddress     string            `json:"server_address"`
-	RecordCount       int               `json:"record_count"`
-	ArchivePath       string            `json:"archive_path"`
-	ArchiveSize       int64             `json:"archive_size_bytes"`
-	Resources         []ResourceSummary `json:"resources"`
+	SchemaVersion int `json:"schema_version"`
+	// ArchiveFormatVersion is the .kshrk format version of the inspected
+	// archive (capture.CurrentFormatVersion), not the version of this output.
+	ArchiveFormatVersion int               `json:"archive_format_version"`
+	CaptureID            string            `json:"capture_id"`
+	CapturedAt           time.Time         `json:"captured_at"`
+	CapturedUntil        time.Time         `json:"captured_until"`
+	KubernetesVersion    string            `json:"kubernetes_version"`
+	ServerAddress        string            `json:"server_address"`
+	RecordCount          int               `json:"record_count"`
+	ArchivePath          string            `json:"archive_path"`
+	ArchiveSize          int64             `json:"archive_size_bytes"`
+	Resources            []ResourceSummary `json:"resources"`
 }
 
 // ResourceSummary describes a single captured resource type.
@@ -67,7 +75,9 @@ func Run(archivePath string, identities []age.Identity) (*Report, error) {
 	}
 
 	return &Report{
-		FormatVersion:     formatVersion,
+		SchemaVersion:        SchemaVersion,
+		ArchiveFormatVersion: formatVersion,
+
 		CaptureID:         meta.CaptureID,
 		CapturedAt:        meta.CapturedAt,
 		CapturedUntil:     meta.CapturedUntil,

@@ -17,8 +17,8 @@ func TestRun_ReportsFormatVersion_LegacyNormalizedToOne(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if report.FormatVersion != 1 {
-		t.Errorf("FormatVersion = %d, want 1", report.FormatVersion)
+	if report.ArchiveFormatVersion != 1 {
+		t.Errorf("ArchiveFormatVersion = %d, want 1", report.ArchiveFormatVersion)
 	}
 }
 

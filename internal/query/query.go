@@ -39,9 +39,14 @@ type Match struct {
 	Value     json.RawMessage `json:"value"`
 }
 
+// SchemaVersion is the version of the `kshrk query -o json` output shape,
+// shared by Result (JSONPath mode) and TextResult (--text/--regex mode).
+const SchemaVersion = 1
+
 // Result is the full set of matches for one query.
 type Result struct {
-	Matches []Match `json:"matches"`
+	SchemaVersion int     `json:"schema_version"`
+	Matches       []Match `json:"matches"`
 }
 
 // Run evaluates opts.Expression against every captured object in store at
@@ -116,7 +121,7 @@ func Run(store *store.CaptureStore, opts Options) (*Result, error) {
 			}
 		}
 	}
-	return &Result{Matches: matches}, nil
+	return &Result{SchemaVersion: SchemaVersion, Matches: matches}, nil
 }
 
 // extractItems returns the objects to query in body: a list's items, or the

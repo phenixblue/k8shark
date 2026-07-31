@@ -1,0 +1,61 @@
+package diagnose
+
+import (
+	"encoding/json"
+	"testing"
+)
+
+// The `-o json` output is a stable, scriptable interface as of v1.0 (see
+// docs/stability-policy.md): adding a top-level key is a minor change,
+// renaming or removing one is a major change. These tests pin the key set so
+// an accidental tag rename fails here rather than silently breaking consumers.
+
+func TestReport_JSONContract_TopLevelKeys(t *testing.T) {
+	b, err := json.Marshal(Report{})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got map[string]json.RawMessage
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	// capture_id and at are omitempty, so they're absent on a zero Report.
+	for _, k := range []string{"schema_version", "summary", "findings"} {
+		if _, ok := got[k]; !ok {
+			t.Errorf("missing frozen top-level key %q; got %s", k, b)
+		}
+	}
+}
+
+// TestRun_EmptyFindings_MarshalsAsArray guards the null-vs-[] footgun: a
+// capture with nothing wrong must still emit `"findings": []`, because the
+// most natural consumer pattern (`jq '.findings[]'`) errors on null.
+func TestRun_EmptyFindings_MarshalsAsArray(t *testing.T) {
+	// A store with one healthy pod list — no rule should fire.
+	cs := buildDiagStore(t, map[string]string{
+		"/api/v1/pods": `{"kind":"PodList","apiVersion":"v1","items":[]}`,
+	})
+	defer cs.Close()
+
+	rep := Run(cs, Options{})
+	if len(rep.Findings) != 0 {
+		t.Fatalf("expected no findings, got %d", len(rep.Findings))
+	}
+	if rep.Findings == nil {
+		t.Error("Findings is nil; it must be an empty slice so JSON is [] not null")
+	}
+
+	b, err := json.Marshal(rep)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var probe struct {
+		Findings *[]Finding `json:"findings"`
+	}
+	if err := json.Unmarshal(b, &probe); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if probe.Findings == nil {
+		t.Errorf("findings marshaled as null, want []; output was %s", b)
+	}
+}
