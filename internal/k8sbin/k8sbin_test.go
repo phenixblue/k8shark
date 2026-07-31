@@ -72,19 +72,26 @@ func TestExtractTarGz_PathTraversalRejected(t *testing.T) {
 	}{
 		{name: "go.mod", wantSafe: true},
 		{name: "cmd/kube-apiserver/main.go", wantSafe: true},
-		// Any ".." path segment is rejected with an error, not normalized —
-		// including "foo/../bar", which would clean to the harmless "bar".
-		// A real Kubernetes tarball never contains one, so refusing to reason
-		// about it at all is strictly safer than cleaning it (see
-		// extractTarGz's first-barrier comment).
+		// Any ".." is rejected with an error, not normalized — including
+		// "foo/../bar", which would clean to the harmless "bar". Refusing to
+		// reason about it at all is strictly safer (see extractTarGz's
+		// first-barrier comment).
 		{name: "..", wantErr: true},
 		{name: "../etc/passwd", wantErr: true},
 		{name: "../../etc/passwd", wantErr: true},
 		{name: "foo/../../bar", wantErr: true},
 		{name: "foo/../bar", wantErr: true},
-		{name: `..\..\etc\passwd`, wantErr: true}, // backslash segments too, on every host
-		// Absolute paths are skipped rather than erroring (they carry no
-		// ".." segment to reject).
+		{name: `..\..\etc\passwd`, wantErr: true}, // backslash names too, on every host
+		// The rejection is deliberately blunt — a substring match, not a path
+		// segment — so these are refused even though neither is a traversal.
+		// Pinned as intended, not incidental: none of kubernetes-src.tar.gz's
+		// 35,083 entries contain ".." anywhere, so nothing real is lost, and
+		// the blunt form is what CodeQL's go/zipslip query recognizes as a
+		// sanitizer (alert #13).
+		{name: "foo..bar", wantErr: true},
+		{name: "..../escaped.txt", wantErr: true},
+		// Absolute paths are skipped rather than erroring (they contain no
+		// ".." to reject).
 		{name: "/etc/passwd"},
 	}
 	for _, tc := range cases {
