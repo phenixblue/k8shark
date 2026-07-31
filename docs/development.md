@@ -111,7 +111,7 @@ against what an old release actually wrote:
 ```sh
 # 1. Get the old binary.
 gh release download v0.5.1 --repo phenixblue/k8shark -p 'k8shark_*_darwin_arm64.tar.gz'
-tar xzf k8shark_0.5.1_darwin_arm64.tar.gz -C /tmp/old
+mkdir -p /tmp/old && tar xzf k8shark_0.5.1_darwin_arm64.tar.gz -C /tmp/old
 
 # 2. Capture with it against a live cluster.
 make kind-up

@@ -385,6 +385,10 @@ func TestReadMetadata_RealV051Shape(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStreamWriter: %v", err)
 	}
+	// Abort is a no-op once Finish has closed the writer, so this only fires on
+	// an early t.Fatalf below — where it releases the file handle that would
+	// otherwise block t.TempDir cleanup on Windows.
+	defer func() { _ = sw.Abort() }()
 	capturedAt := time.Date(2026, 7, 31, 4, 30, 0, 0, time.UTC)
 	capturedUntil := capturedAt.Add(20 * time.Second)
 	rec := &format.Record{
@@ -434,6 +438,9 @@ func TestReadMetadata_RealV051Shape(t *testing.T) {
 	}
 	if got.CaptureID != "8e04a3c4-f361-426a-9f3a-da1e261f7c5d" {
 		t.Errorf("CaptureID = %q", got.CaptureID)
+	}
+	if got.RecordCount != 135 {
+		t.Errorf("RecordCount = %d, want 135", got.RecordCount)
 	}
 	// The seven fields golden-v1 never exercises.
 	if !got.CapturedAt.Equal(capturedAt) {
