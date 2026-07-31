@@ -11,7 +11,9 @@ import (
 // an accidental tag rename fails here rather than silently breaking consumers.
 
 func TestReport_JSONContract_TopLevelKeys(t *testing.T) {
-	b, err := json.Marshal(Report{})
+	// Populated, not zero-value: a zero Report marshals "findings": null and
+	// "schema_version": 0 and would still satisfy key-presence checks.
+	b, err := json.Marshal(Report{SchemaVersion: SchemaVersion, Findings: make([]Finding, 0)})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -24,6 +26,15 @@ func TestReport_JSONContract_TopLevelKeys(t *testing.T) {
 		if _, ok := got[k]; !ok {
 			t.Errorf("missing frozen top-level key %q; got %s", k, b)
 		}
+	}
+	var probe struct {
+		SchemaVersion int `json:"schema_version"`
+	}
+	if err := json.Unmarshal(b, &probe); err != nil {
+		t.Fatalf("unmarshal probe: %v", err)
+	}
+	if probe.SchemaVersion != SchemaVersion {
+		t.Errorf("schema_version = %d, want %d", probe.SchemaVersion, SchemaVersion)
 	}
 }
 
