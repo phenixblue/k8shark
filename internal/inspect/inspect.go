@@ -117,10 +117,6 @@ func summarizeResources(ar *archive.Archive, idx capture.Index) []ResourceSummar
 			a = &accum{nsSeen: map[string]bool{}}
 			byKey[k] = a
 		}
-		if ns != "" {
-			a.namespaced = true
-			a.nsSeen[ns] = true
-		}
 		a.records += len(entry.Seqs)
 
 		// Count items in the latest record for this path.
@@ -129,6 +125,18 @@ func summarizeResources(ar *archive.Archive, idx capture.Index) []ResourceSummar
 			if data, err := ar.ReadRecord(path, latestSeq); err == nil {
 				var rec capture.Record
 				if jerr := json.Unmarshal(data, &rec); jerr == nil && rec.ResponseCode == 200 {
+					// A /namespaces/<ns>/ segment only means something on a
+					// successful response. When a cluster-scoped resource is
+					// configured with `namespaces:` by mistake, the engine
+					// probes the namespaced endpoints, gets 404s, and falls
+					// back to the cluster-scoped path (fetchResource in
+					// internal/capture/poll.go) — but those 404 records stay in
+					// the archive. Reading the namespace out of them reported
+					// nodes as namespaced=true with bogus namespaces entries.
+					if ns != "" {
+						a.namespaced = true
+						a.nsSeen[ns] = true
+					}
 					var list struct {
 						Items []struct {
 							Metadata struct {

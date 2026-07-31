@@ -279,3 +279,61 @@ func TestRun_NamespacedFromItems_NotPathShape(t *testing.T) {
 		t.Errorf("nodes: namespaces = %v, want empty", nodes.Namespaces)
 	}
 }
+
+// TestRun_404ProbePathsDoNotImplyNamespaced covers a cluster-scoped resource
+// configured with `namespaces:` by mistake.
+//
+// The capture engine probes the namespaced endpoints, gets 404s, warns, and
+// falls back to the cluster-scoped path (fetchResource in
+// internal/capture/poll.go) — but the 404 records stay in the archive. Reading
+// the namespace out of a /namespaces/<ns>/ path without checking the response
+// code reported nodes as namespaced=true with two invented namespaces.
+func TestRun_404ProbePathsDoNotImplyNamespaced(t *testing.T) {
+	now := time.Date(2026, 7, 31, 10, 0, 0, 0, time.UTC)
+	notFound := json.RawMessage(`{"kind":"Status","apiVersion":"v1","status":"Failure","code":404}`)
+	path := buildArchive(t, []*capture.Record{
+		{
+			ID: "probe-default", CapturedAt: now,
+			APIPath:    "/api/v1/namespaces/default/nodes",
+			HTTPMethod: "GET", ResponseCode: 404, ResponseBody: notFound,
+		},
+		{
+			ID: "probe-kube-system", CapturedAt: now,
+			APIPath:    "/api/v1/namespaces/kube-system/nodes",
+			HTTPMethod: "GET", ResponseCode: 404, ResponseBody: notFound,
+		},
+		{
+			// The cluster-scoped fallback the engine also captures.
+			ID: "nodes-fallback", CapturedAt: now, APIPath: "/api/v1/nodes",
+			HTTPMethod: "GET", ResponseCode: 200,
+			ResponseBody: json.RawMessage(`{"kind":"NodeList","apiVersion":"v1","items":[
+				{"metadata":{"name":"node-1"}},{"metadata":{"name":"node-2"}}
+			]}`),
+		},
+	})
+
+	rep, err := Run(path, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var nodes *ResourceSummary
+	for i := range rep.Resources {
+		if rep.Resources[i].Resource == "nodes" {
+			nodes = &rep.Resources[i]
+		}
+	}
+	if nodes == nil {
+		t.Fatalf("no nodes summary; got %+v", rep.Resources)
+	}
+	if nodes.Namespaced {
+		t.Error("nodes: namespaced=true, derived from 404 probe paths rather than a successful response")
+	}
+	if len(nodes.Namespaces) != 0 {
+		t.Errorf("nodes: namespaces = %v, want empty — those came from 404 probes", nodes.Namespaces)
+	}
+	// The successful cluster-scoped fallback is still counted.
+	if nodes.Items != 2 {
+		t.Errorf("nodes: item_count = %d, want 2 from the cluster-scoped fallback", nodes.Items)
+	}
+}
