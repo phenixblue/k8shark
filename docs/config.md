@@ -118,7 +118,7 @@ resources:
 
 ### Namespaced vs. cluster-scoped resources
 
-- **Namespaced resources** (pods, deployments, services, PVCs, etc.): specify `namespaces:` with a list of namespaces to capture. Without `namespaces:`, the resource is skipped.
+- **Namespaced resources** (pods, deployments, services, PVCs, etc.): specify `namespaces:` with a list of namespaces to capture. Omitting `namespaces:` does *not* skip the resource — it is fetched from the cluster-wide path (e.g. `/api/v1/pods`), which returns objects from every namespace in a single request. See [namespaces, request volume, and archive shape](#namespaces-request-volume-and-archive-shape).
 - **Cluster-scoped resources** (nodes, persistentvolumes, storageclasses, namespaces, clusterroles, etc.): **do not include `namespaces:`**. k8shark fetches these from the cluster root path (e.g. `/api/v1/nodes`).
 
 > **Warning**: if you include `namespaces:` for a cluster-scoped resource, k8shark will warn during capture and automatically fall back to the correct cluster-scoped path.
@@ -141,46 +141,42 @@ Use `"*"` as a namespace value to automatically capture from all namespaces disc
 - If namespace discovery fails (e.g. RBAC permissions), the capture exits with a clear error.
 - A well-known cluster-scoped resource (nodes, persistentvolumes, etc.) with `namespaces: ["*"]` emits a warning and falls back to a cluster-scoped fetch.
 
-### Omitting `namespaces` costs far less on a large cluster
+### `namespaces`, request volume, and archive shape
 
-`namespaces: ["*"]` issues **one LIST per namespace**. Omitting `namespaces`
-entirely for a namespaced resource issues **one cluster-wide LIST** that returns
-objects from every namespace — the same data, at a fraction of the request
-volume.
+The three forms differ in **archive shape**, and only one of them scales its
+request volume with the number of namespaces:
 
-Measured against a real 80-namespace cluster with 175 listable namespaced
-resource types:
+| form | requests per poll | records per poll |
+|------|-------------------|------------------|
+| `namespaces:` omitted | 1 cluster-wide LIST | 1 |
+| `namespaces: ["*"]` | 1 cluster-wide LIST | 1 per namespace |
+| `namespaces: [a, b, c]` | **1 LIST per listed namespace** | 1 per namespace |
 
-| form | LIST calls per poll interval |
-|------|----------------------------:|
-| omitted (cluster-wide) | 315 |
-| `namespaces: ["*"]` | 14,140 |
+`["*"]` does *not* poll each namespace separately. The engine fetches the
+cluster-wide endpoint once and demultiplexes the response into per-namespace
+records (`fetchResourceClusterWide` in `internal/capture/poll.go`), so the mock
+server can answer per-namespace paths on replay. It costs archive space, not
+cluster load.
 
-That is a **44× difference**, and at the 30s default it is the difference
-between ~10 and ~470 requests per second sustained against the apiserver. A
-smaller check on a 52-namespace cluster captured byte-identical object sets
-either way — 140 pods and 94 deployments — while the wildcard form produced 5×
-the records and a 2.2× larger archive for no extra information.
+Measured on a 52-namespace cluster, pods over three polls, counting
+`apiserver_request_total` on the source apiserver:
 
-```yaml
-# Prefer this on a large cluster: one LIST, all namespaces.
-- group: ""
-  version: v1
-  resource: pods
-  interval: 30s
+| form | pod LIST requests | records | archive |
+|------|------------------:|--------:|--------:|
+| omitted | 6 | 3 | 1.15 MB |
+| `["*"]` | 7 | 156 | 2.48 MB |
+| explicit list of 10 namespaces | 61 | 30 | — |
 
-# Use "*" only when you need per-namespace *records* (separate archive entries
-# per namespace), or when combined with a short explicit namespace list.
-```
+All three captured the same 140 pods.
 
-Reach for `namespaces: ["*"]` when you want each namespace recorded as its own
-archive entry, or when narrowing to a handful of named namespaces. For "capture
-everything everywhere", omit the field.
-
-> **`--auto-discover` currently uses the wildcard form** for every namespaced
-> resource it finds, so on a large cluster it inherits the multiplication above.
-> Scope it with an explicit `namespaces:` list on the `all: true` entry when
-> pointing it at a big cluster.
+**Guidance:**
+- Want every namespace? Use `["*"]`, or omit `namespaces:` if you don't need
+  per-namespace records. Both are one request per poll.
+- Want a few specific namespaces? An explicit list is fine and precise — just
+  know its request cost grows linearly with the list, so a long explicit list is
+  the one form worth avoiding on a large cluster.
+- `--auto-discover` uses `["*"]` for namespaced resources, so it inherits the
+  cheap cluster-wide path.
 
 ### Response deduplication
 
