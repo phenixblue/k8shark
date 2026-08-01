@@ -927,8 +927,14 @@ func TestExpandWildcard_DiscoveryCancelledByDuration(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/namespaces":
-			// Ensure the run context times out before this response is returned.
-			time.Sleep(100 * time.Millisecond)
+			// Block until the run context is cancelled, rather than sleeping a
+			// fixed span and hoping the deadline lands inside it. The handler
+			// then returns exactly when the deadline fires, so the test's
+			// runtime is the configured duration and not a hardcoded sleep.
+			select {
+			case <-r.Context().Done():
+			case <-time.After(10 * time.Second): // safety net; never reached
+			}
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"kind":"NamespaceList","items":[]}`)
 		case "/version":
@@ -942,9 +948,17 @@ func TestExpandWildcard_DiscoveryCancelledByDuration(t *testing.T) {
 	defer srv.Close()
 
 	outDir := t.TempDir()
+	// The run duration has to comfortably exceed the preflight round-trip
+	// (GET /version) while still expiring during namespace discovery. At 50ms it
+	// did not: on a loaded Windows runner the TLS handshake plus round-trip to
+	// the local test server outran the budget, so the *preflight* failed with
+	// "context deadline exceeded" and the test saw a different error than the
+	// cancellation hint it asserts. 500ms is a 10x margin, and costs nothing in
+	// wall time because the discovery handler returns the moment the deadline
+	// fires rather than sleeping a fixed span.
 	cfg := &config.Config{
-		DurationRaw: "50ms",
-		Duration:    50 * time.Millisecond,
+		DurationRaw: "500ms",
+		Duration:    500 * time.Millisecond,
 		Output:      filepath.Join(outDir, "capture.kshrk"),
 		Resources: []config.Resource{
 			{Version: "v1", Resource: "pods", Namespaces: []string{"*"}, IntervalRaw: "200ms", Interval: 200 * time.Millisecond},
