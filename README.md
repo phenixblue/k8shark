@@ -45,6 +45,12 @@ export KUBECONFIG=~/.kube/k8shark-<id>.yaml   # <id> is printed by the command a
 kubectl get pods -A
 ```
 
+> **macOS:** the binaries aren't Apple-notarized yet ([#316](https://github.com/phenixblue/k8shark/issues/316)),
+> and Homebrew quarantines cask installs, so the first run is blocked by Gatekeeper.
+> Approve it once in System Settings → Privacy & Security, or run
+> `xattr -d com.apple.quarantine "$(brew --prefix)/bin/kshrk"`. See
+> [docs/usage.md](docs/usage.md#macos-first-run-is-blocked-by-gatekeeper).
+
 No cluster on hand? Skip straight to [Examples](#examples) below — five pre-recorded
 captures you can replay immediately, no live cluster required.
 

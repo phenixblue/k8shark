@@ -45,6 +45,26 @@ generation in favor of casks, and `@` in a Ruby class name is invalid regardless
 (`k8shark@rc` could only ever be a cask, which uses a `cask "name" do` string, not
 a class name) — hence `--cask` on both.
 
+#### macOS: first run is blocked by Gatekeeper
+
+The macOS binaries are not yet code-signed with an Apple Developer ID
+([#316](https://github.com/phenixblue/k8shark/issues/316)), and Homebrew applies
+`com.apple.quarantine` to everything it installs from a cask. The combination
+means the first run is refused with *"cannot be opened because the developer
+cannot be verified"*.
+
+Either approve it once in **System Settings → Privacy & Security**, or clear the
+attribute:
+
+```sh
+xattr -d com.apple.quarantine "$(brew --prefix)/bin/kshrk"
+```
+
+This affects the Homebrew install specifically. `go install` and building from
+source produce a local binary that is never quarantined, and neither is a
+tarball fetched with `gh release download` or `curl` — only a browser download
+or a Homebrew cask carries the attribute.
+
 ### go install
 
 ```sh
