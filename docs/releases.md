@@ -5,8 +5,8 @@
 Releases are cut by pushing a version tag to `main`. The tag triggers the [release workflow](../.github/workflows/release.yml) which runs [GoReleaser](https://goreleaser.com) to build and publish everything.
 
 ```sh
-git tag v1.0.0-rc.1
-git push origin v1.0.0-rc.1
+git tag v1.0.0
+git push origin v1.0.0
 ```
 
 Use [semantic versioning](https://semver.org): `vMAJOR.MINOR.PATCH`. Tags that contain a pre-release identifier (e.g. `v1.0.0-rc.1`) are automatically marked as pre-release on GitHub.
@@ -70,8 +70,8 @@ The cosign signing uses GitHub's OIDC token — no additional secret is needed.
 ### Verify the checksum signature
 
 ```sh
-# Download the release artifacts
-gh release download v1.0.0-rc.3 --repo phenixblue/k8shark
+# Download the release artifacts (substitute the tag you are verifying)
+gh release download v1.0.0 --repo phenixblue/k8shark
 
 # Verify the cosign signature
 cosign verify-blob \
@@ -89,7 +89,7 @@ also match any identity that merely *contains* that string (say
 which defeats the point of checking it. `^`/`$` plus escaped dots plus the
 required `@refs/tags/v…` suffix pins it to this repo's release workflow run
 from a version tag. The signing identity looks like
-`https://github.com/phenixblue/k8shark/.github/workflows/release.yml@refs/tags/v1.0.0-rc.2`
+`https://github.com/phenixblue/k8shark/.github/workflows/release.yml@refs/tags/v1.0.0`
 (read off that release's own certificate).
 
 The signature and certificate live together in a single `checksums.txt.bundle`
