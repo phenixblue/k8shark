@@ -26,14 +26,16 @@
   }
   a{color:var(--accent); text-decoration:none}
   a:hover{text-decoration:underline}
-  .wrap{max-width:860px; margin-left:auto; margin-right:auto; padding:0 24px}
-  /* Screenshots and the terminal recording are detail-dense: giving them a
-     wider column than the body text keeps the text legible at native scale
-     instead of downscaling a 1440px-wide capture into an 860px slot.
-     1320px - 48px of padding = a 1272px content box, so demo.gif (1440px wide,
-     recorded at FontSize 16) renders at ~14.1px apparent — a real gain over the
-     13px it used to be, rather than the parity a 1220px column would give. */
-  .wrap.wide{max-width:1320px}
+  /* One column width for every section, so all of them scale together as the
+     window resizes. A narrower column for prose and a wider one for the media
+     meant the gif and screenshot resized with the viewport while the text
+     blocks stayed pinned, which read as a bug.
+
+     1320px is set by the media rather than the prose: minus 48px of padding
+     that's a 1272px content box, so demo.gif (1440px wide, recorded at
+     FontSize 16) renders at ~14.1px apparent — legible, where the old 860px
+     column squeezed it to ~8.8px. */
+  .wrap{max-width:1320px; margin-left:auto; margin-right:auto; padding:0 24px}
   header{padding:72px 0 0; text-align:center}
   header img.logo{width:300px; max-width:80%; height:auto}
   .tagline{color:var(--muted); font-size:20px; margin:12px 0 0}
@@ -117,7 +119,7 @@ go install github.com/phenixblue/k8shark@latest</pre>
   </p>
 </section>
 
-<section class="wrap wide">
+<section class="wrap">
   <img class="shot" src="demo.gif" alt="Terminal recording: kshrk captures a cluster, then kubectl queries the archive through the mock API server">
   <p class="caption">Capture a live cluster, then run <code>kubectl</code> against the archive — no cluster required.</p>
 </section>
@@ -143,7 +145,7 @@ go install github.com/phenixblue/k8shark@latest</pre>
   </div>
 </section>
 
-<section class="wrap wide">
+<section class="wrap">
   <h2>Built-in dashboard</h2>
   <a href="https://github.com/phenixblue/k8shark/blob/main/docs/web-ui.md">
     <img class="shot" src="dashboard.png" alt="k8shark web dashboard: cluster totals, capture details, a resource-transition histogram, and a list of unhealthy pods to investigate">
