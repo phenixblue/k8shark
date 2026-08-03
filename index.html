@@ -65,6 +65,14 @@
   section{margin-top:80px}
   h2{font-size:24px; margin:0 0 24px; text-align:center}
   .caption{text-align:center; color:var(--muted); font-size:14px; margin:14px 0 0}
+  /* Connective prose between two code blocks — left aligned, unlike .caption,
+     because it reads as instruction rather than a label for an image. */
+  .between{color:var(--muted); font-size:14px; margin:14px 0 12px}
+  kbd{
+    background:var(--code-bg); border:1px solid var(--border); border-radius:5px;
+    padding:1px 6px; font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    color:var(--text);
+  }
   .shot{display:block; width:100%; height:auto; border:1px solid var(--border); border-radius:12px; box-shadow:0 8px 40px rgba(0,0,0,.4)}
   .steps{display:grid; grid-template-columns:repeat(3,1fr); gap:16px}
   .step{background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:20px}
@@ -121,19 +129,23 @@ go install github.com/phenixblue/k8shark@latest</pre>
 
 <section class="wrap">
   <h2>Quick start</h2>
-  <pre><span class="c"># 1. Capture a live cluster — no config file needed</span>
+  <pre><span class="c"># Capture a live cluster — no config file needed</span>
 kshrk capture --auto-discover --duration 2m --out capture.kshrk
 
-<span class="c"># 2. Ask what's broken, entirely offline</span>
-kshrk diagnose capture.kshrk
-
-<span class="c"># 3. Or explore it with kubectl — starts a local mock API server</span>
+<span class="c"># Ask what's broken, entirely offline</span>
+kshrk diagnose capture.kshrk</pre>
+  <p class="between">
+    Then explore it. Both options below run in the foreground until you press
+    <kbd>Ctrl+C</kbd>, so pick one rather than pasting both.
+  </p>
+  <pre><span class="c"># Option A — query it with kubectl</span>
 kshrk open capture.kshrk --kubeconfig-out ./kubeconfig
-<span class="c">#    then, in another shell:</span>
+
+<span class="c"># ...then, in a second shell:</span>
 export KUBECONFIG=./kubeconfig
 kubectl get pods -A
 
-<span class="c"># 4. Or browse it in the dashboard shown below</span>
+<span class="c"># Option B — browse it in the dashboard shown below (prints a local URL)</span>
 kshrk ui capture.kshrk</pre>
   <p class="note">
     <code>--auto-discover</code> captures every API resource your credentials can read, which is the
