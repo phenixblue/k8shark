@@ -122,19 +122,19 @@ go install github.com/phenixblue/k8shark@latest</pre>
 <section class="wrap">
   <h2>Quick start</h2>
   <pre><span class="c"># 1. Capture a live cluster — no config file needed</span>
-kshrk capture --auto-discover --duration 2m --out cluster.kshrk
+kshrk capture --auto-discover --duration 2m --out capture.kshrk
 
 <span class="c"># 2. Ask what's broken, entirely offline</span>
-kshrk diagnose cluster.kshrk
+kshrk diagnose capture.kshrk
 
 <span class="c"># 3. Or explore it with kubectl — starts a local mock API server</span>
-kshrk open cluster.kshrk --kubeconfig-out ./kubeconfig
+kshrk open capture.kshrk --kubeconfig-out ./kubeconfig
 <span class="c">#    then, in another shell:</span>
 export KUBECONFIG=./kubeconfig
 kubectl get pods -A
 
 <span class="c"># 4. Or browse it in the dashboard shown below</span>
-kshrk ui cluster.kshrk</pre>
+kshrk ui capture.kshrk</pre>
   <p class="note">
     <code>--auto-discover</code> captures every API resource your credentials can read, which is the
     fastest way to a first archive. For repeatable or scoped captures — specific resources,
