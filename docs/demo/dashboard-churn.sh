@@ -13,8 +13,11 @@
 #   cp ~/.kube/k8shark-dev.yaml /tmp/k8shark-dev.yaml   # what the config expects
 #   mkdir -p /tmp/k8shark-demo
 #   ./docs/demo/dashboard-churn.sh &
+#   churn=$!                                            # wait on this job only
 #   kshrk capture --config docs/demo/dashboard-capture.yaml
-#   wait
+#   wait "$churn"                                       # bare `wait` would block
+#                                                       # on unrelated background
+#                                                       # jobs in your shell
 #   kshrk ui /tmp/k8shark-demo/cluster.kshrk --ui-port 18080 --api-port 18081
 #
 # Ports 18080/18081 on purpose: 8080/8081 are commonly already in use locally.
@@ -37,7 +40,30 @@ DEADLINE=$((SECONDS + 80))
 # context" the moment kubectl writes anything to stderr.
 kc() { kubectl "$@" 2>&1 | sed 's/^/    /'; }
 
-echo "churn: starting against $KUBECONFIG (ns=$NS)"
+# Record the replica count before touching anything, so cleanup restores what was
+# actually there rather than assuming the dev cluster's default.
+NGINX_BASELINE=$(kubectl get deployment nginx -n "$NS" \
+  -o jsonpath='{.spec.replicas}' 2>/dev/null) || NGINX_BASELINE=""
+: "${NGINX_BASELINE:=2}"
+
+# Restore on every exit path, not just the happy one. Each round scales nginx up
+# to 4 and back down, so being killed partway through would otherwise strand the
+# deployment at 4 replicas — easy to hit, since the documented recipe leaves this
+# running in the background during a capture.
+restore_replicas() {
+  echo "churn: restoring nginx to $NGINX_BASELINE replica(s)"
+  kc scale deployment/nginx -n "$NS" --replicas="$NGINX_BASELINE"
+}
+# EXIT rather than INT/TERM directly: a signal trap converts the signal into an
+# exit, and the EXIT trap then does the cleanup — so normal completion, SIGTERM
+# (`kill %1`), and Ctrl+C all take one path. Trapping only INT/TERM would also
+# miss a subtlety: a background job started from a non-interactive shell inherits
+# SIGINT already ignored, and a trap can't re-enable a signal that was ignored on
+# entry, so an INT-only trap silently never fires for the recipe's `script &`.
+trap restore_replicas EXIT
+trap 'exit 130' INT TERM
+
+echo "churn: starting against $KUBECONFIG (ns=$NS, nginx baseline=$NGINX_BASELINE)"
 
 round=0
 while [ "$SECONDS" -lt "$DEADLINE" ]; do
@@ -77,7 +103,5 @@ while [ "$SECONDS" -lt "$DEADLINE" ]; do
   sleep 4
 done
 
-# Leave the cluster the way we found it, so a rerun starts from the same state.
-echo "churn: restoring replicas"
-kc scale deployment/nginx -n "$NS" --replicas=2
+# No explicit restore here: the EXIT trap above handles it on every path.
 echo "churn: done after $round round(s), ${SECONDS}s"
