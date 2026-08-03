@@ -15,7 +15,7 @@
   :root{
     --bg:#0b0e14; --panel:#121722; --panel-2:#0f141d; --border:#222b3a;
     --text:#e6edf6; --muted:#93a1b5; --accent:#5b9dff; --accent-2:#7c5cff;
-    --code-bg:#0d1119;
+    --code-bg:#0d1119; --ok:#3fb950;
   }
   *{box-sizing:border-box}
   html{scroll-behavior:smooth}
@@ -27,9 +27,23 @@
   a{color:var(--accent); text-decoration:none}
   a:hover{text-decoration:underline}
   .wrap{max-width:860px; margin-left:auto; margin-right:auto; padding:0 24px}
+  /* Screenshots and the terminal recording are detail-dense: giving them a
+     wider column than the body text keeps the text legible at native scale
+     instead of downscaling a 1440px-wide capture into an 860px slot.
+     1320px - 48px of padding = a 1272px content box, so demo.gif (1440px wide,
+     recorded at FontSize 16) renders at ~14.1px apparent — a real gain over the
+     13px it used to be, rather than the parity a 1220px column would give. */
+  .wrap.wide{max-width:1320px}
   header{padding:72px 0 0; text-align:center}
   header img.logo{width:300px; max-width:80%; height:auto}
   .tagline{color:var(--muted); font-size:20px; margin:12px 0 0}
+  .badges{display:flex; gap:8px; justify-content:center; flex-wrap:wrap; margin:18px 0 0}
+  .badge{
+    display:inline-flex; align-items:center; gap:6px; padding:4px 11px; border-radius:999px;
+    border:1px solid var(--border); background:var(--panel-2); color:var(--muted);
+    font-size:13px; font-weight:600;
+  }
+  .badge.stable{color:var(--ok); border-color:rgba(63,185,80,.35)}
   .lede{margin:24px 0 0; text-align:center; font-size:18px; color:var(--text)}
   .cta{display:flex; gap:12px; justify-content:center; flex-wrap:wrap; margin:28px 0 0}
   .btn{
@@ -48,6 +62,7 @@
   pre:last-child{margin-bottom:0}
   section{margin-top:80px}
   h2{font-size:24px; margin:0 0 24px; text-align:center}
+  .caption{text-align:center; color:var(--muted); font-size:14px; margin:14px 0 0}
   .shot{display:block; width:100%; height:auto; border:1px solid var(--border); border-radius:12px; box-shadow:0 8px 40px rgba(0,0,0,.4)}
   .steps{display:grid; grid-template-columns:repeat(3,1fr); gap:16px}
   .step{background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:20px}
@@ -55,7 +70,9 @@
   .step h3{margin:0 0 6px; font-size:16px}
   .step p{margin:0; color:var(--muted); font-size:14px}
   .step code{background:var(--code-bg); border:1px solid var(--border); border-radius:6px; padding:1px 6px; font-size:13px}
-  .note{text-align:center; color:var(--muted); font-size:14px; background:var(--panel-2); border:1px solid var(--border); border-radius:10px; padding:16px 18px}
+  .note{color:var(--muted); font-size:14px; background:var(--panel-2); border:1px solid var(--border); border-radius:10px; padding:16px 18px; margin:0}
+  .note.center{text-align:center}
+  .note code{background:var(--code-bg); border:1px solid var(--border); border-radius:6px; padding:1px 6px; font-size:13px}
   footer{margin-top:80px; border-top:1px solid var(--border); padding:28px 0 40px; text-align:center; color:var(--muted); font-size:14px}
   @media (max-width:680px){ .steps{grid-template-columns:1fr} header{padding-top:40px} }
 </style>
@@ -64,6 +81,11 @@
 <header class="wrap">
   <img class="logo" src="logo.png" alt="k8shark">
   <p class="tagline">Like Wireshark, but for Kubernetes.</p>
+  <div class="badges">
+    <span class="badge stable">v1.0 — stable</span>
+    <span class="badge">Apache-2.0</span>
+    <span class="badge">macOS · Linux · Windows</span>
+  </div>
 </header>
 
 <div class="wrap">
@@ -84,14 +106,21 @@
 <section class="wrap">
   <h2>Install</h2>
   <pre><span class="c"># Homebrew</span>
-brew install phenixblue/tap/k8shark
+brew install --cask phenixblue/tap/k8shark
 
 <span class="c"># or with Go</span>
 go install github.com/phenixblue/k8shark@latest</pre>
+  <p class="note">
+    <strong>macOS:</strong> Homebrew quarantines cask installs, so the first run is blocked by
+    Gatekeeper. Approve it once under <em>System Settings → Privacy &amp; Security</em>, or clear the
+    attribute yourself — see
+    <a href="https://github.com/phenixblue/k8shark/blob/main/docs/usage.md#macos-first-run-is-blocked-by-gatekeeper">the install notes</a>.
+  </p>
 </section>
 
-<section class="wrap">
-  <img class="shot" src="demo.gif" alt="k8shark capture and replay demo">
+<section class="wrap wide">
+  <img class="shot" src="demo.gif" alt="Terminal recording: kshrk captures a cluster, then kubectl queries the archive through the mock API server">
+  <p class="caption">Capture a live cluster, then run <code>kubectl</code> against the archive — no cluster required.</p>
 </section>
 
 <section class="wrap">
@@ -100,7 +129,7 @@ go install github.com/phenixblue/k8shark@latest</pre>
     <div class="step">
       <span class="n">1</span>
       <h3>Capture</h3>
-      <p><code>kshrk capture</code> polls the Kubernetes API at set intervals and packages every response into a single <code>.khsrk</code> archive.</p>
+      <p><code>kshrk capture</code> polls the Kubernetes API at set intervals — and watches for changes — packaging every response into a single <code>.kshrk</code> archive.</p>
     </div>
     <div class="step">
       <span class="n">2</span>
@@ -115,18 +144,21 @@ go install github.com/phenixblue/k8shark@latest</pre>
   </div>
 </section>
 
-<section class="wrap">
+<section class="wrap wide">
   <h2>Built-in dashboard</h2>
   <a href="https://github.com/phenixblue/k8shark/blob/main/docs/web-ui.md">
-    <img class="shot" src="dashboard.png" alt="k8shark web dashboard overview">
+    <img class="shot" src="dashboard.png" alt="k8shark web dashboard: cluster totals, capture details, a resource-transition histogram, and a list of unhealthy pods to investigate">
   </a>
+  <p class="caption">Cluster totals, capture provenance, a watch-event timeline, and the pods worth looking at first.</p>
 </section>
 
 <section class="wrap">
-  <p class="note">
-    <strong>k8shark is under active development.</strong> Until the API and archive format stabilize,
-    prefer the latest <a href="https://github.com/phenixblue/k8shark/releases/latest">release</a> for
-    compatibility fixes and current behavior.
+  <p class="note center">
+    <strong>k8shark 1.0 is stable.</strong> The CLI surface, <code>-o json</code> output shapes, config
+    schema, and <code>.kshrk</code> archive format are covered by
+    <a href="https://github.com/phenixblue/k8shark/blob/main/docs/stability-policy.md">a published
+    stability policy</a> and semantic versioning: the 1.x line reads every version-1 archive for the
+    life of the series, and breaking changes wait for 2.0.
   </p>
 </section>
 
