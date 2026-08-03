@@ -71,7 +71,6 @@
   .step p{margin:0; color:var(--muted); font-size:14px}
   .step code{background:var(--code-bg); border:1px solid var(--border); border-radius:6px; padding:1px 6px; font-size:13px}
   .note{color:var(--muted); font-size:14px; background:var(--panel-2); border:1px solid var(--border); border-radius:10px; padding:16px 18px; margin:0}
-  .note.center{text-align:center}
   .note code{background:var(--code-bg); border:1px solid var(--border); border-radius:6px; padding:1px 6px; font-size:13px}
   footer{margin-top:80px; border-top:1px solid var(--border); padding:28px 0 40px; text-align:center; color:var(--muted); font-size:14px}
   @media (max-width:680px){ .steps{grid-template-columns:1fr} header{padding-top:40px} }
@@ -150,16 +149,6 @@ go install github.com/phenixblue/k8shark@latest</pre>
     <img class="shot" src="dashboard.png" alt="k8shark web dashboard: cluster totals, capture details, a resource-transition histogram, and a list of unhealthy pods to investigate">
   </a>
   <p class="caption">Cluster totals, capture provenance, a watch-event timeline, and the pods worth looking at first.</p>
-</section>
-
-<section class="wrap">
-  <p class="note center">
-    <strong>k8shark 1.0 is stable.</strong> The CLI surface, <code>-o json</code> output shapes, config
-    schema, and <code>.kshrk</code> archive format are covered by
-    <a href="https://github.com/phenixblue/k8shark/blob/main/docs/stability-policy.md">a published
-    stability policy</a> and semantic versioning: the 1.x line reads every version-1 archive for the
-    life of the series, and breaking changes wait for 2.0.
-  </p>
 </section>
 
 <footer>
