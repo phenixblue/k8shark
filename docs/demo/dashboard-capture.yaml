@@ -1,0 +1,107 @@
+# Capture config behind the dashboard screenshot on k8shark.io (dashboard.png).
+#
+# Checked in for the same reason demo.tape is: so the published asset can be
+# regenerated rather than being a one-off nobody can reproduce. Run it against
+# the `make kind-up` dev cluster, with docs/demo/dashboard-churn.sh generating
+# churn in parallel — see the header of that script for the full recipe.
+#
+# Deliberate choices:
+#   * output goes to /tmp, not the repo — the UI displays the archive path, and
+#     the screenshot must not publish a developer's home directory. The previous
+#     dashboard.png leaked both a personal path and an internal cluster
+#     hostname.
+#   * `watch: true` on the resources that actually change during the window.
+#     Without it the WATCH EVENTS tile reads 0 and the "Resource transitions"
+#     chart renders empty, which makes a headline feature look broken. That is
+#     exactly what the old screenshot showed.
+#   * namespaces: ["*"] for pods/deployments so the Namespaces and Workloads
+#     views have something to show. This is one cluster-wide LIST per resource,
+#     not one per namespace (see fetchResourceClusterWide in
+#     internal/capture/poll.go), so the wildcard is cheap.
+
+duration: 90s
+output: /tmp/k8shark-demo/cluster.kshrk
+kubeconfig: /tmp/k8shark-dev.yaml
+
+resources:
+  # --- the churning ones: watch on, short interval -------------------------
+  - group: ""
+    version: v1
+    resource: pods
+    namespaces: ["*"]
+    interval: 10s
+    watch: true
+
+  - group: apps
+    version: v1
+    resource: deployments
+    namespaces: ["*"]
+    interval: 10s
+    watch: true
+
+  - group: apps
+    version: v1
+    resource: replicasets
+    namespaces: ["*"]
+    interval: 15s
+    watch: true
+
+  - group: ""
+    version: v1
+    resource: configmaps
+    namespaces: ["*"]
+    interval: 15s
+    watch: true
+
+  # --- steady state: polled only ------------------------------------------
+  - group: ""
+    version: v1
+    resource: nodes
+    interval: 30s
+
+  - group: ""
+    version: v1
+    resource: namespaces
+    interval: 30s
+
+  - group: ""
+    version: v1
+    resource: services
+    namespaces: ["*"]
+    interval: 30s
+
+  - group: ""
+    version: v1
+    resource: serviceaccounts
+    namespaces: ["*"]
+    interval: 30s
+
+  - group: ""
+    version: v1
+    resource: persistentvolumeclaims
+    namespaces: ["*"]
+    interval: 30s
+
+  - group: apps
+    version: v1
+    resource: statefulsets
+    namespaces: ["*"]
+    interval: 30s
+
+  - group: apps
+    version: v1
+    resource: daemonsets
+    namespaces: ["*"]
+    interval: 30s
+
+  - group: batch
+    version: v1
+    resource: jobs
+    namespaces: ["*"]
+    interval: 30s
+
+  - group: discovery.k8s.io
+    version: v1
+    resource: endpointslices
+    namespaces: ["*"]
+    interval: 30s
