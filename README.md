@@ -40,14 +40,24 @@ kshrk capture --auto-discover --duration 2m --out capture.kshrk
 
 # Ask what's broken, entirely offline
 kshrk diagnose capture.kshrk
+```
 
-# Or explore it with kubectl — starts a local mock API server
+Then explore the capture. Both options below **run in the foreground until you
+press Ctrl+C**, so pick one rather than pasting both:
+
+```sh
+# Option A — query it with kubectl
 kshrk open capture.kshrk --kubeconfig-out ./kubeconfig
-#   then, in another shell:
+```
+
+```sh
+# ...then, in a second shell:
 export KUBECONFIG=./kubeconfig
 kubectl get pods -A
+```
 
-# Or browse it in the web dashboard
+```sh
+# Option B — browse it in the web dashboard (prints a local URL)
 kshrk ui capture.kshrk
 ```
 

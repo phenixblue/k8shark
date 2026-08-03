@@ -28,6 +28,13 @@ DEADLINE=$((SECONDS + 80))
 
 # Best-effort throughout: a failed scale or delete should not abort the run and
 # lose the churn that already happened. Errors are surfaced, not swallowed.
+#
+# Only for commands whose output is meant for a human to read. Never redirect
+# this to a file that another command parses: the 2>&1 folds kubectl's stderr
+# into the captured stdout, so a single klog warning ends up inside the payload.
+# Verified — piping a generated manifest through here and applying it fails with
+# "error converting YAML to JSON: mapping values are not allowed in this
+# context" the moment kubectl writes anything to stderr.
 kc() { kubectl "$@" 2>&1 | sed 's/^/    /'; }
 
 echo "churn: starting against $KUBECONFIG (ns=$NS)"
@@ -53,9 +60,11 @@ while [ "$SECONDS" -lt "$DEADLINE" ]; do
   # the transitions chart is not all one kind.
   kc create configmap "churn-$round" -n "$NS" --from-literal=round="$round"
   sleep 3
-  kc create configmap "churn-$round" -n "$NS" --from-literal=round="$round-updated" \
-    --dry-run=client -o yaml >/tmp/k8shark-churn-cm.yaml
-  kc apply -f /tmp/k8shark-churn-cm.yaml
+  # Plain kubectl generates the manifest (see the kc() note above), piped
+  # straight into apply — no temp file, so concurrent runs can't collide on one.
+  kubectl create configmap "churn-$round" -n "$NS" \
+    --from-literal=round="$round-updated" --dry-run=client -o yaml \
+    | kc apply -f -
   sleep 3
   kc delete configmap "churn-$round" -n "$NS" --ignore-not-found
   sleep 4
@@ -71,5 +80,4 @@ done
 # Leave the cluster the way we found it, so a rerun starts from the same state.
 echo "churn: restoring replicas"
 kc scale deployment/nginx -n "$NS" --replicas=2
-rm -f /tmp/k8shark-churn-cm.yaml
 echo "churn: done after $round round(s), ${SECONDS}s"
