@@ -15,7 +15,7 @@
   :root{
     --bg:#0b0e14; --panel:#121722; --panel-2:#0f141d; --border:#222b3a;
     --text:#e6edf6; --muted:#93a1b5; --accent:#5b9dff; --accent-2:#7c5cff;
-    --code-bg:#0d1119;
+    --code-bg:#0d1119; --ok:#3fb950;
   }
   *{box-sizing:border-box}
   html{scroll-behavior:smooth}
@@ -26,10 +26,26 @@
   }
   a{color:var(--accent); text-decoration:none}
   a:hover{text-decoration:underline}
-  .wrap{max-width:860px; margin-left:auto; margin-right:auto; padding:0 24px}
+  /* One column width for every section, so all of them scale together as the
+     window resizes. A narrower column for prose and a wider one for the media
+     meant the gif and screenshot resized with the viewport while the text
+     blocks stayed pinned, which read as a bug.
+
+     1320px is set by the media rather than the prose: minus 48px of padding
+     that's a 1272px content box, so demo.gif (1440px wide, recorded at
+     FontSize 16) renders at ~14.1px apparent — legible, where the old 860px
+     column squeezed it to ~8.8px. */
+  .wrap{max-width:1320px; margin-left:auto; margin-right:auto; padding:0 24px}
   header{padding:72px 0 0; text-align:center}
   header img.logo{width:300px; max-width:80%; height:auto}
   .tagline{color:var(--muted); font-size:20px; margin:12px 0 0}
+  .badges{display:flex; gap:8px; justify-content:center; flex-wrap:wrap; margin:18px 0 0}
+  .badge{
+    display:inline-flex; align-items:center; gap:6px; padding:4px 11px; border-radius:999px;
+    border:1px solid var(--border); background:var(--panel-2); color:var(--muted);
+    font-size:13px; font-weight:600;
+  }
+  .badge.stable{color:var(--ok); border-color:rgba(63,185,80,.35)}
   .lede{margin:24px 0 0; text-align:center; font-size:18px; color:var(--text)}
   .cta{display:flex; gap:12px; justify-content:center; flex-wrap:wrap; margin:28px 0 0}
   .btn{
@@ -48,6 +64,15 @@
   pre:last-child{margin-bottom:0}
   section{margin-top:80px}
   h2{font-size:24px; margin:0 0 24px; text-align:center}
+  .caption{text-align:center; color:var(--muted); font-size:14px; margin:14px 0 0}
+  /* Connective prose between two code blocks — left aligned, unlike .caption,
+     because it reads as instruction rather than a label for an image. */
+  .between{color:var(--muted); font-size:14px; margin:14px 0 12px}
+  kbd{
+    background:var(--code-bg); border:1px solid var(--border); border-radius:5px;
+    padding:1px 6px; font:13px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    color:var(--text);
+  }
   .shot{display:block; width:100%; height:auto; border:1px solid var(--border); border-radius:12px; box-shadow:0 8px 40px rgba(0,0,0,.4)}
   .steps{display:grid; grid-template-columns:repeat(3,1fr); gap:16px}
   .step{background:var(--panel); border:1px solid var(--border); border-radius:12px; padding:20px}
@@ -55,7 +80,8 @@
   .step h3{margin:0 0 6px; font-size:16px}
   .step p{margin:0; color:var(--muted); font-size:14px}
   .step code{background:var(--code-bg); border:1px solid var(--border); border-radius:6px; padding:1px 6px; font-size:13px}
-  .note{text-align:center; color:var(--muted); font-size:14px; background:var(--panel-2); border:1px solid var(--border); border-radius:10px; padding:16px 18px}
+  .note{color:var(--muted); font-size:14px; background:var(--panel-2); border:1px solid var(--border); border-radius:10px; padding:16px 18px; margin:0}
+  .note code{background:var(--code-bg); border:1px solid var(--border); border-radius:6px; padding:1px 6px; font-size:13px}
   footer{margin-top:80px; border-top:1px solid var(--border); padding:28px 0 40px; text-align:center; color:var(--muted); font-size:14px}
   @media (max-width:680px){ .steps{grid-template-columns:1fr} header{padding-top:40px} }
 </style>
@@ -64,6 +90,11 @@
 <header class="wrap">
   <img class="logo" src="logo.png" alt="k8shark">
   <p class="tagline">Like Wireshark, but for Kubernetes.</p>
+  <div class="badges">
+    <span class="badge stable">v1.0 — stable</span>
+    <span class="badge">Apache-2.0</span>
+    <span class="badge">macOS · Linux · Windows</span>
+  </div>
 </header>
 
 <div class="wrap">
@@ -84,14 +115,53 @@
 <section class="wrap">
   <h2>Install</h2>
   <pre><span class="c"># Homebrew</span>
-brew install phenixblue/tap/k8shark
+brew install --cask phenixblue/tap/k8shark
 
 <span class="c"># or with Go</span>
 go install github.com/phenixblue/k8shark@latest</pre>
+  <p class="note">
+    <strong>macOS:</strong> Homebrew quarantines cask installs, so the first run is blocked by
+    Gatekeeper. Approve it once under <em>System Settings → Privacy &amp; Security</em>, or clear the
+    attribute yourself — see
+    <a href="https://github.com/phenixblue/k8shark/blob/main/docs/usage.md#macos-first-run-is-blocked-by-gatekeeper">the install notes</a>.
+  </p>
 </section>
 
 <section class="wrap">
-  <img class="shot" src="demo.gif" alt="k8shark capture and replay demo">
+  <h2>Quick start</h2>
+  <pre><span class="c"># Capture a live cluster — no config file needed</span>
+kshrk capture --auto-discover --duration 2m --out capture.kshrk
+
+<span class="c"># Ask what's broken, entirely offline</span>
+kshrk diagnose capture.kshrk</pre>
+  <p class="between">
+    Then explore it. Both options below run in the foreground until you press
+    <kbd>Ctrl+C</kbd>, so pick one rather than pasting both.
+  </p>
+  <pre><span class="c"># Option A — query it with kubectl</span>
+kshrk open capture.kshrk --kubeconfig-out ~/.kube/k8shark-demo.yaml
+
+<span class="c"># ...then, in a second shell — absolute, so any directory works:</span>
+export KUBECONFIG=~/.kube/k8shark-demo.yaml
+kubectl get pods -A
+
+<span class="c"># Option B — browse it in the dashboard shown below (prints a local URL)</span>
+kshrk ui capture.kshrk</pre>
+  <p class="note">
+    <code>--auto-discover</code> captures every API resource your credentials can read, which is the
+    fastest way to a first archive. For repeatable or scoped captures — specific resources,
+    namespaces, and poll intervals — use a config file instead: see
+    <a href="https://github.com/phenixblue/k8shark/blob/main/docs/config.md">the config reference</a>
+    and the <a href="https://github.com/phenixblue/k8shark/blob/main/examples/k8shark.yaml">starter config</a>.
+    No cluster handy? The repo ships
+    <a href="https://github.com/phenixblue/k8shark/blob/main/examples/README.md">five pre-recorded captures</a>
+    you can open immediately.
+  </p>
+</section>
+
+<section class="wrap">
+  <img class="shot" src="demo.gif" alt="Terminal recording: kshrk captures a cluster, then kubectl queries the archive through the mock API server">
+  <p class="caption">Capture a live cluster, then run <code>kubectl</code> against the archive — no cluster required.</p>
 </section>
 
 <section class="wrap">
@@ -100,7 +170,7 @@ go install github.com/phenixblue/k8shark@latest</pre>
     <div class="step">
       <span class="n">1</span>
       <h3>Capture</h3>
-      <p><code>kshrk capture</code> polls the Kubernetes API at set intervals and packages every response into a single <code>.khsrk</code> archive.</p>
+      <p><code>kshrk capture</code> polls the Kubernetes API at set intervals — and watches for changes — packaging every response into a single <code>.kshrk</code> archive.</p>
     </div>
     <div class="step">
       <span class="n">2</span>
@@ -118,16 +188,9 @@ go install github.com/phenixblue/k8shark@latest</pre>
 <section class="wrap">
   <h2>Built-in dashboard</h2>
   <a href="https://github.com/phenixblue/k8shark/blob/main/docs/web-ui.md">
-    <img class="shot" src="dashboard.png" alt="k8shark web dashboard overview">
+    <img class="shot" src="dashboard.png" alt="k8shark web dashboard: cluster totals, capture details, a resource-transition histogram, and a list of unhealthy pods to investigate">
   </a>
-</section>
-
-<section class="wrap">
-  <p class="note">
-    <strong>k8shark is under active development.</strong> Until the API and archive format stabilize,
-    prefer the latest <a href="https://github.com/phenixblue/k8shark/releases/latest">release</a> for
-    compatibility fixes and current behavior.
-  </p>
+  <p class="caption">Cluster totals, capture provenance, a watch-event timeline, and the pods worth looking at first.</p>
 </section>
 
 <footer>
