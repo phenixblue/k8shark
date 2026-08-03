@@ -139,10 +139,10 @@ kshrk diagnose capture.kshrk</pre>
     <kbd>Ctrl+C</kbd>, so pick one rather than pasting both.
   </p>
   <pre><span class="c"># Option A — query it with kubectl</span>
-kshrk open capture.kshrk --kubeconfig-out ./kubeconfig
+kshrk open capture.kshrk --kubeconfig-out ~/.kube/k8shark-demo.yaml
 
-<span class="c"># ...then, in a second shell:</span>
-export KUBECONFIG=./kubeconfig
+<span class="c"># ...then, in a second shell — absolute, so any directory works:</span>
+export KUBECONFIG=~/.kube/k8shark-demo.yaml
 kubectl get pods -A
 
 <span class="c"># Option B — browse it in the dashboard shown below (prints a local URL)</span>
