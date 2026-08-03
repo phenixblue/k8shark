@@ -120,6 +120,34 @@ go install github.com/phenixblue/k8shark@latest</pre>
 </section>
 
 <section class="wrap">
+  <h2>Quick start</h2>
+  <pre><span class="c"># 1. Capture a live cluster — no config file needed</span>
+kshrk capture --auto-discover --duration 2m --out cluster.kshrk
+
+<span class="c"># 2. Ask what's broken, entirely offline</span>
+kshrk diagnose cluster.kshrk
+
+<span class="c"># 3. Or explore it with kubectl — starts a local mock API server</span>
+kshrk open cluster.kshrk --kubeconfig-out ./kubeconfig
+<span class="c">#    then, in another shell:</span>
+export KUBECONFIG=./kubeconfig
+kubectl get pods -A
+
+<span class="c"># 4. Or browse it in the dashboard shown below</span>
+kshrk ui cluster.kshrk</pre>
+  <p class="note">
+    <code>--auto-discover</code> captures every API resource your credentials can read, which is the
+    fastest way to a first archive. For repeatable or scoped captures — specific resources,
+    namespaces, and poll intervals — use a config file instead: see
+    <a href="https://github.com/phenixblue/k8shark/blob/main/docs/config.md">the config reference</a>
+    and the <a href="https://github.com/phenixblue/k8shark/blob/main/examples/k8shark.yaml">starter config</a>.
+    No cluster handy? The repo ships
+    <a href="https://github.com/phenixblue/k8shark/blob/main/examples/README.md">five pre-recorded captures</a>
+    you can open immediately.
+  </p>
+</section>
+
+<section class="wrap">
   <img class="shot" src="demo.gif" alt="Terminal recording: kshrk captures a cluster, then kubectl queries the archive through the mock API server">
   <p class="caption">Capture a live cluster, then run <code>kubectl</code> against the archive — no cluster required.</p>
 </section>
