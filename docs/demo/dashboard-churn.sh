@@ -45,11 +45,17 @@ kc() { kubectl "$@" 2>&1 | sed 's/^/    /'; }
 NGINX_BASELINE=$(kubectl get deployment nginx -n "$NS" \
   -o jsonpath='{.spec.replicas}' 2>/dev/null) || NGINX_BASELINE=""
 : "${NGINX_BASELINE:=2}"
+# Churn relative to the baseline, never to fixed numbers. Scaling to a literal 4
+# would be a no-op on a cluster already running 4 — the scale step would generate
+# no pod events at all while still looking like it worked. Returning to the
+# baseline each round also keeps the steady state during the capture window equal
+# to what was there before, so the script stays as unintrusive as it can be.
+NGINX_SCALED=$((NGINX_BASELINE + 2))
 
 # Restore on every exit path, not just the happy one. Each round scales nginx up
-# to 4 and back down, so being killed partway through would otherwise strand the
-# deployment at 4 replicas — easy to hit, since the documented recipe leaves this
-# running in the background during a capture.
+# and back down, so being killed partway through would otherwise strand the
+# deployment above its baseline — easy to hit, since the documented recipe leaves
+# this running in the background during a capture.
 restore_replicas() {
   echo "churn: restoring nginx to $NGINX_BASELINE replica(s)"
   kc scale deployment/nginx -n "$NS" --replicas="$NGINX_BASELINE"
@@ -72,9 +78,9 @@ while [ "$SECONDS" -lt "$DEADLINE" ]; do
 
   # Scale a deployment up and back down: creates/deletes pods, so ReplicaSet
   # and Pod watch events both fire.
-  kc scale deployment/nginx -n "$NS" --replicas=4
+  kc scale deployment/nginx -n "$NS" --replicas="$NGINX_SCALED"
   sleep 8
-  kc scale deployment/nginx -n "$NS" --replicas=2
+  kc scale deployment/nginx -n "$NS" --replicas="$NGINX_BASELINE"
   sleep 6
 
   # Rollout restart: new ReplicaSet, pods terminating and starting — the most
