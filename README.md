@@ -47,12 +47,13 @@ press Ctrl+C**, so pick one rather than pasting both:
 
 ```sh
 # Option A — query it with kubectl
-kshrk open capture.kshrk --kubeconfig-out ./kubeconfig
+kshrk open capture.kshrk --kubeconfig-out ~/.kube/k8shark-demo.yaml
 ```
 
 ```sh
-# ...then, in a second shell:
-export KUBECONFIG=./kubeconfig
+# ...then, in a second shell. The path is absolute, so it works from any
+# directory — and kshrk creates the parent if it doesn't exist.
+export KUBECONFIG=~/.kube/k8shark-demo.yaml
 kubectl get pods -A
 ```
 
