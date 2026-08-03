@@ -35,15 +35,32 @@ RBAC a capture needs? See the [RBAC guide](docs/rbac.md).
 # Install
 brew install --cask phenixblue/tap/k8shark
 
-# Capture cluster state for 10 minutes (writes to ./capture.kshrk — see
-# examples/k8shark.yaml's `output:` field)
-kshrk capture --config examples/k8shark.yaml
+# Capture a live cluster for 2 minutes — no config file needed
+kshrk capture --auto-discover --duration 2m --out capture.kshrk
 
-# Replay the capture — prints the generated kubeconfig path
-kshrk open capture.kshrk
-export KUBECONFIG=~/.kube/k8shark-<id>.yaml   # <id> is printed by the command above
+# Ask what's broken, entirely offline
+kshrk diagnose capture.kshrk
+
+# Or explore it with kubectl — starts a local mock API server
+kshrk open capture.kshrk --kubeconfig-out ./kubeconfig
+#   then, in another shell:
+export KUBECONFIG=./kubeconfig
 kubectl get pods -A
+
+# Or browse it in the web dashboard
+kshrk ui capture.kshrk
 ```
+
+`--auto-discover` captures every API resource your credentials can read, which
+is the fastest way to a first archive. For repeatable or scoped captures —
+specific resources, namespaces, and poll intervals — use a config file instead:
+
+```sh
+kshrk capture --config examples/k8shark.yaml   # requires a clone of this repo
+```
+
+See [docs/config.md](docs/config.md) for the schema and
+[examples/k8shark.yaml](examples/k8shark.yaml) for a starter config.
 
 > **macOS:** the binaries aren't Apple-notarized yet ([#316](https://github.com/phenixblue/k8shark/issues/316)),
 > and Homebrew quarantines cask installs, so the first run is blocked by Gatekeeper.
