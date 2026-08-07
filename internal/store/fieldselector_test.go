@@ -644,6 +644,130 @@ func TestFieldSelector_OutOfRangeNumber(t *testing.T) {
 	}
 }
 
+// TestFieldSelector_DecodeMode pins which selectors can be answered from an
+// already-decoded K8sObject and which need the whole object. Getting this wrong
+// is silent in both directions — a raw-only path read from the struct resolves
+// to "" and matches nothing, and a struct-resolvable path sent through the raw
+// decode just costs time — so assert the classification directly.
+func TestFieldSelector_DecodeMode(t *testing.T) {
+	cases := []struct {
+		group, resource, sel string
+		want                 decodeMode
+	}{
+		// metadata, spec and status all live on the struct.
+		{"", "pods", "metadata.name=web", decodeFromObject},
+		{"", "pods", "spec.nodeName=node-a", decodeFromObject},
+		{"", "pods", "status.phase=Running", decodeFromObject},
+		{"", "pods", "spec.nodeName=node-a,status.phase=Running", decodeFromObject},
+		{"", "nodes", "spec.unschedulable=true", decodeFromObject},
+		{"", "namespaces", "status.phase=Active", decodeFromObject},
+		{"", "services", "spec.type=ClusterIP", decodeFromObject},
+		{"", "replicationcontrollers", "status.replicas=3", decodeFromObject},
+		{"batch", "jobs", "status.successful=1", decodeFromObject},
+		{"certificates.k8s.io", "certificatesigningrequests", "spec.signerName=x", decodeFromObject},
+		// Accepted but not selectable: resolves to "" from any source, so it
+		// needs no raw decode.
+		{"", "pods", "status.podIPs=10.0.0.1", decodeFromObject},
+		// Secrets keep type at the top level, outside spec/status.
+		{"", "secrets", "type=Opaque", decodeFromRaw},
+		// Every Event field the selectors read is top-level.
+		{"", "events", "involvedObject.kind=Pod", decodeFromRaw},
+		{"", "events", "reason=Scheduled", decodeFromRaw},
+		{"", "events", "type=Normal", decodeFromRaw},
+		{"", "events", "source=kubelet", decodeFromRaw},
+		{"events.k8s.io", "events", "regarding.kind=Pod", decodeFromRaw},
+		{"events.k8s.io", "events", "reportingController=kubelet", decodeFromRaw},
+		// One raw-only requirement forces the whole selector to raw.
+		{"", "events", "metadata.name=e1,reason=Scheduled", decodeFromRaw},
+	}
+	for _, tc := range cases {
+		fs := mustFieldSelector(t, tc.group, tc.resource, tc.sel)
+		if fs.mode != tc.want {
+			t.Errorf("[%s %s %q] mode = %v, want %v",
+				tc.group, tc.resource, tc.sel, fs.mode, tc.want)
+		}
+	}
+}
+
+// TestFieldSelector_StructPathIgnoresRaw proves the fast path really is taken:
+// with a decoded object supplied and the raw bytes deliberately unusable, a
+// spec/status selector must still filter correctly. If the mode ever regresses
+// to decodeFromRaw, the unmarshal fails and Matches returns true — an
+// over-match, which is the bug this whole change set is about.
+func TestFieldSelector_StructPathIgnoresRaw(t *testing.T) {
+	var onNodeA, onNodeB K8sObject
+	if err := json.Unmarshal(pod(t, "web-1", "demo", "node-a", "Running"), &onNodeA); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(pod(t, "web-2", "demo", "node-b", "Failed"), &onNodeB); err != nil {
+		t.Fatal(err)
+	}
+	unusable := json.RawMessage(`not json at all`)
+
+	for _, tc := range []struct {
+		sel        string
+		wantA      bool
+		wantB      bool
+		wantReason string
+	}{
+		{"spec.nodeName=node-a", true, false, "spec path"},
+		{"status.phase=Failed", false, true, "status path"},
+		{"metadata.name=web-1", true, false, "metadata path"},
+	} {
+		fs := mustFieldSelector(t, "", "pods", tc.sel)
+		if got := fs.Matches(unusable, &onNodeA); got != tc.wantA {
+			t.Errorf("[%s] web-1 (%s) = %v, want %v", tc.sel, tc.wantReason, got, tc.wantA)
+		}
+		if got := fs.Matches(unusable, &onNodeB); got != tc.wantB {
+			t.Errorf("[%s] web-2 (%s) = %v, want %v", tc.sel, tc.wantReason, got, tc.wantB)
+		}
+	}
+}
+
+// TestFieldSelector_RawPathWithDecodedObject is the mirror image: a selector on a
+// field outside metadata/spec/status must read the raw object even when a decoded
+// K8sObject is available, since the struct simply has nowhere to hold it.
+func TestFieldSelector_RawPathWithDecodedObject(t *testing.T) {
+	event := obj(t, map[string]any{
+		"metadata":       map[string]any{"name": "e1", "namespace": "demo"},
+		"involvedObject": map[string]any{"kind": "Pod", "name": "web-1"},
+		"reason":         "Scheduled",
+		"type":           "Normal",
+		"source":         map[string]any{"component": "default-scheduler"},
+	})
+	var decoded K8sObject
+	if err := json.Unmarshal(event, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	for _, sel := range []string{
+		"involvedObject.kind=Pod", "reason=Scheduled", "type=Normal", "source=default-scheduler",
+	} {
+		fs := mustFieldSelector(t, "", "events", sel)
+		if !fs.Matches(event, &decoded) {
+			t.Errorf("[%s] should match even with a decoded object supplied", sel)
+		}
+	}
+	// And a non-matching value still filters.
+	fs := mustFieldSelector(t, "", "events", "reason=Killing")
+	if fs.Matches(event, &decoded) {
+		t.Error("reason=Killing should not match a Scheduled event")
+	}
+
+	// Secrets keep type at the top level too.
+	secret := obj(t, map[string]any{
+		"metadata": map[string]any{"name": "s1", "namespace": "demo"},
+		"type":     "kubernetes.io/service-account-token",
+	})
+	var decodedSecret K8sObject
+	if err := json.Unmarshal(secret, &decodedSecret); err != nil {
+		t.Fatal(err)
+	}
+	fs = mustFieldSelector(t, "", "secrets", "type=kubernetes.io/service-account-token")
+	if !fs.Matches(secret, &decodedSecret) {
+		t.Error("secret type should match with a decoded object supplied")
+	}
+}
+
 // TestFieldSelector_NeedsFullObject drives the Table fallback decision.
 func TestFieldSelector_NeedsFullObject(t *testing.T) {
 	cases := []struct {

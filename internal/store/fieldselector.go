@@ -339,15 +339,35 @@ func rulesFor(group, resource string) fieldLabelRules {
 	return metadataOnlyRules
 }
 
+// decodeMode says what Matches needs in order to evaluate the selector.
+type decodeMode uint8
+
+const (
+	// decodeFromObject: every requirement resolves from an already-decoded
+	// K8sObject — metadata.name/namespace, any spec.* or status.* path (both are
+	// map[string]any on the struct), and accepted-but-not-selectable labels,
+	// which resolve to "" whatever the source. No second unmarshal needed.
+	decodeFromObject decodeMode = iota
+	// decodeFromRaw: at least one requirement reads a field outside
+	// metadata/spec/status, so the whole object has to be decoded. Events
+	// (involvedObject.*/regarding.*/reason/type/source/reportingComponent) and
+	// Secrets (top-level type) are the kinds that land here.
+	decodeFromRaw
+)
+
 // FieldSelector is a parsed, per-kind-validated fieldSelector. A nil
 // *FieldSelector matches everything, so callers can pass one through unchecked.
 type FieldSelector struct {
 	sel   fields.Selector
 	rules fieldLabelRules
 	// metadataOnly is true when every requirement reads metadata.name or
-	// metadata.namespace, which lets Matches answer from the already-decoded
-	// K8sObject instead of unmarshaling the object a second time.
+	// metadata.namespace — i.e. when the selector can be evaluated against a
+	// PartialObjectMetadata, which is what a Table row carries. Distinct from
+	// mode: a spec.nodeName selector needs no second unmarshal (mode is
+	// decodeFromObject) but still cannot be answered from a Table row.
 	metadataOnly bool
+	// mode is how Matches gets at the values. See decodeMode.
+	mode decodeMode
 }
 
 // ParseFieldSelector parses and validates a client-supplied fieldSelector for
@@ -383,12 +403,21 @@ func ParseFieldSelector(group, resource, selector string) (*FieldSelector, error
 	if err != nil {
 		return nil, err
 	}
-	fs := &FieldSelector{sel: transformed, rules: rules, metadataOnly: true}
+	fs := &FieldSelector{sel: transformed, rules: rules, metadataOnly: true, mode: decodeFromObject}
 	for _, req := range transformed.Requirements() {
 		p, ok := rules.selectable[req.Field]
-		if !ok || (p.path != "metadata.name" && p.path != "metadata.namespace") {
+		if !ok {
+			// Accepted but never set by ToSelectableFields: resolves to "" from
+			// any source, so it needs no raw decode — but it is not a metadata
+			// field either, so a Table row cannot answer it.
 			fs.metadataOnly = false
-			break
+			continue
+		}
+		if p.path != "metadata.name" && p.path != "metadata.namespace" {
+			fs.metadataOnly = false
+		}
+		if !resolvableFromObject(p) {
+			fs.mode = decodeFromRaw
 		}
 	}
 	return fs, nil
@@ -440,7 +469,13 @@ func (fs *FieldSelector) Matches(raw json.RawMessage, obj *K8sObject) bool {
 	if fs == nil {
 		return true
 	}
-	if fs.metadataOnly && obj != nil {
+	// Prefer the caller's already-decoded object. K8sObject carries Spec and
+	// Status as map[string]any, so every metadata/spec/status path resolves from
+	// it — which is most selectors in practice, spec.nodeName and status.phase
+	// among them. Decoding the object a second time to reach the same values
+	// costs about half again the wall time and better than twice the allocations
+	// on a large list.
+	if fs.mode == decodeFromObject && obj != nil {
 		return fs.sel.Matches(fieldsAdapter{rules: fs.rules, obj: obj})
 	}
 	var m map[string]any
@@ -448,6 +483,21 @@ func (fs *FieldSelector) Matches(raw json.RawMessage, obj *K8sObject) bool {
 		return true
 	}
 	return fs.sel.Matches(fieldsAdapter{rules: fs.rules, m: m})
+}
+
+// resolvableFromObject reports whether a path can be read off a decoded
+// K8sObject rather than the whole object. Its fallback (only core Events'
+// "source") has to be reachable too, or the fallback would silently read empty.
+func resolvableFromObject(p selectablePath) bool {
+	if !pathUnderStruct(p.path) {
+		return false
+	}
+	return p.fallback == "" || pathUnderStruct(p.fallback)
+}
+
+func pathUnderStruct(path string) bool {
+	return path == "metadata.name" || path == "metadata.namespace" ||
+		strings.HasPrefix(path, "spec.") || strings.HasPrefix(path, "status.")
 }
 
 // fieldsAdapter exposes an object's selectable fields as fields.Fields, so
@@ -473,15 +523,6 @@ func (f fieldsAdapter) Get(label string) string {
 	if !ok {
 		return ""
 	}
-	if f.obj != nil {
-		switch p.path {
-		case "metadata.name":
-			return f.obj.Metadata.Name
-		case "metadata.namespace":
-			return f.obj.Metadata.Namespace
-		}
-		return ""
-	}
 	v := f.valueAt(p.path, p.kind)
 	if v == "" && p.fallback != "" {
 		v = f.valueAt(p.fallback, p.kind)
@@ -490,11 +531,37 @@ func (f fieldsAdapter) Get(label string) string {
 }
 
 func (f fieldsAdapter) valueAt(path string, kind valueKind) string {
-	v, ok := lookupPath(f.m, path)
+	var (
+		v  any
+		ok bool
+	)
+	if f.obj != nil {
+		v, ok = f.lookupInObject(path)
+	} else {
+		v, ok = lookupPath(f.m, path)
+	}
 	if !ok {
 		return zeroFieldValue(kind)
 	}
 	return stringifyFieldValue(v, kind)
+}
+
+// lookupInObject resolves a path against the decoded K8sObject. Only the paths
+// resolvableFromObject accepts reach here, so anything else is a programming
+// error rather than a missing field — it reports not-found, which reads as the
+// zero value, the same answer a genuinely absent field gives.
+func (f fieldsAdapter) lookupInObject(path string) (any, bool) {
+	switch {
+	case path == "metadata.name":
+		return f.obj.Metadata.Name, true
+	case path == "metadata.namespace":
+		return f.obj.Metadata.Namespace, true
+	case strings.HasPrefix(path, "spec."):
+		return lookupPath(f.obj.Spec, strings.TrimPrefix(path, "spec."))
+	case strings.HasPrefix(path, "status."):
+		return lookupPath(f.obj.Status, strings.TrimPrefix(path, "status."))
+	}
+	return nil, false
 }
 
 // lookupPath walks a dotted path through a decoded JSON object. None of
