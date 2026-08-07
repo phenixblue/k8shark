@@ -344,7 +344,7 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 				return
 			}
 			if clusterCode == 200 {
-				filtered, ferr := kstore.ApplySelectors(clusterBody, "", "metadata.namespace="+ns)
+				filtered, ferr := kstore.ApplySelectors(clusterBody, "", kstore.NamespaceScopeSelector(ns))
 				if ferr == nil {
 					body, code = filtered, 200
 				}
@@ -402,9 +402,27 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 		}
 	}
 
-	// Apply label/field selectors if present.
+	// Apply label/field selectors if present. The field selector is validated
+	// against the kind's field-label contract before anything is filtered: an
+	// unsupported label is a 400 on a read exactly as on a deletecollection,
+	// which is what a real apiserver does (the conversion runs in the generic
+	// handler, shared by list, watch and delete). Silently ignoring it would
+	// serve every item as if the selector had matched everything.
+	//
+	// Skipped for an item-level GET, where ParseAPIPath yields no resource: a
+	// single-object GET takes GetOptions, which has no field selector, so
+	// upstream ignores the parameter rather than rejecting it.
 	labelSel := r.URL.Query().Get("labelSelector")
-	fieldSel := r.URL.Query().Get("fieldSelector")
+	selGroup, _, selResource, _ := kstore.ParseAPIPath(strings.TrimSuffix(path, "/"))
+	var fieldSel *kstore.FieldSelector
+	if selResource != "" {
+		var fsErr error
+		fieldSel, fsErr = kstore.ParseFieldSelector(selGroup, selResource, r.URL.Query().Get("fieldSelector"))
+		if fsErr != nil {
+			h.writeStatus(w, http.StatusBadRequest, fsErr.Error())
+			return
+		}
+	}
 	body, err = kstore.ApplySelectors(body, labelSel, fieldSel)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, statusObj(500, err.Error()))
@@ -424,14 +442,34 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 	// tableFiltered applies label/field selectors to a stored Table-format body,
 	// removing rows whose embedded object does not match. Returns tb unchanged
 	// when selectors are empty or if filtering fails (best-effort).
-	tableFiltered := func(tb []byte) []byte {
-		if labelSel == "" && fieldSel == "" {
-			return tb
+	//
+	// ok is false when a stored Table cannot be filtered faithfully, and the
+	// caller must fall back to a computed Table rather than serve rows the
+	// selector was never really applied to. That happens when the selector reads
+	// spec or status: a stored Table's rows embed PartialObjectMetadata, so those
+	// fields simply are not there, and evaluating against the row would match
+	// nothing regardless of the value. A real apiserver filters full objects and
+	// then projects to Table, so we intersect with the identities that survived
+	// on the JSON list — which was filtered with the full objects above (#339).
+	tableFiltered := func(tb []byte) ([]byte, bool) {
+		if labelSel == "" && fieldSel == nil {
+			return tb, true
+		}
+		if fieldSel.NeedsFullObject() {
+			allow, ok := kstore.ListIdentities(body)
+			if !ok {
+				return nil, false
+			}
+			out, ferr := kstore.FilterTableRowsToIdentities(tb, allow)
+			if ferr != nil {
+				return nil, false
+			}
+			return out, true
 		}
 		if out, ferr := kstore.FilterTableRows(tb, labelSel, fieldSel); ferr == nil {
-			return out
+			return out, true
 		}
-		return tb
+		return tb, true
 	}
 
 	// If kubectl requests Table format, try the captured Table response first
@@ -442,10 +480,13 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 		// mode so the Table reflects overlay writes (built from the merged body
 		// below) rather than the captured-only stored Table.
 		if tb, tbCode, _ := h.store.Latest(path+"?as=Table", at); tbCode == 200 && h.overlay == nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(200)
-			_, _ = w.Write(tableFiltered(tb))
-			return
+			if out, ok := tableFiltered(tb); ok {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(200)
+				_, _ = w.Write(out)
+				return
+			}
+			// Fall through to the computed Table, built from the filtered list.
 		}
 		// Single-item GET: extract the matching row from the parent list's Table.
 		// Selectors on single-item GETs are resolved by name, not labels — no
@@ -465,10 +506,13 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 		// Also bypassed in writable mode (see above).
 		if _, _, _, reqNS := kstore.ParseAPIPath(path); reqNS == "" && h.overlay == nil {
 			if tb, tbCode, _ := h.store.AggregateTableAcrossNamespaces(path, at); tbCode == 200 {
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(200)
-				_, _ = w.Write(tableFiltered(tb))
-				return
+				if out, ok := tableFiltered(tb); ok {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(200)
+					_, _ = w.Write(out)
+					return
+				}
+				// Fall through to the computed Table, built from the filtered list.
 			}
 		}
 		// Compute a Table for objects not covered by a captured Table (writable
@@ -559,7 +603,7 @@ func (h *handler) trySingleItemGet(path string, at time.Time) ([]byte, int) {
 			clusterBody, clusterCode, cerr := h.store.ReconstructAt(clusterParent, at)
 			if cerr == nil && clusterCode == 200 {
 				// Filter to the requested namespace before doing the name lookup.
-				filtered, ferr := kstore.ApplySelectors(clusterBody, "", "metadata.namespace="+ns)
+				filtered, ferr := kstore.ApplySelectors(clusterBody, "", kstore.NamespaceScopeSelector(ns))
 				if ferr == nil {
 					body, code = filtered, 200
 				}
@@ -613,7 +657,16 @@ func (h *handler) trySingleItemGet(path string, at time.Time) ([]byte, int) {
 
 func (h *handler) handleWatch(w http.ResponseWriter, r *http.Request, path string, at time.Time) {
 	watchPath := strings.TrimSuffix(path, "/")
-	list, ok, err := h.resolveWatchList(watchPath, at, r.URL.Query().Get("labelSelector"), r.URL.Query().Get("fieldSelector"))
+	// Same per-kind field-label validation as the list path — a watch and a list
+	// share the conversion upstream, so an unsupported label is a 400 here too
+	// rather than a stream of everything (#339).
+	selGroup, _, selResource, _ := kstore.ParseAPIPath(watchPath)
+	fieldSel, fsErr := kstore.ParseFieldSelector(selGroup, selResource, r.URL.Query().Get("fieldSelector"))
+	if fsErr != nil {
+		h.writeStatus(w, http.StatusBadRequest, fsErr.Error())
+		return
+	}
+	list, ok, err := h.resolveWatchList(watchPath, at, r.URL.Query().Get("labelSelector"), fieldSel)
 	if err != nil {
 		h.writeStatus(w, http.StatusInternalServerError, err.Error())
 		return

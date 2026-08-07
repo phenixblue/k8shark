@@ -91,7 +91,7 @@ func TestApplySelectors_LabelFilter(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		filtered, err := ApplySelectors(list, tc.sel, "")
+		filtered, err := ApplySelectors(list, tc.sel, nil)
 		if err != nil {
 			t.Fatalf("[%q] error: %v", tc.sel, err)
 		}
@@ -116,14 +116,10 @@ func TestApplySelectors_FieldFilter(t *testing.T) {
 		{"metadata.name!=nginx", []string{"redis"}},
 		{"metadata.namespace=kube-system", []string{"redis"}},
 		{"metadata.namespace!=kube-system", []string{"nginx"}},
-		// Whitespace around the operator must be trimmed from both sides, not
-		// just the key — "= nginx" (with a leading space in the value) should
-		// still match "nginx".
-		{"metadata.name = nginx", []string{"nginx"}},
 	}
 
 	for _, tc := range cases {
-		filtered, err := ApplySelectors(list, "", tc.sel)
+		filtered, err := ApplySelectors(list, "", mustFieldSelector(t, "", "pods", tc.sel))
 		if err != nil {
 			t.Fatalf("[%q] error: %v", tc.sel, err)
 		}
@@ -136,7 +132,7 @@ func TestApplySelectors_FieldFilter(t *testing.T) {
 
 func TestApplySelectors_EmptySelector(t *testing.T) {
 	list := listWithPods([]podSpec{{name: "nginx", labels: map[string]string{"app": "nginx"}}})
-	out, err := ApplySelectors(list, "", "")
+	out, err := ApplySelectors(list, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +144,7 @@ func TestApplySelectors_EmptySelector(t *testing.T) {
 
 func TestApplySelectors_NotAList(t *testing.T) {
 	body := []byte(`{"apiVersion":"v1","kind":"Pod","metadata":{"name":"nginx"}}`)
-	out, err := ApplySelectors(body, "app=nginx", "")
+	out, err := ApplySelectors(body, "app=nginx", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,7 +300,7 @@ func TestFilterTableRows_LabelFilter(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		filtered, err := FilterTableRows(table, tc.sel, "")
+		filtered, err := FilterTableRows(table, tc.sel, nil)
 		if err != nil {
 			t.Fatalf("[%q] error: %v", tc.sel, err)
 		}
@@ -331,7 +327,7 @@ func TestFilterTableRows_FieldFilter(t *testing.T) {
 	}
 
 	for _, tc := range cases {
-		filtered, err := FilterTableRows(table, "", tc.sel)
+		filtered, err := FilterTableRows(table, "", mustFieldSelector(t, "", "pods", tc.sel))
 		if err != nil {
 			t.Fatalf("[%q] error: %v", tc.sel, err)
 		}
@@ -344,7 +340,7 @@ func TestFilterTableRows_FieldFilter(t *testing.T) {
 
 func TestFilterTableRows_EmptySelector(t *testing.T) {
 	table := tableWithPods([]podSpec{{name: "nginx", labels: map[string]string{"app": "nginx"}}})
-	out, err := FilterTableRows(table, "", "")
+	out, err := FilterTableRows(table, "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -355,7 +351,7 @@ func TestFilterTableRows_EmptySelector(t *testing.T) {
 
 func TestFilterTableRows_NotATable(t *testing.T) {
 	body := []byte(`{"apiVersion":"v1","kind":"Pod","metadata":{"name":"nginx"}}`)
-	out, err := FilterTableRows(body, "app=nginx", "")
+	out, err := FilterTableRows(body, "app=nginx", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

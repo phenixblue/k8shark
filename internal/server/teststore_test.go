@@ -79,6 +79,11 @@ type podSpec struct {
 	name      string
 	namespace string
 	labels    map[string]string
+	// nodeName and phase populate spec.nodeName and status.phase, the fields
+	// the per-kind pod field selectors read. Both are omitted from the built
+	// object when empty, so existing callers get the same body as before.
+	nodeName string
+	phase    string
 }
 
 // listWithPods builds a PodList body from pods, defaulting an empty namespace
@@ -91,7 +96,7 @@ func listWithPods(pods []podSpec) []byte {
 		if ns == "" {
 			ns = "default"
 		}
-		items = append(items, map[string]any{
+		item := map[string]any{
 			"apiVersion": "v1",
 			"kind":       "Pod",
 			"metadata": map[string]any{
@@ -99,7 +104,14 @@ func listWithPods(pods []podSpec) []byte {
 				"namespace": ns,
 				"labels":    p.labels,
 			},
-		})
+		}
+		if p.nodeName != "" {
+			item["spec"] = map[string]any{"nodeName": p.nodeName}
+		}
+		if p.phase != "" {
+			item["status"] = map[string]any{"phase": p.phase}
+		}
+		items = append(items, item)
 	}
 	body, _ := json.Marshal(map[string]any{
 		"apiVersion": "v1",

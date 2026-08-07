@@ -1964,12 +1964,13 @@ func TestOverlay_DeleteCollection_AggregateAcrossNamespacesFallback(t *testing.T
 }
 
 // TestOverlay_DeleteCollection_InvalidSelectorRejected verifies deletecollection
-// rejects a malformed or unsupported labelSelector/fieldSelector with 400
-// (kstore.FilterItemsStrict, backed by k8s.io/apimachinery's labels.Parse and
-// fields.ParseSelector) rather than the read path's best-effort leniency
-// (kstore.FilterItems/kstore.ApplySelectors) — which for a mutating deletecollection would
-// mean "delete more than the caller asked for," not just "display more than
-// intended."
+// rejects a malformed or unsupported labelSelector/fieldSelector with 400.
+// Field labels are validated per-kind by kstore.ParseFieldSelector (shared with
+// the read path, since upstream runs the same conversion for both); label
+// selectors and selectors that restrict nothing are rejected by
+// kstore.FilterItemsStrict, which is stricter than the read path's best-effort
+// leniency because for a mutating deletecollection "matches more than intended"
+// means "delete more than the caller asked for."
 func TestOverlay_DeleteCollection_InvalidSelectorRejected(t *testing.T) {
 	from := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
 
@@ -1977,7 +1978,12 @@ func TestOverlay_DeleteCollection_InvalidSelectorRejected(t *testing.T) {
 		name  string
 		query string
 	}{
-		{"unsupported fieldSelector key", "?fieldSelector=spec.nodeName%3Dnode-1"},
+		// A key no kind accepts. spec.nodeName is deliberately *not* here: a
+		// real apiserver accepts it for pods, and rejecting it was its own
+		// divergence (#339) — see the accepted-key assertion below.
+		{"unsupported fieldSelector key", "?fieldSelector=spec.bogus%3Dx"},
+		// Accepted for pods, but not for this kind.
+		{"field label from another kind", "?fieldSelector=spec.unschedulable%3Dtrue"},
 		// A bare "!" isn't a valid requirement (! must be followed by a key).
 		{"bare negation, no key", "?labelSelector=%21"},
 		// labels.Parse rejects a stray comma outright.
