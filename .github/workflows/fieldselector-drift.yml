@@ -1,0 +1,53 @@
+name: fieldselector-drift
+
+# The mock apiserver hand-maintains Kubernetes' per-kind field-label tables
+# (internal/store/fieldselector.go), because upstream registers them in
+# k8s.io/kubernetes's internal API packages, which are not importable from
+# k8s.io/api or client-go — there is nothing to reflect over at build time.
+#
+# This job is one of three mechanisms that keep those tables honest:
+#
+#   1. this workflow — parses the upstream source at the Kubernetes minor pinned
+#      in go.mod and diffs it against scripts/fieldselector-snapshot.json;
+#   2. TestFieldSelectorTables_* in internal/store — asserts the Go tables match
+#      that snapshot, offline, on every `make test`;
+#   3. the conformance differential (.github/workflows/conformance.yml, section
+#      G) — compares actual behavior against a live KinD apiserver.
+#
+# (1) exists to cover what (3) cannot: a capture has no CertificateSigningRequest
+# to exercise, so spec.signerName would otherwise go unchecked. It needs network
+# access to raw.githubusercontent.com, so it runs on a schedule and on PRs that
+# touch the tables rather than on every push.
+#
+# A failure here is not necessarily a bug in k8shark — it means upstream changed
+# a field-label table. Read the diff, update internal/store/fieldselector.go to
+# match, then run `make fieldselector-drift-update` to refresh the snapshot.
+
+on:
+  pull_request:
+    paths:
+      - 'internal/store/fieldselector*.go'
+      - 'scripts/fieldselector_drift.py'
+      - 'scripts/fieldselector-snapshot.json'
+      - 'go.mod'
+      - '.github/workflows/fieldselector-drift.yml'
+  schedule:
+    # Weekly, Monday 06:00 UTC. Upstream field-label tables change rarely, so a
+    # weekly check is early enough to land a fix before the next k8s bump.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # python3 is preinstalled on ubuntu-latest and the script is stdlib-only,
+      # so no setup-python step or dependency install is needed.
+      - name: Check field-label tables against upstream
+        run: make fieldselector-drift

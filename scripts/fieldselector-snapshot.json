@@ -1,0 +1,156 @@
+{
+  "accepted": {
+    "pkg/apis/apps/v1/conversion.go": {},
+    "pkg/apis/batch/v1/conversion.go": {
+      "Job": [
+        "metadata.name",
+        "metadata.namespace",
+        "status.successful"
+      ]
+    },
+    "pkg/apis/certificates/v1/conversion.go": {
+      "CertificateSigningRequest": [
+        "metadata.name",
+        "spec.signerName"
+      ]
+    },
+    "pkg/apis/core/v1/conversion.go": {
+      "Event": [
+        "involvedObject.apiVersion",
+        "involvedObject.fieldPath",
+        "involvedObject.kind",
+        "involvedObject.name",
+        "involvedObject.namespace",
+        "involvedObject.resourceVersion",
+        "involvedObject.uid",
+        "metadata.name",
+        "metadata.namespace",
+        "reason",
+        "reportingComponent",
+        "source",
+        "type"
+      ],
+      "Namespace": [
+        "metadata.name",
+        "status.phase"
+      ],
+      "Node": [
+        "metadata.name",
+        "spec.unschedulable"
+      ],
+      "Pod": [
+        "metadata.name",
+        "metadata.namespace",
+        "spec.host",
+        "spec.hostNetwork",
+        "spec.nodeName",
+        "spec.restartPolicy",
+        "spec.schedulerName",
+        "spec.serviceAccountName",
+        "status.nominatedNodeName",
+        "status.phase",
+        "status.podIP",
+        "status.podIPs"
+      ],
+      "ReplicationController": [
+        "metadata.name",
+        "metadata.namespace",
+        "status.replicas"
+      ],
+      "Secret": [
+        "metadata.name",
+        "metadata.namespace",
+        "type"
+      ],
+      "Service": [
+        "metadata.name",
+        "metadata.namespace",
+        "spec.clusterIP",
+        "spec.type"
+      ]
+    },
+    "pkg/apis/events/v1/conversion.go": {
+      "Event": [
+        "metadata.name",
+        "metadata.namespace",
+        "reason",
+        "regarding.apiVersion",
+        "regarding.fieldPath",
+        "regarding.kind",
+        "regarding.name",
+        "regarding.namespace",
+        "regarding.resourceVersion",
+        "regarding.uid",
+        "reportingController",
+        "type"
+      ]
+    }
+  },
+  "kubernetesVersion": "1.36",
+  "selectable": {
+    "pkg/registry/batch/job/strategy.go": {
+      "JobToSelectableFields": [
+        "status.successful"
+      ]
+    },
+    "pkg/registry/certificates/certificates/strategy.go": {
+      "SelectableFields": [
+        "spec.signerName"
+      ]
+    },
+    "pkg/registry/core/event/strategy.go": {
+      "ToSelectableFields": [
+        "involvedObject.apiVersion",
+        "involvedObject.fieldPath",
+        "involvedObject.kind",
+        "involvedObject.name",
+        "involvedObject.namespace",
+        "involvedObject.resourceVersion",
+        "involvedObject.uid",
+        "reason",
+        "reportingComponent",
+        "source",
+        "type"
+      ]
+    },
+    "pkg/registry/core/namespace/strategy.go": {
+      "NamespaceToSelectableFields": [
+        "name",
+        "status.phase"
+      ]
+    },
+    "pkg/registry/core/node/strategy.go": {
+      "NodeToSelectableFields": [
+        "spec.unschedulable"
+      ]
+    },
+    "pkg/registry/core/pod/strategy.go": {
+      "ToSelectableFields": [
+        "spec.hostNetwork",
+        "spec.nodeName",
+        "spec.restartPolicy",
+        "spec.schedulerName",
+        "spec.serviceAccountName",
+        "status.nominatedNodeName",
+        "status.phase",
+        "status.podIP"
+      ]
+    },
+    "pkg/registry/core/replicationcontroller/strategy.go": {
+      "ControllerToSelectableFields": [
+        "status.replicas"
+      ]
+    },
+    "pkg/registry/core/secret/strategy.go": {
+      "SelectableFields": [
+        "type"
+      ]
+    },
+    "pkg/registry/core/service/strategy.go": {
+      "SelectableFields": [
+        "spec.clusterIP",
+        "spec.type"
+      ]
+    }
+  }
+}
