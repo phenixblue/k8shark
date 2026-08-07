@@ -103,10 +103,24 @@ def fetch(ver: str, path: str) -> str:
 
 
 # AddFieldLabelConversionFunc(SchemeGroupVersion.WithKind("Pod"), func(...) { ... })
+#
+# Both patterns avoid nesting one quantifier inside another. A grouped repetition
+# such as (?:\w+\.)* or (?:"[^"]+"\s*,?\s*)+ backtracks exponentially on input
+# that almost-but-never matches, which CodeQL flags as py/redos — and this script
+# runs over source fetched from the network.
 CONV_START = re.compile(
-    r'AddFieldLabelConversionFunc\(\s*(?:\w+\.)*SchemeGroupVersion\.WithKind\(\s*"(\w+)"\s*\)',
+    r'AddFieldLabelConversionFunc\(\s*(?:\w+\.)?SchemeGroupVersion\.WithKind\(\s*"(\w+)"\s*\)',
 )
-CASE_LABELS = re.compile(r'case\s+((?:"[^"]+"\s*,?\s*)+):')
+# The label list of a case clause, up to its colon. Quoted labels are pulled out
+# of the captured span separately. [^:]* is greedy but cannot cross a colon, so
+# it lands on the first one deterministically — and it spans newlines, which
+# matters because upstream wraps long lists:
+#
+#     case "metadata.name",
+#         "spec.signerName":
+#
+# Stopping at the first ":" is safe because no upstream field label contains one.
+CASE_LABELS = re.compile(r"\bcase\b([^:]*):")
 # fields.Set{ "key": expr, ... } — capture the quoted keys.
 SET_KEY = re.compile(r'"([A-Za-z0-9_.]+)"\s*:')
 # Pods build their set imperatively — make(fields.Set, 10) followed by
