@@ -642,9 +642,16 @@ def field_selector_probes(live, mock):
 
     # churn marks a kind whose contents change while the run is in flight, so an
     # exact live-vs-mock set comparison could never hold: the capture is a
-    # snapshot and the live cluster keeps emitting. For those, base is the
-    # unfiltered list path, and the comparison asserts the properties that still
-    # hold — see check_field_selectors.
+    # snapshot and the live cluster keeps emitting. Those probes are checked for
+    # self-consistency against the mock's own unfiltered list (base) instead —
+    # see check_field_selectors.
+    #
+    # Only set churn on a probe whose selector is a single key=value whose key is
+    # also the field's path in the served JSON, since that is what makes the
+    # local evaluation correct. pods' status.podIPs is the counterexample: the
+    # field is present in the object, so a local evaluator would expect a match,
+    # while upstream matches nothing because ToSelectableFields never sets that
+    # key — a correct mock would be marked wrong.
     def add(label, path, selector, churn=False):
         probes.append((label, f"{path}?fieldSelector={urllib.parse.quote(selector)}",
                        path if churn else None))
@@ -711,6 +718,23 @@ def field_selector_probes(live, mock):
     return probes
 
 
+def probe_key_value(path):
+    """('type', 'Normal') from a probe path's ?fieldSelector=type%3DNormal."""
+    query = urllib.parse.urlparse(path).query
+    selector = urllib.parse.parse_qs(query).get("fieldSelector", [""])[0]
+    key, _, value = selector.partition("=")
+    return key, value
+
+
+def dotted_get(obj, path):
+    """Walk a dotted path through a decoded JSON object; None if absent."""
+    for part in path.split("."):
+        if not isinstance(obj, dict):
+            return None
+        obj = obj.get(part)
+    return obj
+
+
 def check_field_selectors(live, mock):
     print(f"\n{BOLD}{CYN}== G. Field selectors =={RST}")
     for label, path, base in field_selector_probes(live, mock):
@@ -746,30 +770,42 @@ def check_field_selectors(live, mock):
             record("fieldselector", label, "UNEXPECTED", detail)
             continue
 
-        # Churn-prone kind. The capture froze a snapshot and the live cluster has
-        # kept emitting since, so live is expected to be a strict superset and an
-        # equality check could never pass. Two properties still hold, and between
-        # them they catch both failure directions:
+        # Churn-prone kind: the capture froze a snapshot and the live cluster has
+        # kept emitting since, so live holds items the mock has never seen and a
+        # live-vs-mock equality check could never pass. Compare the mock against
+        # *itself* instead — ask it for the unfiltered list, work out here which
+        # of those items the selector should match, and require its filtered
+        # answer to be exactly that. Both sides of the comparison come from the
+        # same capture, so churn cannot affect it and the check stays exact: a
+        # mock that returns 3 items where its own data implies 35 fails, which a
+        # subset-and-non-empty heuristic would have passed.
         #
-        #   over-match — the mock must not return an item the live server, with
-        #     the same selector, filtered out;
-        #   under-match — if the mock holds items for this kind at all, a
-        #     selector the live server matched something with must match
-        #     something here too, rather than silently filtering everything away.
-        extra = [n for n in mock_names if n not in set(live_names)]
-        if extra:
+        # Live still supplies the signal that matters most for these probes —
+        # agreement on the status code, checked above, which is the per-kind
+        # field-label contract itself.
+        key, value = probe_key_value(path)
+        if key == "" or "," in key or "," in value:
             record("fieldselector", label, "UNEXPECTED",
-                   f"mock over-matched: returned {len(extra)} item(s) live filtered out: {extra[:5]}")
+                   f"harness error: a churn probe must be one key=value requirement, got {key}={value}")
             continue
         _, unfiltered = mock.get_json(base)
         held = sorted(name for name, _ in named_items(unfiltered))
-        if held and live_names and not mock_names:
-            record("fieldselector", label, "UNEXPECTED",
-                   f"mock under-matched: 0 of its {len(held)} captured item(s) matched, "
-                   f"but live matched {len(live_names)}")
+        expected = sorted(name for name, item in named_items(unfiltered)
+                          if dotted_get(item, key) == value)
+        if mock_names == expected:
+            record("fieldselector", label, "PASS",
+                   f"{len(expected)} of the mock's {len(held)} captured item(s); live matched "
+                   f"{len(live_names)} (compared against the mock's own list — see above)")
             continue
-        record("fieldselector", label, "PASS",
-               f"mock {len(mock_names)}/{len(held)} captured, live {len(live_names)} (churn-tolerant)")
+        missing = [n for n in expected if n not in set(mock_names)]
+        extra = [n for n in mock_names if n not in set(expected)]
+        detail = (f"mock returned {len(mock_names)} item(s), but its own {len(held)} captured "
+                  f"item(s) imply {len(expected)}")
+        if extra:
+            detail += f"; over-matched: {extra[:5]}"
+        if missing:
+            detail += f"; under-matched: {missing[:5]}"
+        record("fieldselector", label, "UNEXPECTED", detail)
 
 
 # ── summary ──────────────────────────────────────────────────────────────────────
