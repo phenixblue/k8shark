@@ -95,6 +95,18 @@ Therefore:
   negative = corrupt (rejected), greater than `CurrentFormatVersion` = rejected
   with an "upgrade kshrk" error. Bump `CurrentFormatVersion` only on a breaking,
   structurally-incompatible change.
+- **Field selectors:** `internal/store/fieldselector.go` mirrors the
+  apiserver's *two independent* layers — `AddFieldLabelConversionFunc`
+  (which labels are accepted; unaccepted → 400) and `ToSelectableFields`
+  (which resolve to a value; absent → `""`). They are not the same list
+  (pods accept `status.podIPs` but never select on it), so don't collapse
+  them. The tables are hand-maintained because upstream registers them in
+  `k8s.io/kubernetes`'s internal API packages, unreachable from `k8s.io/api`
+  — three mechanisms detect drift (conformance differential, weekly
+  `make fieldselector-drift`, and `TestFieldSelectorTables_*` against
+  `scripts/fieldselector-snapshot.json`). Validation is shared by list,
+  watch and deletecollection, matching upstream (#339). See the "Field
+  selectors" section of `docs/conformance.md`.
 - **`internal/store`** holds `CaptureStore`/`LoadStore` (archive-backed
   reads, selectors, response content negotiation) — extracted from
   `internal/server` (#234) so `diagnose`/`query`/`diff` read an archive

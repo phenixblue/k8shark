@@ -427,13 +427,23 @@ func (h *handler) overlayDeleteCollection(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusInternalServerError, statusObj(http.StatusInternalServerError, err.Error()))
 		return
 	}
-	// Unlike a read (kstore.ApplySelectors/kstore.FilterItems, deliberately best-effort — a
-	// malformed selector there just means "show more than intended"), a
-	// malformed or unsupported selector here would mean "delete more than
-	// intended" — kstore.FilterItemsStrict parses with apimachinery's real selector
-	// grammar and 400s on anything malformed, rather than silently matching
-	// everything.
-	msg, filtered := kstore.FilterItemsStrict(items, r.URL.Query().Get("labelSelector"), r.URL.Query().Get("fieldSelector"))
+	// Field-label validation is shared with the read path now (kstore.ParseFieldSelector
+	// applies the kind's real per-kind contract, so spec.nodeName is accepted for
+	// pods here just as it is on a list). What stays stricter on this path is
+	// label parsing and the refusal of a selector that parses to zero
+	// requirements: on a read that only means "show more than intended", but
+	// here it would mean "delete more than intended".
+	//
+	// Note that kubectl's `delete --field-selector` does not reach this handler
+	// at all — it lists first and then deletes by name — so the read path's
+	// validation is what actually protects that flow (#339).
+	fieldSelRaw := r.URL.Query().Get("fieldSelector")
+	fieldSel, fsErr := kstore.ParseFieldSelector(group, resource, fieldSelRaw)
+	if fsErr != nil {
+		h.writeStatus(w, http.StatusBadRequest, fsErr.Error())
+		return
+	}
+	msg, filtered := kstore.FilterItemsStrict(items, r.URL.Query().Get("labelSelector"), fieldSelRaw, fieldSel)
 	if msg != "" {
 		h.writeStatus(w, http.StatusBadRequest, msg)
 		return

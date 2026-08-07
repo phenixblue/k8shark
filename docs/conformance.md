@@ -24,8 +24,8 @@ per [#136](https://github.com/phenixblue/k8shark/issues/136).
 In-scope surface: discovery (`/api`, `/apis`, `/api/v1`, `/apis/<g>/<v>`,
 per-resource `kind`/`namespaced`/`shortNames`/`verbs`/subresources), `/version`,
 OpenAPI v2/v3, resource LIST/GET envelopes and item structure, health
-(`/healthz`, `/readyz`, `/livez`), and error shapes (not-found, unknown
-group/version).
+(`/healthz`, `/readyz`, `/livez`), error shapes (not-found, unknown
+group/version), and `?fieldSelector=` queries (see below).
 
 Run it locally (needs `kind`, `kubectl`, `jq`, `python3`):
 
@@ -38,6 +38,50 @@ KEEP=1 ./scripts/conformance.sh     # leave cluster + mock running to poke at
 Set `CONFORMANCE_MD=/path/report.md` to also write a Markdown summary (the CI
 workflow uses this for the job summary and posts it as a sticky PR comment that
 is updated in place on each run).
+
+## Field selectors, and keeping their tables in sync
+
+`?fieldSelector=` is the one part of the read surface where fidelity depends on
+data the mock cannot derive from the capture. kubectl contributes nothing here —
+cli-runtime forwards the raw string and holds no per-kind table — so everything a
+client expects is owed by the server. The apiserver evaluates a selector in two
+independent layers:
+
+| Layer | Upstream source | What it decides |
+|-------|-----------------|-----------------|
+| Validation + aliasing | `AddFieldLabelConversionFunc` in `pkg/apis/<group>/<version>/conversion.go` | Which labels are accepted at all; unaccepted → **400**. Rewrites aliases (`spec.host` → `spec.nodeName`). |
+| Matching | `ToSelectableFields` in `pkg/registry/.../strategy.go` | Which labels resolve to a value; a label absent here reads as `""`. |
+
+The two lists genuinely differ, so `internal/store/fieldselector.go` keeps them
+separate. Pods accept `status.podIPs` but never select on it, so upstream accepts
+`status.podIPs=10.0.0.1` and then matches nothing. Collapsing the layers would
+either reject a key upstream accepts or match on one it ignores.
+
+Those tables are hand-maintained: upstream registers them in
+`k8s.io/kubernetes`'s *internal* API packages, which are not importable from
+`k8s.io/api` or `client-go`, so there is nothing to reflect over at build time.
+Three mechanisms keep them honest, each covering the others' blind spots:
+
+1. **The differential** (section G of `conformance_diff.py`) — probes real
+   `?fieldSelector=` queries against both servers and compares status code *and*
+   matched set. The live apiserver *is* the table, so an upstream change shows up
+   as a new divergence. Blind spot: it only exercises kinds and keys the capture
+   actually contains.
+2. **`scripts/fieldselector_drift.py`** — parses the upstream source at the
+   Kubernetes minor pinned in `go.mod` and diffs it against
+   `scripts/fieldselector-snapshot.json`. Covers the kinds the capture lacks (a
+   KinD capture has no CertificateSigningRequest). Runs weekly and on PRs that
+   touch the tables (`.github/workflows/fieldselector-drift.yml`); needs network.
+3. **`TestFieldSelectorTables_*`** in `internal/store` — asserts the Go tables
+   match that snapshot, offline, on every `make test`. Without it the snapshot
+   could track upstream perfectly while the Go code drifted from both.
+
+When (2) fails, upstream changed something. Read the diff, update
+`internal/store/fieldselector.go`, then refresh the snapshot:
+
+```sh
+make fieldselector-drift-update
+```
 
 ## Why not the CNCF conformance suite?
 

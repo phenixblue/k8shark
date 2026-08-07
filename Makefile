@@ -1,4 +1,4 @@
-.PHONY: build test test-race test-cover bench fmt lint lint-ci-install lint-ci docs e2e e2e-kwok kind-up kind-chaos kind-scale kind-down release-snapshot release-local clean help
+.PHONY: build test test-race test-cover bench fmt lint lint-ci-install lint-ci fieldselector-drift fieldselector-drift-update docs e2e e2e-kwok kind-up kind-chaos kind-scale kind-down release-snapshot release-local clean help
 
 BINARY  := kshrk
 VERSION ?= dev
@@ -33,6 +33,12 @@ lint-ci-install: ## Install the pinned golangci-lint version used in CI
 
 lint-ci: ## Run golangci-lint exactly like CI (requires lint-ci-install)
 	golangci-lint run
+
+fieldselector-drift: ## Check the field-label tables against upstream Kubernetes source (needs network)
+	python3 scripts/fieldselector_drift.py
+
+fieldselector-drift-update: ## Refresh scripts/fieldselector-snapshot.json from upstream
+	python3 scripts/fieldselector_drift.py --update
 
 docs: ## Regenerate docs/cli-reference.md from the live Cobra command tree
 	go run ./tools/gendocs

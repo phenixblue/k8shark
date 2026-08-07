@@ -34,7 +34,7 @@ type watchList struct {
 // cluster-scoped namespace filtering, empty-list synthesis), then applies label
 // and field selectors. ok is false only when the resource can't be resolved at
 // all; err is non-nil only for internal reconstruction failures.
-func (h *handler) resolveWatchList(watchPath string, at time.Time, labelSelector, fieldSelector string) (watchList, bool, error) {
+func (h *handler) resolveWatchList(watchPath string, at time.Time, labelSelector string, fieldSel *kstore.FieldSelector) (watchList, bool, error) {
 	rawBody, code, err := h.store.ReconstructAt(watchPath, at)
 	if err != nil {
 		return watchList{}, false, err
@@ -64,7 +64,7 @@ func (h *handler) resolveWatchList(watchPath string, at time.Time, labelSelector
 			}
 			clusterBody, clusterCode, cerr := h.store.ReconstructAt(clusterPath, at)
 			if cerr == nil && clusterCode == 200 {
-				filtered, ferr := kstore.ApplySelectors(clusterBody, "", "metadata.namespace="+ns)
+				filtered, ferr := kstore.ApplySelectors(clusterBody, "", kstore.NamespaceScopeSelector(ns))
 				if ferr == nil {
 					rawBody, code = filtered, 200
 				}
@@ -103,7 +103,7 @@ func (h *handler) resolveWatchList(watchPath string, at time.Time, labelSelector
 		rawBody, overlaySkipRV = h.mergeOverlayList(watchPath, rawBody)
 	}
 
-	body, serr := kstore.ApplySelectors(rawBody, labelSelector, fieldSelector)
+	body, serr := kstore.ApplySelectors(rawBody, labelSelector, fieldSel)
 	if serr != nil {
 		// Best-effort: fall back to the unfiltered list rather than failing the
 		// whole watch on a selector/marshal error.
@@ -143,22 +143,23 @@ type replayEvent struct {
 }
 
 // matchesSelectors reports whether a single object satisfies the label and
-// field selectors. An empty selector matches everything; a malformed selector
-// or unparseable object is treated as a match (best-effort, never hides data).
-func matchesSelectors(raw json.RawMessage, labelSelector, fieldSelector string) bool {
-	if labelSelector == "" && fieldSelector == "" {
+// field selectors. An empty selector matches everything; a malformed label
+// selector or unparseable object is treated as a match (best-effort, never
+// hides data). fieldSel is already validated per-kind by the watch handler,
+// which 400s an unsupported label before streaming anything.
+func matchesSelectors(raw json.RawMessage, labelSelector string, fieldSel *kstore.FieldSelector) bool {
+	if labelSelector == "" && fieldSel == nil {
 		return true
 	}
 	labelReqs, err := kstore.ParseRequirements(labelSelector)
 	if err != nil {
 		return true
 	}
-	fieldReqs := kstore.ParseFieldSelector(fieldSelector)
 	var obj kstore.K8sObject
 	if err := json.Unmarshal(raw, &obj); err != nil {
 		return true
 	}
-	return kstore.MatchesLabels(&obj, labelReqs) && kstore.MatchesFields(&obj, fieldReqs)
+	return kstore.MatchesLabels(&obj, labelReqs) && fieldSel.Matches(raw, &obj)
 }
 
 // withKind stamps apiVersion/kind onto a watch event object when they're absent,
@@ -214,7 +215,16 @@ func (h *handler) streamReplayWatch(w http.ResponseWriter, r *http.Request, path
 	clock := h.clock
 	watchPath := strings.TrimSuffix(path, "/")
 	labelSel := r.URL.Query().Get("labelSelector")
-	fieldSel := r.URL.Query().Get("fieldSelector")
+	// Validate the field selector against the kind's field-label contract before
+	// streaming anything: upstream runs the same conversion for a watch as for a
+	// list, so an unsupported label is a 400 here too rather than a stream of
+	// every object (#339).
+	selGroup, _, selResource, _ := kstore.ParseAPIPath(watchPath)
+	fieldSel, fsErr := kstore.ParseFieldSelector(selGroup, selResource, r.URL.Query().Get("fieldSelector"))
+	if fsErr != nil {
+		h.writeStatus(w, http.StatusBadRequest, fsErr.Error())
+		return
+	}
 	// WatchList (client-go 1.32+): the initial-list burst must be terminated by
 	// a BOOKMARK carrying the k8s.io/initial-events-end annotation, or informers
 	// never complete their initial sync.
@@ -620,7 +630,7 @@ func sleepInterruptible(ctx context.Context, timer <-chan time.Time, d time.Dura
 // loops past `epoch` (passLooped) or is seeked past `seekGen` (passSeeked), or
 // the request is canceled/times out (passCanceled). Each emitted object carries
 // its own monotonic rv so clients can resume coherently.
-func (h *handler) replayPass(ctx context.Context, timer <-chan time.Time, clock *ReplayClock, timeline []replayEvent, minRV int64, epoch, seekGen int, labelSel, fieldSel string, emit func(string, json.RawMessage) bool) passResult {
+func (h *handler) replayPass(ctx context.Context, timer <-chan time.Time, clock *ReplayClock, timeline []replayEvent, minRV int64, epoch, seekGen int, labelSel string, fieldSel *kstore.FieldSelector, emit func(string, json.RawMessage) bool) passResult {
 	for _, ev := range timeline {
 		if ev.rv <= minRV {
 			continue

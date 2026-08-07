@@ -21,6 +21,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 LIVE_KC = os.environ["LIVE_KUBECONFIG"]
@@ -214,6 +215,7 @@ def main():
         check_resources(live, mock)
         check_health(live, mock)
         check_errors(live, mock)
+        check_field_selectors(live, mock)
     finally:
         live.stop()
         mock.stop()
@@ -617,6 +619,193 @@ def check_errors(live, mock):
     else:
         record("errors", "404 for unknown group/version", "UNEXPECTED",
                f"mock status={mc} (live=404) body={mb}")
+
+
+# ── G. Field selectors ──────────────────────────────────────────────────────────
+# The mock hand-maintains the apiserver's per-kind field-label tables (see
+# internal/store/fieldselector.go), because upstream registers them in
+# k8s.io/kubernetes's internal API packages, which are not importable from
+# k8s.io/api or client-go. This check is the behavioral half of keeping them in
+# sync: the live apiserver *is* the table, so if upstream adds, removes, or
+# renames a selectable field, the mock's answer stops matching and the run
+# reports a new divergence. scripts/fieldselector_drift.py covers the kinds a
+# capture may not contain.
+#
+# Each probe compares the full response — status code *and* the matched set — so
+# it catches both failure directions: rejecting a key upstream accepts, and
+# silently matching everything for a key upstream filters on (#339).
+def field_selector_probes(live, mock):
+    """Build the probe list, resolving real object names from the live cluster so
+    an equality probe has something to match. Returns a list of (label, path)."""
+    probes = []
+    pods_path = f"/api/v1/namespaces/{PROBE_NS}/pods"
+
+    # churn marks a kind whose contents change while the run is in flight, so an
+    # exact live-vs-mock set comparison could never hold: the capture is a
+    # snapshot and the live cluster keeps emitting. Those probes are checked for
+    # self-consistency against the mock's own unfiltered list (base) instead —
+    # see check_field_selectors.
+    #
+    # Only set churn on a probe whose selector is a single key=value whose key is
+    # also the field's path in the served JSON, since that is what makes the
+    # local evaluation correct. pods' status.podIPs is the counterexample: the
+    # field is present in the object, so a local evaluator would expect a match,
+    # while upstream matches nothing because ToSelectableFields never sets that
+    # key — a correct mock would be marked wrong.
+    def add(label, path, selector, churn=False):
+        probes.append((label, f"{path}?fieldSelector={urllib.parse.quote(selector)}",
+                       path if churn else None))
+
+    # Pods: the kind with the largest selectable set, and the one the issue was
+    # filed against.
+    _, lb = live.get_json(pods_path)
+    _, mb = mock.get_json(pods_path)
+    pod_name = first_common_name(lb, mb)
+    if pod_name:
+        add("pods metadata.name", pods_path, f"metadata.name={pod_name}")
+    node_name = None
+    for _, item in named_items(lb):
+        node_name = (item.get("spec") or {}).get("nodeName")
+        if node_name:
+            break
+    if node_name:
+        # The query `kubectl describe node` issues, and the one from #339.
+        add("pods spec.nodeName (match)", pods_path, f"spec.nodeName={node_name}")
+    add("pods spec.nodeName (no match)", pods_path, "spec.nodeName=k8shark-no-such-node")
+    add("pods status.phase=Running", pods_path, "status.phase=Running")
+    add("pods status.phase=Failed", pods_path, "status.phase=Failed")
+    add("pods spec.restartPolicy=Always", pods_path, "spec.restartPolicy=Always")
+    add("pods spec.hostNetwork=false", pods_path, "spec.hostNetwork=false")
+    add("pods spec.serviceAccountName=default", pods_path, "spec.serviceAccountName=default")
+    # Accepted by the conversion func but never set by ToSelectableFields, so
+    # upstream accepts the request and matches nothing.
+    add("pods status.podIPs (accepted, not selectable)", pods_path, "status.podIPs=10.0.0.1")
+    # Legacy alias, rewritten to spec.nodeName upstream.
+    if node_name:
+        add("pods spec.host (legacy alias)", pods_path, f"spec.host={node_name}")
+    # Unsupported for pods — must be a 400, not a full list.
+    add("pods spec.bogus (unsupported)", pods_path, "spec.bogus=x")
+    add("pods spec.unschedulable (other kind's key)", pods_path, "spec.unschedulable=true")
+
+    # Cluster-scoped kinds restrict metadata.namespace, which is a 400 upstream
+    # rather than an empty result.
+    add("nodes spec.unschedulable=false", "/api/v1/nodes", "spec.unschedulable=false")
+    add("nodes metadata.namespace (unsupported)", "/api/v1/nodes", "metadata.namespace=default")
+
+    add("services spec.type=ClusterIP", f"/api/v1/namespaces/{PROBE_NS}/services",
+        "spec.type=ClusterIP")
+    add("namespaces status.phase=Active", "/api/v1/namespaces", "status.phase=Active")
+    add("secrets type", f"/api/v1/namespaces/{PROBE_NS}/secrets",
+        "type=kubernetes.io/service-account-token")
+
+    events_path = "/api/v1/namespaces/kube-system/events"
+    new_events_path = "/apis/events.k8s.io/v1/namespaces/kube-system/events"
+    add("events involvedObject.kind=Pod", events_path, "involvedObject.kind=Pod", churn=True)
+    add("events type=Normal", events_path, "type=Normal", churn=True)
+    # Must match nothing on both sides regardless of churn, so it stays an exact
+    # comparison — the cheapest possible over-match detector.
+    add("events involvedObject.kind (no match)", events_path,
+        "involvedObject.kind=K8sharkNoSuchKind")
+    add("events source (unsupported on events.k8s.io)", new_events_path, "source=kubelet")
+    add("events regarding.kind=Pod", new_events_path, "regarding.kind=Pod", churn=True)
+
+    # apps registers no conversion func at all, so everything but the metadata
+    # keys is a 400 — an easy one to get wrong by assuming status.replicas works.
+    deploys = f"/apis/apps/v1/namespaces/{PROBE_NS}/deployments"
+    add("deployments status.replicas (unsupported)", deploys, "status.replicas=1")
+    add("deployments metadata.name (supported)", deploys, "metadata.name=nonexistent-xyz")
+
+    return probes
+
+
+def probe_key_value(path):
+    """('type', 'Normal') from a probe path's ?fieldSelector=type%3DNormal."""
+    query = urllib.parse.urlparse(path).query
+    selector = urllib.parse.parse_qs(query).get("fieldSelector", [""])[0]
+    key, _, value = selector.partition("=")
+    return key, value
+
+
+def dotted_get(obj, path):
+    """Walk a dotted path through a decoded JSON object; None if absent."""
+    for part in path.split("."):
+        if not isinstance(obj, dict):
+            return None
+        obj = obj.get(part)
+    return obj
+
+
+def check_field_selectors(live, mock):
+    print(f"\n{BOLD}{CYN}== G. Field selectors =={RST}")
+    for label, path, base in field_selector_probes(live, mock):
+        lc, lb = live.get_json(path)
+        mc, mb = mock.get_json(path)
+        # A transport failure against live tells us nothing about the mock.
+        if lc == 0:
+            record("fieldselector", label, "UNEXPECTED",
+                   f"live transport error, cannot compare: {lb}")
+            continue
+        if lc != mc:
+            record("fieldselector", label, "UNEXPECTED",
+                   f"status live={lc} mock={mc}; mock body={str(mb)[:200]}")
+            continue
+        if lc != 200:
+            # Both rejected (or both 404'd) — agreement on the error is the point,
+            # and it is the signal that matters most: it is the per-kind
+            # field-label contract, independent of what the capture contains.
+            record("fieldselector", label, "PASS", f"live=mock={lc}")
+            continue
+        live_names = sorted(name for name, _ in named_items(lb))
+        mock_names = sorted(name for name, _ in named_items(mb))
+
+        if base is None:
+            if live_names == mock_names:
+                record("fieldselector", label, "PASS", f"{len(live_names)} item(s) both sides")
+                continue
+            only_live = [n for n in live_names if n not in set(mock_names)]
+            only_mock = [n for n in mock_names if n not in set(live_names)]
+            detail = f"live={live_names} mock={mock_names}"
+            if only_mock and not only_live:
+                detail = f"mock over-matched: extra={only_mock} ({detail})"
+            record("fieldselector", label, "UNEXPECTED", detail)
+            continue
+
+        # Churn-prone kind: the capture froze a snapshot and the live cluster has
+        # kept emitting since, so live holds items the mock has never seen and a
+        # live-vs-mock equality check could never pass. Compare the mock against
+        # *itself* instead — ask it for the unfiltered list, work out here which
+        # of those items the selector should match, and require its filtered
+        # answer to be exactly that. Both sides of the comparison come from the
+        # same capture, so churn cannot affect it and the check stays exact: a
+        # mock that returns 3 items where its own data implies 35 fails, which a
+        # subset-and-non-empty heuristic would have passed.
+        #
+        # Live still supplies the signal that matters most for these probes —
+        # agreement on the status code, checked above, which is the per-kind
+        # field-label contract itself.
+        key, value = probe_key_value(path)
+        if key == "" or "," in key or "," in value:
+            record("fieldselector", label, "UNEXPECTED",
+                   f"harness error: a churn probe must be one key=value requirement, got {key}={value}")
+            continue
+        _, unfiltered = mock.get_json(base)
+        held = sorted(name for name, _ in named_items(unfiltered))
+        expected = sorted(name for name, item in named_items(unfiltered)
+                          if dotted_get(item, key) == value)
+        if mock_names == expected:
+            record("fieldselector", label, "PASS",
+                   f"{len(expected)} of the mock's {len(held)} captured item(s); live matched "
+                   f"{len(live_names)} (compared against the mock's own list — see above)")
+            continue
+        missing = [n for n in expected if n not in set(mock_names)]
+        extra = [n for n in mock_names if n not in set(expected)]
+        detail = (f"mock returned {len(mock_names)} item(s), but its own {len(held)} captured "
+                  f"item(s) imply {len(expected)}")
+        if extra:
+            detail += f"; over-matched: {extra[:5]}"
+        if missing:
+            detail += f"; under-matched: {missing[:5]}"
+        record("fieldselector", label, "UNEXPECTED", detail)
 
 
 # ── summary ──────────────────────────────────────────────────────────────────────
