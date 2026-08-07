@@ -542,6 +542,63 @@ func TestFieldSelector_NeedsFullObject(t *testing.T) {
 	}
 }
 
+// TestFilterItemsStrict_LabelSelectorOnly covers deletecollection with a
+// labelSelector and no fieldSelector, which passes a nil *FieldSelector through
+// to Restricts and Matches. Both are nil-safe by design; this keeps them so.
+func TestFilterItemsStrict_LabelSelectorOnly(t *testing.T) {
+	withLabels := func(name, app string) json.RawMessage {
+		return obj(t, map[string]any{
+			"metadata": map[string]any{
+				"name": name, "namespace": "demo",
+				"labels": map[string]any{"app": app},
+			},
+			"spec": map[string]any{"nodeName": "node-a"},
+		})
+	}
+	items := []json.RawMessage{withLabels("web-1", "web"), withLabels("db-1", "db")}
+
+	msg, filtered := FilterItemsStrict(items, "app=web", "", nil)
+	if msg != "" {
+		t.Fatalf("label-only deletecollection rejected: %q", msg)
+	}
+	if len(filtered) != 1 {
+		t.Fatalf("filtered %d items, want 1", len(filtered))
+	}
+	var o K8sObject
+	if err := json.Unmarshal(filtered[0], &o); err != nil {
+		t.Fatal(err)
+	}
+	if o.Metadata.Name != "web-1" {
+		t.Errorf("kept %q, want web-1", o.Metadata.Name)
+	}
+
+	// Neither selector supplied: items pass through untouched.
+	msg, filtered = FilterItemsStrict(items, "", "", nil)
+	if msg != "" || len(filtered) != 2 {
+		t.Errorf("no selectors: msg=%q, %d items; want no message and 2 items", msg, len(filtered))
+	}
+}
+
+// TestFieldSelector_NilReceiverIsSafe pins the contract the call sites rely on:
+// a nil *FieldSelector means "no field selector", and every method tolerates it
+// rather than panicking. Go permits calling a pointer-receiver method on a nil
+// pointer; these methods check the receiver before dereferencing it.
+func TestFieldSelector_NilReceiverIsSafe(t *testing.T) {
+	var fs *FieldSelector
+	if !fs.Matches(pod(t, "web", "demo", "node-a", "Running"), nil) {
+		t.Error("nil.Matches should match everything")
+	}
+	if fs.Restricts() {
+		t.Error("nil.Restricts should be false")
+	}
+	if fs.NeedsFullObject() {
+		t.Error("nil.NeedsFullObject should be false")
+	}
+	if fs.String() != "" {
+		t.Errorf("nil.String = %q, want empty", fs.String())
+	}
+}
+
 // TestFilterItemsStrict_FieldSelector covers deletecollection's path: the
 // per-kind contract now applies (so pods' spec.nodeName is accepted, where it
 // used to be rejected), while a selector that restricts nothing is still

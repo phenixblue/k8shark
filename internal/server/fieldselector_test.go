@@ -152,9 +152,78 @@ func TestHandler_FieldSelector_TablePathFilters(t *testing.T) {
 	}
 }
 
+// TestHandler_LabelSelectorOnly_NoFieldSelector covers every request shape that
+// carries a labelSelector and no fieldSelector, which leaves the compiled
+// *kstore.FieldSelector nil all the way down. The methods called on it
+// (NeedsFullObject, Matches, Restricts) are nil-safe by design — a nil receiver
+// means "matches everything" — and these exercise the JSON list, stored Table
+// and watch paths to keep it that way.
+func TestHandler_LabelSelectorOnly_NoFieldSelector(t *testing.T) {
+	pods := []podSpec{
+		{name: "web-1", namespace: "demo", nodeName: "node-a", phase: "Running",
+			labels: map[string]string{"app": "web"}},
+		{name: "db-1", namespace: "demo", nodeName: "node-b", phase: "Running",
+			labels: map[string]string{"app": "db"}},
+	}
+	store := buildTestStore(t, map[string][]byte{
+		"/api/v1/namespaces/demo/pods":          listWithPods(pods),
+		"/api/v1/namespaces/demo/pods?as=Table": partialMetadataTable(pods),
+	})
+	h := newHandler(store, time.Time{}, false)
+
+	t.Run("json list", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, fsPodsPath+"?labelSelector=app%3Dweb", nil)
+		rw := httptest.NewRecorder()
+		h.ServeHTTP(rw, req)
+		if rw.Code != 200 {
+			t.Fatalf("status %d (body: %s)", rw.Code, rw.Body.String())
+		}
+		if got := itemNames(t, rw.Body.Bytes()); !equalStrings(got, []string{"web-1"}) {
+			t.Errorf("got %v, want [web-1]", got)
+		}
+	})
+
+	t.Run("stored table", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, fsPodsPath+"?labelSelector=app%3Dweb", nil)
+		req.Header.Set("Accept", "application/json;as=Table;v=v1;g=meta.k8s.io")
+		rw := httptest.NewRecorder()
+		h.ServeHTTP(rw, req)
+		if rw.Code != 200 {
+			t.Fatalf("status %d (body: %s)", rw.Code, rw.Body.String())
+		}
+		if got := tableRowNames(t, rw.Body.Bytes()); !equalStrings(got, []string{"web-1"}) {
+			t.Errorf("rows %v, want [web-1]", got)
+		}
+	})
+
+	t.Run("watch", func(t *testing.T) {
+		names := watchInitialNames(t, h,
+			fsPodsPath+"?watch=true&timeoutSeconds=1&labelSelector=app%3Dweb")
+		if !equalStrings(names, []string{"web-1"}) {
+			t.Errorf("watch initial events = %v, want [web-1]", names)
+		}
+	})
+
+	t.Run("no selectors at all", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, fsPodsPath, nil)
+		rw := httptest.NewRecorder()
+		h.ServeHTTP(rw, req)
+		if rw.Code != 200 {
+			t.Fatalf("status %d (body: %s)", rw.Code, rw.Body.String())
+		}
+		if got := itemNames(t, rw.Body.Bytes()); !equalStrings(got, []string{"web-1", "db-1"}) {
+			t.Errorf("got %v, want both pods", got)
+		}
+	})
+}
+
 // partialMetadataTable builds a stored Table whose rows embed
 // PartialObjectMetadata, which is what a real apiserver serves for a Table
-// projection — spec and status are simply absent from the row objects.
+// projection. The row objects carry the *full* ObjectMeta — labels included, so
+// a labelSelector still filters rows directly — and nothing else: spec and
+// status are absent, which is why a selector on those has to be resolved
+// against the JSON list instead. Verified against a real capture; getting this
+// shape wrong in either direction makes the Table tests meaningless.
 func partialMetadataTable(pods []podSpec) []byte {
 	rows := make([]map[string]any, 0, len(pods))
 	for _, p := range pods {
@@ -163,7 +232,11 @@ func partialMetadataTable(pods []podSpec) []byte {
 			"object": map[string]any{
 				"apiVersion": "meta.k8s.io/v1",
 				"kind":       "PartialObjectMetadata",
-				"metadata":   map[string]any{"name": p.name, "namespace": p.namespace},
+				"metadata": map[string]any{
+					"name":      p.name,
+					"namespace": p.namespace,
+					"labels":    p.labels,
+				},
 			},
 		})
 	}
