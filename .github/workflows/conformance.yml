@@ -10,6 +10,7 @@ on:
   pull_request:
     paths:
       - 'internal/server/**'
+      - 'internal/store/**'
       - 'internal/capture/**'
       - 'scripts/conformance*.sh'
       - 'scripts/conformance_diff.py'
@@ -20,6 +21,7 @@ on:
       - main
     paths:
       - 'internal/server/**'
+      - 'internal/store/**'
       - 'internal/capture/**'
       - 'scripts/conformance*'
       - '.github/workflows/conformance.yml'

@@ -21,6 +21,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 LIVE_KC = os.environ["LIVE_KUBECONFIG"]
@@ -214,6 +215,7 @@ def main():
         check_resources(live, mock)
         check_health(live, mock)
         check_errors(live, mock)
+        check_field_selectors(live, mock)
     finally:
         live.stop()
         mock.stop()
@@ -617,6 +619,123 @@ def check_errors(live, mock):
     else:
         record("errors", "404 for unknown group/version", "UNEXPECTED",
                f"mock status={mc} (live=404) body={mb}")
+
+
+# ── G. Field selectors ──────────────────────────────────────────────────────────
+# The mock hand-maintains the apiserver's per-kind field-label tables (see
+# internal/store/fieldselector.go), because upstream registers them in
+# k8s.io/kubernetes's internal API packages, which are not importable from
+# k8s.io/api or client-go. This check is the behavioral half of keeping them in
+# sync: the live apiserver *is* the table, so if upstream adds, removes, or
+# renames a selectable field, the mock's answer stops matching and the run
+# reports a new divergence. scripts/fieldselector_drift.py covers the kinds a
+# capture may not contain.
+#
+# Each probe compares the full response — status code *and* the matched set — so
+# it catches both failure directions: rejecting a key upstream accepts, and
+# silently matching everything for a key upstream filters on (#339).
+def field_selector_probes(live, mock):
+    """Build the probe list, resolving real object names from the live cluster so
+    an equality probe has something to match. Returns a list of (label, path)."""
+    probes = []
+    pods_path = f"/api/v1/namespaces/{PROBE_NS}/pods"
+
+    def add(label, path, selector):
+        probes.append((label, f"{path}?fieldSelector={urllib.parse.quote(selector)}"))
+
+    # Pods: the kind with the largest selectable set, and the one the issue was
+    # filed against.
+    _, lb = live.get_json(pods_path)
+    _, mb = mock.get_json(pods_path)
+    pod_name = first_common_name(lb, mb)
+    if pod_name:
+        add("pods metadata.name", pods_path, f"metadata.name={pod_name}")
+    node_name = None
+    for _, item in named_items(lb):
+        node_name = (item.get("spec") or {}).get("nodeName")
+        if node_name:
+            break
+    if node_name:
+        # The query `kubectl describe node` issues, and the one from #339.
+        add("pods spec.nodeName (match)", pods_path, f"spec.nodeName={node_name}")
+    add("pods spec.nodeName (no match)", pods_path, "spec.nodeName=k8shark-no-such-node")
+    add("pods status.phase=Running", pods_path, "status.phase=Running")
+    add("pods status.phase=Failed", pods_path, "status.phase=Failed")
+    add("pods spec.restartPolicy=Always", pods_path, "spec.restartPolicy=Always")
+    add("pods spec.hostNetwork=false", pods_path, "spec.hostNetwork=false")
+    add("pods spec.serviceAccountName=default", pods_path, "spec.serviceAccountName=default")
+    # Accepted by the conversion func but never set by ToSelectableFields, so
+    # upstream accepts the request and matches nothing.
+    add("pods status.podIPs (accepted, not selectable)", pods_path, "status.podIPs=10.0.0.1")
+    # Legacy alias, rewritten to spec.nodeName upstream.
+    if node_name:
+        add("pods spec.host (legacy alias)", pods_path, f"spec.host={node_name}")
+    # Unsupported for pods — must be a 400, not a full list.
+    add("pods spec.bogus (unsupported)", pods_path, "spec.bogus=x")
+    add("pods spec.unschedulable (other kind's key)", pods_path, "spec.unschedulable=true")
+
+    # Cluster-scoped kinds restrict metadata.namespace, which is a 400 upstream
+    # rather than an empty result.
+    add("nodes spec.unschedulable=false", "/api/v1/nodes", "spec.unschedulable=false")
+    add("nodes metadata.namespace (unsupported)", "/api/v1/nodes", "metadata.namespace=default")
+
+    add("services spec.type=ClusterIP", f"/api/v1/namespaces/{PROBE_NS}/services",
+        "spec.type=ClusterIP")
+    add("namespaces status.phase=Active", "/api/v1/namespaces", "status.phase=Active")
+    add("secrets type", f"/api/v1/namespaces/{PROBE_NS}/secrets",
+        "type=kubernetes.io/service-account-token")
+
+    events_path = "/api/v1/namespaces/kube-system/events"
+    add("events involvedObject.kind=Pod", events_path, "involvedObject.kind=Pod")
+    add("events type=Normal", events_path, "type=Normal")
+    add("events source (unsupported on events.k8s.io)",
+        "/apis/events.k8s.io/v1/namespaces/kube-system/events", "source=kubelet")
+    add("events regarding.kind=Pod",
+        "/apis/events.k8s.io/v1/namespaces/kube-system/events", "regarding.kind=Pod")
+
+    # apps registers no conversion func at all, so everything but the metadata
+    # keys is a 400 — an easy one to get wrong by assuming status.replicas works.
+    deploys = f"/apis/apps/v1/namespaces/{PROBE_NS}/deployments"
+    add("deployments status.replicas (unsupported)", deploys, "status.replicas=1")
+    add("deployments metadata.name (supported)", deploys, "metadata.name=nonexistent-xyz")
+
+    return probes
+
+
+def check_field_selectors(live, mock):
+    print(f"\n{BOLD}{CYN}== G. Field selectors =={RST}")
+    for label, path in field_selector_probes(live, mock):
+        lc, lb = live.get_json(path)
+        mc, mb = mock.get_json(path)
+        # A transport failure against live tells us nothing about the mock.
+        if lc == 0:
+            record("fieldselector", label, "UNEXPECTED",
+                   f"live transport error, cannot compare: {lb}")
+            continue
+        if lc != mc:
+            record("fieldselector", label, "UNEXPECTED",
+                   f"status live={lc} mock={mc}; mock body={str(mb)[:200]}")
+            continue
+        if lc != 200:
+            # Both rejected (or both 404'd) — agreement on the error is the point.
+            record("fieldselector", label, "PASS", f"live=mock={lc}")
+            continue
+        live_names = sorted(name for name, _ in named_items(lb))
+        mock_names = sorted(name for name, _ in named_items(mb))
+        if live_names == mock_names:
+            record("fieldselector", label, "PASS", f"{len(live_names)} item(s) both sides")
+            continue
+        only_live = [n for n in live_names if n not in set(mock_names)]
+        only_mock = [n for n in mock_names if n not in set(live_names)]
+        # A capture is a point-in-time snapshot, so a set difference is only
+        # meaningful as a *selector* bug when the mock returns strictly more than
+        # it should relative to its own unfiltered list. Report the difference
+        # either way, but name the over-matching case explicitly since that is
+        # the silent-failure mode.
+        detail = f"live={live_names} mock={mock_names}"
+        if only_mock and not only_live:
+            detail = f"mock over-matched: extra={only_mock} ({detail})"
+        record("fieldselector", label, "UNEXPECTED", detail)
 
 
 # ── summary ──────────────────────────────────────────────────────────────────────
