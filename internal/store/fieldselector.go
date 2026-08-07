@@ -72,7 +72,10 @@ type selectablePath struct {
 	path string
 	// fallback supplies the value when path resolves to the empty string.
 	// Mirrors core/v1 Events' "source", which upstream computes as
-	// event.Source.Component falling back to event.ReportingController.
+	// event.Source.Component falling back to event.ReportingController. Both
+	// fields are named differently on the wire than on the internal type, so
+	// the paths here are source.component and reportingComponent respectively —
+	// the same two fields, spelled as the v1 serialization spells them.
 	fallback string
 	kind     valueKind
 }
@@ -539,8 +542,13 @@ func stringifyFieldValue(v any, kind valueKind) string {
 		return strconv.FormatBool(t)
 	case float64:
 		// Counts arrive as float64 from encoding/json; upstream stringifies them
-		// with strconv.Itoa, so keep integral values integral.
-		if !math.IsInf(t, 0) && !math.IsNaN(t) && t == math.Trunc(t) {
+		// with strconv.Itoa, so keep integral values integral. The range check
+		// is load-bearing: converting an out-of-range float64 to int64 is
+		// undefined in Go, and archive content is not trusted to hold only
+		// plausible counts. math.MaxInt64 rounds up to 2^63 as a float64, so the
+		// bound is deliberately exclusive.
+		if !math.IsInf(t, 0) && !math.IsNaN(t) && t == math.Trunc(t) &&
+			t >= math.MinInt64 && t < math.MaxInt64 {
 			return strconv.FormatInt(int64(t), 10)
 		}
 		return strconv.FormatFloat(t, 'f', -1, 64)

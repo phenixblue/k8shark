@@ -515,6 +515,86 @@ func TestFilterTableRowsToIdentities(t *testing.T) {
 	}
 }
 
+// TestListIdentities_UndecodableItemIsKept guards the convention the rest of
+// this file follows: an item we cannot fully decode is never silently hidden.
+// K8sObject declares Labels as map[string]string, so an object with a
+// non-string label value fails to unmarshal against it — and since FilterItems
+// keeps such an item, dropping its identity here would make the Table path lose
+// a row the JSON list path kept.
+func TestListIdentities_UndecodableItemIsKept(t *testing.T) {
+	odd := json.RawMessage(
+		`{"metadata":{"name":"odd","namespace":"demo","labels":{"a":1}},"spec":{"nodeName":"node-a"}}`)
+
+	// Precondition: this really is undecodable as a K8sObject, so the test
+	// stays meaningful if that struct changes.
+	var probe K8sObject
+	if err := json.Unmarshal(odd, &probe); err == nil {
+		t.Skip("K8sObject now decodes non-string labels; pick another malformed shape")
+	}
+
+	body, err := json.Marshal(map[string]any{"items": []json.RawMessage{odd}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, ok := ListIdentities(body)
+	if !ok {
+		t.Fatal("ListIdentities ok = false")
+	}
+	if !ids[ObjectIdentity{"demo", "odd"}] {
+		t.Errorf("identity dropped for an item FilterItems would keep: %v", ids)
+	}
+
+	// And the two paths agree: the row survives Table filtering too.
+	table, err := json.Marshal(map[string]any{
+		"kind": "Table",
+		"rows": []map[string]any{{"cells": []any{"odd"}, "object": json.RawMessage(odd)}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := FilterTableRowsToIdentities(table, ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got struct {
+		Rows []json.RawMessage `json:"rows"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Rows) != 1 {
+		t.Errorf("kept %d rows, want 1 — the JSON list path keeps this item", len(got.Rows))
+	}
+}
+
+// TestFieldSelector_OutOfRangeNumber checks a count that cannot fit in an int64.
+// Converting an out-of-range float64 to int64 is undefined in Go, so without a
+// range check a wildly large value stringifies to something arbitrary — and
+// archive content is not trusted to hold only plausible counts.
+func TestFieldSelector_OutOfRangeNumber(t *testing.T) {
+	huge := obj(t, map[string]any{
+		"metadata": map[string]any{"name": "rc"},
+		"status":   map[string]any{"replicas": 1e30},
+	})
+	// Assert the exact rendering rather than "not some wrong value": the result
+	// of the undefined conversion is platform-specific (amd64 gives MinInt64,
+	// arm64 saturates to MaxInt64), so a negative assertion would pass
+	// vacuously on one of them.
+	fs := mustFieldSelector(t, "", "replicationcontrollers",
+		"status.replicas=1000000000000000000000000000000")
+	if !fs.Matches(huge, nil) {
+		t.Error("a replicas value of 1e30 should render as its full decimal expansion")
+	}
+	// Sanity: an in-range count still formats as an integer, not 3e+00.
+	normal := obj(t, map[string]any{
+		"metadata": map[string]any{"name": "rc"},
+		"status":   map[string]any{"replicas": 3},
+	})
+	if fs := mustFieldSelector(t, "", "replicationcontrollers", "status.replicas=3"); !fs.Matches(normal, nil) {
+		t.Error("status.replicas=3 should match replicas: 3")
+	}
+}
+
 // TestFieldSelector_NeedsFullObject drives the Table fallback decision.
 func TestFieldSelector_NeedsFullObject(t *testing.T) {
 	cases := []struct {

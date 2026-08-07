@@ -293,6 +293,19 @@ type ObjectIdentity struct {
 	Name      string
 }
 
+// identityOnly decodes just the fields ObjectIdentity needs. Decoding a full
+// K8sObject would impose type constraints this does not — its Labels is a
+// map[string]string, so an object with a non-string label value fails to
+// unmarshal entirely. That matters here: FilterItems *keeps* an item it cannot
+// decode rather than hiding it, so dropping the same item's identity would make
+// the Table path lose a row the JSON list path kept.
+type identityOnly struct {
+	Metadata struct {
+		Name      string `json:"name"`
+		Namespace string `json:"namespace"`
+	} `json:"metadata"`
+}
+
 // ListIdentities returns the identity of every item in a JSON list body. ok is
 // false if the body is not a list, meaning the caller has no basis to filter a
 // Table against and should not pretend otherwise.
@@ -305,7 +318,7 @@ func ListIdentities(listBody []byte) (map[ObjectIdentity]bool, bool) {
 	}
 	out := make(map[ObjectIdentity]bool, len(list.Items))
 	for _, raw := range list.Items {
-		var o K8sObject
+		var o identityOnly
 		if err := json.Unmarshal(raw, &o); err != nil {
 			continue
 		}
@@ -340,7 +353,7 @@ func FilterTableRowsToIdentities(tableBody []byte, allow map[ObjectIdentity]bool
 	filtered := make([]json.RawMessage, 0, len(table.Rows))
 	for _, row := range table.Rows {
 		var r struct {
-			Object K8sObject `json:"object"`
+			Object identityOnly `json:"object"`
 		}
 		if err := json.Unmarshal(row, &r); err != nil {
 			filtered = append(filtered, row) // can't inspect — include to avoid data loss
