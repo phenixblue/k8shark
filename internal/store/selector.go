@@ -307,8 +307,16 @@ type identityOnly struct {
 }
 
 // ListIdentities returns the identity of every item in a JSON list body. ok is
-// false if the body is not a list, meaning the caller has no basis to filter a
-// Table against and should not pretend otherwise.
+// false if the body is not a list, or if any single item's identity cannot be
+// decoded — in both cases the caller has no sound basis to filter a Table and
+// should fall back rather than filter partially.
+//
+// Failing on one bad item rather than skipping it is deliberate. An item whose
+// identity won't decode cannot be correlated with a Table row at all, and
+// FilterItems *keeps* such an item rather than hiding it, so skipping it here
+// would drop a row the JSON list kept — the same divergence between the two read
+// paths that motivated this function. Falling back costs the captured columns
+// and cell values for that one response; partially filtering costs data.
 func ListIdentities(listBody []byte) (map[ObjectIdentity]bool, bool) {
 	var list struct {
 		Items []json.RawMessage `json:"items"`
@@ -320,7 +328,7 @@ func ListIdentities(listBody []byte) (map[ObjectIdentity]bool, bool) {
 	for _, raw := range list.Items {
 		var o identityOnly
 		if err := json.Unmarshal(raw, &o); err != nil {
-			continue
+			return nil, false
 		}
 		out[ObjectIdentity{o.Metadata.Namespace, o.Metadata.Name}] = true
 	}

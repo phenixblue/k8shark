@@ -567,6 +567,55 @@ func TestListIdentities_UndecodableItemIsKept(t *testing.T) {
 	}
 }
 
+// TestListIdentities_UndecodableIdentityFailsClosed covers what identityOnly
+// still cannot decode. Skipping such an item would silently drop the Table row
+// for an object the JSON list path keeps, so the whole identity set is reported
+// unusable and the caller falls back instead of filtering partially.
+func TestListIdentities_UndecodableIdentityFailsClosed(t *testing.T) {
+	cases := []struct {
+		name string
+		item string
+	}{
+		{"numeric name", `{"metadata":{"name":5,"namespace":"demo"}}`},
+		{"metadata not an object", `{"metadata":"nope"}`},
+		{"item not an object", `"just-a-string"`},
+		{"namespace not a string", `{"metadata":{"name":"ok","namespace":[]}}`},
+	}
+	for _, tc := range cases {
+		raw := json.RawMessage(tc.item)
+		// Precondition: FilterItems keeps this item, which is what makes
+		// dropping its row a divergence rather than a wash.
+		kept := FilterItems([]json.RawMessage{raw}, "",
+			mustFieldSelector(t, "", "pods", "spec.nodeName=node-a"))
+		if len(kept) != 1 {
+			t.Errorf("[%s] FilterItems kept %d items, want 1 (undecodable items are never hidden)",
+				tc.name, len(kept))
+		}
+
+		body, err := json.Marshal(map[string]any{"items": []json.RawMessage{raw}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := ListIdentities(body); ok {
+			t.Errorf("[%s] ListIdentities reported ok; want it to fail closed so the "+
+				"caller falls back rather than dropping the row", tc.name)
+		}
+	}
+
+	// A well-formed list alongside is still usable — failing closed must not
+	// mean failing always.
+	body, err := json.Marshal(map[string]any{
+		"items": []json.RawMessage{pod(t, "web-1", "demo", "node-a", "Running")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids, ok := ListIdentities(body)
+	if !ok || !ids[ObjectIdentity{"demo", "web-1"}] {
+		t.Errorf("well-formed list should still yield identities: ok=%v ids=%v", ok, ids)
+	}
+}
+
 // TestFieldSelector_OutOfRangeNumber checks a count that cannot fit in an int64.
 // Converting an out-of-range float64 to int64 is undefined in Go, so without a
 // range check a wildly large value stringifies to something arbitrary — and

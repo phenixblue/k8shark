@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -296,6 +297,76 @@ func TestHandler_FieldSelector_StoredTableWithPartialMetadata(t *testing.T) {
 		if !equalStrings(got, tc.want) {
 			t.Errorf("[%s] rows %v, want %v", tc.query, got, tc.want)
 		}
+	}
+}
+
+// TestHandler_FieldSelector_StoredTableFallsBackOnBadItem checks the escape
+// hatch. When one list item's identity cannot be decoded there is no way to
+// correlate it with a Table row, so kstore.ListIdentities fails closed and the
+// handler must fall back to a computed Table — built from the already-filtered
+// JSON list — rather than serve a stored Table with rows silently dropped.
+func TestHandler_FieldSelector_StoredTableFallsBackOnBadItem(t *testing.T) {
+	good := []podSpec{
+		{name: "web-1", namespace: "demo", nodeName: "node-a", phase: "Running"},
+	}
+	// A list carrying one well-formed pod plus an item whose metadata.name is a
+	// number, which decodes into neither K8sObject nor the identity-only shape.
+	listBody, err := json.Marshal(map[string]any{
+		"apiVersion": "v1",
+		"kind":       "PodList",
+		"metadata":   map[string]any{},
+		"items": []json.RawMessage{
+			json.RawMessage(`{"apiVersion":"v1","kind":"Pod","metadata":{"name":"web-1",` +
+				`"namespace":"demo"},"spec":{"nodeName":"node-a"},"status":{"phase":"Running"}}`),
+			json.RawMessage(`{"apiVersion":"v1","kind":"Pod","metadata":{"name":7,"namespace":"demo"}}`),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := buildTestStore(t, map[string][]byte{
+		"/api/v1/namespaces/demo/pods":          listBody,
+		"/api/v1/namespaces/demo/pods?as=Table": partialMetadataTable(good),
+	})
+	h := newHandler(store, time.Time{}, false)
+
+	req := httptest.NewRequest(http.MethodGet, fsPodsPath+"?fieldSelector=spec.nodeName=node-a", nil)
+	req.Header.Set("Accept", "application/json;as=Table;v=v1;g=meta.k8s.io")
+	rw := httptest.NewRecorder()
+	h.ServeHTTP(rw, req)
+	if rw.Code != 200 {
+		t.Fatalf("status %d (body: %s)", rw.Code, rw.Body.String())
+	}
+	// Decoded leniently: the computed Table carries a row for the malformed item
+	// too — its metadata.name is still the original number, so a strict
+	// string-typed decode would fail here. That the row survives at all is the
+	// point: the fallback trades captured column fidelity for not losing rows.
+	var table struct {
+		Kind string `json:"kind"`
+		Rows []struct {
+			Object struct {
+				Metadata map[string]any `json:"metadata"`
+			} `json:"object"`
+		} `json:"rows"`
+	}
+	if err := json.Unmarshal(rw.Body.Bytes(), &table); err != nil {
+		t.Fatalf("decoding table: %v\nbody: %s", err, rw.Body.String())
+	}
+	if table.Kind != "Table" {
+		t.Fatalf("kind = %q, want Table", table.Kind)
+	}
+	var names []string
+	for _, r := range table.Rows {
+		names = append(names, fmt.Sprint(r.Object.Metadata["name"]))
+	}
+	found := false
+	for _, n := range names {
+		if n == "web-1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("rows %v: web-1 matches spec.nodeName=node-a and must not be dropped", names)
 	}
 }
 

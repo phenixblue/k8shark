@@ -445,7 +445,9 @@ func (h *handler) serveResource(w http.ResponseWriter, r *http.Request, path str
 	//
 	// ok is false when a stored Table cannot be filtered faithfully, and the
 	// caller must fall back to a computed Table rather than serve rows the
-	// selector was never really applied to. That happens when the selector reads
+	// selector was never really applied to — either because the JSON list did
+	// not reconstruct, or because an item's identity would not decode, leaving
+	// no way to correlate it with a row. That happens when the selector reads
 	// spec or status: a stored Table's rows embed PartialObjectMetadata, so those
 	// fields simply are not there, and evaluating against the row would match
 	// nothing regardless of the value. A real apiserver filters full objects and
