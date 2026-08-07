@@ -123,6 +123,13 @@ resources:
   - { group: apps, version: v1, resource: deployments, namespaces: [conf-test], interval: 5s }
   - { group: apps, version: v1, resource: replicasets, namespaces: [conf-test], interval: 5s }
   - { group: batch, version: v1, resource: jobs, namespaces: [conf-test], interval: 5s }
+  # Events, in both API groups, so the field-selector differential (section G)
+  # can exercise involvedObject.*/regarding.* — the kinds with the most
+  # interesting field-label contract, including the events.k8s.io alias
+  # mapping. kube-system is used because a fresh KinD cluster reliably has
+  # control-plane events there.
+  - { version: v1, resource: events, namespaces: [kube-system], interval: 5s }
+  - { group: events.k8s.io, version: v1, resource: events, namespaces: [kube-system], interval: 5s }
 YAML
 "$BINARY" --config "$CAPTURE_CONFIG" capture
 [[ -s "$CAPTURE_FILE" ]] || die "capture archive missing/empty"

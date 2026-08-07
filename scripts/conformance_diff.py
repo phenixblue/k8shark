@@ -640,8 +640,14 @@ def field_selector_probes(live, mock):
     probes = []
     pods_path = f"/api/v1/namespaces/{PROBE_NS}/pods"
 
-    def add(label, path, selector):
-        probes.append((label, f"{path}?fieldSelector={urllib.parse.quote(selector)}"))
+    # churn marks a kind whose contents change while the run is in flight, so an
+    # exact live-vs-mock set comparison could never hold: the capture is a
+    # snapshot and the live cluster keeps emitting. For those, base is the
+    # unfiltered list path, and the comparison asserts the properties that still
+    # hold — see check_field_selectors.
+    def add(label, path, selector, churn=False):
+        probes.append((label, f"{path}?fieldSelector={urllib.parse.quote(selector)}",
+                       path if churn else None))
 
     # Pods: the kind with the largest selectable set, and the one the issue was
     # filed against.
@@ -686,12 +692,15 @@ def field_selector_probes(live, mock):
         "type=kubernetes.io/service-account-token")
 
     events_path = "/api/v1/namespaces/kube-system/events"
-    add("events involvedObject.kind=Pod", events_path, "involvedObject.kind=Pod")
-    add("events type=Normal", events_path, "type=Normal")
-    add("events source (unsupported on events.k8s.io)",
-        "/apis/events.k8s.io/v1/namespaces/kube-system/events", "source=kubelet")
-    add("events regarding.kind=Pod",
-        "/apis/events.k8s.io/v1/namespaces/kube-system/events", "regarding.kind=Pod")
+    new_events_path = "/apis/events.k8s.io/v1/namespaces/kube-system/events"
+    add("events involvedObject.kind=Pod", events_path, "involvedObject.kind=Pod", churn=True)
+    add("events type=Normal", events_path, "type=Normal", churn=True)
+    # Must match nothing on both sides regardless of churn, so it stays an exact
+    # comparison — the cheapest possible over-match detector.
+    add("events involvedObject.kind (no match)", events_path,
+        "involvedObject.kind=K8sharkNoSuchKind")
+    add("events source (unsupported on events.k8s.io)", new_events_path, "source=kubelet")
+    add("events regarding.kind=Pod", new_events_path, "regarding.kind=Pod", churn=True)
 
     # apps registers no conversion func at all, so everything but the metadata
     # keys is a 400 — an easy one to get wrong by assuming status.replicas works.
@@ -704,7 +713,7 @@ def field_selector_probes(live, mock):
 
 def check_field_selectors(live, mock):
     print(f"\n{BOLD}{CYN}== G. Field selectors =={RST}")
-    for label, path in field_selector_probes(live, mock):
+    for label, path, base in field_selector_probes(live, mock):
         lc, lb = live.get_json(path)
         mc, mb = mock.get_json(path)
         # A transport failure against live tells us nothing about the mock.
@@ -717,25 +726,50 @@ def check_field_selectors(live, mock):
                    f"status live={lc} mock={mc}; mock body={str(mb)[:200]}")
             continue
         if lc != 200:
-            # Both rejected (or both 404'd) — agreement on the error is the point.
+            # Both rejected (or both 404'd) — agreement on the error is the point,
+            # and it is the signal that matters most: it is the per-kind
+            # field-label contract, independent of what the capture contains.
             record("fieldselector", label, "PASS", f"live=mock={lc}")
             continue
         live_names = sorted(name for name, _ in named_items(lb))
         mock_names = sorted(name for name, _ in named_items(mb))
-        if live_names == mock_names:
-            record("fieldselector", label, "PASS", f"{len(live_names)} item(s) both sides")
+
+        if base is None:
+            if live_names == mock_names:
+                record("fieldselector", label, "PASS", f"{len(live_names)} item(s) both sides")
+                continue
+            only_live = [n for n in live_names if n not in set(mock_names)]
+            only_mock = [n for n in mock_names if n not in set(live_names)]
+            detail = f"live={live_names} mock={mock_names}"
+            if only_mock and not only_live:
+                detail = f"mock over-matched: extra={only_mock} ({detail})"
+            record("fieldselector", label, "UNEXPECTED", detail)
             continue
-        only_live = [n for n in live_names if n not in set(mock_names)]
-        only_mock = [n for n in mock_names if n not in set(live_names)]
-        # A capture is a point-in-time snapshot, so a set difference is only
-        # meaningful as a *selector* bug when the mock returns strictly more than
-        # it should relative to its own unfiltered list. Report the difference
-        # either way, but name the over-matching case explicitly since that is
-        # the silent-failure mode.
-        detail = f"live={live_names} mock={mock_names}"
-        if only_mock and not only_live:
-            detail = f"mock over-matched: extra={only_mock} ({detail})"
-        record("fieldselector", label, "UNEXPECTED", detail)
+
+        # Churn-prone kind. The capture froze a snapshot and the live cluster has
+        # kept emitting since, so live is expected to be a strict superset and an
+        # equality check could never pass. Two properties still hold, and between
+        # them they catch both failure directions:
+        #
+        #   over-match — the mock must not return an item the live server, with
+        #     the same selector, filtered out;
+        #   under-match — if the mock holds items for this kind at all, a
+        #     selector the live server matched something with must match
+        #     something here too, rather than silently filtering everything away.
+        extra = [n for n in mock_names if n not in set(live_names)]
+        if extra:
+            record("fieldselector", label, "UNEXPECTED",
+                   f"mock over-matched: returned {len(extra)} item(s) live filtered out: {extra[:5]}")
+            continue
+        _, unfiltered = mock.get_json(base)
+        held = sorted(name for name, _ in named_items(unfiltered))
+        if held and live_names and not mock_names:
+            record("fieldselector", label, "UNEXPECTED",
+                   f"mock under-matched: 0 of its {len(held)} captured item(s) matched, "
+                   f"but live matched {len(live_names)}")
+            continue
+        record("fieldselector", label, "PASS",
+               f"mock {len(mock_names)}/{len(held)} captured, live {len(live_names)} (churn-tolerant)")
 
 
 # ── summary ──────────────────────────────────────────────────────────────────────
