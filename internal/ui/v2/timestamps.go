@@ -9,6 +9,10 @@ import (
 // TimestampsResponse is what /v2/api/timestamps returns. Sampled when the
 // capture has more than ~180 distinct event timestamps so the scrubber stays
 // usable on long captures.
+//
+// TotalCount counts distinct *scrubber stops* — event timestamps at the second
+// precision Timestamps is emitted in — not records. Timestamps is guaranteed
+// free of duplicates (#257); the client indexes the scrubber by position in it.
 type TimestampsResponse struct {
 	CapturedAt    time.Time `json:"captured_at"`
 	CapturedUntil time.Time `json:"captured_until"`
@@ -29,16 +33,35 @@ func (h *Handler) timestampsHandler(w http.ResponseWriter, _ *http.Request) {
 		resp.DefaultAt = h.At.UTC().Format(time.RFC3339)
 	}
 
+	// Dedupe at the precision we actually emit (see the RFC3339 Format below),
+	// NOT at the nanosecond precision the index carries. Keying this map on the
+	// full-precision time produced a list whose *string* values repeated — on
+	// examples/auto-discovery/capture.kshrk, 180 stops with 4 distinct values,
+	// one of them 96 times. The client keys the scrubber off those strings, so
+	// every duplicate run was a dead zone: stepping forward landed on an
+	// identical value and snapped back, making the button a permanent no-op
+	// (#257).
+	//
+	// Second precision is deliberate rather than a concession. Every `at` in
+	// this API is RFC3339 seconds — parsed that way, echoed back that way by
+	// each handler, rendered by formatTS and by the diff pickers, and accepted
+	// from `--at`. Emitting RFC3339Nano would keep more stops but would put
+	// nine decimal places into the scrubber label and the diff dropdowns, and
+	// would make the stops disagree with the `at` every handler echoes. A stop
+	// the rest of the contract cannot address is not a usable stop.
 	uniq := make(map[time.Time]struct{})
+	add := func(t time.Time) {
+		if t.IsZero() {
+			return
+		}
+		uniq[t.UTC().Truncate(time.Second)] = struct{}{}
+	}
 	for _, entry := range h.Store.Index {
 		if entry == nil {
 			continue
 		}
 		for _, t := range entry.Times {
-			if t.IsZero() {
-				continue
-			}
-			uniq[t.UTC()] = struct{}{}
+			add(t)
 		}
 	}
 	for _, wi := range h.Store.WatchIndex {
@@ -46,10 +69,7 @@ func (h *Handler) timestampsHandler(w http.ResponseWriter, _ *http.Request) {
 			continue
 		}
 		for _, t := range wi.Times {
-			if t.IsZero() {
-				continue
-			}
-			uniq[t.UTC()] = struct{}{}
+			add(t)
 		}
 	}
 

@@ -9,7 +9,11 @@
   --border-strong: #2d3748;
   --fg: #e5e7eb;
   --fg-dim: #9ca3af;
-  --fg-faint: #6b7280;
+  /* Was #6b7280 — 3.21:1 on --bg-row-hover and below AA on every surface it
+   * carries body text on, in the dark theme too, not just the light one (#258).
+   * Picked as near the AA floor as the palette allows (4.75:1 worst case) so it
+   * stays visibly recessive against --fg-dim rather than collapsing into it. */
+  --fg-faint: #858f9e;
   --accent: #38bdf8;
   --accent-2: #818cf8;
   --good: #22c55e;
@@ -20,7 +24,31 @@
   --pod: #38bdf8;
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Code surfaces (.code, .json-view, .yaml-view, .log-preview, .diff).
+   *
+   * These get their own tokens rather than borrowing the semantic UI colors,
+   * because --accent/--good/--warn/--bad are tuned for panel backgrounds and
+   * were never checked against --code-bg. In the light theme that mismatch made
+   * every code, log and diff view unreadable — plain text sat at 1.18:1 (#258).
+   * Every value below is verified >= 4.5:1 against --code-bg in its own theme.
+   *
+   * --code-dim is "readable but recessive" (log bodies, diff context);
+   * --code-com is for comments and timestamps; --code-punc for braces and
+   * brackets, which are structural and so kept a touch stronger than comments. */
   --code-bg: #07090f;
+  --code-fg: #e5e7eb;
+  --code-dim: #a8b0bd;
+  --code-com: #8b95a5;
+  --code-punc: #a3adbb;
+  --code-key: #93c5fd;
+  --code-str: #fcd34d;
+  --code-num: #c4b5fd;
+  --code-lit: #6ee7b7;
+  --diff-add-fg: #4ade80;
+  --diff-del-fg: #f87171;
+  --diff-add-bg: rgba(34, 197, 94, 0.12);
+  --diff-del-bg: rgba(239, 68, 68, 0.12);
 }
 :root[data-theme="light"] {
   --bg: #f6f7f9;
@@ -32,16 +60,36 @@
   --border-strong: #cfd6dd;
   --fg: #1b2733;
   --fg-dim: #51606e;
-  --fg-faint: #8a97a5;
-  --accent: #0b76d0;
+  /* Was #8a97a5 — 2.49:1 on --bg-row-hover, and below AA on every surface it is
+   * used as body text on (#258). */
+  --fg-faint: #5c6875;
+  /* Was #0b76d0 — 4.34:1 as a link on --bg. */
+  --accent: #0a67b8;
   --accent-2: #5b4bd6;
   --good: #15803d;
   --warn: #b45309;
-  --bad: #dc2626;
+  /* Was #dc2626 — 4.34:1 on --bg-row. */
+  --bad: #c62222;
   --tag-bg: #eef1f4;
   --workload: #7c5cff;
   --pod: #0b76d0;
-  --code-bg: #0f1726;
+
+  /* A light theme gets a light code surface. The previous value was #0f1726 —
+   * dark navy — while the consumers kept light-theme foregrounds, so plain text
+   * rendered at 1.18:1 and every syntax token failed AA (#258). */
+  --code-bg: #f8fafc;
+  --code-fg: #10202e;
+  --code-dim: #47566a;
+  --code-com: #5a6675;
+  --code-punc: #46525f;
+  --code-key: #0a5aa0;
+  --code-str: #0c6b3a;
+  --code-num: #8a4b00;
+  --code-lit: #5333c4;
+  --diff-add-fg: #0a6b34;
+  --diff-del-fg: #b91c1c;
+  --diff-add-bg: rgba(22, 163, 74, 0.14);
+  --diff-del-bg: rgba(220, 38, 38, 0.1);
 }
 .theme-toggle {
   background: var(--bg-row); border: 1px solid var(--border-strong); color: var(--fg-dim);
@@ -400,11 +448,11 @@ a { color: inherit; }
 .container-meta .v.good { color: var(--good); }
 .log-preview {
   background: var(--code-bg); border: 1px solid var(--border); border-radius: 5px;
-  padding: 8px 10px; font: 11px var(--mono); color: var(--fg-dim);
+  padding: 8px 10px; font: 11px var(--mono); color: var(--code-dim);
   white-space: pre-wrap; max-height: 110px; overflow: auto;
 }
-.log-preview .err { color: var(--bad); }
-.log-preview .ts { color: var(--fg-faint); }
+.log-preview .err { color: var(--diff-del-fg); }
+.log-preview .ts { color: var(--code-com); }
 
 /* Events */
 .events { display: flex; flex-direction: column; gap: 6px; }
@@ -447,26 +495,36 @@ a { color: inherit; }
 .json-view, .yaml-view {
   background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px;
   padding: 14px; font: 12px var(--mono); white-space: pre-wrap; word-break: break-word;
-  color: var(--fg); overflow: auto; max-height: 70vh;
+  color: var(--code-fg); overflow: auto; max-height: 70vh;
 }
-.json-view .k { color: #93c5fd; }
-.json-view .s { color: #fcd34d; }
-.json-view .n { color: #c4b5fd; }
-.json-view .b { color: #6ee7b7; }
-.json-view .c { color: var(--fg-faint); font-style: italic; }
+/* Were hardcoded dark-theme hex values, which left the light theme with no way
+ * to be legible at all (#258). The dark-theme tokens carry those exact values
+ * forward, so the dark appearance here is unchanged. */
+.json-view .k { color: var(--code-key); }
+.json-view .s { color: var(--code-str); }
+.json-view .n { color: var(--code-num); }
+.json-view .b { color: var(--code-lit); }
+.json-view .c { color: var(--code-com); font-style: italic; }
 
 /* Diff view */
 /* Syntax-highlighted code (object YAML/JSON view). */
 .code {
   font: 12px var(--mono); white-space: pre; background: var(--code-bg); border: 1px solid var(--border);
-  border-radius: 6px; overflow: auto; color: var(--fg);
+  border-radius: 6px; overflow: auto; color: var(--code-fg);
 }
-.code .k-key { color: var(--accent); }
-.code .k-str { color: var(--good); }
-.code .k-num { color: var(--warn); }
-.code .k-lit { color: var(--accent-2); }
-.code .k-com { color: var(--fg-faint); font-style: italic; }
-.code .k-punc { color: var(--fg-faint); }
+/* The plain `color` above is what codeBlock falls back to when it skips
+ * highlighting past its 300 KB cutoff, so it carries whole large objects on its
+ * own — it was the 1.18:1 case in #258, not an edge case.
+ *
+ * These were the semantic UI tokens (--accent/--good/--warn/--accent-2), which
+ * are tuned for panel backgrounds; they now share the purpose-built code
+ * palette with .json-view, so the two highlighters finally agree. */
+.code .k-key { color: var(--code-key); }
+.code .k-str { color: var(--code-str); }
+.code .k-num { color: var(--code-num); }
+.code .k-lit { color: var(--code-lit); }
+.code .k-com { color: var(--code-com); font-style: italic; }
+.code .k-punc { color: var(--code-punc); }
 
 /* Resources catalog page. */
 .cat-group {
@@ -501,10 +559,12 @@ a { color: inherit; }
 .capmeta .k { font-size: 10.5px; color: var(--fg-faint); text-transform: uppercase; letter-spacing: .05em; }
 .capmeta .v { font: 12.5px var(--mono); color: var(--fg); overflow: hidden; text-overflow: ellipsis; }
 
-.diff { font: 12px var(--mono); white-space: pre; background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px; overflow: auto; }
-.diff .add { background: rgba(34,197,94,0.12); color: var(--good); }
-.diff .del { background: rgba(239,68,68,0.12); color: var(--bad); }
-.diff .ctx { color: var(--fg-dim); }
+.diff { font: 12px var(--mono); white-space: pre; background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px; overflow: auto; color: var(--code-fg); }
+/* The row tint blends over --code-bg, so the foregrounds are checked against
+ * that composite rather than against --code-bg alone (#258). */
+.diff .add { background: var(--diff-add-bg); color: var(--diff-add-fg); }
+.diff .del { background: var(--diff-del-bg); color: var(--diff-del-fg); }
+.diff .ctx { color: var(--code-dim); }
 
 /* Toasts */
 #toasts { position: fixed; right: 18px; bottom: 18px; display: flex; flex-direction: column; gap: 8px; z-index: 10; }
