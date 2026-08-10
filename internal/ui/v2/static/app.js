@@ -87,8 +87,17 @@
   // ── State ────────────────────────────────────────────────────────────────
   const state = {
     captureMeta: null,
-    snapshots: [],   // RFC3339 strings
+    snapshots: [],   // RFC3339 strings, distinct and ascending (see #257)
     at: '',          // selected snapshot timestamp ('' = latest / follow clock in replay)
+    // Scrubber position, kept in lockstep with `at` by selectSnapshot().
+    // null = not explicitly positioned, so derive it from `at`.
+    //
+    // The scrubber is positioned by index rather than by looking `at` back up in
+    // `snapshots`: a reverse lookup returns the *first* match, so any repeated
+    // stop was a dead zone that stepping forward could never leave (#257). The
+    // server no longer emits duplicates, but the lookup is also simply wrong for
+    // an `at` that isn't itself a stop, which a deep link can hand us.
+    atIndex: null,
     route: { name: 'overview' },
     // Replay transport (populated from /v2/api/replay when replay mode is on).
     replay: {
@@ -176,7 +185,7 @@
     const maxIdx = Math.max(0, state.snapshots.length - 1);
     // In replay mode the thumb tracks the live clock position; otherwise it
     // tracks the manually-selected snapshot.
-    const idxNow = replay ? replaySnapshotIndex(state.replay.position) : currentSnapshotIndex();
+    const idxNow = replay ? snapshotIndexAtOrBefore(state.replay.position) : currentSnapshotIndex();
     const prev = el('button', { class: 'btn', onclick: () => (replay ? seekSnapshot(-1) : stepSnapshot(-1)), title: 'Step back' }, '◀');
     const next = el('button', { class: 'btn', onclick: () => (replay ? seekSnapshot(+1) : stepSnapshot(+1)), title: 'Step forward' }, '▶');
     const range = el('input', { type: 'range', min: '0', max: String(maxIdx), value: String(idxNow) });
@@ -190,11 +199,11 @@
       });
     } else {
       range.addEventListener('input', () => {
-        state.at = state.snapshots[Number(range.value)] || '';
+        selectSnapshot(Number(range.value));
         ts.textContent = formatTS(state.at);
       });
       range.addEventListener('change', () => {
-        state.at = state.snapshots[Number(range.value)] || '';
+        selectSnapshot(Number(range.value));
         render();
       });
     }
@@ -207,11 +216,14 @@
   // ── Replay transport ───────────────────────────────────────────────────────
   const REPLAY_SPEEDS = [0.25, 0.5, 1, 2];
 
-  // replaySnapshotIndex returns the index of the latest snapshot at or before
-  // the given time (floor). Using the floor (not the nearest) means the view
-  // re-renders exactly when the clock crosses a snapshot, rather than at the
-  // midpoint between two snapshots.
-  function replaySnapshotIndex(rfc3339) {
+  // snapshotIndexAtOrBefore returns the index of the latest snapshot at or
+  // before the given time (floor). Using the floor (not the nearest) means the
+  // view re-renders exactly when the clock crosses a snapshot, rather than at
+  // the midpoint between two snapshots.
+  //
+  // Used by the replay clock and, as a fallback, to place an `at` that isn't
+  // itself one of the stops.
+  function snapshotIndexAtOrBefore(rfc3339) {
     if (!rfc3339 || state.snapshots.length === 0) return Math.max(0, state.snapshots.length - 1);
     const t = Date.parse(rfc3339);
     let idx = 0;
@@ -289,7 +301,7 @@
 
   // seekSnapshot seeks the clock to the neighbouring snapshot (step buttons).
   function seekSnapshot(delta) {
-    const idx = Math.max(0, Math.min(state.snapshots.length - 1, replaySnapshotIndex(state.replay.position) + delta));
+    const idx = Math.max(0, Math.min(state.snapshots.length - 1, snapshotIndexAtOrBefore(state.replay.position) + delta));
     const to = state.snapshots[idx];
     if (to) replayControl('seek', { to });
   }
@@ -327,7 +339,7 @@
     // Live-update the scrubber thumb + label without a full re-render.
     const s = $('scrubber');
     const range = s && s.querySelector('input[type=range]');
-    const idx = replaySnapshotIndex(rp.position);
+    const idx = snapshotIndexAtOrBefore(rp.position);
     if (range) range.value = String(idx);
     const tsEl = s && s.querySelector('.ts');
     if (tsEl) tsEl.textContent = formatTS(rp.position);
@@ -378,14 +390,39 @@
   }
 
   function currentSnapshotIndex() {
-    if (!state.at) return state.snapshots.length - 1; // latest
+    if (state.snapshots.length === 0) return 0;
+    const last = state.snapshots.length - 1;
+    // The tracked position wins when we have one, so stepping and dragging never
+    // depend on finding `at` in the list.
+    if (Number.isInteger(state.atIndex) && state.atIndex >= 0 && state.atIndex <= last) {
+      return state.atIndex;
+    }
+    if (!state.at) return last; // latest
     const i = state.snapshots.indexOf(state.at);
-    return i >= 0 ? i : state.snapshots.length - 1;
+    if (i >= 0) return i;
+    // An `at` that is not itself a stop — a deep link, or a sampled list on a
+    // long capture. Land on the stop at or before it rather than silently
+    // jumping to the end of the range, which is what the old fallback did.
+    return snapshotIndexAtOrBefore(state.at);
+  }
+
+  // selectSnapshot moves the scrubber to an index, keeping `at` (what the API is
+  // queried with) and `atIndex` (where the thumb sits) in lockstep. Every
+  // scrubber interaction goes through this — letting the two drift apart is what
+  // made the forward button a no-op and made dragging snap backward (#257).
+  function selectSnapshot(idx) {
+    if (state.snapshots.length === 0) {
+      state.at = '';
+      state.atIndex = null;
+      return;
+    }
+    const clamped = Math.max(0, Math.min(state.snapshots.length - 1, idx));
+    state.atIndex = clamped;
+    state.at = state.snapshots[clamped] || '';
   }
 
   function stepSnapshot(delta) {
-    const idx = Math.max(0, Math.min(state.snapshots.length - 1, currentSnapshotIndex() + delta));
-    state.at = state.snapshots[idx] || '';
+    selectSnapshot(currentSnapshotIndex() + delta);
     render();
   }
 
@@ -2637,7 +2674,12 @@
       };
       if (state.captureMeta) {
         $('capture-meta').textContent =
-          `${state.captureMeta.captured_at?.slice(0, 19) ?? ''} → ${state.captureMeta.captured_until?.slice(0, 19) ?? ''} · ${state.captureMeta.total_count} records`;
+          // "snapshots", not "records": total_count has always been the count of
+          // distinct scrubber stops, never a record count. The mislabel was easy
+          // to miss while the stop list was inflated by duplicates (#257) — now
+          // that it reports distinct stops the number is visibly smaller, so call
+          // it what it is.
+          `${state.captureMeta.captured_at?.slice(0, 19) ?? ''} → ${state.captureMeta.captured_until?.slice(0, 19) ?? ''} · ${state.captureMeta.total_count} snapshots`;
       }
     } catch (e) {
       // Timestamps endpoint not implemented yet — keep going with empty snapshots.
