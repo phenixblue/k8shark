@@ -113,14 +113,26 @@
   };
 
   // ── Router ───────────────────────────────────────────────────────────────
-  // Routes:
-  //   #/overview              dashboard landing
-  //   #/namespaces            namespace browser
-  //   #/ns/<name>             namespace drilldown
-  //   #/ns/<name>/pod/<pod>   pod drilldown
-  //   #/timeline              timeline
-  //   #/logs                  logs full-screen
-  //   #/search?q=..&mode=..   global search results (see the topbar search box)
+  // Routes. Keep this list, parseRoute below, and render()'s dispatch in sync —
+  // TestBrowser_RouteListMatchesRenderDispatch (#263) fails if a route reachable
+  // from render() has no browser smoke coverage.
+  //
+  //   #/overview                       dashboard landing
+  //   #/namespaces                     namespace browser
+  //   #/ns/<name>                      namespace drilldown
+  //   #/ns/<name>/pod/<pod>            pod drilldown
+  //   #/pods                           all pods
+  //   #/workloads                      all workloads
+  //   #/resources                      resource catalog
+  //   #/resource?path=..               one resource's objects
+  //   #/object?path=..&name=..         single object (YAML/JSON/relationships)
+  //   #/diagnostics                    diagnostics
+  //   #/timeline                       timeline
+  //   #/logs?ns=..&pod=..              logs full-screen
+  //   #/diff?path=..&name=..           compare an object at two snapshots
+  //   #/search?q=..&mode=..            global search results (topbar search box)
+  //
+  // Anything unrecognized falls back to #/overview.
   function parseRoute() {
     let h = (location.hash || '#/overview').replace(/^#/, '');
     // Strip any ?query=... before splitting on slashes; route params live in
