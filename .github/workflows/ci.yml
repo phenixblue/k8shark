@@ -71,6 +71,44 @@ jobs:
       - name: Test
         run: go test -race ./...
 
+  # Headless-browser coverage for the dashboard's app.js (#263). Separate from
+  # `test` on purpose: these need a Chrome binary, and the `test` matrix spans
+  # three OSes where requiring one would triple the flake surface for no extra
+  # signal. They are behind the `browser` build tag, so `go test ./...` in that
+  # matrix never compiles them.
+  #
+  # ubuntu-latest ships Chrome preinstalled, so there is no browser-install step
+  # to drift. The job asserts that up front rather than letting a missing binary
+  # turn into a skip — a suite that silently stops running is the failure mode
+  # from #334, and it is worse here because the whole point is coverage.
+  ui-browser:
+    needs: contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Verify a browser is available
+        run: |
+          set -euo pipefail
+          for c in google-chrome chromium chromium-browser; do
+            if command -v "$c" >/dev/null 2>&1; then
+              echo "found $c: $("$c" --version)"
+              exit 0
+            fi
+          done
+          echo "::error::no Chrome/Chromium on the runner — the app.js browser tests (#263) cannot run, and must fail rather than silently not run"
+          exit 1
+
+      - name: Browser tests
+        run: go test -tags browser -v -timeout 10m ./internal/ui/v2/
+
   build:
     needs: test
     runs-on: ubuntu-latest
