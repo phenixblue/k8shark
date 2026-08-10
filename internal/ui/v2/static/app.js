@@ -299,7 +299,7 @@
     }
   }
 
-  // seekSnapshot seeks the clock to the neighbouring snapshot (step buttons).
+  // seekSnapshot seeks the clock to the neighboring snapshot (step buttons).
   function seekSnapshot(delta) {
     const idx = Math.max(0, Math.min(state.snapshots.length - 1, snapshotIndexAtOrBefore(state.replay.position) + delta));
     const to = state.snapshots[idx];
