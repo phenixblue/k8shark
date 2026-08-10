@@ -5,12 +5,38 @@ name: artifact-smoke
 # executes a release artifact, so a packaging or cross-compilation defect
 # present only in the shipped binary would not be caught there.
 #
-# Triggers on a published release (so every tag is covered automatically), and
-# on demand against any existing tag via workflow_dispatch.
+# Called by release.yml once GoReleaser has published (so every tag we cut is
+# covered automatically), and on demand against any existing tag via
+# workflow_dispatch.
+#
+# The workflow_call entry point is load-bearing, not a convenience: `on: release`
+# alone can never cover our own releases. GoReleaser creates the GitHub Release
+# with secrets.GITHUB_TOKEN, and GitHub deliberately does not start workflow runs
+# from events that token triggers (the recursion guard) — so `on: release` did not
+# fire for v1.0.0 and structurally never can for a release our pipeline creates
+# (#334). Being called from release.yml keeps it in the same run, where the token
+# restriction doesn't apply and a smoke failure marks the release run red.
+#
+# Do not "simplify" this back to a release-triggered workflow.
 
 on:
+  # Retained deliberately, and NOT the path that covers our own releases (see
+  # above). This only fires for a release created by a *user* — cut by hand in
+  # the web UI, or re-published later. Cheap to keep, and it is the one case
+  # release.yml cannot call us for.
   release:
     types: [published]
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Release tag to smoke-test (e.g. v1.0.0)'
+        required: true
+        type: string
+      expect_contract:
+        description: 'Assert the v1.0 -o json shapes'
+        required: false
+        default: true
+        type: boolean
   # Mirrors release-check.yml (#315): exercise a change to this workflow or the
   # smoke script in the PR that makes it, rather than discovering it broke at
   # the next tag. Falls back to the latest published release as the subject.
@@ -73,17 +99,40 @@ jobs:
         # the smoke test reads.
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Resolve the tag
+      - name: Resolve the tag and the contract mode
         id: tag
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          # github.event.inputs.* rather than inputs.*: the latter is documented as
-          # a workflow_dispatch/workflow_call context. It does resolve to empty on
-          # other events in practice (verified on a pull_request run), but the
-          # release path is both the one that matters here and the least
-          # exercised, so don't lean on undocumented behavior for it.
-          EXPLICIT: ${{ github.event.inputs.tag || github.event.release.tag_name }}
+          # inputs.* is the documented context for BOTH workflow_call and
+          # workflow_dispatch, and it is the only one that works for
+          # workflow_call: on a called workflow `github.event` is the *caller's*
+          # payload (a tag push), which carries no .inputs at all. The release
+          # path still reads github.event.release.tag_name rather than leaning on
+          # inputs.* resolving to empty on a release event.
+          EXPLICIT: ${{ inputs.tag || github.event.release.tag_name }}
+          # On a real release, enforce the frozen -o json shapes. On a PR the
+          # subject is whichever release happens to be latest, which may predate
+          # the contract (#320 landed after v1.0.0-rc.3) — so the PR run proves
+          # the harness works end-to-end on all six platforms, and the shape
+          # assertions are enforced where the version is known to have them.
+          #
+          # Keyed on inputs.expect_contract, NOT on github.event_name: for a
+          # workflow_call, github.event_name is the *caller's* event ('push' for
+          # a tag), so an event_name test would silently fall through to '0' and
+          # run every release with the contract assertions off — the exact
+          # "mechanism verified, reach not verified" failure this workflow keeps
+          # hitting (#334). The guard below exists because that mistake is
+          # invisible in a green run.
+          #
+          # format() rather than a bare truthiness check or a string compare,
+          # because the two entry points type this input differently: inputs.* is
+          # a real boolean for workflow_call/workflow_dispatch, but a bare check
+          # would read a literal "false" string as true (every non-empty string is
+          # truthy), and == 'true' would miss a real boolean. format('{0}', …)
+          # normalizes both to 'true'/'false', and an absent input (pull_request)
+          # to ''.
+          EXPECT_CONTRACT: ${{ (github.event_name == 'release' || format('{0}', inputs.expect_contract) == 'true') && '1' || '0' }}
         run: |
           set -euo pipefail
           tag="$EXPLICIT"
@@ -93,6 +142,27 @@ jobs:
             echo "no tag given; using the latest release: $tag"
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "expect_contract=$EXPECT_CONTRACT" >> "$GITHUB_OUTPUT"
+          echo "resolved: event=$GITHUB_EVENT_NAME tag=$tag expect_contract=$EXPECT_CONTRACT"
+
+          # Fail loudly rather than smoke a real release with the shape
+          # assertions off. Without this, a regression in the expression above
+          # degrades every release run to a weaker check that still reports
+          # green — which is the same class of defect as #334 itself.
+          #
+          # 'push' means release.yml called us for a tag (this workflow has no
+          # push trigger of its own); 'release' is a hand-cut release. Both are
+          # real releases and must assert the contract. workflow_dispatch is
+          # exempt on purpose: EXPECT_CONTRACT=0 is the documented way to smoke a
+          # pre-#320 artifact such as v1.0.0-rc.3.
+          case "$GITHUB_EVENT_NAME" in
+            push | release)
+              if [ "$EXPECT_CONTRACT" != "1" ]; then
+                echo "::error::refusing to smoke release $tag with EXPECT_CONTRACT=$EXPECT_CONTRACT — the -o json contract assertions must be on for a real release (see #334)"
+                exit 1
+              fi
+              ;;
+          esac
 
       - name: Download and verify the artifact
         shell: bash
@@ -126,15 +196,9 @@ jobs:
         shell: bash
         env:
           TAG: ${{ steps.tag.outputs.tag }}
-          # On a real release, enforce the frozen -o json shapes. On a PR the
-          # subject is whichever release happens to be latest, which may predate
-          # the contract (#320 landed after v1.0.0-rc.3) — so the PR run proves
-          # the harness works end-to-end on all six platforms, and the shape
-          # assertions are enforced where the version is known to have them.
-          # Compared to the string 'true' on purpose: github.event.inputs values
-          # are strings, so a bare truthiness check would read the literal
-          # "false" as true — every non-empty string is truthy here.
-          EXPECT_CONTRACT: ${{ (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.event.inputs.expect_contract == 'true')) && '1' || '0' }}
+          # Resolved and guarded in the step above, so the decision lives in one
+          # place rather than being restated here.
+          EXPECT_CONTRACT: ${{ steps.tag.outputs.expect_contract }}
         run: |
           set -euo pipefail
           bin=bin/kshrk

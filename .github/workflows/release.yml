@@ -57,3 +57,32 @@ jobs:
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           subject-path: dist/*.tar.gz,dist/*.zip
+
+  # Smoke-test the bytes we just published, on all six shipped platforms.
+  #
+  # This has to be called from here rather than left to artifact-smoke.yml's own
+  # `on: release` trigger: GoReleaser creates the release with secrets.GITHUB_TOKEN,
+  # and GitHub does not start workflow runs from events that token triggers, so
+  # `on: release` never fired for v1.0.0 and never can for a release this pipeline
+  # creates (#334). Calling it keeps the smoke run inside this workflow run, where
+  # that restriction doesn't apply and a failure turns the release run red instead
+  # of waiting for someone to remember to dispatch it by hand.
+  #
+  # Deliberately not `if: !prerelease` — an -rc tag is exactly when we most want to
+  # find a packaging defect, and rc.1/rc.2 existed to exercise this pipeline.
+  #
+  # goreleaser's release: block sets draft: false, so the assets are downloadable
+  # as soon as that job completes and no extra wait is needed here.
+  smoke:
+    needs: goreleaser
+    uses: ./.github/workflows/artifact-smoke.yml
+    permissions:
+      contents: read
+    with:
+      # github.ref_name is the tag that triggered this run — the same value passed
+      # to GoReleaser as GORELEASER_CURRENT_TAG, so both resolve the same release
+      # even when two tags point at one commit.
+      tag: ${{ github.ref_name }}
+      # Every release from v1.0.0 on carries the frozen -o json shapes (#320), so
+      # the contract assertions are always on for a real release.
+      expect_contract: true
