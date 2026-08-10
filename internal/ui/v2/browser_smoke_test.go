@@ -23,6 +23,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -581,6 +582,13 @@ func firstNamespaceAndPod(t *testing.T, base string) (ns, pod string) {
 		t.Fatalf("GET /v2/api/pods: %v", err)
 	}
 	defer resp.Body.Close()
+	// Check the status before decoding: on a 500 the body is an error object, and
+	// decoding it would fail as "no pods" or a JSON error rather than naming the
+	// real problem.
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		t.Fatalf("GET /v2/api/pods: status %d, body: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
 	var payload struct {
 		Pods []struct {
 			Namespace string `json:"namespace"`

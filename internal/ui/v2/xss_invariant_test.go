@@ -52,7 +52,7 @@ var emptyStringRHS = regexp.MustCompile(`^\s*(''|""|\x60\x60)\s*$`)
 
 func TestStaticAssets_NoHTMLParsingSinks(t *testing.T) {
 	for name, src := range readStaticSources(t) {
-		stripped := stripJSCommentsAndTemplates(src)
+		stripped := stripJSComments(src)
 
 		for _, sink := range htmlParsingSinks {
 			for _, m := range sink.pattern.FindAllString(stripped, -1) {
@@ -203,7 +203,7 @@ func TestXSSInvariantTest_CatchesRegressions(t *testing.T) {
 // scanFindsProblem applies the same checks as TestStaticAssets_NoHTMLParsingSinks
 // to a source fragment, so the scanner and its self-test can't drift apart.
 func scanFindsProblem(src string) bool {
-	stripped := stripJSCommentsAndTemplates(src)
+	stripped := stripJSComments(src)
 	for _, sink := range htmlParsingSinks {
 		if sink.pattern.MatchString(stripped) {
 			return true
@@ -254,14 +254,16 @@ var (
 	blockComment = regexp.MustCompile(`(?s)/\*.*?\*/`)
 )
 
-// stripJSCommentsAndTemplates removes comments so prose describing a sink (this
-// file's own guidance ends up quoted in app.js comments) isn't mistaken for one.
+// stripJSComments removes line and block comments so prose describing a sink
+// (this file's own guidance ends up quoted in app.js comments) isn't mistaken
+// for one. Comments only — string and template literals are left intact.
 //
 // It is deliberately not a JS parser. Comment stripping is enough for the shapes
-// that occur here, and a scanner that over-reports is safe — it fails loudly and
-// gets looked at — whereas one that under-reports fails silently. The self-test
-// above pins both directions.
-func stripJSCommentsAndTemplates(src string) string {
+// that occur here, and leaving literals in place is the safer direction: a
+// payload string that happens to contain "innerHTML =" gets reported rather than
+// hidden. A scanner that over-reports fails loudly and gets looked at; one that
+// under-reports fails silently. The self-test above pins both directions.
+func stripJSComments(src string) string {
 	src = blockComment.ReplaceAllString(src, " ")
 	return lineComment.ReplaceAllString(src, "")
 }

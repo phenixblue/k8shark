@@ -106,8 +106,11 @@ jobs:
           echo "::error::no Chrome/Chromium on the runner — the app.js browser tests (#263) cannot run, and must fail rather than silently not run"
           exit 1
 
+      # -race to match the `test` job: the harness collects console errors and
+      # exceptions on the CDP event goroutine while the test goroutine reads them,
+      # so this job is where that synchronization is actually exercised.
       - name: Browser tests
-        run: go test -tags browser -v -timeout 10m ./internal/ui/v2/
+        run: go test -tags browser -race -v -timeout 10m ./internal/ui/v2/
 
   build:
     needs: test
