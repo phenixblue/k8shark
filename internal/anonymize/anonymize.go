@@ -37,11 +37,14 @@ const (
 	CategoryWorkload Category = "workload"
 )
 
-// AllCategories is every category anonymize supports, in a stable order
-// (used for --categories default, and for iterating deterministically in
-// reports). Not all are wired to the archive-rewrite path yet — see the
-// package's tracking issue (#137) milestones for what each build actually
-// covers; this list is the eventual full set.
+// AllCategories is the full set of categories anonymize is designed to
+// eventually support, in a stable order — the target end-state from #137's
+// design, not what's implemented today. Most are not usable yet:
+// (*Aliaser).Alias panics for any category not in its own
+// implementedCategories set (alias.go), which is a strict subset of this
+// list until later milestones add the rest. Don't iterate AllCategories
+// expecting every entry to work; iterate implementedCategories (or call
+// Alias and let it panic loudly) if you need "what works right now."
 var AllCategories = []Category{
 	CategoryIP,
 	CategoryURL,

@@ -20,11 +20,13 @@ var wordsPerCategory = map[Category]int{
 	CategoryWorkload:  3,
 }
 
-// defaultWords is used for any category not listed in wordsPerCategory
-// (currently CategoryURL and CategoryImage, which don't go through
-// aliasName in this milestone — they alias to a hostname-style string
-// instead — but the default keeps this function total rather than panicking
-// on an unrecognized category).
+// defaultWords is used for any category not listed in wordsPerCategory. In
+// practice Alias (alias.go) only ever calls aliasName with a category from
+// its own implementedCategories set, and every one of those is listed above
+// — so this path isn't reachable through Alias today. It exists so aliasName
+// stays total on its own terms rather than silently returning a 0-word
+// "<category>" alias for an unlisted one, independent of whatever Alias's
+// current dispatch policy happens to be.
 const defaultWords = 2
 
 // aliasName renders digest as a "<category>-<word>-<word>[-<word>]" string.

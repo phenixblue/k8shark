@@ -101,9 +101,12 @@ func TestAliaser_CategoriesNeverCollide(t *testing.T) {
 	a := NewAliaser([]byte("cross-category-salt"))
 	values := []string{"shared-value", "10.0.0.1", "prod", "worker-1"}
 
+	// implementedCategories, not AllCategories: AllCategories is the eventual
+	// full set (#137's design target), and Alias panics on the categories in
+	// it that aren't implemented yet — see TestAliaser_PanicsOnUnimplementedCategory.
 	for _, v := range values {
 		byCategory := make(map[Category]string)
-		for _, cat := range AllCategories {
+		for cat := range implementedCategories {
 			byCategory[cat] = a.Alias(cat, v)
 		}
 		seen := make(map[string]Category, len(byCategory))
@@ -181,6 +184,54 @@ func TestAliaser_IPAliasesAreValidAndPrivate(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Calling Alias with a category that isn't implemented yet must panic, not
+// silently render something through the wrong encoder. This is the guard
+// that makes CategoryURL/CategoryImage safe to define now (for later
+// milestones to reference) without accidentally locking in an encoding
+// nobody has designed.
+func TestAliaser_PanicsOnUnimplementedCategory(t *testing.T) {
+	a := NewAliaser([]byte("panic-salt"))
+	for _, cat := range []Category{CategoryURL, CategoryImage, Category("bogus")} {
+		t.Run(string(cat), func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("Alias(%q, ...) did not panic", cat)
+				}
+			}()
+			a.Alias(cat, "some-value")
+		})
+	}
+}
+
+// implementedCategories (used by Alias's guard) and the case list in Alias's
+// own switch must agree exactly — pinned here so the two can't quietly drift
+// apart (a category added to one without the other would either panic
+// despite being "implemented," or silently reach the switch's unreachable
+// default panic branch instead of the clearer guard message).
+func TestAliaser_ImplementedCategoriesMatchDispatch(t *testing.T) {
+	a := NewAliaser([]byte("dispatch-sync-salt"))
+	for _, cat := range AllCategories {
+		implemented := implementedCategories[cat]
+		panicked := panics(func() { a.Alias(cat, "probe-value") })
+		if implemented == panicked {
+			t.Errorf("category %q: implementedCategories says implemented=%v but Alias panicked=%v — implementedCategories and Alias's switch have drifted apart",
+				cat, implemented, panicked)
+		}
+	}
+}
+
+// panics reports whether f panics, recovering so the test can assert on the
+// outcome rather than crash.
+func panics(f func()) (didPanic bool) {
+	defer func() {
+		if recover() != nil {
+			didPanic = true
+		}
+	}()
+	f()
+	return false
 }
 
 // aliasIP's documented fallback: an input that doesn't parse as an IP at all
