@@ -44,7 +44,7 @@ func TestRewriteNamespaceInObject(t *testing.T) {
 		}
 	})
 
-	t.Run("Event aliases both its own metadata.namespace and involvedObject.namespace", func(t *testing.T) {
+	t.Run("core/v1 Event aliases both its own metadata.namespace and involvedObject.namespace", func(t *testing.T) {
 		obj := map[string]interface{}{
 			"kind":           "Event",
 			"metadata":       map[string]interface{}{"name": "web-1.abc", "namespace": "prod"},
@@ -60,6 +60,34 @@ func TestRewriteNamespaceInObject(t *testing.T) {
 		}
 		if got := involved["namespace"]; got != "prod-ALIASED" {
 			t.Errorf("involvedObject.namespace = %v, want prod-ALIASED", got)
+		}
+	})
+
+	// events.k8s.io/v1 is the Events API a real cluster actually emits by
+	// default (core/v1 Event is the older, still-supported shape) — missing
+	// this would anonymize metadata.namespace and the API path correctly
+	// while leaving the real namespace name sitting in regarding.namespace
+	// on the majority of Events a real capture contains.
+	t.Run("events.k8s.io/v1 Event aliases regarding.namespace and related.namespace", func(t *testing.T) {
+		obj := map[string]interface{}{
+			"kind":      "Event",
+			"metadata":  map[string]interface{}{"name": "web-1.abc", "namespace": "prod"},
+			"regarding": map[string]interface{}{"kind": "Pod", "name": "web-1", "namespace": "prod"},
+			"related":   map[string]interface{}{"kind": "ReplicaSet", "name": "web-1-rs", "namespace": "prod"},
+		}
+		if !rewriteNamespaceInObject(obj, "Event", alias) {
+			t.Fatal("want modified=true")
+		}
+		regarding := obj["regarding"].(map[string]interface{})
+		related := obj["related"].(map[string]interface{})
+		if got := regarding["namespace"]; got != "prod-ALIASED" {
+			t.Errorf("regarding.namespace = %v, want prod-ALIASED", got)
+		}
+		if got := related["namespace"]; got != "prod-ALIASED" {
+			t.Errorf("related.namespace = %v, want prod-ALIASED", got)
+		}
+		if got := regarding["name"]; got != "web-1" {
+			t.Errorf("regarding.name = %v, want unchanged web-1", got)
 		}
 	})
 

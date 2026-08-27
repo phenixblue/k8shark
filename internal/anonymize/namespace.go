@@ -22,11 +22,22 @@ import (
 // here in a comment rather than left to be discovered via a failing
 // round-trip test.
 //
-// Event objects carry a second, independent namespace reference:
-// involvedObject.namespace, naming the namespace of whatever the Event is
-// about. That is in addition to the Event's own metadata.namespace (an
-// Event is itself namespaced, so the generic case above already covers
-// that), not instead of it.
+// Event objects carry a second, independent namespace reference, in
+// addition to the Event's own metadata.namespace (an Event is itself
+// namespaced, so the generic case above already covers that) — but which
+// field holds it depends on which Events API produced the record, and a
+// real cluster emits both depending on client/version:
+//
+//   - core/v1 Event: involvedObject.namespace
+//   - events.k8s.io/v1 Event: regarding.namespace, and optionally
+//     related.namespace (an additional secondary reference introduced by
+//     the newer API and absent from core/v1)
+//
+// Both events.k8s.io/v1's "regarding" and "related" are the same
+// ObjectReference shape as core/v1's "involvedObject" — different field
+// *names* on the parent Event, same Namespace field within. All three are
+// checked unconditionally; whichever ones a given record doesn't have are
+// simply absent from the decoded map and the corresponding check is a no-op.
 func rewriteNamespaceInObject(obj map[string]interface{}, kind string, alias func(string) string) bool {
 	meta, _ := obj["metadata"].(map[string]interface{})
 	if meta == nil {
@@ -45,9 +56,13 @@ func rewriteNamespaceInObject(obj map[string]interface{}, kind string, alias fun
 	}
 
 	if kind == "Event" {
-		if involved, ok := obj["involvedObject"].(map[string]interface{}); ok {
-			if ns, ok := involved["namespace"].(string); ok && ns != "" {
-				involved["namespace"] = alias(ns)
+		for _, field := range []string{"involvedObject", "regarding", "related"} {
+			ref, ok := obj[field].(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if ns, ok := ref["namespace"].(string); ok && ns != "" {
+				ref["namespace"] = alias(ns)
 				modified = true
 			}
 		}
