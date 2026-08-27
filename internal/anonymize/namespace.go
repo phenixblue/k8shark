@@ -73,10 +73,11 @@ func rewriteNamespaceInObject(obj map[string]interface{}, kind string, alias fun
 
 // rewriteNamespaceInRecord decodes rec's body, rewrites every namespace
 // occurrence it recognizes using alias, and re-encodes the body if anything
-// changed. seen accumulates every distinct original namespace name
-// encountered — used only for the reported count (Result.NamespacesRenamed),
-// not for the aliasing itself, so its accumulation order has no bearing on
-// determinism.
+// changed. Tracking which distinct original values were seen (for
+// Result.NamespacesRenamed and for collision detection) is alias's own job
+// now — see collisionTracker — not this function's; it used to take a
+// separate seen map for that, which became redundant bookkeeping once the
+// tracker existed to do the same thing more safely.
 //
 // Handles both a single-object response and a List response's items[],
 // mirroring internal/redact/fields.go's ApplyRules list-handling. Records
@@ -87,7 +88,7 @@ func rewriteNamespaceInObject(obj map[string]interface{}, kind string, alias fun
 // for the archive-rewrite path in this milestone: Table rows have no field
 // names, so it needs a different, value-pattern-based approach layered on
 // top of this schema-aware one, not a fix to this function.
-func rewriteNamespaceInRecord(rec *capture.Record, alias func(string) string, seen map[string]bool) (bool, error) {
+func rewriteNamespaceInRecord(rec *capture.Record, alias func(string) string) (bool, error) {
 	var obj map[string]interface{}
 	if err := json.Unmarshal(rec.ResponseBody, &obj); err != nil {
 		return false, nil
@@ -95,11 +96,6 @@ func rewriteNamespaceInRecord(rec *capture.Record, alias func(string) string, se
 
 	kind, _ := obj["kind"].(string)
 	modified := false
-
-	track := func(original string) string {
-		seen[original] = true
-		return alias(original)
-	}
 
 	if strings.HasSuffix(kind, "List") {
 		items, _ := obj["items"].([]interface{})
@@ -113,12 +109,12 @@ func rewriteNamespaceInRecord(rec *capture.Record, alias func(string) string, se
 			if k, ok := item["kind"].(string); ok && k != "" {
 				ik = k
 			}
-			if rewriteNamespaceInObject(item, ik, track) {
+			if rewriteNamespaceInObject(item, ik, alias) {
 				items[i] = item
 				modified = true
 			}
 		}
-	} else if rewriteNamespaceInObject(obj, kind, track) {
+	} else if rewriteNamespaceInObject(obj, kind, alias) {
 		modified = true
 	}
 

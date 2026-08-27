@@ -2,8 +2,10 @@ package anonymize
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -289,6 +291,62 @@ func TestArchive_Deterministic(t *testing.T) {
 	}
 }
 
+// A real, found-not-constructed collision: "ns-66" and "ns-106" both alias to
+// "namespace-green-lynx" under this exact salt (found by brute-force search
+// over the namespace category's real HMAC-based Aliaser — it took only ~106
+// draws, consistent with collision.go's birthday-bound math for a
+// 64x64=4096-combination space). This exercises the real, wired-up
+// collisionTracker end to end through Archive(), not just the tracker in
+// isolation (collision_test.go) with an injected colliding function — a bug
+// in how the tracker is *wired into* the two index loops would not
+// necessarily show up there.
+const (
+	collidingNamespaceA    = "ns-66"
+	collidingNamespaceB    = "ns-106"
+	collidingNamespaceSalt = "fixed-test-salt-for-collision-search"
+)
+
+func TestArchive_DetectsRealNamespaceCollision(t *testing.T) {
+	nsBody := func(name string) string {
+		return fmt.Sprintf(`{"kind":"Namespace","apiVersion":"v1","metadata":{"name":%q}}`, name)
+	}
+	records := []*capture.Record{
+		{ID: "r1", CapturedAt: fixedNow, APIPath: "/api/v1/namespaces/" + collidingNamespaceA, HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(nsBody(collidingNamespaceA))},
+		{ID: "r2", CapturedAt: fixedNow, APIPath: "/api/v1/namespaces/" + collidingNamespaceB, HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(nsBody(collidingNamespaceB))},
+	}
+	src := buildAnonymizeTestArchive(t, records)
+	dst := filepath.Join(t.TempDir(), "out.kshrk")
+
+	_, err := Archive(src, dst, Options{
+		Categories: []Category{CategoryNamespace},
+		Salt:       []byte(collidingNamespaceSalt),
+	})
+	if err == nil {
+		t.Fatal("want a collision error; got none — a real archive with a genuine alias collision was silently accepted")
+	}
+	for _, want := range []string{collidingNamespaceA, collidingNamespaceB} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name the colliding value %q", err.Error(), want)
+		}
+	}
+	if _, statErr := os.Stat(dst); statErr == nil {
+		t.Error("no (corrupt) output file should be left behind on a detected collision")
+	}
+}
+
+func TestArchive_RejectsEmptySalt(t *testing.T) {
+	src := buildAnonymizeTestArchive(t, namespaceFixtureRecords())
+	dst := filepath.Join(t.TempDir(), "out.kshrk")
+
+	_, err := Archive(src, dst, Options{Categories: []Category{CategoryNamespace}, Salt: nil})
+	if err == nil {
+		t.Fatal("want an error for an empty salt")
+	}
+	if _, statErr := os.Stat(dst); statErr == nil {
+		t.Error("no output file should be left behind on a rejected empty salt")
+	}
+}
+
 func TestArchive_UnsupportedCategoryErrors(t *testing.T) {
 	src := buildAnonymizeTestArchive(t, namespaceFixtureRecords())
 	dst := filepath.Join(t.TempDir(), "out.kshrk")
@@ -311,10 +369,15 @@ func TestArchive_NoCategoriesErrors(t *testing.T) {
 	}
 }
 
-// Data with nothing to do with namespaces must survive byte-for-byte —
-// proving the rewrite is surgical, not a side effect of decoding and
-// re-marshaling every record through Go's map-based JSON representation
-// (which does not preserve key order or exact number formatting).
+// Fields that have nothing to do with namespaces (a ConfigMap's own name and
+// data) must survive with their values unchanged — proving the rewrite is
+// surgical, not a side effect of decoding and re-marshaling every record
+// through Go's map-based JSON representation. This checks semantic
+// preservation after decode, not byte-for-byte identity of the record: the
+// record's own api_path field is expected to change (its namespace segment
+// is aliased, same as every other record's), and a decode/re-encode round
+// trip doesn't preserve exact key order or number formatting anyway — this
+// test would not (and should not) catch either of those.
 func TestArchive_PreservesUnrelatedRecordUntouched(t *testing.T) {
 	cmBody := `{"kind":"ConfigMap","apiVersion":"v1","metadata":{"name":"settings","namespace":"prod"},"data":{"key":"value","count":"42"}}`
 	records := append(namespaceFixtureRecords(), &capture.Record{

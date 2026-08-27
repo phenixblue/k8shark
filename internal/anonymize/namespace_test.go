@@ -120,8 +120,7 @@ func TestRewriteNamespaceInRecord(t *testing.T) {
 		rec := &capture.Record{
 			ResponseBody: json.RawMessage(`{"kind":"Namespace","metadata":{"name":"prod"}}`),
 		}
-		seen := map[string]bool{}
-		changed, err := rewriteNamespaceInRecord(rec, alias, seen)
+		changed, err := rewriteNamespaceInRecord(rec, alias)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -136,9 +135,6 @@ func TestRewriteNamespaceInRecord(t *testing.T) {
 		if got := meta["name"]; got != "prod-ALIASED" {
 			t.Errorf("metadata.name = %v, want prod-ALIASED", got)
 		}
-		if !seen["prod"] {
-			t.Error("seen[\"prod\"] should be tracked")
-		}
 	})
 
 	t.Run("list response rewrites every item, using each item's own kind", func(t *testing.T) {
@@ -147,8 +143,7 @@ func TestRewriteNamespaceInRecord(t *testing.T) {
 			{"metadata":{"name":"web-2","namespace":"staging"}}
 		]}`
 		rec := &capture.Record{ResponseBody: json.RawMessage(body)}
-		seen := map[string]bool{}
-		changed, err := rewriteNamespaceInRecord(rec, alias, seen)
+		changed, err := rewriteNamespaceInRecord(rec, alias)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -178,16 +173,13 @@ func TestRewriteNamespaceInRecord(t *testing.T) {
 		if out.Items[0].Metadata.Name != "web-1" || out.Items[1].Metadata.Name != "web-2" {
 			t.Errorf("item names must survive unchanged, got %q and %q", out.Items[0].Metadata.Name, out.Items[1].Metadata.Name)
 		}
-		if !seen["prod"] || !seen["staging"] {
-			t.Errorf("both distinct namespaces should be tracked, got seen=%v", seen)
-		}
 	})
 
 	t.Run("a Table-format body is left untouched, not an error", func(t *testing.T) {
 		body := `{"kind":"Table","apiVersion":"meta.k8s.io/v1","rows":[{"cells":["web-1","Running"]}]}`
 		rec := &capture.Record{ResponseBody: json.RawMessage(body)}
 		orig := string(rec.ResponseBody)
-		changed, err := rewriteNamespaceInRecord(rec, alias, map[string]bool{})
+		changed, err := rewriteNamespaceInRecord(rec, alias)
 		if err != nil {
 			t.Fatalf("Table-format body should not error, got: %v", err)
 		}
@@ -210,7 +202,7 @@ func TestRewriteNamespaceInRecord(t *testing.T) {
 		body := `{"kind":"Node","metadata":{"name":"worker-1"}}`
 		rec := &capture.Record{ResponseBody: json.RawMessage(body)}
 		orig := string(rec.ResponseBody)
-		changed, err := rewriteNamespaceInRecord(rec, alias, map[string]bool{})
+		changed, err := rewriteNamespaceInRecord(rec, alias)
 		if err != nil {
 			t.Fatal(err)
 		}

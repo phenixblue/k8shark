@@ -3,6 +3,7 @@ package anonymize
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 
 	"filippo.io/age"
@@ -90,6 +91,17 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 	if len(opts.Categories) == 0 {
 		return Result{}, fmt.Errorf("anonymize: no categories requested")
 	}
+	if len(opts.Salt) == 0 {
+		// An empty salt still produces deterministic aliases (HMAC accepts
+		// any key, including an empty one) — it just makes them trivially
+		// weak, and an empty Options.Salt is an easy mistake for a caller
+		// that isn't the CLI (which always resolves a non-empty one; see
+		// cmd/anonymize_flags.go) to make by accident, e.g. a test fixture
+		// or a future caller that forgets to wire salt resolution at all.
+		// Rejecting it here keeps the library API safe by default rather
+		// than relying on every caller to remember.
+		return Result{}, fmt.Errorf("anonymize: Options.Salt must not be empty")
+	}
 	doNamespace := false
 	for _, cat := range opts.Categories {
 		if !archiveCategories[cat] {
@@ -128,8 +140,15 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 	}
 
 	aliaser := NewAliaser(opts.Salt)
-	namespaceAlias := func(original string) string { return aliaser.Alias(CategoryNamespace, original) }
-	seenNamespaces := make(map[string]bool)
+	// Wrapped in a collisionTracker rather than called directly: two distinct
+	// original namespace names landing on the same alias is a real
+	// possibility, not a theoretical one (see collision.go's doc comment for
+	// the numbers), and left unchecked it would let the index/watch-index
+	// rebuild below silently clobber one entry with another.
+	namespaceTracker := newCollisionTracker(CategoryNamespace, func(original string) string {
+		return aliaser.Alias(CategoryNamespace, original)
+	})
+	namespaceAlias := namespaceTracker.Alias
 
 	var sw *archive.StreamWriter
 	if len(opts.Recipients) > 0 {
@@ -141,9 +160,24 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 		return Result{}, fmt.Errorf("creating output archive: %w", err)
 	}
 	// Ensure the output writer's file handle is released if we return early
-	// (e.g. a malformed record) before Finish. Abort is a no-op once Finish
-	// has run, so the success path is unaffected.
-	defer func() { _ = sw.Abort() }()
+	// (e.g. a malformed record, or a detected alias collision) before Finish.
+	// Abort is a no-op once Finish has run, so the success path is
+	// unaffected. Abort only closes the file handle, though — it
+	// deliberately does not delete dstPath (matching redact.Archive's
+	// identical pattern), so on any early return this also removes the
+	// partial file. Otherwise a rejected run (e.g. a collision, forcing the
+	// user to pick a different salt and try again) would leave a stale,
+	// misleading file sitting at the requested output path even though
+	// Archive reported failure. Best-effort: the original error already
+	// explains what went wrong, so a removal error here is not surfaced —
+	// this is cleanup, not the primary failure.
+	finished := false
+	defer func() {
+		_ = sw.Abort()
+		if !finished {
+			_ = os.Remove(dstPath)
+		}
+	}()
 
 	newIdx := make(capture.Index, len(idx))
 	newWI := make(capture.WatchIndex, len(wi))
@@ -177,7 +211,7 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 			}
 
 			if doNamespace {
-				if _, err := rewriteNamespaceInRecord(&rec, namespaceAlias, seenNamespaces); err != nil {
+				if _, err := rewriteNamespaceInRecord(&rec, namespaceAlias); err != nil {
 					return nil, fmt.Errorf("anonymizing record %s seq %d: %w", apiPath, seq, err)
 				}
 			}
@@ -217,6 +251,19 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 			if rewritten, ok := rewriteNamespaceInPath(apiPath, namespaceAlias); ok {
 				newAPIPath = rewritten
 			}
+			// Check as soon as a collision could have been produced, rather
+			// than waiting until the whole pass finishes: the specific,
+			// actionable error from the tracker (naming the two colliding
+			// original values) is what a caller should see, not the generic
+			// one below — which exists only as a defensive backstop for a
+			// collision this check somehow didn't catch, and would fire on
+			// this same iteration if we let it run first.
+			if err := namespaceTracker.Err(); err != nil {
+				return Result{}, err
+			}
+		}
+		if existing, ok := newIdx[newAPIPath]; ok {
+			return Result{}, fmt.Errorf("anonymize: internal error: both %q and %q rewrite to output path %q — refusing to silently drop one", existing.APIPath, apiPath, newAPIPath)
 		}
 		newSeqs, err := rewriteEntryRecords(apiPath, newAPIPath, entry.Seqs)
 		if err != nil {
@@ -237,6 +284,12 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 			if rewritten, ok := rewriteNamespaceInPath(apiPath, namespaceAlias); ok {
 				newAPIPath = rewritten
 			}
+			if err := namespaceTracker.Err(); err != nil {
+				return Result{}, err
+			}
+		}
+		if existing, ok := newWI[newAPIPath]; ok {
+			return Result{}, fmt.Errorf("anonymize: internal error: both %q and %q rewrite to output watch-path %q — refusing to silently drop one", existing.APIPath, apiPath, newAPIPath)
 		}
 		newSeqs, err := rewriteEntryRecords(apiPath, newAPIPath, wiEntry.Seqs)
 		if err != nil {
@@ -253,6 +306,7 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 	if err := sw.Finish(&meta, newIdx, newWI); err != nil {
 		return Result{}, fmt.Errorf("finishing output archive: %w", err)
 	}
+	finished = true
 
-	return Result{NamespacesRenamed: len(seenNamespaces)}, nil
+	return Result{NamespacesRenamed: namespaceTracker.Count()}, nil
 }
