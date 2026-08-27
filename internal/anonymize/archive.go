@@ -303,6 +303,15 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 		}
 	}
 
+	// meta was populated by ar.ReadMetadata(), so left untouched its Encrypted
+	// field still describes the *source* archive, not the one actually being
+	// written here. redact.Archive sets this explicitly for the identical
+	// reason (internal/redact/redact.go); anonymize needs the same
+	// correction, or an anonymized-and-now-plaintext copy of an encrypted
+	// source would misreport itself as encrypted, and vice versa for a
+	// plaintext source anonymized straight into an encrypted output.
+	meta.Encrypted = len(opts.Recipients) > 0
+
 	if err := sw.Finish(&meta, newIdx, newWI); err != nil {
 		return Result{}, fmt.Errorf("finishing output archive: %w", err)
 	}

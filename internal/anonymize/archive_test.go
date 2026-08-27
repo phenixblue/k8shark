@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"filippo.io/age"
 	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/capture"
 	"github.com/phenixblue/k8shark/internal/store"
@@ -345,6 +346,137 @@ func TestArchive_RejectsEmptySalt(t *testing.T) {
 	if _, statErr := os.Stat(dst); statErr == nil {
 		t.Error("no output file should be left behind on a rejected empty salt")
 	}
+}
+
+// buildAnonymizeEncryptedTestArchive mirrors buildAnonymizeTestArchive but
+// writes the source as an age-encrypted archive, its own metadata.Encrypted
+// set true (as a real capture/redact/encrypt run would leave it) — needed to
+// exercise the plaintext-source-to-encrypted-output direction, and the
+// reverse, for the meta.Encrypted regression below.
+func buildAnonymizeEncryptedTestArchive(t *testing.T, records []*capture.Record, recipients []age.Recipient) string {
+	t.Helper()
+	dir := t.TempDir()
+
+	idx := capture.Index{}
+	pathSeq := map[string]int{}
+	for _, r := range records {
+		seq := pathSeq[r.APIPath]
+		pathSeq[r.APIPath] = seq + 1
+		e := idx[r.APIPath]
+		if e == nil {
+			e = &capture.IndexEntry{APIPath: r.APIPath}
+			idx[r.APIPath] = e
+		}
+		e.Seqs = append(e.Seqs, seq)
+		e.Times = append(e.Times, r.CapturedAt)
+	}
+
+	meta := &capture.CaptureMetadata{
+		CaptureID:     "anonymize-encrypted-test",
+		CapturedAt:    fixedNow.Add(-time.Minute),
+		CapturedUntil: fixedNow,
+		RecordCount:   len(records),
+		Encrypted:     true,
+	}
+
+	outPath := filepath.Join(dir, "test.kshrk")
+	sw, err := archive.NewEncryptedStreamWriter(outPath, recipients)
+	if err != nil {
+		t.Fatalf("NewEncryptedStreamWriter: %v", err)
+	}
+	defer func() { _ = sw.Abort() }() // no-op after a successful Finish
+	for _, r := range records {
+		if _, err := sw.WriteRecord(r); err != nil {
+			t.Fatalf("WriteRecord: %v", err)
+		}
+	}
+	if err := sw.Finish(meta, idx, nil); err != nil {
+		t.Fatalf("Finish: %v", err)
+	}
+	return outPath
+}
+
+// readOutputMetadataEncrypted opens dst (assumed plaintext) and returns its
+// own metadata.Encrypted value.
+func readOutputMetadataEncrypted(t *testing.T, dst string) bool {
+	t.Helper()
+	ar, err := archive.Open(dst)
+	if err != nil {
+		t.Fatalf("archive.Open(%s): %v", dst, err)
+	}
+	defer ar.Close()
+	meta, err := ar.ReadMetadata()
+	if err != nil {
+		t.Fatalf("ReadMetadata: %v", err)
+	}
+	return meta.Encrypted
+}
+
+// meta is populated straight from the source archive's own metadata
+// (ar.ReadMetadata()), so left untouched it describes the *source*, not the
+// archive actually being written. Both directions of the resulting mismatch
+// are real: a plaintext source anonymized straight into an encrypted output
+// would under-report itself as unencrypted, and — the more concerning
+// direction, checked second — an encrypted source anonymized into a
+// plaintext output (no --encrypt-* flags on the CLI) would over-report
+// itself as still encrypted, which could give a consumer false confidence
+// about a file that is, in fact, sitting on disk in the clear.
+func TestArchive_MetadataEncryptedReflectsOutputNotSource(t *testing.T) {
+	t.Run("plaintext source, encrypted output -> Encrypted true", func(t *testing.T) {
+		id, err := age.GenerateX25519Identity()
+		if err != nil {
+			t.Fatal(err)
+		}
+		src := buildAnonymizeTestArchive(t, namespaceFixtureRecords()) // plaintext, Encrypted: false
+		dst := filepath.Join(t.TempDir(), "out.kshrk")
+
+		_, err = Archive(src, dst, Options{
+			Categories: []Category{CategoryNamespace},
+			Salt:       []byte("salt"),
+			Recipients: []age.Recipient{id.Recipient()},
+		})
+		if err != nil {
+			t.Fatalf("Archive: %v", err)
+		}
+
+		// The output is encrypted, so open it directly rather than through
+		// readOutputMetadataEncrypted (which assumes plaintext).
+		ar, err := archive.OpenWithIdentities(dst, []age.Identity{id})
+		if err != nil {
+			t.Fatalf("OpenWithIdentities: %v", err)
+		}
+		defer ar.Close()
+		meta, err := ar.ReadMetadata()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !meta.Encrypted {
+			t.Error("output metadata.Encrypted = false, want true — the output actually is encrypted")
+		}
+	})
+
+	t.Run("encrypted source, plaintext output -> Encrypted false", func(t *testing.T) {
+		id, err := age.GenerateX25519Identity()
+		if err != nil {
+			t.Fatal(err)
+		}
+		src := buildAnonymizeEncryptedTestArchive(t, namespaceFixtureRecords(), []age.Recipient{id.Recipient()})
+		dst := filepath.Join(t.TempDir(), "out.kshrk")
+
+		_, err = Archive(src, dst, Options{
+			Categories: []Category{CategoryNamespace},
+			Salt:       []byte("salt"),
+			Identities: []age.Identity{id}, // decrypt the source
+			// No Recipients: the output is written plaintext.
+		})
+		if err != nil {
+			t.Fatalf("Archive: %v", err)
+		}
+
+		if got := readOutputMetadataEncrypted(t, dst); got {
+			t.Error("output metadata.Encrypted = true, want false — the output is plaintext, only the source was encrypted")
+		}
+	})
 }
 
 func TestArchive_UnsupportedCategoryErrors(t *testing.T) {
