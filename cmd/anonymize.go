@@ -25,10 +25,13 @@ field path with a fixed constant, everywhere it's configured to look;
 anonymize replaces every occurrence of a value it recognizes, consistently,
 using a deterministic alias derived from a salt.
 
-Only one category is available so far: namespace. More land milestone by
-milestone -- see https://github.com/phenixblue/k8shark/issues/137.`,
+Categories available so far: namespace, node, pod, workload. More land
+milestone by milestone -- see https://github.com/phenixblue/k8shark/issues/137.`,
 	Example: `  # Anonymize every namespace name in a capture
   kshrk anonymize capture.kshrk --categories namespace
+
+  # Anonymize multiple categories in one pass
+  kshrk anonymize capture.kshrk --categories namespace --categories node --categories pod
 
   # Reproduce the exact same aliases on a re-run
   kshrk anonymize capture.kshrk --categories namespace --anonymize-salt-file salt.txt
@@ -43,12 +46,26 @@ milestone -- see https://github.com/phenixblue/k8shark/issues/137.`,
 func init() {
 	rootCmd.AddCommand(anonymizeCmd)
 	anonymizeCmd.Flags().String("out", "", "output archive path (default: <in>-anonymized.kshrk)")
-	anonymizeCmd.Flags().StringArray("categories", nil, `category to anonymize (repeatable); only "namespace" is available so far`)
+	anonymizeCmd.Flags().StringArray("categories", nil, `category to anonymize (repeatable); supported: namespace, node, pod, workload`)
 	_ = anonymizeCmd.MarkFlagFilename("out", captureExt)
 	addAnonymizeFlags(anonymizeCmd)
 	// Write-side encryption for the anonymized output (read-side --decrypt-*
 	// are persistent flags from the root command, same as redact).
 	addEncryptFlags(anonymizeCmd)
+}
+
+// supportedAnonymizeCategories must track internal/anonymize's own
+// archiveCategories (archive.go) — kept as a separate list here (rather
+// than exporting and reusing that one) because this is user-facing
+// validation with its own error message, not the library's internal gate.
+// internal/anonymize/archive_test.go's node/pod/workload integration tests
+// are the real proof that Archive actually supports whatever this list
+// claims; this list just needs to not get ahead of or behind that.
+var supportedAnonymizeCategories = map[anonymize.Category]bool{
+	anonymize.CategoryNamespace: true,
+	anonymize.CategoryNode:      true,
+	anonymize.CategoryPod:       true,
+	anonymize.CategoryWorkload:  true,
 }
 
 // parseAnonymizeCategories validates --categories against what this build's
@@ -58,13 +75,13 @@ func init() {
 // category should fail loudly, not silently anonymize nothing for it.
 func parseAnonymizeCategories(raw []string) ([]anonymize.Category, error) {
 	if len(raw) == 0 {
-		return nil, fmt.Errorf(`--categories is required; only "namespace" is available so far (see #137)`)
+		return nil, fmt.Errorf(`--categories is required; supported categories: namespace, node, pod, workload (see #137)`)
 	}
 	out := make([]anonymize.Category, 0, len(raw))
 	for _, c := range raw {
 		cat := anonymize.Category(strings.ToLower(strings.TrimSpace(c)))
-		if cat != anonymize.CategoryNamespace {
-			return nil, fmt.Errorf(`--categories %q: not yet supported; only "namespace" is available so far (see #137)`, c)
+		if !supportedAnonymizeCategories[cat] {
+			return nil, fmt.Errorf(`--categories %q: not yet supported; supported categories: namespace, node, pod, workload (see #137)`, c)
 		}
 		out = append(out, cat)
 	}
@@ -138,6 +155,7 @@ func runAnonymize(cmd *cobra.Command, args []string) error {
 		size = fi.Size()
 	}
 
-	fmt.Printf("Anonymized %d namespace(s) → %s (%d bytes)\n", result.NamespacesRenamed, out, size)
+	fmt.Printf("Anonymized %d namespace(s), %d node(s), %d pod(s), %d workload(s) → %s (%d bytes)\n",
+		result.NamespacesRenamed, result.NodesRenamed, result.PodsRenamed, result.WorkloadsRenamed, out, size)
 	return nil
 }

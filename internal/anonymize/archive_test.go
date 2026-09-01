@@ -592,3 +592,267 @@ func TestArchive_PreservesUnrelatedRecordUntouched(t *testing.T) {
 		t.Errorf("ConfigMap's own name was modified: %v", obj["metadata"])
 	}
 }
+
+// resourceNameFixtureRecords builds a small but representative set of
+// records covering all three M3 categories at once, plus namespace,
+// mirroring namespaceFixtureRecords' role for M2: a Node (its own identity
+// plus its Hostname address), a Pod living on that node and owned by a
+// ReplicaSet, the ReplicaSet itself, and an Event about the Pod that also
+// names the node it ran on.
+func resourceNameFixtureRecords() []*capture.Record {
+	nodeBody := `{"kind":"Node","apiVersion":"v1","metadata":{"name":"worker-1"},
+		"status":{"addresses":[{"type":"InternalIP","address":"10.0.0.5"},{"type":"Hostname","address":"worker-1"}]}}`
+	podListBody := `{"kind":"PodList","apiVersion":"v1","items":[
+		{"metadata":{"name":"web-1","namespace":"prod","ownerReferences":[{"kind":"ReplicaSet","name":"web-rs"}]},
+		 "spec":{"nodeName":"worker-1","containers":[{"name":"app"}]}}
+	]}`
+	rsBody := `{"kind":"ReplicaSet","apiVersion":"apps/v1","metadata":{"name":"web-rs","namespace":"prod"}}`
+	eventListBody := `{"kind":"EventList","apiVersion":"v1","items":[
+		{"metadata":{"name":"web-1.abc","namespace":"prod"},
+		 "involvedObject":{"kind":"Pod","name":"web-1","namespace":"prod"},
+		 "source":{"component":"kubelet","host":"worker-1"},
+		 "message":"Started container app"}
+	]}`
+	return []*capture.Record{
+		{ID: "r1", CapturedAt: fixedNow, APIPath: "/api/v1/nodes/worker-1", HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(nodeBody)},
+		{ID: "r2", CapturedAt: fixedNow, APIPath: "/api/v1/namespaces/prod/pods", HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(podListBody)},
+		{ID: "r3", CapturedAt: fixedNow, APIPath: "/apis/apps/v1/namespaces/prod/replicasets/web-rs", HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(rsBody)},
+		{ID: "r4", CapturedAt: fixedNow, APIPath: "/api/v1/namespaces/prod/events", HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(eventListBody)},
+	}
+}
+
+// The M3 analogue of TestArchive_NamespaceConsistentAcrossKindsAndPaths: the
+// same real node name, seen on the Node's own identity, a Hostname address,
+// a Pod's spec.nodeName, and an Event's source.host, must come out as the
+// same alias everywhere — and likewise for the pod name (its own identity
+// plus an Event's involvedObject.name) and the workload name (the
+// ReplicaSet's own identity, its APIPath's object-name segment, plus the
+// Pod's ownerReferences[0].name). Runs all four categories in one pass, as
+// the CLI's own --categories example now does.
+func TestArchive_ResourceNamesConsistentAcrossKindsAndPaths(t *testing.T) {
+	src := buildAnonymizeTestArchive(t, resourceNameFixtureRecords())
+	dst := filepath.Join(t.TempDir(), "out.kshrk")
+
+	salt := []byte("resourcename-integration-test-salt")
+	result, err := Archive(src, dst, Options{
+		Categories: []Category{CategoryNamespace, CategoryNode, CategoryPod, CategoryWorkload},
+		Salt:       salt,
+	})
+	if err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+	if result.NamespacesRenamed != 1 || result.NodesRenamed != 1 || result.PodsRenamed != 1 || result.WorkloadsRenamed != 1 {
+		t.Errorf("counts = %+v, want 1 distinct value renamed per category", result)
+	}
+
+	a := NewAliaser(salt)
+	nsAlias := a.Alias(CategoryNamespace, "prod")
+	nodeAlias := a.Alias(CategoryNode, "worker-1")
+	podAlias := a.Alias(CategoryPod, "web-1")
+	workloadAlias := a.Alias(CategoryWorkload, "web-rs")
+
+	ar, err := archive.Open(dst)
+	if err != nil {
+		t.Fatalf("opening output archive: %v", err)
+	}
+	defer ar.Close()
+
+	idx, err := ar.ReadIndex()
+	if err != nil {
+		t.Fatalf("ReadIndex: %v", err)
+	}
+	readBody := func(apiPath string) map[string]interface{} {
+		t.Helper()
+		if _, ok := idx[apiPath]; !ok {
+			t.Fatalf("index has no entry for %q (index keys: %v)", apiPath, indexKeys(idx))
+		}
+		data, err := ar.ReadRecord(apiPath, 0)
+		if err != nil {
+			t.Fatalf("ReadRecord(%q, 0): %v", apiPath, err)
+		}
+		var rec capture.Record
+		if err := json.Unmarshal(data, &rec); err != nil {
+			t.Fatalf("unmarshaling record: %v", err)
+		}
+		var obj map[string]interface{}
+		if err := json.Unmarshal(rec.ResponseBody, &obj); err != nil {
+			t.Fatalf("unmarshaling body: %v", err)
+		}
+		return obj
+	}
+
+	nodeObj := readBody("/api/v1/nodes/" + nodeAlias)
+	if got := nodeObj["metadata"].(map[string]interface{})["name"]; got != nodeAlias {
+		t.Errorf("Node metadata.name = %v, want %v", got, nodeAlias)
+	}
+	addrs := nodeObj["status"].(map[string]interface{})["addresses"].([]interface{})
+	hostAddr := addrs[1].(map[string]interface{})
+	if got := hostAddr["address"]; got != nodeAlias {
+		t.Errorf("Node Hostname address = %v, want %v", got, nodeAlias)
+	}
+
+	podList := readBody("/api/v1/namespaces/" + nsAlias + "/pods")
+	podItem := podList["items"].([]interface{})[0].(map[string]interface{})
+	podMeta := podItem["metadata"].(map[string]interface{})
+	if got := podMeta["name"]; got != podAlias {
+		t.Errorf("Pod metadata.name = %v, want %v", got, podAlias)
+	}
+	if got := podItem["spec"].(map[string]interface{})["nodeName"]; got != nodeAlias {
+		t.Errorf("Pod spec.nodeName = %v, want %v", got, nodeAlias)
+	}
+	ownerRef := podMeta["ownerReferences"].([]interface{})[0].(map[string]interface{})
+	if got := ownerRef["name"]; got != workloadAlias {
+		t.Errorf("Pod ownerReferences[0].name = %v, want %v", got, workloadAlias)
+	}
+
+	rsObj := readBody("/apis/apps/v1/namespaces/" + nsAlias + "/replicasets/" + workloadAlias)
+	if got := rsObj["metadata"].(map[string]interface{})["name"]; got != workloadAlias {
+		t.Errorf("ReplicaSet metadata.name = %v, want %v", got, workloadAlias)
+	}
+
+	eventList := readBody("/api/v1/namespaces/" + nsAlias + "/events")
+	eventItem := eventList["items"].([]interface{})[0].(map[string]interface{})
+	if got := eventItem["involvedObject"].(map[string]interface{})["name"]; got != podAlias {
+		t.Errorf("Event involvedObject.name = %v, want %v", got, podAlias)
+	}
+	if got := eventItem["source"].(map[string]interface{})["host"]; got != nodeAlias {
+		t.Errorf("Event source.host = %v, want %v", got, nodeAlias)
+	}
+}
+
+// Requesting only --categories pod must not also alias node-category fields
+// it happens to recognize (a Pod's spec.nodeName, a Node's own identity) —
+// the enabled-gating unit-tested directly in resourcename_test.go, exercised
+// here end to end through Archive().
+func TestArchive_CategoryGatingRestrictsWhichFieldsChange(t *testing.T) {
+	src := buildAnonymizeTestArchive(t, resourceNameFixtureRecords())
+	dst := filepath.Join(t.TempDir(), "out.kshrk")
+	salt := []byte("gating-test-salt")
+
+	result, err := Archive(src, dst, Options{Categories: []Category{CategoryPod}, Salt: salt})
+	if err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+	if result.NodesRenamed != 0 || result.WorkloadsRenamed != 0 || result.NamespacesRenamed != 0 {
+		t.Errorf("counts = %+v, want only PodsRenamed set", result)
+	}
+
+	ar, err := archive.Open(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ar.Close()
+
+	// The node's own path and identity must be untouched.
+	data, err := ar.ReadRecord("/api/v1/nodes/worker-1", 0)
+	if err != nil {
+		t.Fatalf("ReadRecord(node): %v — the node path should not have been rewritten", err)
+	}
+	var rec capture.Record
+	if err := json.Unmarshal(data, &rec); err != nil {
+		t.Fatal(err)
+	}
+	var nodeObj map[string]interface{}
+	if err := json.Unmarshal(rec.ResponseBody, &nodeObj); err != nil {
+		t.Fatal(err)
+	}
+	if got := nodeObj["metadata"].(map[string]interface{})["name"]; got != "worker-1" {
+		t.Errorf("Node metadata.name = %v, want unchanged worker-1", got)
+	}
+
+	// The Pod's own name is aliased, but its spec.nodeName (a node-category
+	// occurrence) is not.
+	podAlias := NewAliaser(salt).Alias(CategoryPod, "web-1")
+	data, err = ar.ReadRecord("/api/v1/namespaces/prod/pods", 0)
+	if err != nil {
+		t.Fatalf("ReadRecord(pods): %v", err)
+	}
+	if err := json.Unmarshal(data, &rec); err != nil {
+		t.Fatal(err)
+	}
+	var podList map[string]interface{}
+	if err := json.Unmarshal(rec.ResponseBody, &podList); err != nil {
+		t.Fatal(err)
+	}
+	podItem := podList["items"].([]interface{})[0].(map[string]interface{})
+	if got := podItem["metadata"].(map[string]interface{})["name"]; got != podAlias {
+		t.Errorf("Pod metadata.name = %v, want %v", got, podAlias)
+	}
+	if got := podItem["spec"].(map[string]interface{})["nodeName"]; got != "worker-1" {
+		t.Errorf("Pod spec.nodeName = %v, want unchanged worker-1 — node category was not requested", got)
+	}
+}
+
+// A real, found-not-constructed collision for the node category (the same
+// approach as collidingNamespaceA/B, using CategoryNode's own 2-word
+// encoding): "node-95" and "node-130" both alias to "node-noble-gull" under
+// this exact salt. Proves the collisionTracker wiring generalizes to a
+// category beyond namespace, not just that namespace's own wiring works.
+const (
+	collidingNodeA    = "node-95"
+	collidingNodeB    = "node-130"
+	collidingNodeSalt = "fixed-test-salt-for-collision-search"
+)
+
+func TestArchive_DetectsRealNodeCollision(t *testing.T) {
+	nodeBody := func(name string) string {
+		return fmt.Sprintf(`{"kind":"Node","apiVersion":"v1","metadata":{"name":%q}}`, name)
+	}
+	records := []*capture.Record{
+		{ID: "r1", CapturedAt: fixedNow, APIPath: "/api/v1/nodes/" + collidingNodeA, HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(nodeBody(collidingNodeA))},
+		{ID: "r2", CapturedAt: fixedNow, APIPath: "/api/v1/nodes/" + collidingNodeB, HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(nodeBody(collidingNodeB))},
+	}
+	src := buildAnonymizeTestArchive(t, records)
+	dst := filepath.Join(t.TempDir(), "out.kshrk")
+
+	_, err := Archive(src, dst, Options{
+		Categories: []Category{CategoryNode},
+		Salt:       []byte(collidingNodeSalt),
+	})
+	if err == nil {
+		t.Fatal("want a collision error; got none — a real archive with a genuine alias collision was silently accepted")
+	}
+	for _, want := range []string{collidingNodeA, collidingNodeB} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name the colliding value %q", err.Error(), want)
+		}
+	}
+	if _, statErr := os.Stat(dst); statErr == nil {
+		t.Error("no (corrupt) output file should be left behind on a detected collision")
+	}
+}
+
+// The node-category analogue of
+// TestArchive_DetectsCollisionIntroducedOnlyByRecordBody: both colliding
+// names appear only inside a NodeList response's items[].metadata.name, on
+// the archive's only (cluster-scoped, no per-object segment) apiPath —
+// proving the shared firstCollisionErr() checkpoint placement catches a
+// body-only collision for this category too, not just namespace's.
+func TestArchive_DetectsNodeCollisionIntroducedOnlyByRecordBody(t *testing.T) {
+	body := fmt.Sprintf(`{"kind":"NodeList","apiVersion":"v1","items":[
+		{"metadata":{"name":%q}},
+		{"metadata":{"name":%q}}
+	]}`, collidingNodeA, collidingNodeB)
+	rec := &capture.Record{
+		ID: "r1", CapturedAt: fixedNow, APIPath: "/api/v1/nodes",
+		HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(body),
+	}
+	src := buildAnonymizeTestArchive(t, []*capture.Record{rec})
+	dst := filepath.Join(t.TempDir(), "out.kshrk")
+
+	_, err := Archive(src, dst, Options{
+		Categories: []Category{CategoryNode},
+		Salt:       []byte(collidingNodeSalt),
+	})
+	if err == nil {
+		t.Fatal("want a collision error; got none — a collision introduced only by record body content, on the archive's only apiPath, was silently accepted")
+	}
+	for _, want := range []string{collidingNodeA, collidingNodeB} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name the colliding value %q", err.Error(), want)
+		}
+	}
+	if _, statErr := os.Stat(dst); statErr == nil {
+		t.Error("no (corrupt) output file should be left behind on a detected collision")
+	}
+}
