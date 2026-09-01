@@ -134,4 +134,22 @@ func TestDecodeSaltHex(t *testing.T) {
 			t.Error("want an error for a whitespace-only salt")
 		}
 	})
+
+	// The salt is treated as a secret everywhere else in this file (no
+	// inline --anonymize-salt flag, precisely to keep it out of shell
+	// history) — an error that echoes the malformed value right back would
+	// undo that the moment someone pastes the error into a log or a support
+	// ticket. This asserts the invariant directly against a value that would
+	// be very easy to recognize if it leaked, rather than just trusting the
+	// implementation not to interpolate it.
+	t.Run("does not echo the malformed value into the error", func(t *testing.T) {
+		secret := "this-looks-like-a-leaked-secret-not-hex-zzz"
+		_, err := decodeSaltHex(secret)
+		if err == nil {
+			t.Fatal("want an error")
+		}
+		if strings.Contains(err.Error(), secret) {
+			t.Errorf("error %q leaks the malformed input value", err.Error())
+		}
+	})
 }

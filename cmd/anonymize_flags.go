@@ -73,11 +73,24 @@ func resolveAnonymizeSalt(cmd *cobra.Command) ([]byte, error) {
 // silently truncated or got mangled in transit would still "work" (any bytes
 // produce a valid HMAC key), so a decode error is the only signal available
 // that something is wrong, and it must not be swallowed.
+//
+// The error deliberately never echoes s itself — only its length, which is
+// low-sensitivity on its own (unlike the salt's content) but still enough to
+// tell a user "you pasted half of it" from "this isn't hex at all". The
+// salt is treated as a secret everywhere else in this file (no inline
+// --anonymize-salt flag, precisely to keep it out of shell history and
+// process listings); echoing it into an error message would undo that the
+// moment someone pastes the error into a log, a CI run, or a support
+// ticket — arguably an easier way for it to leak than the command-line
+// exposure the missing flag already avoids, since people share error
+// output to ask for help far more readily than they share commands.
+// hex.DecodeString's own error (wrapped via %w) is safe to include as-is:
+// it names at most one invalid byte or "odd length", never the input string.
 func decodeSaltHex(s string) ([]byte, error) {
 	s = strings.TrimSpace(s)
 	salt, err := hex.DecodeString(s)
 	if err != nil {
-		return nil, fmt.Errorf("anonymize salt %q is not valid hex: %w", s, err)
+		return nil, fmt.Errorf("anonymize salt (%d chars) is not valid hex: %w", len(s), err)
 	}
 	if len(salt) == 0 {
 		return nil, fmt.Errorf("anonymize salt is empty")
