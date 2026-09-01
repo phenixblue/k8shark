@@ -33,6 +33,7 @@ environment without direct connectivity.
 
 ### SEE ALSO
 
+* [kshrk anonymize](#kshrk-anonymize)	 - Anonymize identifying values across a capture archive, consistently
 * [kshrk capture](#kshrk-capture)	 - Capture Kubernetes cluster state to a .kshrk archive
 * [kshrk completion](#kshrk-completion)	 - Generate the autocompletion script for the specified shell
 * [kshrk decrypt](#kshrk-decrypt)	 - Decrypt an encrypted capture archive back to plaintext
@@ -48,6 +49,71 @@ environment without direct connectivity.
 * [kshrk ui](#kshrk-ui)	 - Open an interactive web explorer for a capture archive
 * [kshrk validate](#kshrk-validate)	 - Validate a capture config file without connecting to a cluster
 * [kshrk version](#kshrk-version)	 - Print the kshrk version
+
+
+## kshrk anonymize
+
+Anonymize identifying values across a capture archive, consistently
+
+### Synopsis
+
+Produces a new capture archive with values of the given categories replaced
+by stable, deterministic aliases: the same original value maps to the same
+alias everywhere it occurs in the archive, so relationships between objects
+(a Pod's namespace, a Namespace's own identity, an Event's involvedObject)
+stay intact. The original archive is not modified; the output defaults to
+<in>-anonymized.kshrk.
+
+This is a different tool than "kshrk redact": redact replaces one exact
+field path with a fixed constant, everywhere it's configured to look;
+anonymize replaces every occurrence of a value it recognizes, consistently,
+using a deterministic alias derived from a salt.
+
+Only one category is available so far: namespace. More land milestone by
+milestone -- see https://github.com/phenixblue/k8shark/issues/137.
+
+```
+kshrk anonymize <capture.kshrk> --categories <category> [--out <anonymized.kshrk>] [flags]
+```
+
+### Examples
+
+```
+  # Anonymize every namespace name in a capture
+  kshrk anonymize capture.kshrk --categories namespace
+
+  # Reproduce the exact same aliases on a re-run
+  kshrk anonymize capture.kshrk --categories namespace --anonymize-salt-file salt.txt
+
+  # Anonymize and write to a chosen path
+  kshrk anonymize capture.kshrk --out safe.kshrk --categories namespace
+```
+
+### Options
+
+```
+      --anonymize-salt-file string       read the anonymize salt from this file (first line, hex-encoded) instead of $KSHRK_ANONYMIZE_SALT or generating one
+      --categories stringArray           category to anonymize (repeatable); only "namespace" is available so far
+      --encrypt                          encrypt the output archive with a passphrase (age); from --encrypt-passphrase-file, $KSHRK_ENCRYPT_PASSPHRASE, or an interactive prompt
+      --encrypt-passphrase-file string   read the encryption passphrase from this file (first line) instead of prompting
+      --encrypt-recipient stringArray    age recipient public key (age1...) to encrypt to (repeatable); mutually exclusive with passphrase encryption
+      --encrypt-recipients-file string   file of age recipient public keys (one per line) to encrypt to
+  -h, --help                             help for anonymize
+      --out string                       output archive path (default: <in>-anonymized.kshrk)
+```
+
+### Options inherited from parent commands
+
+```
+      --config string                    config file (default: ./config.yaml, then ~/.config/kshrk/config.yaml)
+      --decrypt-identity-file string     age identity (key) file to decrypt an encrypted archive
+      --decrypt-passphrase-file string   read the passphrase for an encrypted archive from this file (first line)
+  -v, --verbose                          enable verbose output
+```
+
+### SEE ALSO
+
+* [kshrk](#kshrk)	 - k8shark — Kubernetes cluster state capture and replay
 
 
 ## kshrk capture
