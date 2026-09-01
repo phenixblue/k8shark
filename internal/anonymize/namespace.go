@@ -80,14 +80,19 @@ func rewriteNamespaceInObject(obj map[string]interface{}, kind string, alias fun
 // tracker existed to do the same thing more safely.
 //
 // Handles both a single-object response and a List response's items[],
-// mirroring internal/redact/fields.go's ApplyRules list-handling. Records
-// that don't decode into a JSON object at all — a meta.k8s.io/v1 Table
-// response's rows[], or a discovery/OpenAPI document — are left untouched,
-// matching internal/redact's existing precedent for the same case. Catching
-// a namespace name inside an opaque Table cell is deliberately out of scope
-// for the archive-rewrite path in this milestone: Table rows have no field
-// names, so it needs a different, value-pattern-based approach layered on
-// top of this schema-aware one, not a fix to this function.
+// mirroring internal/redact/fields.go's ApplyRules list-handling. Two
+// different kinds of record are left untouched, and it's worth keeping them
+// straight: a body that isn't valid JSON at all (rare — a corrupt record)
+// fails the initial Unmarshal and returns immediately; a meta.k8s.io/v1
+// Table response's rows[] or a discovery/OpenAPI document decodes into obj
+// just fine (they're ordinary JSON) but has no metadata/items shaped like a
+// Kubernetes object or list, so nothing below ever matches and modified
+// stays false. Both end up untouched, but for different reasons — this
+// mirrors internal/redact's identical precedent for the same two cases.
+// Catching a namespace name inside an opaque Table cell is deliberately out
+// of scope for the archive-rewrite path in this milestone: Table rows have
+// no field names, so it needs a different, value-pattern-based approach
+// layered on top of this schema-aware one, not a fix to this function.
 func rewriteNamespaceInRecord(rec *capture.Record, alias func(string) string) (bool, error) {
 	var obj map[string]interface{}
 	if err := json.Unmarshal(rec.ResponseBody, &obj); err != nil {
