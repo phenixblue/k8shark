@@ -251,13 +251,12 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 			if rewritten, ok := rewriteNamespaceInPath(apiPath, namespaceAlias); ok {
 				newAPIPath = rewritten
 			}
-			// Check as soon as a collision could have been produced, rather
-			// than waiting until the whole pass finishes: the specific,
+			// Check as soon as a collision could have been produced by the
+			// *path* rewrite above, rather than waiting: the specific,
 			// actionable error from the tracker (naming the two colliding
 			// original values) is what a caller should see, not the generic
-			// one below — which exists only as a defensive backstop for a
-			// collision this check somehow didn't catch, and would fire on
-			// this same iteration if we let it run first.
+			// one below. This alone is not enough, though — see the second
+			// check after rewriteEntryRecords.
 			if err := namespaceTracker.Err(); err != nil {
 				return Result{}, err
 			}
@@ -268,6 +267,21 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 		newSeqs, err := rewriteEntryRecords(apiPath, newAPIPath, entry.Seqs)
 		if err != nil {
 			return Result{}, err
+		}
+		if doNamespace {
+			// A second check, after the records under this path have had
+			// their *bodies* rewritten too. The path-only check above can't
+			// see a collision that's only ever introduced by body content —
+			// e.g. two Namespace objects' metadata.name values colliding
+			// inside a /api/v1/namespaces NamespaceList response, which has
+			// no namespace path segment at all for rewriteNamespaceInPath to
+			// have looked at. Without this, that collision wouldn't be
+			// caught until the *next* loop iteration, and not at all if this
+			// were the last one — Archive would report success despite
+			// having detected a real collision.
+			if err := namespaceTracker.Err(); err != nil {
+				return Result{}, err
+			}
 		}
 		newIdx[newAPIPath] = &capture.IndexEntry{
 			APIPath: newAPIPath,
@@ -295,11 +309,30 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 		if err != nil {
 			return Result{}, err
 		}
+		if doNamespace {
+			if err := namespaceTracker.Err(); err != nil {
+				return Result{}, err
+			}
+		}
 		newWI[newAPIPath] = &capture.WatchIndexEntry{
 			APIPath:    newAPIPath,
 			Seqs:       newSeqs,
 			Times:      wiEntry.Times,
 			EventTypes: wiEntry.EventTypes,
+		}
+	}
+
+	// A final, unconditional check before Finish, independent of exactly
+	// where in the two loops above a collision happened to be introduced.
+	// This is the guarantee that actually matters — "no successful run has a
+	// collision" — and it should not depend on remembering to place a check
+	// after every single site that can call namespaceAlias. The per-iteration
+	// checks above exist so a doomed run fails fast rather than finishing all
+	// the remaining I/O first; this one exists so a gap in those doesn't
+	// matter.
+	if doNamespace {
+		if err := namespaceTracker.Err(); err != nil {
+			return Result{}, err
 		}
 	}
 

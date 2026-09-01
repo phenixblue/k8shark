@@ -335,6 +335,48 @@ func TestArchive_DetectsRealNamespaceCollision(t *testing.T) {
 	}
 }
 
+// The same collision, but introduced purely by record *body* content, with
+// no per-namespace URL segment anywhere for rewriteNamespaceInPath to have
+// already caught it: a single /api/v1/namespaces NamespaceList response
+// listing both colliding names in items[].metadata.name. This is also the
+// only (hence last) apiPath in the archive.
+//
+// This is the specific gap a real review caught: the collision check
+// originally sat only between the *path* rewrite and the *body* rewrite for
+// each entry, so a collision introduced by body content wasn't observed
+// until the next loop iteration — and not at all if, as here, there is no
+// next iteration. Archive() would report success despite having detected a
+// real collision. Confirmed against the code before fixing: reverting to
+// only the path-adjacent check reproduces this exact false success.
+func TestArchive_DetectsCollisionIntroducedOnlyByRecordBody(t *testing.T) {
+	body := fmt.Sprintf(`{"kind":"NamespaceList","apiVersion":"v1","items":[
+		{"metadata":{"name":%q}},
+		{"metadata":{"name":%q}}
+	]}`, collidingNamespaceA, collidingNamespaceB)
+	rec := &capture.Record{
+		ID: "r1", CapturedAt: fixedNow, APIPath: "/api/v1/namespaces",
+		HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(body),
+	}
+	src := buildAnonymizeTestArchive(t, []*capture.Record{rec})
+	dst := filepath.Join(t.TempDir(), "out.kshrk")
+
+	_, err := Archive(src, dst, Options{
+		Categories: []Category{CategoryNamespace},
+		Salt:       []byte(collidingNamespaceSalt),
+	})
+	if err == nil {
+		t.Fatal("want a collision error; got none — a collision introduced only by record body content, on the archive's only apiPath, was silently accepted")
+	}
+	for _, want := range []string{collidingNamespaceA, collidingNamespaceB} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name the colliding value %q", err.Error(), want)
+		}
+	}
+	if _, statErr := os.Stat(dst); statErr == nil {
+		t.Error("no (corrupt) output file should be left behind on a detected collision")
+	}
+}
+
 func TestArchive_RejectsEmptySalt(t *testing.T) {
 	src := buildAnonymizeTestArchive(t, namespaceFixtureRecords())
 	dst := filepath.Join(t.TempDir(), "out.kshrk")
