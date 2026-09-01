@@ -45,6 +45,18 @@ func TestSpliceURLHosts(t *testing.T) {
 			wantOK: true,
 		},
 		{
+			name:   "bracketed IPv6 literal host — brackets are removed, not preserved",
+			s:      "https://[fd00::1]:6443/api",
+			want:   "https://fd00::1-ALIASED:6443/api",
+			wantOK: true,
+		},
+		{
+			name:   "bracketed IPv6 literal, no port",
+			s:      "wss://[2001:db8::5678]/ws",
+			want:   "wss://2001:db8::5678-ALIASED/ws",
+			wantOK: true,
+		},
+		{
 			name:   "no scheme at all — not matched, by design",
 			s:      "webhook-svc.default.svc.cluster.local",
 			want:   "webhook-svc.default.svc.cluster.local",

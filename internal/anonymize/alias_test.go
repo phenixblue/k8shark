@@ -125,7 +125,7 @@ func TestAliaser_CategoriesNeverCollide(t *testing.T) {
 // depend on.
 func TestAliaser_NameAliasesAreDNS1123Safe(t *testing.T) {
 	a := NewAliaser([]byte("name-salt"))
-	for _, cat := range []Category{CategoryNode, CategoryNamespace, CategoryPod, CategoryWorkload} {
+	for _, cat := range []Category{CategoryNode, CategoryNamespace, CategoryPod, CategoryWorkload, CategoryURL} {
 		for i := 0; i < 50; i++ {
 			original := fmt.Sprintf("%s-original-%d", cat, i)
 			alias := a.Alias(cat, original)
@@ -135,6 +135,29 @@ func TestAliaser_NameAliasesAreDNS1123Safe(t *testing.T) {
 			if got := alias[:len(string(cat))]; got != string(cat) {
 				t.Errorf("%s alias %q does not start with the category prefix", cat, alias)
 			}
+		}
+	}
+}
+
+// A CategoryImage alias must itself "look like a registry host" under
+// imagematch.go's own looksLikeRegistryHost heuristic (contains a '.' or
+// ':', or is exactly "localhost") — otherwise substituting it as an image
+// reference's leading segment would silently turn an explicit registry into
+// what Docker's tooling treats as an implicit Docker Hub namespace instead,
+// defeating the very distinction rewriteImageRegistryHost exists to
+// preserve. It must also still be a valid DNS-1123 *subdomain* (multiple
+// dot-separated labels are allowed here, unlike the single-label categories
+// TestAliaser_NameAliasesAreDNS1123Safe checks).
+func TestAliaser_ImageAliasesLookLikeRegistryHosts(t *testing.T) {
+	a := NewAliaser([]byte("image-registry-salt"))
+	for i := 0; i < 50; i++ {
+		original := fmt.Sprintf("registry-%d.example.com", i)
+		alias := a.Alias(CategoryImage, original)
+		if !looksLikeRegistryHost(alias) {
+			t.Errorf("alias %q for input %q does not look like a registry host (no '.' or ':', and isn't \"localhost\")", alias, original)
+		}
+		if errs := validation.IsDNS1123Subdomain(alias); len(errs) > 0 {
+			t.Errorf("alias %q for input %q is not a valid DNS-1123 subdomain: %v", alias, original, errs)
 		}
 	}
 }

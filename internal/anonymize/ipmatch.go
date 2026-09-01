@@ -19,10 +19,20 @@ import (
 // therefore already covers every schema-aware location the design plan
 // calls out (status.podIP, status.podIPs[*].ip, status.hostIP,
 // spec.clusterIP(s), LoadBalancer ingress IPs, Endpoints addresses, Node
-// status.addresses[type=InternalIP|ExternalIP]) *and* stray occurrences in
-// annotations, Event messages, or Table cells, in a single pass — there are
-// two mechanisms in the design plan's own wording, but only one is needed in
-// the implementation.
+// status.addresses[type=InternalIP|ExternalIP]) with no allowlist needed —
+// there are two mechanisms in the design plan's own wording, but only one is
+// needed in the implementation.
+//
+// This is a whole-value match only, not substring splicing: a field whose
+// entire value is exactly an IP literal is caught wherever it occurs
+// (including an annotation or a Table cell that holds nothing else), but an
+// IP embedded inside a longer free-text string — the common shape for a
+// real Event message ("Pulling image ... from 10.1.2.3") — is not, since
+// walkStrings only ever replaces a whole leaf value net.ParseIP accepts as
+// one. Deliberately out of scope, same reasoning as the CIDR gap below:
+// recognizing an IP as a substring of arbitrary text needs its own
+// detector, not just net.ParseIP on the whole string. ipmatch_test.go's
+// stray-occurrence case documents this boundary directly.
 //
 // Out of scope: a CIDR string (e.g. a Node's spec.podCIDR, "10.244.0.0/16")
 // does not parse as a bare IP (net.ParseIP rejects the "/16" suffix), so it

@@ -52,13 +52,15 @@ func NewAliaser(salt []byte) *Aliaser {
 // TestAliaser_ImplementedCategoriesMatchDispatch pins this list against
 // Alias's own switch so the two can't drift apart.
 //
-// CategoryURL and CategoryImage render through the same word-based
-// aliasName as the resource-name categories: a bare "url-word-word" or
-// "image-word-word" is itself a valid single-label hostname, which is all
-// that's needed here — the *splicing* (finding the host/registry substring
-// inside a larger URL or image reference and replacing only that part) is
-// this package's archive-rewrite layer's job (urlmatch.go, imagematch.go),
-// not this primitive's.
+// CategoryURL renders through the same word-based aliasName as the
+// resource-name categories: a bare "url-word-word" is itself a valid
+// single-label hostname, which is all that's needed here. CategoryImage
+// needs one thing more than that — see aliasRegistryHost's own doc comment
+// for why a bare "image-word-word" isn't enough on its own. Either way, the
+// *splicing* (finding the host/registry substring inside a larger URL or
+// image reference and replacing only that part) is this package's
+// archive-rewrite layer's job (urlmatch.go, imagematch.go), not this
+// primitive's.
 var implementedCategories = map[Category]bool{
 	CategoryIP:        true,
 	CategoryURL:       true,
@@ -86,7 +88,9 @@ func (a *Aliaser) Alias(category Category, original string) string {
 	switch category {
 	case CategoryIP:
 		return aliasIP(digest, original)
-	case CategoryNode, CategoryNamespace, CategoryPod, CategoryWorkload, CategoryURL, CategoryImage:
+	case CategoryImage:
+		return aliasRegistryHost(digest)
+	case CategoryNode, CategoryNamespace, CategoryPod, CategoryWorkload, CategoryURL:
 		return aliasName(category, digest)
 	default:
 		// Unreachable: implementedCategories and this switch are kept in

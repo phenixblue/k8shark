@@ -52,20 +52,17 @@ func TestRewriteIPInRecord(t *testing.T) {
 		}
 	})
 
-	// The whole point of the full-tree approach: an IP literal sitting in an
-	// annotation value (not any of the schema-aware field names) is caught
-	// with no special-casing at all.
-	t.Run("stray occurrence in an annotation is caught by the full-tree walk", func(t *testing.T) {
+	// Documents a real, deliberate boundary rather than asserting a
+	// substring-splice behavior IP doesn't implement: the annotation VALUE
+	// as a whole is "reachable at 10.1.2.3 for now", which is not itself a
+	// valid IP, so walkStrings won't touch it — whole-string match only,
+	// not substring splicing inside free text (see rewriteIPInRecord's own
+	// doc comment).
+	t.Run("an IP embedded in free text is NOT caught — whole-value match only", func(t *testing.T) {
 		rec := &capture.Record{
 			ResponseBody: json.RawMessage(`{"kind":"Pod","metadata":{"annotations":{"note":"reachable at 10.1.2.3 for now"}}}`),
 		}
 		orig := string(rec.ResponseBody)
-		// A bare exact-match alias func for this test: the annotation VALUE
-		// as a whole is "reachable at 10.1.2.3 for now", which is not itself
-		// a valid IP, so walkStrings won't touch it (whole-string match
-		// only, not substring splicing — that's the URL category's job, not
-		// IP's). This documents the boundary rather than asserting a
-		// substring-splice behavior IP doesn't implement.
 		changed, err := rewriteIPInRecord(rec, upper)
 		if err != nil {
 			t.Fatal(err)
