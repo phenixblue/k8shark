@@ -62,6 +62,23 @@ func TestRewriteImageRegistryHost(t *testing.T) {
 			want:   "gcr.io-ALIASED/my-project/my-app@sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 			wantOK: true,
 		},
+		// CRI-O's containerStatuses[*].imageID commonly carries a
+		// "docker-pullable://" scheme prefix ahead of the actual reference
+		// — without accounting for it, the first "/" lands inside the
+		// scheme separator's own "://", and "docker-pullable:" (which
+		// contains a ':') would be misidentified as the registry host.
+		{
+			name:   "CRI-prefixed imageID (docker-pullable://)",
+			image:  "docker-pullable://docker.io/library/nginx@sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+			want:   "docker-pullable://docker.io-ALIASED/library/nginx@sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+			wantOK: true,
+		},
+		{
+			name:   "CRI-prefixed imageID, implicit Docker Hub (no explicit registry)",
+			image:  "docker://nginx:alpine",
+			want:   "docker://nginx:alpine",
+			wantOK: false,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

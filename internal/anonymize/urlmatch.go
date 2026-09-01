@@ -9,21 +9,28 @@ import (
 	"github.com/phenixblue/k8shark/internal/capture"
 )
 
-// urlHostPattern matches a URL scheme prefix immediately followed by a
-// host, which is either a bracketed IPv6 literal (RFC 3986 requires the
-// brackets in a URL's host position, e.g. "https://[fd00::1]:6443") or a
-// DNS name: one mandatory label, then zero or more ".<label>" labels — so
-// a bare in-cluster service name ("https://webhook-svc:8443"), a
-// fully-qualified one ("https://webhook-svc.default.svc:8443"), and an
-// IPv6 cluster address all match. The scheme prefix is what makes this safe
-// as a full-tree, unscoped scan: it's the trigger that disambiguates a real
-// host from any other dot- or colon-containing string (a version number,
-// an image tag) which never appears right after "://". Deliberately does
-// not also match a bare hostname with no scheme — that would reintroduce
-// exactly the false-positive risk the scheme prefix exists to avoid; bare
-// hostnames are instead handled at their own known schema-aware field
-// locations (see rewriteURLInObject).
-var urlHostPattern = regexp.MustCompile(`(?i)((?:https?|wss?)://)(\[[0-9a-fA-F:]+\]|[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*)`)
+// urlHostPattern matches a URL scheme prefix, an optional "userinfo@" (RFC
+// 3986's "user[:password]@" form, e.g. "https://user:pass@host/path") which
+// is skipped over rather than captured, and then the actual host: either a
+// bracketed IPv6 literal (RFC 3986 requires the brackets in a URL's host
+// position, e.g. "https://[fd00::1]:6443") or a DNS name — one mandatory
+// label, then zero or more ".<label>" labels. So a bare in-cluster service
+// name ("https://webhook-svc:8443"), a fully-qualified one
+// ("https://webhook-svc.default.svc:8443"), an IPv6 cluster address, and a
+// URL carrying credentials all match, with the captured host group always
+// landing on the real host, not the username. The userinfo group excludes
+// "/" so it can only ever match up to the next "@" *before* the path even
+// starts — a literal "@" that shows up later, inside the path, can't be
+// mistaken for a userinfo separator this way. The scheme prefix is what
+// makes the whole pattern safe as a full-tree, unscoped scan: it's the
+// trigger that disambiguates a real host from any other dot- or
+// colon-containing string (a version number, an image tag) which never
+// appears right after "://". Deliberately does not also match a bare
+// hostname with no scheme — that would reintroduce exactly the
+// false-positive risk the scheme prefix exists to avoid; bare hostnames are
+// instead handled at their own known schema-aware field locations (see
+// rewriteURLInObject).
+var urlHostPattern = regexp.MustCompile(`(?i)((?:https?|wss?)://)(?:[^/@]*@)?(\[[0-9a-fA-F:]+\]|[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*)`)
 
 // spliceURLHosts rewrites every scheme://host occurrence in s, replacing
 // only the host substring with alias(host) — the scheme, any port, path,

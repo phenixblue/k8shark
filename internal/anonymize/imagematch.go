@@ -147,16 +147,34 @@ func rewriteContainerImages(node interface{}, alias func(string) string) bool {
 // The whole leading segment (including ":<port>", if present) is aliased as
 // one atomic value, not split further — a registry's host and port
 // together identify one logical endpoint.
+//
+// image may itself be prefixed with a CRI scheme, not just a bare
+// reference: status.containerStatuses[*].imageID from CRI-O (rather than
+// containerd/dockershim) commonly reads
+// "docker-pullable://docker.io/library/nginx@sha256:...". Splitting on the
+// first "/" without accounting for this would land inside the scheme
+// separator's own "://" — "docker-pullable:" contains a ':' and would be
+// misidentified as the registry host, corrupting the CRI scheme instead of
+// rewriting the real one. Stripping a leading "<scheme>://" first, then
+// applying the same heuristic to what remains, handles both a bare
+// reference (no such prefix — most images, and every spec-side one) and a
+// CRI-prefixed imageID uniformly.
 func rewriteImageRegistryHost(image string, alias func(string) string) (string, bool) {
-	slash := strings.IndexByte(image, '/')
+	prefix := ""
+	rest := image
+	if i := strings.Index(image, "://"); i >= 0 {
+		prefix, rest = image[:i+len("://")], image[i+len("://"):]
+	}
+
+	slash := strings.IndexByte(rest, '/')
 	if slash < 0 {
 		return image, false
 	}
-	first := image[:slash]
+	first := rest[:slash]
 	if !looksLikeRegistryHost(first) {
 		return image, false
 	}
-	return alias(first) + image[slash:], true
+	return prefix + alias(first) + rest[slash:], true
 }
 
 func looksLikeRegistryHost(segment string) bool {

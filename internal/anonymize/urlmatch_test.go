@@ -45,6 +45,18 @@ func TestSpliceURLHosts(t *testing.T) {
 			wantOK: true,
 		},
 		{
+			name:   "URL with userinfo — the host is aliased, not the username",
+			s:      "https://user:pass@host.example.com/path",
+			want:   "https://user:pass@host.example.com-ALIASED/path",
+			wantOK: true,
+		},
+		{
+			name:   "a literal '@' inside the path is not mistaken for userinfo",
+			s:      "https://host.example.com/path@notuserinfo",
+			want:   "https://host.example.com-ALIASED/path@notuserinfo",
+			wantOK: true,
+		},
+		{
 			name:   "bracketed IPv6 literal host — brackets are removed, not preserved",
 			s:      "https://[fd00::1]:6443/api",
 			want:   "https://fd00::1-ALIASED:6443/api",
