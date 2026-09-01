@@ -221,7 +221,7 @@ func rewriteResourceNameInRecord(rec *capture.Record, enabled map[Category]bool,
 //	/api/v1/nodes/<name>                                (cluster-scoped GET)
 //	/api/v1/namespaces/<ns>/pods/<name>                 (namespaced GET)
 //	/apis/apps/v1/namespaces/<ns>/deployments/<name>    (group/version form)
-//	/api/v1/namespaces/<ns>/pods/<name>/log             (subresource, untouched)
+//	/api/v1/namespaces/<ns>/pods/<name>/log             (<name> still rewritten; only "log" is untouched)
 //
 // Returns the path unchanged (ok=false) for a list path (nothing follows
 // the resource-type segment), a resource type this package doesn't
