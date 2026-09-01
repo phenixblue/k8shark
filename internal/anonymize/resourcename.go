@@ -14,11 +14,13 @@ import (
 // object-body side (keyed by Kind) and the APIPath side (keyed by the path's
 // resource-type segment) can't drift apart the way alias.go's
 // implementedCategories/switch pairing already has a test guarding against.
-var resourceKindTable = []struct {
+type resourceKindEntry struct {
 	Kind         string
 	ResourceType string
 	Category     Category
-}{
+}
+
+var resourceKindTable = []resourceKindEntry{
 	{"Node", "nodes", CategoryNode},
 	{"Pod", "pods", CategoryPod},
 	{"Deployment", "deployments", CategoryWorkload},
