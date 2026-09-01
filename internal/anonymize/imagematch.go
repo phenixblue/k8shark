@@ -19,6 +19,22 @@ import (
 var containerListFields = []string{"containers", "initContainers", "ephemeralContainers"}
 var containerStatusFields = []string{"containerStatuses", "initContainerStatuses", "ephemeralContainerStatuses"}
 
+// containerFieldNames is the fixed set of the six field names above, built
+// once rather than as a map literal per rewriteContainerImages call: the
+// set of keys the recursive descent skips re-walking never changes call to
+// call, so there is nothing to gain from reallocating it at every map node
+// visited in the tree.
+var containerFieldNames = func() map[string]bool {
+	m := make(map[string]bool, len(containerListFields)+len(containerStatusFields))
+	for _, f := range containerListFields {
+		m[f] = true
+	}
+	for _, f := range containerStatusFields {
+		m[f] = true
+	}
+	return m
+}()
+
 // rewriteImageRegistryInRecord decodes rec's body and rewrites the leading
 // registry host of every container image reference it finds, wherever a
 // recognizable containers/initContainers/ephemeralContainers (spec-side) or
@@ -57,18 +73,12 @@ func rewriteContainerImages(node interface{}, alias func(string) string) bool {
 	switch v := node.(type) {
 	case map[string]interface{}:
 		modified := false
-		// handled tracks which top-level keys of v were already fully
-		// processed by the explicit container-list logic below, so the
-		// generic recursive descent at the end doesn't redundantly re-walk
-		// them looking for nothing new.
-		handled := make(map[string]bool)
 
 		for _, field := range containerListFields {
 			list, ok := v[field].([]interface{})
 			if !ok {
 				continue
 			}
-			handled[field] = true
 			for _, raw := range list {
 				c, ok := raw.(map[string]interface{})
 				if !ok {
@@ -87,7 +97,6 @@ func rewriteContainerImages(node interface{}, alias func(string) string) bool {
 			if !ok {
 				continue
 			}
-			handled[field] = true
 			for _, raw := range list {
 				c, ok := raw.(map[string]interface{})
 				if !ok {
@@ -108,9 +117,13 @@ func rewriteContainerImages(node interface{}, alias func(string) string) bool {
 		// list at whatever depth a given Kind happens to nest its
 		// PodTemplateSpec (e.g. spec.template.spec for a Deployment,
 		// spec.jobTemplate.spec.template.spec for a CronJob) without this
-		// function needing to know any of those paths by name.
+		// function needing to know any of those paths by name. Skipping
+		// containerFieldNames here, rather than re-descending into them,
+		// avoids redundant work: those six fields were already fully
+		// handled above, whether or not they were actually present as a
+		// []interface{} on this particular v.
 		for k, val := range v {
-			if handled[k] {
+			if containerFieldNames[k] {
 				continue
 			}
 			if rewriteContainerImages(val, alias) {
