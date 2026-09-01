@@ -161,7 +161,7 @@ func runAnonymize(cmd *cobra.Command, args []string) error {
 		size = fi.Size()
 	}
 
-	fmt.Printf("Anonymized %d namespace(s), %d node(s), %d pod(s), %d workload(s), %d IP(s), %d host(s), %d registries → %s (%d bytes)\n",
+	fmt.Printf("Anonymized %d namespace(s), %d node(s), %d pod(s), %d workload(s), %d IP(s), %d host(s), %d registry host(s) → %s (%d bytes)\n",
 		result.NamespacesRenamed, result.NodesRenamed, result.PodsRenamed, result.WorkloadsRenamed,
 		result.IPsRenamed, result.HostsRenamed, result.RegistriesRenamed, out, size)
 	return nil

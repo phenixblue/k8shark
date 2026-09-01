@@ -80,8 +80,13 @@ type Result struct {
 	WorkloadsRenamed  int
 	// IPsRenamed counts distinct IP literals.
 	IPsRenamed int
-	// HostsRenamed counts distinct hostnames — both bare (an Ingress host)
-	// and the host portion spliced out of a scheme://host URL.
+	// HostsRenamed counts distinct URL-category values: bare hostnames (an
+	// Ingress host, a Service externalName) and whatever occupies a
+	// scheme://host URL's host position — which is not always a DNS name.
+	// CaptureMetadata.ServerAddress (e.g. "https://127.0.0.1:6443") goes
+	// through this same category, so an IP literal sitting in a URL's host
+	// position counts here too, not under IPsRenamed — see Archive's own
+	// ServerAddress-rewrite comment for why that's the deliberate choice.
 	HostsRenamed int
 	// RegistriesRenamed counts distinct container-image registry hosts
 	// (the leading host[:port] segment of an image reference).
