@@ -87,7 +87,7 @@ func parseAnonymizeCategories(raw []string) ([]anonymize.Category, error) {
 	for _, c := range raw {
 		cat := anonymize.Category(strings.ToLower(strings.TrimSpace(c)))
 		if !supportedAnonymizeCategories[cat] {
-			return nil, fmt.Errorf(`--categories %q: not yet supported; supported categories: namespace, node, pod, workload, ip, url, image (see #137)`, c)
+			return nil, fmt.Errorf(`--categories %q: unsupported; supported categories: namespace, node, pod, workload, ip, url, image (see #137)`, c)
 		}
 		out = append(out, cat)
 	}

@@ -130,7 +130,7 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 	doImage := false
 	for _, cat := range opts.Categories {
 		if !archiveCategories[cat] {
-			return Result{}, fmt.Errorf("anonymize: category %q is not yet supported for archive rewriting", cat)
+			return Result{}, fmt.Errorf("anonymize: category %q is not supported for archive rewriting", cat)
 		}
 		switch cat {
 		case CategoryNamespace:
