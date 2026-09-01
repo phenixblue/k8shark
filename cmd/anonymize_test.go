@@ -50,31 +50,45 @@ func TestParseAnonymizeCategories(t *testing.T) {
 		}
 	})
 
-	t.Run("multiple supported categories in one call are all accepted", func(t *testing.T) {
-		got, err := parseAnonymizeCategories([]string{"namespace", "node", "pod", "workload"})
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-		if len(got) != 4 {
-			t.Errorf("got %v, want 4 categories", got)
-		}
-	})
-
-	// This is the one that matters most: ip/url/image are real Category
-	// constants that exist in internal/anonymize (later milestones' work),
-	// but the archive-rewrite path doesn't support them yet. Accepting them
-	// here would let a user believe --categories ip did something when it
-	// silently anonymized nothing.
-	t.Run("a category not yet supported by archive rewriting is rejected", func(t *testing.T) {
-		for _, c := range []string{"ip", "url", "image", "bogus"} {
-			if _, err := parseAnonymizeCategories([]string{c}); err == nil {
-				t.Errorf("category %q: want an error, got none", c)
+	t.Run("ip, url, and image are accepted", func(t *testing.T) {
+		for cat, want := range map[string]anonymize.Category{
+			"ip":    anonymize.CategoryIP,
+			"url":   anonymize.CategoryURL,
+			"image": anonymize.CategoryImage,
+		} {
+			got, err := parseAnonymizeCategories([]string{cat})
+			if err != nil {
+				t.Errorf("category %q: unexpected error: %v", cat, err)
+				continue
+			}
+			if len(got) != 1 || got[0] != want {
+				t.Errorf("category %q: got %v, want [%v]", cat, got, want)
 			}
 		}
 	})
 
+	t.Run("multiple supported categories in one call are all accepted", func(t *testing.T) {
+		got, err := parseAnonymizeCategories([]string{"namespace", "node", "pod", "workload", "ip", "url", "image"})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(got) != 7 {
+			t.Errorf("got %v, want 7 categories", got)
+		}
+	})
+
+	// As of M4 (#137), every real Category constant is supported by the
+	// archive-rewrite path — there's no longer a real category name left to
+	// exercise this with. A made-up category string still needs to be
+	// rejected, though.
+	t.Run("a made-up category is rejected", func(t *testing.T) {
+		if _, err := parseAnonymizeCategories([]string{"bogus"}); err == nil {
+			t.Error("want an error for a made-up category")
+		}
+	})
+
 	t.Run("one bad category in a list rejects the whole list", func(t *testing.T) {
-		if _, err := parseAnonymizeCategories([]string{"namespace", "ip"}); err == nil {
+		if _, err := parseAnonymizeCategories([]string{"namespace", "bogus"}); err == nil {
 			t.Error("want an error when any requested category is unsupported")
 		}
 	})

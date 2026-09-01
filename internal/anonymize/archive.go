@@ -25,9 +25,8 @@ func sortedKeys[V any](m map[string]V) []string {
 }
 
 // archiveCategories are the categories Archive currently knows how to find
-// and rewrite occurrences of in a real archive. Namespace, node, pod, and
-// workload names for this milestone; IP/URL/image land next (see #137's
-// milestone plan).
+// and rewrite occurrences of in a real archive — every category #137's
+// design plan calls out is now covered.
 //
 // Deliberately a separate set from Aliaser's own implementedCategories
 // (alias.go): that one is about which categories the aliasing *primitive*
@@ -42,6 +41,9 @@ var archiveCategories = map[Category]bool{
 	CategoryNode:      true,
 	CategoryPod:       true,
 	CategoryWorkload:  true,
+	CategoryIP:        true,
+	CategoryURL:       true,
+	CategoryImage:     true,
 }
 
 // Options controls what Archive() anonymizes.
@@ -76,6 +78,14 @@ type Result struct {
 	NodesRenamed      int
 	PodsRenamed       int
 	WorkloadsRenamed  int
+	// IPsRenamed counts distinct IP literals.
+	IPsRenamed int
+	// HostsRenamed counts distinct hostnames — both bare (an Ingress host)
+	// and the host portion spliced out of a scheme://host URL.
+	HostsRenamed int
+	// RegistriesRenamed counts distinct container-image registry hosts
+	// (the leading host[:port] segment of an image reference).
+	RegistriesRenamed int
 }
 
 // Archive reads srcPath, anonymizes it per opts, and writes to dstPath. The
@@ -110,6 +120,9 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 	doNode := false
 	doPod := false
 	doWorkload := false
+	doIP := false
+	doURL := false
+	doImage := false
 	for _, cat := range opts.Categories {
 		if !archiveCategories[cat] {
 			return Result{}, fmt.Errorf("anonymize: category %q is not yet supported for archive rewriting", cat)
@@ -123,6 +136,12 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 			doPod = true
 		case CategoryWorkload:
 			doWorkload = true
+		case CategoryIP:
+			doIP = true
+		case CategoryURL:
+			doURL = true
+		case CategoryImage:
+			doImage = true
 		}
 	}
 	// enabledResource gates rewriteResourceNameInObject/InPath's field-level
@@ -182,7 +201,19 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 	workloadTracker := newCollisionTracker(CategoryWorkload, func(original string) string {
 		return aliaser.Alias(CategoryWorkload, original)
 	})
+	ipTracker := newCollisionTracker(CategoryIP, func(original string) string {
+		return aliaser.Alias(CategoryIP, original)
+	})
+	urlTracker := newCollisionTracker(CategoryURL, func(original string) string {
+		return aliaser.Alias(CategoryURL, original)
+	})
+	imageTracker := newCollisionTracker(CategoryImage, func(original string) string {
+		return aliaser.Alias(CategoryImage, original)
+	})
 	namespaceAlias := namespaceTracker.Alias
+	ipAlias := ipTracker.Alias
+	urlAlias := urlTracker.Alias
+	imageAlias := imageTracker.Alias
 	// resourceAlias dispatches to the tracker for whichever category a
 	// resourcename.go call site determined a given occurrence belongs to.
 	// Only ever called for a category enabledResource already gated on, so
@@ -203,7 +234,7 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 	// actually enabled — an unused tracker's Err() is always nil, so this
 	// stays correct without needing to be told which categories are active.
 	firstCollisionErr := func() error {
-		for _, t := range []*collisionTracker{namespaceTracker, nodeTracker, podTracker, workloadTracker} {
+		for _, t := range []*collisionTracker{namespaceTracker, nodeTracker, podTracker, workloadTracker, ipTracker, urlTracker, imageTracker} {
 			if err := t.Err(); err != nil {
 				return err
 			}
@@ -278,6 +309,21 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 			}
 			if doResourceName {
 				if _, err := rewriteResourceNameInRecord(&rec, enabledResource, resourceAlias); err != nil {
+					return nil, fmt.Errorf("anonymizing record %s seq %d: %w", apiPath, seq, err)
+				}
+			}
+			if doIP {
+				if _, err := rewriteIPInRecord(&rec, ipAlias); err != nil {
+					return nil, fmt.Errorf("anonymizing record %s seq %d: %w", apiPath, seq, err)
+				}
+			}
+			if doURL {
+				if _, err := rewriteURLInRecord(&rec, urlAlias); err != nil {
+					return nil, fmt.Errorf("anonymizing record %s seq %d: %w", apiPath, seq, err)
+				}
+			}
+			if doImage {
+				if _, err := rewriteImageRegistryInRecord(&rec, imageAlias); err != nil {
 					return nil, fmt.Errorf("anonymizing record %s seq %d: %w", apiPath, seq, err)
 				}
 			}
@@ -425,6 +471,21 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 	// plaintext source anonymized straight into an encrypted output.
 	meta.Encrypted = len(opts.Recipients) > 0
 
+	// CaptureMetadata.ServerAddress lives on the metadata, not inside any
+	// Record body, so it needs its own rewrite here rather than going
+	// through rewriteEntryRecords — but it's the exact same URL shape
+	// (e.g. "https://127.0.0.1:6443") spliceURLHosts already handles, so it
+	// shares urlTracker/urlAlias with every other URL-category occurrence
+	// rather than getting a special-cased alias of its own.
+	if doURL {
+		if rewritten, ok := spliceURLHosts(meta.ServerAddress, urlAlias); ok {
+			meta.ServerAddress = rewritten
+		}
+		if err := firstCollisionErr(); err != nil {
+			return Result{}, err
+		}
+	}
+
 	if err := sw.Finish(&meta, newIdx, newWI); err != nil {
 		return Result{}, fmt.Errorf("finishing output archive: %w", err)
 	}
@@ -435,5 +496,8 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 		NodesRenamed:      nodeTracker.Count(),
 		PodsRenamed:       podTracker.Count(),
 		WorkloadsRenamed:  workloadTracker.Count(),
+		IPsRenamed:        ipTracker.Count(),
+		HostsRenamed:      urlTracker.Count(),
+		RegistriesRenamed: imageTracker.Count(),
 	}, nil
 }

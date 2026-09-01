@@ -38,13 +38,11 @@ const (
 )
 
 // AllCategories is the full set of categories anonymize is designed to
-// eventually support, in a stable order — the target end-state from #137's
-// design, not what's implemented today. Most are not usable yet:
-// (*Aliaser).Alias panics for any category not in its own
-// implementedCategories set (alias.go), which is a strict subset of this
-// list until later milestones add the rest. Don't iterate AllCategories
-// expecting every entry to work; iterate implementedCategories (or call
-// Alias and let it panic loudly) if you need "what works right now."
+// support, in a stable order. Every entry now has a working (*Aliaser).Alias
+// encoder (alias.go's implementedCategories), but that is a lower-level
+// concern than whether Archive() actually knows how to *find* occurrences of
+// a category in a real archive — see archive.go's archiveCategories for
+// that, narrower, gate.
 var AllCategories = []Category{
 	CategoryIP,
 	CategoryURL,

@@ -18,6 +18,8 @@ var wordsPerCategory = map[Category]int{
 	CategoryNamespace: 2,
 	CategoryPod:       3,
 	CategoryWorkload:  3,
+	CategoryURL:       2,
+	CategoryImage:     2,
 }
 
 // defaultWords is used for any category not listed in wordsPerCategory. In

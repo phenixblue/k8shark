@@ -25,13 +25,16 @@ field path with a fixed constant, everywhere it's configured to look;
 anonymize replaces every occurrence of a value it recognizes, consistently,
 using a deterministic alias derived from a salt.
 
-Categories available so far: namespace, node, pod, workload. More land
-milestone by milestone -- see https://github.com/phenixblue/k8shark/issues/137.`,
+Categories available: namespace, node, pod, workload, ip, url, image -- see
+https://github.com/phenixblue/k8shark/issues/137.`,
 	Example: `  # Anonymize every namespace name in a capture
   kshrk anonymize capture.kshrk --categories namespace
 
   # Anonymize multiple categories in one pass
   kshrk anonymize capture.kshrk --categories namespace --categories node --categories pod
+
+  # Anonymize IPs, hostnames, and image registries
+  kshrk anonymize capture.kshrk --categories ip --categories url --categories image
 
   # Reproduce the exact same aliases on a re-run
   kshrk anonymize capture.kshrk --categories namespace --anonymize-salt-file salt.txt
@@ -46,7 +49,7 @@ milestone by milestone -- see https://github.com/phenixblue/k8shark/issues/137.`
 func init() {
 	rootCmd.AddCommand(anonymizeCmd)
 	anonymizeCmd.Flags().String("out", "", "output archive path (default: <in>-anonymized.kshrk)")
-	anonymizeCmd.Flags().StringArray("categories", nil, `category to anonymize (repeatable); supported: namespace, node, pod, workload`)
+	anonymizeCmd.Flags().StringArray("categories", nil, `category to anonymize (repeatable); supported: namespace, node, pod, workload, ip, url, image`)
 	_ = anonymizeCmd.MarkFlagFilename("out", captureExt)
 	addAnonymizeFlags(anonymizeCmd)
 	// Write-side encryption for the anonymized output (read-side --decrypt-*
@@ -66,6 +69,9 @@ var supportedAnonymizeCategories = map[anonymize.Category]bool{
 	anonymize.CategoryNode:      true,
 	anonymize.CategoryPod:       true,
 	anonymize.CategoryWorkload:  true,
+	anonymize.CategoryIP:        true,
+	anonymize.CategoryURL:       true,
+	anonymize.CategoryImage:     true,
 }
 
 // parseAnonymizeCategories validates --categories against what this build's
@@ -75,13 +81,13 @@ var supportedAnonymizeCategories = map[anonymize.Category]bool{
 // category should fail loudly, not silently anonymize nothing for it.
 func parseAnonymizeCategories(raw []string) ([]anonymize.Category, error) {
 	if len(raw) == 0 {
-		return nil, fmt.Errorf(`--categories is required; supported categories: namespace, node, pod, workload (see #137)`)
+		return nil, fmt.Errorf(`--categories is required; supported categories: namespace, node, pod, workload, ip, url, image (see #137)`)
 	}
 	out := make([]anonymize.Category, 0, len(raw))
 	for _, c := range raw {
 		cat := anonymize.Category(strings.ToLower(strings.TrimSpace(c)))
 		if !supportedAnonymizeCategories[cat] {
-			return nil, fmt.Errorf(`--categories %q: not yet supported; supported categories: namespace, node, pod, workload (see #137)`, c)
+			return nil, fmt.Errorf(`--categories %q: not yet supported; supported categories: namespace, node, pod, workload, ip, url, image (see #137)`, c)
 		}
 		out = append(out, cat)
 	}
@@ -155,7 +161,8 @@ func runAnonymize(cmd *cobra.Command, args []string) error {
 		size = fi.Size()
 	}
 
-	fmt.Printf("Anonymized %d namespace(s), %d node(s), %d pod(s), %d workload(s) → %s (%d bytes)\n",
-		result.NamespacesRenamed, result.NodesRenamed, result.PodsRenamed, result.WorkloadsRenamed, out, size)
+	fmt.Printf("Anonymized %d namespace(s), %d node(s), %d pod(s), %d workload(s), %d IP(s), %d host(s), %d registries → %s (%d bytes)\n",
+		result.NamespacesRenamed, result.NodesRenamed, result.PodsRenamed, result.WorkloadsRenamed,
+		result.IPsRenamed, result.HostsRenamed, result.RegistriesRenamed, out, size)
 	return nil
 }

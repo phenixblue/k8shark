@@ -186,14 +186,11 @@ func TestAliaser_IPAliasesAreValidAndPrivate(t *testing.T) {
 	}
 }
 
-// Calling Alias with a category that isn't implemented yet must panic, not
-// silently render something through the wrong encoder. This is the guard
-// that makes CategoryURL/CategoryImage safe to define now (for later
-// milestones to reference) without accidentally locking in an encoding
-// nobody has designed.
+// Calling Alias with a category that isn't implemented at all must panic,
+// not silently render something through the wrong encoder.
 func TestAliaser_PanicsOnUnimplementedCategory(t *testing.T) {
 	a := NewAliaser([]byte("panic-salt"))
-	for _, cat := range []Category{CategoryURL, CategoryImage, Category("bogus")} {
+	for _, cat := range []Category{Category("bogus")} {
 		t.Run(string(cat), func(t *testing.T) {
 			defer func() {
 				if recover() == nil {
