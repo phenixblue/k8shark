@@ -52,6 +52,8 @@ var acceptedSources = map[snapshotAcceptedKey]groupResource{
 	{"pkg/apis/events/v1/conversion.go", "Event"}:                           {"events.k8s.io", "events"},
 	{"pkg/apis/batch/v1/conversion.go", "Job"}:                              {"batch", "jobs"},
 	{"pkg/apis/certificates/v1/conversion.go", "CertificateSigningRequest"}: {"certificates.k8s.io", "certificatesigningrequests"},
+	{"pkg/apis/certificates/v1/conversion.go", "ClusterTrustBundle"}:        {"certificates.k8s.io", "clustertrustbundles"},
+	{"pkg/apis/certificates/v1/conversion.go", "PodCertificateRequest"}:     {"certificates.k8s.io", "podcertificaterequests"},
 }
 
 // snapshotSelectableKey identifies one entry in the snapshot's selectable section.

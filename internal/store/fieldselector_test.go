@@ -70,6 +70,10 @@ func TestParseFieldSelector_RejectsUnsupportedLabel(t *testing.T) {
 		{"", "nodes", "metadata.namespace=default", "field label not supported: metadata.namespace"},
 		{"certificates.k8s.io", "certificatesigningrequests", "metadata.namespace=x",
 			"field label not supported: metadata.namespace"},
+		{"certificates.k8s.io", "clustertrustbundles", "metadata.namespace=x",
+			"field label not supported: metadata.namespace"},
+		{"certificates.k8s.io", "podcertificaterequests", "metadata.namespace=x",
+			"field label not supported: metadata.namespace"},
 		// batch/v1's Job conversion func has its own wording.
 		{"batch", "jobs", "spec.parallelism=2", `field label "spec.parallelism" not supported for Job`},
 		// An unregistered kind (every custom resource, and everything in the
@@ -128,6 +132,10 @@ func TestParseFieldSelector_AcceptsPerKindLabels(t *testing.T) {
 		{"events.k8s.io", "events", "reportingController=kubelet"},
 		{"batch", "jobs", "status.successful=1"},
 		{"certificates.k8s.io", "certificatesigningrequests", "spec.signerName=kubernetes.io/kubelet-serving"},
+		{"certificates.k8s.io", "clustertrustbundles", "spec.signerName=kubernetes.io/kubelet-serving"},
+		{"certificates.k8s.io", "podcertificaterequests", "spec.signerName=kubernetes.io/kubelet-serving"},
+		{"certificates.k8s.io", "podcertificaterequests", "spec.podName=web"},
+		{"certificates.k8s.io", "podcertificaterequests", "spec.nodeName=node-1"},
 		// The metadata keys stay valid for an unregistered kind.
 		{"example.com", "widgets", "metadata.name=w1"},
 		{"example.com", "widgets", "metadata.namespace=default"},

@@ -85,7 +85,7 @@ type selectablePath struct {
 type kindSpec struct {
 	// namespaced mirrors the generic.ObjectMetaFieldsSet(_, namespaced)
 	// argument in the kind's ToSelectableFields. Cluster-scoped kinds (Node,
-	// Namespace, CertificateSigningRequest) neither accept nor select
+	// Namespace, CertificateSigningRequest, ClusterTrustBundle) neither accept nor select
 	// metadata.namespace — `kubectl get nodes --field-selector
 	// metadata.namespace=x` is a 400 upstream, not an empty result.
 	namespaced bool
@@ -263,6 +263,14 @@ var fieldSelectorKinds = map[groupResource]kindSpec{
 		selectable: map[string]selectablePath{
 			"spec.signerName": {path: "spec.signerName"},
 		},
+	},
+	// pkg/apis/certificates/v1/conversion.go
+	{"certificates.k8s.io", "clustertrustbundles"}: {
+		accepted: []string{"spec.signerName"},
+	},
+	// pkg/apis/certificates/v1/conversion.go
+	{"certificates.k8s.io", "podcertificaterequests"}: {
+		accepted: []string{"spec.signerName", "spec.podName", "spec.nodeName"},
 	},
 }
 
