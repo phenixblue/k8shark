@@ -12,6 +12,16 @@
       "CertificateSigningRequest": [
         "metadata.name",
         "spec.signerName"
+      ],
+      "ClusterTrustBundle": [
+        "metadata.name",
+        "spec.signerName"
+      ],
+      "PodCertificateRequest": [
+        "metadata.name",
+        "spec.nodeName",
+        "spec.podName",
+        "spec.signerName"
       ]
     },
     "pkg/apis/core/v1/conversion.go": {
@@ -86,7 +96,7 @@
       ]
     }
   },
-  "kubernetesVersion": "1.36",
+  "kubernetesVersion": "1.37",
   "selectable": {
     "pkg/registry/batch/job/strategy.go": {
       "JobToSelectableFields": [
