@@ -25,22 +25,23 @@ func sortedKeys[V any](m map[string]V) []string {
 }
 
 // archiveCategories are the categories Archive currently knows how to find
-// and rewrite occurrences of in a real archive. Namespace-only for this
-// milestone; node/pod/workload land in the next one, then IP/URL/image
-// (see #137's milestone plan).
+// and rewrite occurrences of in a real archive. Namespace, node, pod, and
+// workload names for this milestone; IP/URL/image land next (see #137's
+// milestone plan).
 //
 // Deliberately a separate set from Aliaser's own implementedCategories
 // (alias.go): that one is about which categories the aliasing *primitive*
-// can render at all — a lower-level, already-broader set from M1 (it
-// already covers node/pod/workload, since Alias's per-category encoders
-// don't depend on knowing where in a record those values live). This one is
-// about which categories this package's archive-rewrite path knows how to
-// *find*. A category can be alias-ready before it's archive-ready; letting
-// Archive silently accept a category it can't actually locate occurrences
-// of would be the same mistake M1's review caught for Alias itself, one
-// layer up.
+// can render at all — a lower-level, already-broader set from M1. This one
+// is about which categories this package's archive-rewrite path knows how
+// to *find*. A category can be alias-ready before it's archive-ready;
+// letting Archive silently accept a category it can't actually locate
+// occurrences of would be the same mistake M1's review caught for Alias
+// itself, one layer up.
 var archiveCategories = map[Category]bool{
 	CategoryNamespace: true,
+	CategoryNode:      true,
+	CategoryPod:       true,
+	CategoryWorkload:  true,
 }
 
 // Options controls what Archive() anonymizes.
@@ -67,11 +68,14 @@ type Options struct {
 }
 
 // Result reports how many distinct values were anonymized, per category.
+// Every count is the number of distinct original values encountered, not
+// the number of records touched — a value that appears on 50 records still
+// counts once.
 type Result struct {
-	// NamespacesRenamed is the count of distinct original namespace names
-	// encountered, not the count of records touched — renaming a namespace
-	// that appears on 50 records still counts once.
 	NamespacesRenamed int
+	NodesRenamed      int
+	PodsRenamed       int
+	WorkloadsRenamed  int
 }
 
 // Archive reads srcPath, anonymizes it per opts, and writes to dstPath. The
@@ -103,14 +107,34 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 		return Result{}, fmt.Errorf("anonymize: Options.Salt must not be empty")
 	}
 	doNamespace := false
+	doNode := false
+	doPod := false
+	doWorkload := false
 	for _, cat := range opts.Categories {
 		if !archiveCategories[cat] {
 			return Result{}, fmt.Errorf("anonymize: category %q is not yet supported for archive rewriting", cat)
 		}
-		if cat == CategoryNamespace {
+		switch cat {
+		case CategoryNamespace:
 			doNamespace = true
+		case CategoryNode:
+			doNode = true
+		case CategoryPod:
+			doPod = true
+		case CategoryWorkload:
+			doWorkload = true
 		}
 	}
+	// enabledResource gates rewriteResourceNameInObject/InPath's field-level
+	// checks: a field belonging to a category not requested this run is left
+	// untouched even where it's recognized, e.g. --categories pod alone must
+	// not also alias a Pod's spec.nodeName.
+	enabledResource := map[Category]bool{
+		CategoryNode:     doNode,
+		CategoryPod:      doPod,
+		CategoryWorkload: doWorkload,
+	}
+	doResourceName := doNode || doPod || doWorkload
 
 	ar, err := archive.OpenWithIdentities(srcPath, opts.Identities)
 	if err != nil {
@@ -140,15 +164,52 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 	}
 
 	aliaser := NewAliaser(opts.Salt)
-	// Wrapped in a collisionTracker rather than called directly: two distinct
-	// original namespace names landing on the same alias is a real
-	// possibility, not a theoretical one (see collision.go's doc comment for
-	// the numbers), and left unchecked it would let the index/watch-index
-	// rebuild below silently clobber one entry with another.
+	// Each category gets its own collisionTracker rather than being called
+	// directly: two distinct original values landing on the same alias is a
+	// real possibility, not a theoretical one (see collision.go's doc
+	// comment for the numbers), and left unchecked it would let the
+	// index/watch-index rebuild below silently clobber one entry with
+	// another.
 	namespaceTracker := newCollisionTracker(CategoryNamespace, func(original string) string {
 		return aliaser.Alias(CategoryNamespace, original)
 	})
+	nodeTracker := newCollisionTracker(CategoryNode, func(original string) string {
+		return aliaser.Alias(CategoryNode, original)
+	})
+	podTracker := newCollisionTracker(CategoryPod, func(original string) string {
+		return aliaser.Alias(CategoryPod, original)
+	})
+	workloadTracker := newCollisionTracker(CategoryWorkload, func(original string) string {
+		return aliaser.Alias(CategoryWorkload, original)
+	})
 	namespaceAlias := namespaceTracker.Alias
+	// resourceAlias dispatches to the tracker for whichever category a
+	// resourcename.go call site determined a given occurrence belongs to.
+	// Only ever called for a category enabledResource already gated on, so
+	// the default case is unreachable in practice, not a real error path.
+	resourceAlias := func(cat Category, original string) string {
+		switch cat {
+		case CategoryNode:
+			return nodeTracker.Alias(original)
+		case CategoryPod:
+			return podTracker.Alias(original)
+		case CategoryWorkload:
+			return workloadTracker.Alias(original)
+		default:
+			panic(fmt.Sprintf("anonymize: internal error: resourceAlias called with unexpected category %q", cat))
+		}
+	}
+	// firstCollisionErr checks every tracker, not just the ones this run
+	// actually enabled — an unused tracker's Err() is always nil, so this
+	// stays correct without needing to be told which categories are active.
+	firstCollisionErr := func() error {
+		for _, t := range []*collisionTracker{namespaceTracker, nodeTracker, podTracker, workloadTracker} {
+			if err := t.Err(); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 
 	var sw *archive.StreamWriter
 	if len(opts.Recipients) > 0 {
@@ -215,6 +276,11 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 					return nil, fmt.Errorf("anonymizing record %s seq %d: %w", apiPath, seq, err)
 				}
 			}
+			if doResourceName {
+				if _, err := rewriteResourceNameInRecord(&rec, enabledResource, resourceAlias); err != nil {
+					return nil, fmt.Errorf("anonymizing record %s seq %d: %w", apiPath, seq, err)
+				}
+			}
 			// Keep the record's own APIPath field in sync with wherever it's
 			// actually being stored, unconditionally — not just when a
 			// rewrite happened to fire. If this ever fell out of sync with
@@ -257,7 +323,19 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 			// original values) is what a caller should see, not the generic
 			// one below. This alone is not enough, though — see the second
 			// check after rewriteEntryRecords.
-			if err := namespaceTracker.Err(); err != nil {
+			if err := firstCollisionErr(); err != nil {
+				return Result{}, err
+			}
+		}
+		if doResourceName {
+			// Chained onto newAPIPath, not the original apiPath: the
+			// namespace segment (if any) has already been rewritten above,
+			// and this must combine with it into one final path, not
+			// separately rewrite the pre-namespace-alias string.
+			if rewritten, ok := rewriteResourceNameInPath(newAPIPath, enabledResource, resourceAlias); ok {
+				newAPIPath = rewritten
+			}
+			if err := firstCollisionErr(); err != nil {
 				return Result{}, err
 			}
 		}
@@ -268,20 +346,18 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 		if err != nil {
 			return Result{}, err
 		}
-		if doNamespace {
-			// A second check, after the records under this path have had
-			// their *bodies* rewritten too. The path-only check above can't
-			// see a collision that's only ever introduced by body content —
-			// e.g. two Namespace objects' metadata.name values colliding
-			// inside a /api/v1/namespaces NamespaceList response, which has
-			// no namespace path segment at all for rewriteNamespaceInPath to
-			// have looked at. Without this, that collision wouldn't be
-			// caught until the *next* loop iteration, and not at all if this
-			// were the last one — Archive would report success despite
-			// having detected a real collision.
-			if err := namespaceTracker.Err(); err != nil {
-				return Result{}, err
-			}
+		// A second check, after the records under this path have had their
+		// *bodies* rewritten too. The path-only checks above can't see a
+		// collision that's only ever introduced by body content — e.g. two
+		// Namespace objects' metadata.name values colliding inside a
+		// /api/v1/namespaces NamespaceList response, which has no namespace
+		// path segment at all for rewriteNamespaceInPath to have looked at.
+		// Without this, that collision wouldn't be caught until the *next*
+		// loop iteration, and not at all if this were the last one —
+		// Archive would report success despite having detected a real
+		// collision.
+		if err := firstCollisionErr(); err != nil {
+			return Result{}, err
 		}
 		newIdx[newAPIPath] = &capture.IndexEntry{
 			APIPath: newAPIPath,
@@ -298,7 +374,15 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 			if rewritten, ok := rewriteNamespaceInPath(apiPath, namespaceAlias); ok {
 				newAPIPath = rewritten
 			}
-			if err := namespaceTracker.Err(); err != nil {
+			if err := firstCollisionErr(); err != nil {
+				return Result{}, err
+			}
+		}
+		if doResourceName {
+			if rewritten, ok := rewriteResourceNameInPath(newAPIPath, enabledResource, resourceAlias); ok {
+				newAPIPath = rewritten
+			}
+			if err := firstCollisionErr(); err != nil {
 				return Result{}, err
 			}
 		}
@@ -309,10 +393,8 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 		if err != nil {
 			return Result{}, err
 		}
-		if doNamespace {
-			if err := namespaceTracker.Err(); err != nil {
-				return Result{}, err
-			}
+		if err := firstCollisionErr(); err != nil {
+			return Result{}, err
 		}
 		newWI[newAPIPath] = &capture.WatchIndexEntry{
 			APIPath:    newAPIPath,
@@ -326,14 +408,12 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 	// where in the two loops above a collision happened to be introduced.
 	// This is the guarantee that actually matters — "no successful run has a
 	// collision" — and it should not depend on remembering to place a check
-	// after every single site that can call namespaceAlias. The per-iteration
-	// checks above exist so a doomed run fails fast rather than finishing all
-	// the remaining I/O first; this one exists so a gap in those doesn't
-	// matter.
-	if doNamespace {
-		if err := namespaceTracker.Err(); err != nil {
-			return Result{}, err
-		}
+	// after every single site that can call an alias function. The
+	// per-iteration checks above exist so a doomed run fails fast rather
+	// than finishing all the remaining I/O first; this one exists so a gap
+	// in those doesn't matter.
+	if err := firstCollisionErr(); err != nil {
+		return Result{}, err
 	}
 
 	// meta was populated by ar.ReadMetadata(), so left untouched its Encrypted
@@ -350,5 +430,10 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 	}
 	finished = true
 
-	return Result{NamespacesRenamed: namespaceTracker.Count()}, nil
+	return Result{
+		NamespacesRenamed: namespaceTracker.Count(),
+		NodesRenamed:      nodeTracker.Count(),
+		PodsRenamed:       podTracker.Count(),
+		WorkloadsRenamed:  workloadTracker.Count(),
+	}, nil
 }
