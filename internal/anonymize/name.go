@@ -2,11 +2,20 @@ package anonymize
 
 // wordsPerCategory is how many words from the adjective/noun lists are
 // chained together for a category's alias. Categories with realistically
-// high cardinality in a real cluster (pods, workloads) get an extra word to
-// keep the combination space large enough that a same-category collision
-// within one archive stays unlikely; node/namespace counts are realistically
-// much smaller, so two words keeps those aliases shorter and easier to read
-// in the common case without a meaningful collision-risk cost.
+// high cardinality in a real cluster (pods, workloads, namespaces) get an
+// extra word to keep the combination space large enough that a
+// same-category collision within one archive stays unlikely; node counts
+// are realistically much smaller, so two words keeps those aliases shorter
+// and easier to read in the common case without a meaningful collision-risk
+// cost.
+//
+// Namespace was bumped from 2 to 3 words after #359: a real 76-namespace
+// OpenShift cluster hit a same-category collision on 8 of the first 10 salt
+// attempts under the 2-word (64x64=4096-combination) encoding, matching
+// collision.go's own birthday-bound math almost exactly. At 3 words (64^3=262,144
+// combinations), the expected collision count at 76 namespaces drops from
+// ~0.7 to ~0.011 — a first-attempt success becomes the overwhelmingly common
+// case instead of a near coin flip.
 //
 // This is a v1 sizing choice, not a correctness guarantee: two different
 // original values can still collide onto the same alias (see Aliaser's doc
@@ -15,7 +24,7 @@ package anonymize
 // cross-record state this package deliberately does not hold).
 var wordsPerCategory = map[Category]int{
 	CategoryNode:      2,
-	CategoryNamespace: 2,
+	CategoryNamespace: 3,
 	CategoryPod:       3,
 	CategoryWorkload:  3,
 	CategoryURL:       2,
