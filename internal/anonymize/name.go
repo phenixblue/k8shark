@@ -18,6 +18,8 @@ var wordsPerCategory = map[Category]int{
 	CategoryNamespace: 2,
 	CategoryPod:       3,
 	CategoryWorkload:  3,
+	CategoryURL:       2,
+	CategoryImage:     2,
 }
 
 // defaultWords is used for any category not listed in wordsPerCategory. In
@@ -60,4 +62,21 @@ func wordAt(i int, b byte) string {
 		return adjectives[int(b)%len(adjectives)]
 	}
 	return nouns[int(b)%len(nouns)]
+}
+
+// aliasRegistryHost renders a CategoryImage alias, guaranteed to itself
+// "look like a registry host" under imagematch.go's own
+// looksLikeRegistryHost heuristic (contains '.' or ':', or is exactly
+// "localhost") — a bare aliasName output like "image-quiet-otter" does not
+// (no dot, no colon), so substituting it as an image reference's leading
+// segment would silently turn what was an explicit registry into what
+// Docker's own tooling treats as an implicit Docker Hub namespace instead,
+// defeating the very distinction rewriteImageRegistryHost exists to
+// preserve — a second anonymize pass over the same archive, or any
+// downstream tool that re-applies the same "is there a registry"
+// heuristic, would misclassify it. The trailing ".internal" is what
+// supplies that dot; the word choice underneath is still the same
+// deterministic digest-derived encoding aliasName always uses.
+func aliasRegistryHost(digest []byte) string {
+	return aliasName(CategoryImage, digest) + ".internal"
 }

@@ -69,8 +69,8 @@ field path with a fixed constant, everywhere it's configured to look;
 anonymize replaces every occurrence of a value it recognizes, consistently,
 using a deterministic alias derived from a salt.
 
-Categories available so far: namespace, node, pod, workload. More land
-milestone by milestone -- see https://github.com/phenixblue/k8shark/issues/137.
+Categories available: namespace, node, pod, workload, ip, url, image -- see
+https://github.com/phenixblue/k8shark/issues/137.
 
 ```
 kshrk anonymize <capture.kshrk> --categories <category> [--out <anonymized.kshrk>] [flags]
@@ -85,6 +85,9 @@ kshrk anonymize <capture.kshrk> --categories <category> [--out <anonymized.kshrk
   # Anonymize multiple categories in one pass
   kshrk anonymize capture.kshrk --categories namespace --categories node --categories pod
 
+  # Anonymize IPs, hostnames, and image registries
+  kshrk anonymize capture.kshrk --categories ip --categories url --categories image
+
   # Reproduce the exact same aliases on a re-run
   kshrk anonymize capture.kshrk --categories namespace --anonymize-salt-file salt.txt
 
@@ -96,7 +99,7 @@ kshrk anonymize <capture.kshrk> --categories <category> [--out <anonymized.kshrk
 
 ```
       --anonymize-salt-file string       read the anonymize salt from this file (first line, hex-encoded) instead of $KSHRK_ANONYMIZE_SALT or generating one
-      --categories stringArray           category to anonymize (repeatable); supported: namespace, node, pod, workload
+      --categories stringArray           category to anonymize (repeatable); supported: namespace, node, pod, workload, ip, url, image
       --encrypt                          encrypt the output archive with a passphrase (age); from --encrypt-passphrase-file, $KSHRK_ENCRYPT_PASSPHRASE, or an interactive prompt
       --encrypt-passphrase-file string   read the encryption passphrase from this file (first line) instead of prompting
       --encrypt-recipient stringArray    age recipient public key (age1...) to encrypt to (repeatable); mutually exclusive with passphrase encryption

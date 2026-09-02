@@ -47,19 +47,24 @@ func NewAliaser(salt []byte) *Aliaser {
 }
 
 // implementedCategories are the categories Alias currently knows how to
-// render. Deliberately explicit and exhaustive rather than "everything
-// except IP falls through to aliasName": CategoryURL and CategoryImage are
-// real constants (used by later milestones' matchers once those exist), but
-// their encoders don't exist yet — URL/hostname aliasing needs substring
-// splicing, and image aliasing needs registry-host-only rewriting, neither
-// of which is word-based name aliasing. Letting them silently render via
-// aliasName today would lock in an accidental encoding nobody decided on,
-// for categories whose real encoding is different milestones' work. Alias
-// panics for anything not listed here so that can't happen unnoticed;
+// render. Alias panics for anything not listed here so an unimplemented
+// category can't render silently through the wrong encoder;
 // TestAliaser_ImplementedCategoriesMatchDispatch pins this list against
 // Alias's own switch so the two can't drift apart.
+//
+// CategoryURL renders through the same word-based aliasName as the
+// resource-name categories: a bare "url-word-word" is itself a valid
+// single-label hostname, which is all that's needed here. CategoryImage
+// needs one thing more than that — see aliasRegistryHost's own doc comment
+// for why a bare "image-word-word" isn't enough on its own. Either way, the
+// *splicing* (finding the host/registry substring inside a larger URL or
+// image reference and replacing only that part) is this package's
+// archive-rewrite layer's job (urlmatch.go, imagematch.go), not this
+// primitive's.
 var implementedCategories = map[Category]bool{
 	CategoryIP:        true,
+	CategoryURL:       true,
+	CategoryImage:     true,
 	CategoryNode:      true,
 	CategoryNamespace: true,
 	CategoryPod:       true,
@@ -83,7 +88,9 @@ func (a *Aliaser) Alias(category Category, original string) string {
 	switch category {
 	case CategoryIP:
 		return aliasIP(digest, original)
-	case CategoryNode, CategoryNamespace, CategoryPod, CategoryWorkload:
+	case CategoryImage:
+		return aliasRegistryHost(digest)
+	case CategoryNode, CategoryNamespace, CategoryPod, CategoryWorkload, CategoryURL:
 		return aliasName(category, digest)
 	default:
 		// Unreachable: implementedCategories and this switch are kept in

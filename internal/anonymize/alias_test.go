@@ -125,7 +125,7 @@ func TestAliaser_CategoriesNeverCollide(t *testing.T) {
 // depend on.
 func TestAliaser_NameAliasesAreDNS1123Safe(t *testing.T) {
 	a := NewAliaser([]byte("name-salt"))
-	for _, cat := range []Category{CategoryNode, CategoryNamespace, CategoryPod, CategoryWorkload} {
+	for _, cat := range []Category{CategoryNode, CategoryNamespace, CategoryPod, CategoryWorkload, CategoryURL} {
 		for i := 0; i < 50; i++ {
 			original := fmt.Sprintf("%s-original-%d", cat, i)
 			alias := a.Alias(cat, original)
@@ -135,6 +135,29 @@ func TestAliaser_NameAliasesAreDNS1123Safe(t *testing.T) {
 			if got := alias[:len(string(cat))]; got != string(cat) {
 				t.Errorf("%s alias %q does not start with the category prefix", cat, alias)
 			}
+		}
+	}
+}
+
+// A CategoryImage alias must itself "look like a registry host" under
+// imagematch.go's own looksLikeRegistryHost heuristic (contains a '.' or
+// ':', or is exactly "localhost") — otherwise substituting it as an image
+// reference's leading segment would silently turn an explicit registry into
+// what Docker's tooling treats as an implicit Docker Hub namespace instead,
+// defeating the very distinction rewriteImageRegistryHost exists to
+// preserve. It must also still be a valid DNS-1123 *subdomain* (multiple
+// dot-separated labels are allowed here, unlike the single-label categories
+// TestAliaser_NameAliasesAreDNS1123Safe checks).
+func TestAliaser_ImageAliasesLookLikeRegistryHosts(t *testing.T) {
+	a := NewAliaser([]byte("image-registry-salt"))
+	for i := 0; i < 50; i++ {
+		original := fmt.Sprintf("registry-%d.example.com", i)
+		alias := a.Alias(CategoryImage, original)
+		if !looksLikeRegistryHost(alias) {
+			t.Errorf("alias %q for input %q does not look like a registry host (no '.' or ':', and isn't \"localhost\")", alias, original)
+		}
+		if errs := validation.IsDNS1123Subdomain(alias); len(errs) > 0 {
+			t.Errorf("alias %q for input %q is not a valid DNS-1123 subdomain: %v", alias, original, errs)
 		}
 	}
 }
@@ -186,14 +209,11 @@ func TestAliaser_IPAliasesAreValidAndPrivate(t *testing.T) {
 	}
 }
 
-// Calling Alias with a category that isn't implemented yet must panic, not
-// silently render something through the wrong encoder. This is the guard
-// that makes CategoryURL/CategoryImage safe to define now (for later
-// milestones to reference) without accidentally locking in an encoding
-// nobody has designed.
+// Calling Alias with a category that isn't implemented at all must panic,
+// not silently render something through the wrong encoder.
 func TestAliaser_PanicsOnUnimplementedCategory(t *testing.T) {
 	a := NewAliaser([]byte("panic-salt"))
-	for _, cat := range []Category{CategoryURL, CategoryImage, Category("bogus")} {
+	for _, cat := range []Category{Category("bogus")} {
 		t.Run(string(cat), func(t *testing.T) {
 			defer func() {
 				if recover() == nil {

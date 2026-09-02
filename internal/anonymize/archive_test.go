@@ -521,13 +521,19 @@ func TestArchive_MetadataEncryptedReflectsOutputNotSource(t *testing.T) {
 	})
 }
 
+// As of M4 (#137), every real Category constant is supported by Archive()'s
+// archiveCategories — there's no longer a real, still-unsupported category
+// to exercise this with (unlike the M2/M3 version of this test, which used
+// CategoryIP before this milestone implemented it). A made-up category
+// string still needs to be rejected, though — this is the same guard,
+// tested against the only kind of value that can still trigger it.
 func TestArchive_UnsupportedCategoryErrors(t *testing.T) {
 	src := buildAnonymizeTestArchive(t, namespaceFixtureRecords())
 	dst := filepath.Join(t.TempDir(), "out.kshrk")
 
-	_, err := Archive(src, dst, Options{Categories: []Category{CategoryIP}, Salt: []byte("s")})
+	_, err := Archive(src, dst, Options{Categories: []Category{Category("bogus")}, Salt: []byte("s")})
 	if err == nil {
-		t.Fatal("want an error for a category not yet supported by archive rewriting")
+		t.Fatal("want an error for a category not supported by archive rewriting")
 	}
 	if _, statErr := os.Stat(dst); statErr == nil {
 		t.Error("no output file should be left behind on a rejected category")
@@ -848,6 +854,215 @@ func TestArchive_DetectsNodeCollisionIntroducedOnlyByRecordBody(t *testing.T) {
 		t.Fatal("want a collision error; got none — a collision introduced only by record body content, on the archive's only apiPath, was silently accepted")
 	}
 	for _, want := range []string{collidingNodeA, collidingNodeB} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name the colliding value %q", err.Error(), want)
+		}
+	}
+	if _, statErr := os.Stat(dst); statErr == nil {
+		t.Error("no (corrupt) output file should be left behind on a detected collision")
+	}
+}
+
+// ipURLImageFixtureRecords covers all three M4 categories at once, plus a
+// deliberate cross-record consistency case: the Node's own InternalIP and
+// the Pod's status.podIP are the same real address, and the Ingress's own
+// bare spec.rules[*].host and its annotation's embedded
+// https://app.example.com/webhook are the same real hostname — one via the
+// schema-aware whole-value path, the other via the full-tree scheme-splice
+// path. Both pairs must come out as the same alias.
+func ipURLImageFixtureRecords() []*capture.Record {
+	nodeBody := `{"kind":"Node","apiVersion":"v1","metadata":{"name":"worker-1"},
+		"status":{"addresses":[{"type":"InternalIP","address":"10.1.2.3"}]}}`
+	podListBody := `{"kind":"PodList","apiVersion":"v1","items":[
+		{"metadata":{"name":"web-1","namespace":"prod"},
+		 "spec":{"containers":[{"name":"app","image":"registry.internal.corp/team/app:v1.2.3"}]},
+		 "status":{"podIP":"10.1.2.3"}}
+	]}`
+	ingressBody := `{"kind":"Ingress","apiVersion":"networking.k8s.io/v1","metadata":{"name":"web","namespace":"prod",
+		"annotations":{"webhook":"https://app.example.com/webhook"}},
+		"spec":{"rules":[{"host":"app.example.com"}]}}`
+	serviceBody := `{"kind":"Service","apiVersion":"v1","metadata":{"name":"db","namespace":"prod"},
+		"spec":{"type":"ExternalName","externalName":"db.upstream.example.com"}}`
+	return []*capture.Record{
+		{ID: "r1", CapturedAt: fixedNow, APIPath: "/api/v1/nodes/worker-1", HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(nodeBody)},
+		{ID: "r2", CapturedAt: fixedNow, APIPath: "/api/v1/namespaces/prod/pods", HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(podListBody)},
+		{ID: "r3", CapturedAt: fixedNow, APIPath: "/apis/networking.k8s.io/v1/namespaces/prod/ingresses/web", HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(ingressBody)},
+		{ID: "r4", CapturedAt: fixedNow, APIPath: "/api/v1/namespaces/prod/services/db", HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(serviceBody)},
+	}
+}
+
+// The M4 analogue of TestArchive_NamespaceConsistentAcrossKindsAndPaths and
+// TestArchive_ResourceNamesConsistentAcrossKindsAndPaths: the same IP
+// appearing on a Node's own address and a Pod's status.podIP, the same
+// hostname appearing bare (Ingress spec.rules[*].host) and spliced out of a
+// URL (an annotation), and the registry host inside a container image, must
+// all come out as their category's consistent alias — and
+// CaptureMetadata.ServerAddress, which lives outside any record body
+// entirely, must be spliced through the same URL alias space.
+func TestArchive_IPURLImageConsistentAcrossKindsAndPaths(t *testing.T) {
+	src := buildAnonymizeTestArchive(t, ipURLImageFixtureRecords())
+	dst := filepath.Join(t.TempDir(), "out.kshrk")
+
+	salt := []byte("ip-url-image-integration-test-salt")
+	result, err := Archive(src, dst, Options{
+		Categories: []Category{CategoryIP, CategoryURL, CategoryImage},
+		Salt:       salt,
+	})
+	if err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+	if result.IPsRenamed != 1 {
+		t.Errorf("IPsRenamed = %d, want 1 (one distinct IP, seen on two records)", result.IPsRenamed)
+	}
+	// app.example.com, db.upstream.example.com, and the ServerAddress host
+	// 127.0.0.1 (see buildAnonymizeTestArchive) — three distinct hosts.
+	if result.HostsRenamed != 3 {
+		t.Errorf("HostsRenamed = %d, want 3", result.HostsRenamed)
+	}
+	if result.RegistriesRenamed != 1 {
+		t.Errorf("RegistriesRenamed = %d, want 1", result.RegistriesRenamed)
+	}
+
+	a := NewAliaser(salt)
+	ipAlias := a.Alias(CategoryIP, "10.1.2.3")
+	hostAlias := a.Alias(CategoryURL, "app.example.com")
+	registryAlias := a.Alias(CategoryImage, "registry.internal.corp")
+	serverAddrHostAlias := a.Alias(CategoryURL, "127.0.0.1")
+
+	ar, err := archive.Open(dst)
+	if err != nil {
+		t.Fatalf("opening output archive: %v", err)
+	}
+	defer ar.Close()
+
+	meta, err := ar.ReadMetadata()
+	if err != nil {
+		t.Fatalf("ReadMetadata: %v", err)
+	}
+	wantServerAddress := "https://" + serverAddrHostAlias + ":6443"
+	if meta.ServerAddress != wantServerAddress {
+		t.Errorf("ServerAddress = %q, want %q", meta.ServerAddress, wantServerAddress)
+	}
+
+	readBody := func(apiPath string) map[string]interface{} {
+		t.Helper()
+		data, err := ar.ReadRecord(apiPath, 0)
+		if err != nil {
+			t.Fatalf("ReadRecord(%q, 0): %v", apiPath, err)
+		}
+		var rec capture.Record
+		if err := json.Unmarshal(data, &rec); err != nil {
+			t.Fatalf("unmarshaling record: %v", err)
+		}
+		var obj map[string]interface{}
+		if err := json.Unmarshal(rec.ResponseBody, &obj); err != nil {
+			t.Fatalf("unmarshaling body: %v", err)
+		}
+		return obj
+	}
+
+	nodeObj := readBody("/api/v1/nodes/worker-1")
+	nodeAddr := nodeObj["status"].(map[string]interface{})["addresses"].([]interface{})[0].(map[string]interface{})
+	if got := nodeAddr["address"]; got != ipAlias {
+		t.Errorf("Node InternalIP = %v, want %v", got, ipAlias)
+	}
+
+	podList := readBody("/api/v1/namespaces/prod/pods")
+	podItem := podList["items"].([]interface{})[0].(map[string]interface{})
+	if got := podItem["status"].(map[string]interface{})["podIP"]; got != ipAlias {
+		t.Errorf("Pod status.podIP = %v, want %v — must match the Node's own address alias", got, ipAlias)
+	}
+	image := podItem["spec"].(map[string]interface{})["containers"].([]interface{})[0].(map[string]interface{})["image"]
+	if got, want := image, registryAlias+"/team/app:v1.2.3"; got != want {
+		t.Errorf("container image = %v, want %v", got, want)
+	}
+
+	ingressObj := readBody("/apis/networking.k8s.io/v1/namespaces/prod/ingresses/web")
+	if got := ingressObj["spec"].(map[string]interface{})["rules"].([]interface{})[0].(map[string]interface{})["host"]; got != hostAlias {
+		t.Errorf("Ingress spec.rules[0].host = %v, want %v", got, hostAlias)
+	}
+	annotation := ingressObj["metadata"].(map[string]interface{})["annotations"].(map[string]interface{})["webhook"]
+	if got, want := annotation, "https://"+hostAlias+"/webhook"; got != want {
+		t.Errorf("Ingress webhook annotation = %v, want %v — the spliced host must match the bare host field's own alias", got, want)
+	}
+}
+
+// Requesting only --categories ip must not also alias URL/image-category
+// occurrences it happens to be structurally adjacent to.
+func TestArchive_IPURLImageCategoryGatingRestrictsWhichFieldsChange(t *testing.T) {
+	src := buildAnonymizeTestArchive(t, ipURLImageFixtureRecords())
+	dst := filepath.Join(t.TempDir(), "out.kshrk")
+	salt := []byte("ip-url-image-gating-test-salt")
+
+	result, err := Archive(src, dst, Options{Categories: []Category{CategoryIP}, Salt: salt})
+	if err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+	if result.HostsRenamed != 0 || result.RegistriesRenamed != 0 {
+		t.Errorf("counts = %+v, want only IPsRenamed set", result)
+	}
+
+	ar, err := archive.Open(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ar.Close()
+
+	meta, err := ar.ReadMetadata()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.ServerAddress != "https://127.0.0.1:6443" {
+		t.Errorf("ServerAddress = %q, want unchanged — URL category was not requested", meta.ServerAddress)
+	}
+
+	data, err := ar.ReadRecord("/apis/networking.k8s.io/v1/namespaces/prod/ingresses/web", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rec capture.Record
+	if err := json.Unmarshal(data, &rec); err != nil {
+		t.Fatal(err)
+	}
+	var ingressObj map[string]interface{}
+	if err := json.Unmarshal(rec.ResponseBody, &ingressObj); err != nil {
+		t.Fatal(err)
+	}
+	if got := ingressObj["spec"].(map[string]interface{})["rules"].([]interface{})[0].(map[string]interface{})["host"]; got != "app.example.com" {
+		t.Errorf("Ingress host = %v, want unchanged app.example.com", got)
+	}
+}
+
+// A real, found-not-constructed collision for the url category (proving the
+// tracker wiring works for the substring-splicing category, not just the
+// whole-value-swap categories already covered): "host-21.example.com" and
+// "host-133.example.com" both alias to "url-clean-lemur" under this exact
+// salt.
+const (
+	collidingURLA    = "host-21.example.com"
+	collidingURLB    = "host-133.example.com"
+	collidingURLSalt = "fixed-test-salt-for-collision-search"
+)
+
+func TestArchive_DetectsRealURLCollision(t *testing.T) {
+	svcBody := func(host string) string {
+		return fmt.Sprintf(`{"kind":"Service","apiVersion":"v1","metadata":{"name":"svc"},"spec":{"type":"ExternalName","externalName":%q}}`, host)
+	}
+	records := []*capture.Record{
+		{ID: "r1", CapturedAt: fixedNow, APIPath: "/api/v1/namespaces/a/services/svc", HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(svcBody(collidingURLA))},
+		{ID: "r2", CapturedAt: fixedNow, APIPath: "/api/v1/namespaces/b/services/svc", HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(svcBody(collidingURLB))},
+	}
+	src := buildAnonymizeTestArchive(t, records)
+	dst := filepath.Join(t.TempDir(), "out.kshrk")
+
+	_, err := Archive(src, dst, Options{
+		Categories: []Category{CategoryURL},
+		Salt:       []byte(collidingURLSalt),
+	})
+	if err == nil {
+		t.Fatal("want a collision error; got none — a real archive with a genuine alias collision was silently accepted")
+	}
+	for _, want := range []string{collidingURLA, collidingURLB} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not name the colliding value %q", err.Error(), want)
 		}
