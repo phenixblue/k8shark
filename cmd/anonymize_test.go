@@ -271,8 +271,29 @@ func TestRunAnonymize_JSONOutput(t *testing.T) {
 	if result.OutputPath == "" {
 		t.Error("output_path is empty")
 	}
-	if strings.Contains(stdout.String(), `"Mapping"`) {
-		t.Error("the mapping must never appear in -o json output, even though Result.Mapping is populated internally")
+
+	// Decode the top-level key set directly, rather than substring-matching
+	// the Go field name "Mapping" — that would miss a regression where a
+	// future retag exposed it under a differently-cased or differently-named
+	// key (e.g. "mapping"). Every legitimate key is checked for presence and
+	// every present key is checked for not looking like the mapping, so
+	// renaming a real field wouldn't silently pass this either.
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(stdout.String()), &raw); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\noutput: %s", err, stdout.String())
+	}
+	for _, k := range []string{
+		"schema_version", "namespaces_renamed", "nodes_renamed", "pods_renamed",
+		"workloads_renamed", "ips_renamed", "hosts_renamed", "registries_renamed", "output_path",
+	} {
+		if _, ok := raw[k]; !ok {
+			t.Errorf("missing expected top-level key %q; got %s", k, stdout.String())
+		}
+	}
+	for k := range raw {
+		if strings.Contains(strings.ToLower(k), "mapping") {
+			t.Errorf("-o json output must never contain the mapping under any key; found key %q: %s", k, stdout.String())
+		}
 	}
 }
 
@@ -374,6 +395,63 @@ func TestRunAnonymize_EmitMappingRequiresEncryptionOrAck(t *testing.T) {
 		}
 		if mapping["namespace"]["prod"] == "" {
 			t.Errorf("mapping[namespace][prod] is empty; mapping = %v", mapping)
+		}
+	})
+}
+
+// --mapping-path colliding with the source or destination archive would
+// have writeAnonymizeMapping's create/truncate silently destroy that
+// archive — this must be rejected before any archive I/O runs at all, not
+// discovered after the anonymize pass already succeeded.
+func TestRunAnonymize_EmitMappingRejectsPathCollisions(t *testing.T) {
+	// Each subtest builds its own source archive, deliberately not shared:
+	// if the guard under test ever regressed, the first subtest would
+	// actually corrupt a shared "in" by writing the mapping over it, and
+	// the second subtest would then "pass" for the wrong reason (Archive
+	// failing to open the now-corrupted source) rather than because its
+	// own guard fired.
+	t.Run("--mapping-path equal to the source archive is rejected", func(t *testing.T) {
+		in := buildDiffArchive(t, `{"kind":"PodList","items":[{"metadata":{"name":"web-1","namespace":"prod"}}]}`)
+		out := filepath.Join(t.TempDir(), "out.kshrk")
+		cmd := newTestAnonymizeCmdCommand(t)
+		cmd.SetOut(io.Discard)
+		_ = cmd.Flags().Set("categories", "namespace")
+		_ = cmd.Flags().Set("out", out)
+		_ = cmd.Flags().Set("emit-mapping", "true")
+		_ = cmd.Flags().Set("emit-mapping-plaintext", "true")
+		_ = cmd.Flags().Set("mapping-path", in)
+		_ = cmd.Flags().Set("anonymize-salt-file", writeAnonymizeTestSaltFile(t))
+
+		if err := runAnonymize(cmd, []string{in}); err == nil {
+			t.Fatal("want an error when --mapping-path equals the source archive")
+		}
+		// And the source archive itself must survive untouched — the whole
+		// point of catching this before any archive I/O.
+		fi, statErr := os.Stat(in)
+		if statErr != nil || fi.Size() == 0 {
+			t.Errorf("source archive %q was damaged (or removed): stat err=%v, size=%v", in, statErr, fi)
+		}
+	})
+
+	t.Run("--mapping-path equal to the output archive is rejected", func(t *testing.T) {
+		in := buildDiffArchive(t, `{"kind":"PodList","items":[{"metadata":{"name":"web-1","namespace":"prod"}}]}`)
+		out := filepath.Join(t.TempDir(), "out.kshrk")
+		cmd := newTestAnonymizeCmdCommand(t)
+		cmd.SetOut(io.Discard)
+		_ = cmd.Flags().Set("categories", "namespace")
+		_ = cmd.Flags().Set("out", out)
+		_ = cmd.Flags().Set("emit-mapping", "true")
+		_ = cmd.Flags().Set("emit-mapping-plaintext", "true")
+		_ = cmd.Flags().Set("mapping-path", out)
+		_ = cmd.Flags().Set("anonymize-salt-file", writeAnonymizeTestSaltFile(t))
+
+		if err := runAnonymize(cmd, []string{in}); err == nil {
+			t.Fatal("want an error when --mapping-path equals the output archive")
+		}
+		// The whole point: caught before Archive() ever runs, so no output
+		// file should exist at all — not a truncated one.
+		if _, statErr := os.Stat(out); statErr == nil {
+			t.Error("output archive should not have been written at all; the collision must be caught before any archive I/O")
 		}
 	})
 }

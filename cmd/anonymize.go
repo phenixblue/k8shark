@@ -215,11 +215,35 @@ func runAnonymize(cmd *cobra.Command, args []string) error {
 
 	// The mapping is the one genuinely sensitive artifact this command can
 	// produce (see anonymize.Result.Mapping's own doc comment) — resolve
-	// and validate its encryption *before* doing any archive I/O, so a
-	// misconfigured --emit-mapping fails fast rather than after a
-	// potentially expensive anonymize pass.
+	// and validate everything about it *before* doing any archive I/O, so
+	// a misconfigured --emit-mapping fails fast rather than after a
+	// potentially expensive anonymize pass, or worse, after silently
+	// truncating an archive (see the path-collision check below).
 	if emitMapping && len(enc.recipients) == 0 && !emitMappingPlaintext {
 		return fmt.Errorf("--emit-mapping would write an unencrypted mapping because no --encrypt-* flag is set; pass --encrypt / --encrypt-recipient (recommended) or --emit-mapping-plaintext to force plaintext output")
+	}
+	if emitMapping {
+		if mappingPath == "" {
+			mappingPath = out + ".mapping.json"
+			if len(enc.recipients) > 0 {
+				mappingPath += ".age"
+			}
+		}
+		// writeAnonymizeMapping creates/truncates mappingPath — an explicit
+		// --mapping-path (or a config file's mappingPath) that happens to
+		// equal the source or destination archive would silently destroy
+		// that archive the moment the mapping is written. The default path
+		// above always differs from out (it appends a suffix), so this can
+		// only fire for an explicit value. rejectSamePath's own error text
+		// ("output path must differ from...") is written for the in/out
+		// pair, so it's deliberately discarded here in favor of a message
+		// that names --mapping-path specifically.
+		if rejectSamePath(in, mappingPath) != nil {
+			return fmt.Errorf("--mapping-path %q must not be the source archive", mappingPath)
+		}
+		if rejectSamePath(out, mappingPath) != nil {
+			return fmt.Errorf("--mapping-path %q must not be the output archive", mappingPath)
+		}
 	}
 
 	result, err := anonymize.Archive(in, out, anonymize.Options{
@@ -240,12 +264,6 @@ func runAnonymize(cmd *cobra.Command, args []string) error {
 	result.OutputPath = out
 
 	if emitMapping {
-		if mappingPath == "" {
-			mappingPath = out + ".mapping.json"
-			if len(enc.recipients) > 0 {
-				mappingPath += ".age"
-			}
-		}
 		if err := writeAnonymizeMapping(mappingPath, result.Mapping, enc.recipients); err != nil {
 			return fmt.Errorf("writing mapping: %w", err)
 		}
