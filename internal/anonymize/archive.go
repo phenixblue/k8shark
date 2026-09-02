@@ -107,8 +107,14 @@ type Result struct {
 	// OutputPath and OutputBytes are populated by the CLI layer (cmd/anonymize.go),
 	// not by Archive itself — Archive doesn't know its own caller's chosen
 	// output path or need to stat the file it just finished writing.
-	OutputPath  string `json:"output_path,omitempty"`
-	OutputBytes int64  `json:"output_bytes,omitempty"`
+	// Deliberately not omitempty: docs/stability-policy.md's -o json
+	// contract requires every command's top-level key set to be identical
+	// on every run, present even when the value is empty/zero — a stray
+	// omitempty here would silently drop output_path/output_bytes from the
+	// rare case where OutputBytes is legitimately 0 (e.g. os.Stat failed)
+	// or a caller marshals a zero-value Result directly.
+	OutputPath  string `json:"output_path"`
+	OutputBytes int64  `json:"output_bytes"`
 	// Mapping is the original-to-alias mapping, keyed by category, for
 	// every category Options.Categories requested — regardless of whether
 	// the caller actually asked to emit it. Deliberately excluded from the

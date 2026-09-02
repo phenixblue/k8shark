@@ -33,9 +33,14 @@ func TestArchive_JSONContract(t *testing.T) {
 	for _, k := range []string{
 		"schema_version", "namespaces_renamed", "nodes_renamed", "pods_renamed",
 		"workloads_renamed", "ips_renamed", "hosts_renamed", "registries_renamed",
+		// output_path/output_bytes are always zero-valued here (Archive()
+		// itself never sets them — see Result's own doc comment) — that's
+		// exactly the case an accidental omitempty would drop, so their
+		// presence here is a real check, not a formality.
+		"output_path", "output_bytes",
 	} {
 		if _, ok := got[k]; !ok {
-			t.Errorf("missing frozen top-level key %q; got %s", k, b)
+			t.Errorf("missing frozen top-level key %q (must be present even when zero-valued); got %s", k, b)
 		}
 	}
 
