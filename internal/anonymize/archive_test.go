@@ -402,18 +402,19 @@ func TestArchive_Deterministic(t *testing.T) {
 	}
 }
 
-// A real, found-not-constructed collision: "ns-66" and "ns-106" both alias to
-// "namespace-green-lynx" under this exact salt (found by brute-force search
-// over the namespace category's real HMAC-based Aliaser — it took only ~106
-// draws, consistent with collision.go's birthday-bound math for a
-// 64x64=4096-combination space). This exercises the real, wired-up
-// collisionTracker end to end through Archive(), not just the tracker in
-// isolation (collision_test.go) with an injected colliding function — a bug
-// in how the tracker is *wired into* the two index loops would not
-// necessarily show up there.
+// A real, found-not-constructed collision: "ns-763" and "ns-880" both alias
+// to "namespace-large-cheetah-coral" under this exact salt (found by
+// brute-force search over the namespace category's real HMAC-based Aliaser —
+// it took ~881 draws, consistent with collision.go's birthday-bound math for
+// the namespace category's 64x64x64=262144-combination, 3-word encoding —
+// see #359, which bumped namespace from 2 to 3 words). This exercises the
+// real, wired-up collisionTracker end to end through Archive(), not just the
+// tracker in isolation (collision_test.go) with an injected colliding
+// function — a bug in how the tracker is *wired into* the two index loops
+// would not necessarily show up there.
 const (
-	collidingNamespaceA    = "ns-66"
-	collidingNamespaceB    = "ns-106"
+	collidingNamespaceA    = "ns-763"
+	collidingNamespaceB    = "ns-880"
 	collidingNamespaceSalt = "fixed-test-salt-for-collision-search"
 )
 
