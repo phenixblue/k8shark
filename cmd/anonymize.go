@@ -32,7 +32,15 @@ Categories available: namespace, node, pod, workload, ip, url, image -- see
 https://github.com/phenixblue/k8shark/issues/137.
 
 Categories and field-path exclusion rules may also be loaded from a config
-file's anonymize block via --config; see docs/config.md.`,
+file's anonymize block via --config; see docs/config.md.
+
+By default, a value is only anonymized at the field paths each category
+already knows to look at. --full-sweep additionally replaces any substring
+occurrence of a discovered namespace/node/pod/workload/ip/url value anywhere
+else in a record's text (an Event message, an escaped-JSON-string
+annotation, an unrecognized CRD's field) -- slower, and opt-in, since
+matching a short or common value as a substring carries a real
+false-positive risk. See https://github.com/phenixblue/k8shark/issues/361.`,
 	Example: `  # Anonymize every namespace name in a capture
   kshrk anonymize capture.kshrk --categories namespace
 
@@ -52,7 +60,10 @@ file's anonymize block via --config; see docs/config.md.`,
   kshrk anonymize capture.kshrk --categories namespace --emit-mapping --encrypt-recipient age1abc...
 
   # Anonymize and write to a chosen path
-  kshrk anonymize capture.kshrk --out safe.kshrk --categories namespace`,
+  kshrk anonymize capture.kshrk --out safe.kshrk --categories namespace
+
+  # Also catch occurrences outside known field paths (slower, opt-in)
+  kshrk anonymize capture.kshrk --categories namespace --categories ip --full-sweep`,
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeArchiveArg,
 	RunE:              runAnonymize,
@@ -67,6 +78,7 @@ func init() {
 	anonymizeCmd.Flags().Bool("emit-mapping", false, "write the original-to-alias mapping alongside the output archive")
 	anonymizeCmd.Flags().String("mapping-path", "", "path for the mapping file (default: <out>.mapping.json, or .mapping.json.age when encrypted)")
 	anonymizeCmd.Flags().Bool("emit-mapping-plaintext", false, "allow --emit-mapping to write an unencrypted mapping when no --encrypt-* flag is set (not recommended)")
+	anonymizeCmd.Flags().Bool("full-sweep", false, "also replace any substring occurrence of a discovered namespace/node/pod/workload/ip/url value anywhere in a record's text, not just at known field paths (slower, opt-in; see #361)")
 	_ = anonymizeCmd.MarkFlagFilename("out", captureExt)
 	_ = anonymizeCmd.MarkFlagFilename("config", configExts...)
 	_ = anonymizeCmd.RegisterFlagCompletionFunc("output",
@@ -94,6 +106,19 @@ var supportedAnonymizeCategories = map[anonymize.Category]bool{
 	anonymize.CategoryIP:        true,
 	anonymize.CategoryURL:       true,
 	anonymize.CategoryImage:     true,
+}
+
+// sweepEligibleCategories are the categories --full-sweep actually extends
+// recall for (internal/anonymize/sweep.go's buildSweepCandidates). Image is
+// deliberately absent — see that file's own package doc for why a registry
+// host alias isn't swept for free-standing occurrences.
+var sweepEligibleCategories = map[anonymize.Category]bool{
+	anonymize.CategoryNamespace: true,
+	anonymize.CategoryNode:      true,
+	anonymize.CategoryPod:       true,
+	anonymize.CategoryWorkload:  true,
+	anonymize.CategoryIP:        true,
+	anonymize.CategoryURL:       true,
 }
 
 // parseAnonymizeCategories validates --categories against what this build's
@@ -144,6 +169,7 @@ func runAnonymize(cmd *cobra.Command, args []string) error {
 	emitMapping, _ := cmd.Flags().GetBool("emit-mapping")
 	mappingPath, _ := cmd.Flags().GetString("mapping-path")
 	emitMappingPlaintext, _ := cmd.Flags().GetBool("emit-mapping-plaintext")
+	fullSweep, _ := cmd.Flags().GetBool("full-sweep")
 
 	if outputFormat != "text" && outputFormat != "json" {
 		return fmt.Errorf("--output must be text or json (got %q)", outputFormat)
@@ -164,6 +190,9 @@ func runAnonymize(cmd *cobra.Command, args []string) error {
 		if mappingPath == "" {
 			mappingPath = cfg.Anonymize.MappingPath
 		}
+		if cfg.Anonymize.FullSweep {
+			fullSweep = true
+		}
 	}
 
 	categories, err := parseAnonymizeCategories(categoryFlags)
@@ -171,6 +200,20 @@ func runAnonymize(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	categories = dedupeCategories(categories)
+
+	if fullSweep {
+		eligible := false
+		for _, c := range categories {
+			if sweepEligibleCategories[c] {
+				eligible = true
+				break
+			}
+		}
+		if !eligible {
+			fmt.Fprintf(cmd.ErrOrStderr(),
+				"warning: --full-sweep has no effect: none of the requested categories (%v) are sweep-eligible (namespace, node, pod, workload, ip, url)\n", categories)
+		}
+	}
 
 	if out == "" {
 		// Trim either the current or the legacy extension so anonymizing a
@@ -252,6 +295,7 @@ func runAnonymize(cmd *cobra.Command, args []string) error {
 		Identities: identities,
 		Recipients: enc.recipients,
 		Rules:      rules,
+		FullSweep:  fullSweep,
 	})
 	if err != nil {
 		return err
@@ -278,6 +322,10 @@ func runAnonymize(cmd *cobra.Command, args []string) error {
 	fmt.Fprintf(cmd.OutOrStdout(), "Anonymized %d namespace(s), %d node(s), %d pod(s), %d workload(s), %d IP(s), %d host(s), %d registry host(s) → %s (%d bytes)\n",
 		result.NamespacesRenamed, result.NodesRenamed, result.PodsRenamed, result.WorkloadsRenamed,
 		result.IPsRenamed, result.HostsRenamed, result.RegistriesRenamed, out, result.OutputBytes)
+	if fullSweep {
+		fmt.Fprintf(cmd.OutOrStdout(), "Full sweep found %d additional occurrence(s); skipped %d ambiguous value(s)\n",
+			result.SweepOccurrencesFound, result.SweepAmbiguousSkipped)
+	}
 	if emitMapping {
 		fmt.Fprintf(cmd.OutOrStdout(), "Mapping written to %s\n", mappingPath)
 	}
