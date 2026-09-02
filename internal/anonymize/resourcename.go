@@ -62,11 +62,11 @@ var resourceTypeCategories = func() map[string]Category {
 // generic pattern for "this token is a Kubernetes name" the way there is
 // for an IP literal, so recall would need a candidate set built from these
 // same structured fields first (see #137's plan, Open Question 5).
-func rewriteResourceNameInObject(obj map[string]interface{}, kind string, enabled map[Category]bool, alias func(Category, string) string) bool {
+func rewriteResourceNameInObject(obj map[string]interface{}, kind string, enabled map[Category]bool, excluded excludedFunc, alias func(Category, string) string) bool {
 	modified := false
 
 	if meta, ok := obj["metadata"].(map[string]interface{}); ok {
-		if cat, ok := kindCategories[kind]; ok && enabled[cat] {
+		if cat, ok := kindCategories[kind]; ok && enabled[cat] && !excluded(cat, kind, "metadata.name") {
 			if name, ok := meta["name"].(string); ok && name != "" {
 				meta["name"] = alias(cat, name)
 				modified = true
@@ -84,7 +84,7 @@ func rewriteResourceNameInObject(obj map[string]interface{}, kind string, enable
 				}
 				ownerKind, _ := ref["kind"].(string)
 				cat, ok := kindCategories[ownerKind]
-				if !ok || !enabled[cat] {
+				if !ok || !enabled[cat] || excluded(cat, kind, "metadata.ownerReferences[*].name") {
 					continue
 				}
 				if name, ok := ref["name"].(string); ok && name != "" {
@@ -95,7 +95,7 @@ func rewriteResourceNameInObject(obj map[string]interface{}, kind string, enable
 		}
 	}
 
-	if kind == "Pod" && enabled[CategoryNode] {
+	if kind == "Pod" && enabled[CategoryNode] && !excluded(CategoryNode, kind, "spec.nodeName") {
 		if spec, ok := obj["spec"].(map[string]interface{}); ok {
 			if nodeName, ok := spec["nodeName"].(string); ok && nodeName != "" {
 				spec["nodeName"] = alias(CategoryNode, nodeName)
@@ -104,7 +104,7 @@ func rewriteResourceNameInObject(obj map[string]interface{}, kind string, enable
 		}
 	}
 
-	if kind == "Node" && enabled[CategoryNode] {
+	if kind == "Node" && enabled[CategoryNode] && !excluded(CategoryNode, kind, "status.addresses[*].address") {
 		if status, ok := obj["status"].(map[string]interface{}); ok {
 			if addrs, ok := status["addresses"].([]interface{}); ok {
 				for _, raw := range addrs {
@@ -133,7 +133,7 @@ func rewriteResourceNameInObject(obj map[string]interface{}, kind string, enable
 			}
 			refKind, _ := ref["kind"].(string)
 			cat, ok := kindCategories[refKind]
-			if !ok || !enabled[cat] {
+			if !ok || !enabled[cat] || excluded(cat, kind, field+".name") {
 				continue
 			}
 			if name, ok := ref["name"].(string); ok && name != "" {
@@ -146,6 +146,9 @@ func rewriteResourceNameInObject(obj map[string]interface{}, kind string, enable
 		// name the event was generated on.
 		if enabled[CategoryNode] {
 			for _, field := range []string{"source", "deprecatedSource"} {
+				if excluded(CategoryNode, kind, field+".host") {
+					continue
+				}
 				src, ok := obj[field].(map[string]interface{})
 				if !ok {
 					continue
@@ -167,7 +170,7 @@ func rewriteResourceNameInObject(obj map[string]interface{}, kind string, enable
 // rewriteNamespaceInRecord's list-handling exactly (see its own doc comment
 // for why a non-JSON or Table/discovery body is left untouched rather than
 // erroring).
-func rewriteResourceNameInRecord(rec *capture.Record, enabled map[Category]bool, alias func(Category, string) string) (bool, error) {
+func rewriteResourceNameInRecord(rec *capture.Record, enabled map[Category]bool, excluded excludedFunc, alias func(Category, string) string) (bool, error) {
 	var obj map[string]interface{}
 	if err := json.Unmarshal(rec.ResponseBody, &obj); err != nil {
 		return false, nil
@@ -188,12 +191,12 @@ func rewriteResourceNameInRecord(rec *capture.Record, enabled map[Category]bool,
 			if k, ok := item["kind"].(string); ok && k != "" {
 				ik = k
 			}
-			if rewriteResourceNameInObject(item, ik, enabled, alias) {
+			if rewriteResourceNameInObject(item, ik, enabled, excluded, alias) {
 				items[i] = item
 				modified = true
 			}
 		}
-	} else if rewriteResourceNameInObject(obj, kind, enabled, alias) {
+	} else if rewriteResourceNameInObject(obj, kind, enabled, excluded, alias) {
 		modified = true
 	}
 

@@ -48,13 +48,34 @@ var containerFieldNames = func() map[string]bool {
 // here at all" — see registryHost). The repository path, tag, and digest
 // are left untouched; full OCI reference grammar reconstruction is real,
 // separate parsing work this milestone doesn't attempt.
-func rewriteImageRegistryInRecord(rec *capture.Record, alias func(string) string) (bool, error) {
-	var obj interface{}
+func rewriteImageRegistryInRecord(rec *capture.Record, excluded excludedFunc, alias func(string) string) (bool, error) {
+	var obj map[string]interface{}
 	if err := json.Unmarshal(rec.ResponseBody, &obj); err != nil {
 		return false, nil
 	}
 
-	modified := rewriteContainerImages(obj, alias)
+	kind, _ := obj["kind"].(string)
+	modified := false
+	if strings.HasSuffix(kind, "List") {
+		items, _ := obj["items"].([]interface{})
+		itemKind := strings.TrimSuffix(kind, "List")
+		for i, itemRaw := range items {
+			item, ok := itemRaw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			ik := itemKind
+			if k, ok := item["kind"].(string); ok && k != "" {
+				ik = k
+			}
+			if rewriteContainerImages(item, ik, "", excluded, alias) {
+				items[i] = item
+				modified = true
+			}
+		}
+	} else if rewriteContainerImages(obj, kind, "", excluded, alias) {
+		modified = true
+	}
 
 	if !modified {
 		return false, nil
@@ -68,8 +89,14 @@ func rewriteImageRegistryInRecord(rec *capture.Record, alias func(string) string
 }
 
 // rewriteContainerImages recursively walks node, rewriting "image"/"imageID"
-// string fields inside any container-list-shaped map it finds.
-func rewriteContainerImages(node interface{}, alias func(string) string) bool {
+// string fields inside any container-list-shaped map it finds. kind is the
+// enclosing object's own Kind (e.g. "Deployment") — fixed for the whole
+// recursive descent, unlike path, which grows as the walk goes deeper
+// (e.g. into a Deployment's spec.template.spec). Both are threaded through
+// purely for exclusion-rule matching; nothing else in this function
+// depends on kind at all, since the container-list shape it looks for is
+// the same regardless of which Kind it's nested under.
+func rewriteContainerImages(node interface{}, kind, path string, excluded excludedFunc, alias func(string) string) bool {
 	switch v := node.(type) {
 	case map[string]interface{}:
 		modified := false
@@ -77,6 +104,10 @@ func rewriteContainerImages(node interface{}, alias func(string) string) bool {
 		for _, field := range containerListFields {
 			list, ok := v[field].([]interface{})
 			if !ok {
+				continue
+			}
+			imagePath := joinFieldPath(path, field) + "[*].image"
+			if excluded(CategoryImage, kind, imagePath) {
 				continue
 			}
 			for _, raw := range list {
@@ -97,12 +128,16 @@ func rewriteContainerImages(node interface{}, alias func(string) string) bool {
 			if !ok {
 				continue
 			}
+			base := joinFieldPath(path, field) + "[*]"
 			for _, raw := range list {
 				c, ok := raw.(map[string]interface{})
 				if !ok {
 					continue
 				}
 				for _, imgField := range []string{"image", "imageID"} {
+					if excluded(CategoryImage, kind, base+"."+imgField) {
+						continue
+					}
 					if image, ok := c[imgField].(string); ok && image != "" {
 						if rewritten, changed := rewriteImageRegistryHost(image, alias); changed {
 							c[imgField] = rewritten
@@ -126,15 +161,16 @@ func rewriteContainerImages(node interface{}, alias func(string) string) bool {
 			if containerFieldNames[k] {
 				continue
 			}
-			if rewriteContainerImages(val, alias) {
+			if rewriteContainerImages(val, kind, joinFieldPath(path, k), excluded, alias) {
 				modified = true
 			}
 		}
 		return modified
 	case []interface{}:
 		modified := false
+		childPath := path + "[*]"
 		for _, val := range v {
-			if rewriteContainerImages(val, alias) {
+			if rewriteContainerImages(val, kind, childPath, excluded, alias) {
 				modified = true
 			}
 		}

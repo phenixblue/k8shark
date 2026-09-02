@@ -72,6 +72,9 @@ using a deterministic alias derived from a salt.
 Categories available: namespace, node, pod, workload, ip, url, image -- see
 https://github.com/phenixblue/k8shark/issues/137.
 
+Categories and field-path exclusion rules may also be loaded from a config
+file's anonymize block via --config; see docs/config.md.
+
 ```
 kshrk anonymize <capture.kshrk> --categories <category> [--out <anonymized.kshrk>] [flags]
 ```
@@ -91,6 +94,12 @@ kshrk anonymize <capture.kshrk> --categories <category> [--out <anonymized.kshrk
   # Reproduce the exact same aliases on a re-run
   kshrk anonymize capture.kshrk --categories namespace --anonymize-salt-file salt.txt
 
+  # Categories and exclusion rules from a config file, as JSON output
+  kshrk anonymize capture.kshrk --config k8shark.yaml -o json
+
+  # Emit the original-to-alias mapping, encrypted to a recipient
+  kshrk anonymize capture.kshrk --categories namespace --emit-mapping --encrypt-recipient age1abc...
+
   # Anonymize and write to a chosen path
   kshrk anonymize capture.kshrk --out safe.kshrk --categories namespace
 ```
@@ -100,18 +109,22 @@ kshrk anonymize <capture.kshrk> --categories <category> [--out <anonymized.kshrk
 ```
       --anonymize-salt-file string       read the anonymize salt from this file (first line, hex-encoded) instead of $KSHRK_ANONYMIZE_SALT or generating one
       --categories stringArray           category to anonymize (repeatable); supported: namespace, node, pod, workload, ip, url, image
+      --config string                    capture config file whose anonymize.categories/anonymize.rules block is applied
+      --emit-mapping                     write the original-to-alias mapping alongside the output archive
+      --emit-mapping-plaintext           allow --emit-mapping to write an unencrypted mapping when no --encrypt-* flag is set (not recommended)
       --encrypt                          encrypt the output archive with a passphrase (age); from --encrypt-passphrase-file, $KSHRK_ENCRYPT_PASSPHRASE, or an interactive prompt
       --encrypt-passphrase-file string   read the encryption passphrase from this file (first line) instead of prompting
       --encrypt-recipient stringArray    age recipient public key (age1...) to encrypt to (repeatable); mutually exclusive with passphrase encryption
       --encrypt-recipients-file string   file of age recipient public keys (one per line) to encrypt to
   -h, --help                             help for anonymize
+      --mapping-path string              path for the mapping file (default: <out>.mapping.json, or .mapping.json.age when encrypted)
       --out string                       output archive path (default: <in>-anonymized.kshrk)
+  -o, --output string                    output format: text or json (default "text")
 ```
 
 ### Options inherited from parent commands
 
 ```
-      --config string                    config file (default: ./config.yaml, then ~/.config/kshrk/config.yaml)
       --decrypt-identity-file string     age identity (key) file to decrypt an encrypted archive
       --decrypt-passphrase-file string   read the passphrase for an encrypted archive from this file (first line)
   -v, --verbose                          enable verbose output

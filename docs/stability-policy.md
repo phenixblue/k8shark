@@ -55,6 +55,7 @@ the exceptions called out [below](#flags-explicitly-not-covered):
 | `query` | JSONPath / text / regex search across an archive |
 | `transitions` | List watch-event (ADDED/MODIFIED/DELETED) history |
 | `redact` | Re-write an archive with Secret/field redaction applied |
+| `anonymize` | Re-write an archive with consistent value/pattern-based aliasing applied |
 | `encrypt` / `decrypt` | Re-write an archive's encryption envelope |
 | `completion` | Generate shell completion scripts |
 | `version` | Print the `kshrk` version |
@@ -112,17 +113,17 @@ command's current successes into exit `1` would break them.
 
 ### Structured output (`-o json` / `-o yaml`)
 
-`inspect`, `diagnose`, `diff`, `query`, and `transitions` all support `-o
-json` (some also support `-o yaml`). **This output is a stable, scriptable
-interface, not an implementation detail** — it follows the same evolution
-rule as the archive format:
+`inspect`, `diagnose`, `diff`, `query`, `transitions`, and `anonymize` all
+support `-o json` (some also support `-o yaml`). **This output is a stable,
+scriptable interface, not an implementation detail** — it follows the same
+evolution rule as the archive format:
 
 - Adding a new field is a minor-version change. Consumers must ignore
   fields they don't recognize.
 - Removing a field, renaming a field, or changing a field's type/meaning is
   a major-version change.
 
-Every one of the five emits a JSON **object** at the top level (never a bare
+Every one of the six emits a JSON **object** at the top level (never a bare
 array) carrying its own `schema_version`, so the envelope can always gain
 fields and a consumer can always tell what shape it's parsing. The versions
 are per-command and independent: `diagnose`'s `schema_version` moving to 2
@@ -136,6 +137,8 @@ carries is emitted even when empty, rather than dropped. The key sets differ
 *between* commands, though — only `inspect`, `diagnose`, and `transitions`
 carry a `capture_id`. `query` doesn't, and `diff` deliberately doesn't, since
 it compares two archives and a single capture ID wouldn't identify either.
+`anonymize` doesn't carry one either, for the same `diff`/`query` reason:
+its per-category counts describe the *rewrite*, not a single capture.
 
 The one deliberately conditional field is `diagnose`'s `at`, present only when
 `--at` was passed.

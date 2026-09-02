@@ -5,6 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/phenixblue/k8shark/internal/capture"
 )
 
 func TestServeCaptureInfo(t *testing.T) {
@@ -32,6 +35,41 @@ func TestServeCaptureInfo(t *testing.T) {
 	// Two distinct resource paths (pods, replicasets) were indexed.
 	if info.ResourcePaths != 2 {
 		t.Errorf("ResourcePaths = %d, want 2", info.ResourcePaths)
+	}
+}
+
+func TestServeCaptureInfo_AnonymizedProvenance(t *testing.T) {
+	now := time.Date(2026, 4, 10, 10, 0, 0, 0, time.UTC)
+	podList := `{"apiVersion":"v1","kind":"PodList","items":[]}`
+	recs := []*capture.Record{
+		{ID: "r1", CapturedAt: now, APIPath: "/api/v1/pods", HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(podList)},
+	}
+	idx := capture.Index{"/api/v1/pods": {APIPath: "/api/v1/pods", Seqs: []int{0}, Times: []time.Time{now}}}
+	meta := &capture.CaptureMetadata{
+		CaptureID: "v2-anonymized-test", CapturedAt: now.Add(-time.Minute), CapturedUntil: now, RecordCount: 1,
+		Anonymized: true, AnonymizedCategories: []string{"namespace", "ip"},
+	}
+	h := &Handler{Store: buildV2TestStore(t, recs, idx, meta), At: now}
+
+	req := httptest.NewRequest(http.MethodGet, "/v2/api/capture", nil)
+	w := httptest.NewRecorder()
+	h.serveCaptureInfo(w, req)
+
+	var info CaptureInfo
+	if err := json.Unmarshal(w.Body.Bytes(), &info); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !info.Anonymized {
+		t.Error("Anonymized = false, want true")
+	}
+	want := []string{"namespace", "ip"}
+	if len(info.AnonymizedCategories) != len(want) {
+		t.Fatalf("AnonymizedCategories = %v, want %v", info.AnonymizedCategories, want)
+	}
+	for i := range want {
+		if info.AnonymizedCategories[i] != want[i] {
+			t.Errorf("AnonymizedCategories[%d] = %q, want %q", i, info.AnonymizedCategories[i], want[i])
+		}
 	}
 }
 

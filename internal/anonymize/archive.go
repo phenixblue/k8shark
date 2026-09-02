@@ -9,6 +9,7 @@ import (
 	"filippo.io/age"
 	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/capture"
+	"github.com/phenixblue/k8shark/internal/config"
 )
 
 // sortedKeys returns m's keys sorted lexicographically, so a caller that
@@ -67,19 +68,31 @@ type Options struct {
 	// Recipients, when non-empty, cause the anonymized output archive to be
 	// written as an age-encrypted envelope. Mirrors redact.Options.Recipients.
 	Recipients []age.Recipient
+	// Rules is a list of field-path exclusions layered on top of
+	// Categories — see config.AnonymizeRule's own doc comment. Every entry
+	// must have Exclude set; Archive rejects the whole run otherwise (see
+	// newExcludeMatcher).
+	Rules []config.AnonymizeRule
 }
+
+// SchemaVersion is the version of the `kshrk anonymize -o json` output
+// shape (Result). Bump on a breaking change to the documented shape, per
+// docs/stability-policy.md's convention for the other -o json commands
+// (internal/query, internal/diagnose, internal/inspect).
+const SchemaVersion = 1
 
 // Result reports how many distinct values were anonymized, per category.
 // Every count is the number of distinct original values encountered, not
 // the number of records touched — a value that appears on 50 records still
 // counts once.
 type Result struct {
-	NamespacesRenamed int
-	NodesRenamed      int
-	PodsRenamed       int
-	WorkloadsRenamed  int
+	SchemaVersion     int `json:"schema_version"`
+	NamespacesRenamed int `json:"namespaces_renamed"`
+	NodesRenamed      int `json:"nodes_renamed"`
+	PodsRenamed       int `json:"pods_renamed"`
+	WorkloadsRenamed  int `json:"workloads_renamed"`
 	// IPsRenamed counts distinct IP literals.
-	IPsRenamed int
+	IPsRenamed int `json:"ips_renamed"`
 	// HostsRenamed counts distinct URL-category values: bare hostnames (an
 	// Ingress host, a Service externalName) and whatever occupies a
 	// scheme://host URL's host position — which is not always a DNS name.
@@ -87,10 +100,31 @@ type Result struct {
 	// through this same category, so an IP literal sitting in a URL's host
 	// position counts here too, not under IPsRenamed — see Archive's own
 	// ServerAddress-rewrite comment for why that's the deliberate choice.
-	HostsRenamed int
+	HostsRenamed int `json:"hosts_renamed"`
 	// RegistriesRenamed counts distinct container-image registry hosts
 	// (the leading host[:port] segment of an image reference).
-	RegistriesRenamed int
+	RegistriesRenamed int `json:"registries_renamed"`
+	// OutputPath and OutputBytes are populated by the CLI layer (cmd/anonymize.go),
+	// not by Archive itself — Archive doesn't know its own caller's chosen
+	// output path or need to stat the file it just finished writing.
+	// Deliberately not omitempty: docs/stability-policy.md's -o json
+	// contract requires every command's top-level key set to be identical
+	// on every run, present even when the value is empty/zero — a stray
+	// omitempty here would silently drop output_path/output_bytes from the
+	// rare case where OutputBytes is legitimately 0 (e.g. os.Stat failed)
+	// or a caller marshals a zero-value Result directly.
+	OutputPath  string `json:"output_path"`
+	OutputBytes int64  `json:"output_bytes"`
+	// Mapping is the original-to-alias mapping, keyed by category, for
+	// every category Options.Categories requested — regardless of whether
+	// the caller actually asked to emit it. Deliberately excluded from the
+	// -o json output (json:"-"): unlike every other field here, this is the
+	// one genuinely sensitive payload Archive can produce, and #137's own
+	// design explicitly requires it be "never persisted by default" — that
+	// has to hold for accidentally-scripted `-o json | jq` output too, not
+	// just for the default text summary. The CLI layer (cmd/anonymize.go)
+	// only writes this out at all when --emit-mapping was explicitly given.
+	Mapping map[Category]map[string]string `json:"-"`
 }
 
 // Archive reads srcPath, anonymizes it per opts, and writes to dstPath. The
@@ -159,6 +193,11 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 		CategoryWorkload: doWorkload,
 	}
 	doResourceName := doNode || doPod || doWorkload
+
+	excluded, err := newExcludeMatcher(opts.Rules)
+	if err != nil {
+		return Result{}, err
+	}
 
 	ar, err := archive.OpenWithIdentities(srcPath, opts.Identities)
 	if err != nil {
@@ -308,27 +347,27 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 			}
 
 			if doNamespace {
-				if _, err := rewriteNamespaceInRecord(&rec, namespaceAlias); err != nil {
+				if _, err := rewriteNamespaceInRecord(&rec, excluded, namespaceAlias); err != nil {
 					return nil, fmt.Errorf("anonymizing record %s seq %d: %w", apiPath, seq, err)
 				}
 			}
 			if doResourceName {
-				if _, err := rewriteResourceNameInRecord(&rec, enabledResource, resourceAlias); err != nil {
+				if _, err := rewriteResourceNameInRecord(&rec, enabledResource, excluded, resourceAlias); err != nil {
 					return nil, fmt.Errorf("anonymizing record %s seq %d: %w", apiPath, seq, err)
 				}
 			}
 			if doIP {
-				if _, err := rewriteIPInRecord(&rec, ipAlias); err != nil {
+				if _, err := rewriteIPInRecord(&rec, excluded, ipAlias); err != nil {
 					return nil, fmt.Errorf("anonymizing record %s seq %d: %w", apiPath, seq, err)
 				}
 			}
 			if doURL {
-				if _, err := rewriteURLInRecord(&rec, urlAlias); err != nil {
+				if _, err := rewriteURLInRecord(&rec, excluded, urlAlias); err != nil {
 					return nil, fmt.Errorf("anonymizing record %s seq %d: %w", apiPath, seq, err)
 				}
 			}
 			if doImage {
-				if _, err := rewriteImageRegistryInRecord(&rec, imageAlias); err != nil {
+				if _, err := rewriteImageRegistryInRecord(&rec, excluded, imageAlias); err != nil {
 					return nil, fmt.Errorf("anonymizing record %s seq %d: %w", apiPath, seq, err)
 				}
 			}
@@ -476,6 +515,17 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 	// plaintext source anonymized straight into an encrypted output.
 	meta.Encrypted = len(opts.Recipients) > 0
 
+	// Provenance, mirroring Redacted/SecretsRedacted's identical pattern:
+	// mark the output as anonymized and record which categories were
+	// actually applied, so a later `kshrk inspect`/the UI's capture-info
+	// card can say so without having to guess from the data itself.
+	meta.Anonymized = true
+	anonymizedCategories := make([]string, len(opts.Categories))
+	for i, cat := range opts.Categories {
+		anonymizedCategories[i] = string(cat)
+	}
+	meta.AnonymizedCategories = anonymizedCategories
+
 	// CaptureMetadata.ServerAddress lives on the metadata, not inside any
 	// Record body, so it needs its own rewrite here rather than going
 	// through rewriteEntryRecords — but it's the exact same URL shape
@@ -496,7 +546,32 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 	}
 	finished = true
 
+	// Only the requested categories' trackers actually saw any values (an
+	// unrequested category's tracker is wired up but never called), so its
+	// Mapping() would just be an empty map — including it anyway would be
+	// harmless but misleading, implying that category was processed.
+	mapping := make(map[Category]map[string]string, len(opts.Categories))
+	for _, cat := range opts.Categories {
+		switch cat {
+		case CategoryNamespace:
+			mapping[cat] = namespaceTracker.Mapping()
+		case CategoryNode:
+			mapping[cat] = nodeTracker.Mapping()
+		case CategoryPod:
+			mapping[cat] = podTracker.Mapping()
+		case CategoryWorkload:
+			mapping[cat] = workloadTracker.Mapping()
+		case CategoryIP:
+			mapping[cat] = ipTracker.Mapping()
+		case CategoryURL:
+			mapping[cat] = urlTracker.Mapping()
+		case CategoryImage:
+			mapping[cat] = imageTracker.Mapping()
+		}
+	}
+
 	return Result{
+		SchemaVersion:     SchemaVersion,
 		NamespacesRenamed: namespaceTracker.Count(),
 		NodesRenamed:      nodeTracker.Count(),
 		PodsRenamed:       podTracker.Count(),
@@ -504,5 +579,6 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 		IPsRenamed:        ipTracker.Count(),
 		HostsRenamed:      urlTracker.Count(),
 		RegistriesRenamed: imageTracker.Count(),
+		Mapping:           mapping,
 	}, nil
 }

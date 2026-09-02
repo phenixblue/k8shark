@@ -38,7 +38,7 @@ import (
 // *names* on the parent Event, same Namespace field within. All three are
 // checked unconditionally; whichever ones a given record doesn't have are
 // simply absent from the decoded map and the corresponding check is a no-op.
-func rewriteNamespaceInObject(obj map[string]interface{}, kind string, alias func(string) string) bool {
+func rewriteNamespaceInObject(obj map[string]interface{}, kind string, excluded excludedFunc, alias func(string) string) bool {
 	meta, _ := obj["metadata"].(map[string]interface{})
 	if meta == nil {
 		return false
@@ -46,11 +46,11 @@ func rewriteNamespaceInObject(obj map[string]interface{}, kind string, alias fun
 
 	modified := false
 	if kind == "Namespace" {
-		if name, ok := meta["name"].(string); ok && name != "" {
+		if name, ok := meta["name"].(string); ok && name != "" && !excluded(CategoryNamespace, kind, "metadata.name") {
 			meta["name"] = alias(name)
 			modified = true
 		}
-	} else if ns, ok := meta["namespace"].(string); ok && ns != "" {
+	} else if ns, ok := meta["namespace"].(string); ok && ns != "" && !excluded(CategoryNamespace, kind, "metadata.namespace") {
 		meta["namespace"] = alias(ns)
 		modified = true
 	}
@@ -61,7 +61,7 @@ func rewriteNamespaceInObject(obj map[string]interface{}, kind string, alias fun
 			if !ok {
 				continue
 			}
-			if ns, ok := ref["namespace"].(string); ok && ns != "" {
+			if ns, ok := ref["namespace"].(string); ok && ns != "" && !excluded(CategoryNamespace, kind, field+".namespace") {
 				ref["namespace"] = alias(ns)
 				modified = true
 			}
@@ -93,7 +93,7 @@ func rewriteNamespaceInObject(obj map[string]interface{}, kind string, alias fun
 // of scope for the archive-rewrite path in this milestone: Table rows have
 // no field names, so it needs a different, value-pattern-based approach
 // layered on top of this schema-aware one, not a fix to this function.
-func rewriteNamespaceInRecord(rec *capture.Record, alias func(string) string) (bool, error) {
+func rewriteNamespaceInRecord(rec *capture.Record, excluded excludedFunc, alias func(string) string) (bool, error) {
 	var obj map[string]interface{}
 	if err := json.Unmarshal(rec.ResponseBody, &obj); err != nil {
 		return false, nil
@@ -114,12 +114,12 @@ func rewriteNamespaceInRecord(rec *capture.Record, alias func(string) string) (b
 			if k, ok := item["kind"].(string); ok && k != "" {
 				ik = k
 			}
-			if rewriteNamespaceInObject(item, ik, alias) {
+			if rewriteNamespaceInObject(item, ik, excluded, alias) {
 				items[i] = item
 				modified = true
 			}
 		}
-	} else if rewriteNamespaceInObject(obj, kind, alias) {
+	} else if rewriteNamespaceInObject(obj, kind, excluded, alias) {
 		modified = true
 	}
 

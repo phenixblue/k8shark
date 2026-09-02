@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"strings"
 
 	"github.com/phenixblue/k8shark/internal/capture"
 )
@@ -39,19 +40,55 @@ import (
 // passes through unrecognized. Splitting a CIDR into its address and
 // prefix-length, aliasing just the address, is real additional work the
 // design plan doesn't call out for this milestone.
-func rewriteIPInRecord(rec *capture.Record, alias func(string) string) (bool, error) {
-	var obj interface{}
+//
+// List-aware, the same way the schema-aware categories are (namespace.go,
+// resourcename.go): an exclude rule can be scoped to a Kind, and IP
+// occurrences inside a List response's items[] belong to each item's own
+// Kind, not the List's — walking the whole record body in one flat pass
+// (as this function did before rule support existed) would have no correct
+// Kind to check exclusion against for a List response at all.
+func rewriteIPInRecord(rec *capture.Record, excluded excludedFunc, alias func(string) string) (bool, error) {
+	var obj map[string]interface{}
 	if err := json.Unmarshal(rec.ResponseBody, &obj); err != nil {
 		return false, nil
 	}
 
-	changed := walkStrings(obj, func(s string) (string, bool) {
-		if net.ParseIP(s) == nil {
-			return "", false
+	kind, _ := obj["kind"].(string)
+	visit := func(node interface{}, itemKind string) bool {
+		return walkStrings(node, "", func(path, s string) (string, bool) {
+			if net.ParseIP(s) == nil {
+				return "", false
+			}
+			if excluded(CategoryIP, itemKind, path) {
+				return "", false
+			}
+			return alias(s), true
+		})
+	}
+
+	modified := false
+	if strings.HasSuffix(kind, "List") {
+		items, _ := obj["items"].([]interface{})
+		itemKind := strings.TrimSuffix(kind, "List")
+		for i, itemRaw := range items {
+			item, ok := itemRaw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			ik := itemKind
+			if k, ok := item["kind"].(string); ok && k != "" {
+				ik = k
+			}
+			if visit(item, ik) {
+				items[i] = item
+				modified = true
+			}
 		}
-		return alias(s), true
-	})
-	if !changed {
+	} else if visit(obj, kind) {
+		modified = true
+	}
+
+	if !modified {
 		return false, nil
 	}
 
