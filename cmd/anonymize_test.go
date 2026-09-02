@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -320,13 +321,18 @@ func TestRunAnonymize_EmitMappingRequiresEncryptionOrAck(t *testing.T) {
 
 		// The mapping holds every original value behind an alias — it must
 		// never be created at the process umask's default (commonly 0644,
-		// world-readable), regardless of platform umask settings.
-		fi, err := os.Stat(mappingPath)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := fi.Mode().Perm(); got != 0o600 {
-			t.Errorf("mapping file mode = %o, want 0600", got)
+		// world-readable), regardless of platform umask settings. Unix
+		// permission bits don't apply on Windows (mirrors
+		// internal/archive/crypto_test.go's identical skip for the same
+		// reason).
+		if runtime.GOOS != "windows" {
+			fi, err := os.Stat(mappingPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := fi.Mode().Perm(); got != 0o600 {
+				t.Errorf("mapping file mode = %o, want 0600", got)
+			}
 		}
 	})
 
