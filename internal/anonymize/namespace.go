@@ -38,6 +38,16 @@ import (
 // *names* on the parent Event, same Namespace field within. All three are
 // checked unconditionally; whichever ones a given record doesn't have are
 // simply absent from the decoded map and the corresponding check is a no-op.
+//
+// A reference whose own Kind is "Namespace" needs the *opposite* field
+// aliased from every other Kind, mirroring the exact same distinction the
+// top-level object dispatch above makes: the reference's "name" field is
+// that Namespace's own identity (there is no membership to express — a
+// Namespace can't be namespaced), not its "namespace" field. Confirmed
+// missing against a real cluster capture (#137): an Event whose
+// involvedObject.kind is "Namespace" leaked the real namespace name in
+// full through involvedObject.name, even though every other occurrence of
+// that same namespace elsewhere in the archive was correctly aliased.
 func rewriteNamespaceInObject(obj map[string]interface{}, kind string, excluded excludedFunc, alias func(string) string) bool {
 	meta, _ := obj["metadata"].(map[string]interface{})
 	if meta == nil {
@@ -59,6 +69,14 @@ func rewriteNamespaceInObject(obj map[string]interface{}, kind string, excluded 
 		for _, field := range []string{"involvedObject", "regarding", "related"} {
 			ref, ok := obj[field].(map[string]interface{})
 			if !ok {
+				continue
+			}
+			refKind, _ := ref["kind"].(string)
+			if refKind == "Namespace" {
+				if name, ok := ref["name"].(string); ok && name != "" && !excluded(CategoryNamespace, kind, field+".name") {
+					ref["name"] = alias(name)
+					modified = true
+				}
 				continue
 			}
 			if ns, ok := ref["namespace"].(string); ok && ns != "" && !excluded(CategoryNamespace, kind, field+".namespace") {

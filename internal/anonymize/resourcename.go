@@ -62,6 +62,19 @@ var resourceTypeCategories = func() map[string]Category {
 // generic pattern for "this token is a Kubernetes name" the way there is
 // for an IP literal, so recall would need a candidate set built from these
 // same structured fields first (see #137's plan, Open Question 5).
+//
+// A closely related, confirmed-real instance of that same gap: kindCategories
+// only recognizes built-in Kubernetes Kinds, so an Event whose
+// involvedObject/regarding/related.kind is a CRD that happens to share
+// identity with a real Node/Pod (e.g. Portworx's StorageNode custom
+// resource, conventionally named identically to the Node it represents)
+// leaks that real name in full through the reference's own "name" field,
+// even though the same value is correctly aliased everywhere it occurs as
+// an actual Node. Found against a real cluster capture; recognizing this
+// would need either a cluster/vendor-specific Kind allowlist (fragile, not
+// generalizable) or the same candidate-set approach the free-text gap
+// above needs — deliberately left as a documented limitation rather than
+// silently patched for one vendor's naming convention.
 func rewriteResourceNameInObject(obj map[string]interface{}, kind string, enabled map[Category]bool, excluded excludedFunc, alias func(Category, string) string) bool {
 	modified := false
 

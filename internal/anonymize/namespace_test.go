@@ -91,6 +91,34 @@ func TestRewriteNamespaceInObject(t *testing.T) {
 		}
 	})
 
+	// Found missing against a real cluster capture, not a synthetic case:
+	// a Namespace object can't have a "namespace" (membership) field of its
+	// own — its identity IS its name — so a reference whose own Kind is
+	// "Namespace" needs its "name" field aliased, not its "namespace"
+	// field, mirroring the exact distinction the top-level object dispatch
+	// already makes for a Namespace object itself.
+	t.Run("an Event referencing a Namespace object aliases involvedObject.name, not .namespace", func(t *testing.T) {
+		obj := map[string]interface{}{
+			"kind":           "Event",
+			"metadata":       map[string]interface{}{"name": "openshift-cnv.abc", "namespace": "openshift-cnv"},
+			"involvedObject": map[string]interface{}{"kind": "Namespace", "name": "openshift-cnv"},
+		}
+		if !rewriteNamespaceInObject(obj, "Event", noExclusions, alias) {
+			t.Fatal("want modified=true")
+		}
+		meta := obj["metadata"].(map[string]interface{})
+		involved := obj["involvedObject"].(map[string]interface{})
+		if got := meta["namespace"]; got != "openshift-cnv-ALIASED" {
+			t.Errorf("metadata.namespace = %v, want openshift-cnv-ALIASED", got)
+		}
+		if got := involved["name"]; got != "openshift-cnv-ALIASED" {
+			t.Errorf("involvedObject.name = %v, want openshift-cnv-ALIASED — this is the bug found via a real cluster capture: the Namespace's own identity, unaliased, leaked in full", got)
+		}
+		if _, has := involved["namespace"]; has {
+			t.Error("a Namespace reference must not gain a namespace field — it has no membership of its own")
+		}
+	})
+
 	t.Run("cluster-scoped object with no metadata.namespace is left alone", func(t *testing.T) {
 		obj := map[string]interface{}{
 			"kind":     "Node",
