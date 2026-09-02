@@ -317,6 +317,17 @@ func TestRunAnonymize_EmitMappingRequiresEncryptionOrAck(t *testing.T) {
 		if mapping["namespace"]["prod"] == "" {
 			t.Errorf("mapping[namespace][prod] is empty; mapping = %v", mapping)
 		}
+
+		// The mapping holds every original value behind an alias — it must
+		// never be created at the process umask's default (commonly 0644,
+		// world-readable), regardless of platform umask settings.
+		fi, err := os.Stat(mappingPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := fi.Mode().Perm(); got != 0o600 {
+			t.Errorf("mapping file mode = %o, want 0600", got)
+		}
 	})
 
 	t.Run("an encryption recipient satisfies the requirement and encrypts the mapping", func(t *testing.T) {

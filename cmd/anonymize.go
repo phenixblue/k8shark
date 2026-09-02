@@ -277,7 +277,13 @@ func writeAnonymizeMapping(path string, mapping map[anonymize.Category]map[strin
 		return fmt.Errorf("marshaling mapping: %w", err)
 	}
 
-	f, err := os.Create(path)
+	// os.Create leaves permissions up to the process umask (commonly 0644,
+	// world-readable) — this file can hold the original values behind
+	// every alias, so it's created 0600 explicitly rather than trusting
+	// whatever the umask happens to be, matching this codebase's existing
+	// precedent for other sensitive file writes (internal/server/kubeconfig.go,
+	// cmd/controllermanager.go).
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return fmt.Errorf("creating %q: %w", path, err)
 	}

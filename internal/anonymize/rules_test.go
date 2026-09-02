@@ -34,6 +34,33 @@ func TestNewExcludeMatcher_Validation(t *testing.T) {
 		}
 	})
 
+	t.Run("an unrecognized category is rejected", func(t *testing.T) {
+		_, err := newExcludeMatcher([]config.AnonymizeRule{
+			{Category: "namespac", FieldPath: "metadata.name", Exclude: true}, // typo
+		})
+		if err == nil {
+			t.Fatal("want an error for a category that could never match a real occurrence")
+		}
+	})
+
+	t.Run("a fieldPath with a literal array index is rejected", func(t *testing.T) {
+		_, err := newExcludeMatcher([]config.AnonymizeRule{
+			{Category: "image", FieldPath: "spec.containers[0].image", Exclude: true},
+		})
+		if err == nil {
+			t.Fatal(`want an error for a fieldPath with a literal index instead of "[*]"`)
+		}
+	})
+
+	t.Run("a fieldPath using the wildcard convention is accepted", func(t *testing.T) {
+		_, err := newExcludeMatcher([]config.AnonymizeRule{
+			{Category: "image", FieldPath: "spec.containers[*].image", Exclude: true},
+		})
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
 	t.Run("no rules is fine — the resulting func always returns false", func(t *testing.T) {
 		excluded, err := newExcludeMatcher(nil)
 		if err != nil {
