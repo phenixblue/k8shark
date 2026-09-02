@@ -8,9 +8,9 @@ import "fmt"
 // name.go's wordsPerCategory), a cluster with 50 same-category resources has
 // roughly a 1-in-4 chance of at least one collision, and 100 roughly 2-in-3,
 // by the ordinary birthday bound (a 3-word, 262,144-combination encoding
-// pushes that same 100-resource case down to roughly 1-in-30 — see #359,
-// which bumped the namespace category from 2 to 3 words for exactly this
-// reason). Silently
+// pushes that same 100-resource case down to roughly 1-in-53 (~1.9%) — see
+// #359, which bumped the namespace category from 2 to 3 words for exactly
+// this reason). Silently
 // proceeding on a collision is not an acceptable failure mode here: it means
 // two distinct source API paths would rewrite to the same destination key,
 // and the archive-rewrite loop's index/watch-index rebuild would silently
