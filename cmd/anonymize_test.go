@@ -455,3 +455,43 @@ func TestRunAnonymize_EmitMappingRejectsPathCollisions(t *testing.T) {
 		}
 	})
 }
+
+// A pre-existing mapping file left world-readable (e.g. from a build
+// before this 0600 discipline existed, or a re-run at the same path) must
+// end up 0600 after a fresh --emit-mapping run — os.OpenFile's mode
+// argument only applies when the file is actually created, so O_TRUNC
+// alone would silently preserve a pre-existing insecure mode.
+func TestRunAnonymize_EmitMappingTightensPreExistingPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits don't apply on Windows")
+	}
+	in := buildDiffArchive(t, `{"kind":"PodList","items":[{"metadata":{"name":"web-1","namespace":"prod"}}]}`)
+	out := filepath.Join(t.TempDir(), "out.kshrk")
+	mappingPath := out + ".mapping.json"
+
+	// Simulate a pre-existing, world-readable mapping file at the exact
+	// path this run will write to.
+	if err := os.WriteFile(mappingPath, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newTestAnonymizeCmdCommand(t)
+	cmd.SetOut(io.Discard)
+	_ = cmd.Flags().Set("categories", "namespace")
+	_ = cmd.Flags().Set("out", out)
+	_ = cmd.Flags().Set("emit-mapping", "true")
+	_ = cmd.Flags().Set("emit-mapping-plaintext", "true")
+	_ = cmd.Flags().Set("anonymize-salt-file", writeAnonymizeTestSaltFile(t))
+
+	if err := runAnonymize(cmd, []string{in}); err != nil {
+		t.Fatalf("runAnonymize: %v", err)
+	}
+
+	fi, err := os.Stat(mappingPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fi.Mode().Perm(); got != 0o600 {
+		t.Errorf("mapping file mode = %o, want 0600 (a pre-existing 0644 mode must be tightened, not preserved)", got)
+	}
+}

@@ -306,6 +306,14 @@ func writeAnonymizeMapping(path string, mapping map[anonymize.Category]map[strin
 		return fmt.Errorf("creating %q: %w", path, err)
 	}
 	defer f.Close()
+	// OpenFile's mode argument only applies when the file is actually
+	// created — if mappingPath already existed (e.g. a prior run left it
+	// world-readable, before this 0600 discipline existed, or a re-run at
+	// the same path), O_TRUNC alone leaves its existing permissions
+	// untouched. Chmod unconditionally to guarantee 0600 either way.
+	if err := f.Chmod(0o600); err != nil {
+		return fmt.Errorf("setting permissions on %q: %w", path, err)
+	}
 
 	if len(recipients) == 0 {
 		_, err := f.Write(data)
