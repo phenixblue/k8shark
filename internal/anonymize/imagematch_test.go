@@ -95,7 +95,7 @@ func TestRewriteImageRegistryInRecord(t *testing.T) {
 		body := `{"kind":"Pod","spec":{"containers":[{"name":"app","image":"registry.internal.corp/team/app:v1"}]},
 			"status":{"containerStatuses":[{"name":"app","image":"registry.internal.corp/team/app:v1","imageID":"registry.internal.corp/team/app@sha256:abc"}]}}`
 		rec := &capture.Record{ResponseBody: json.RawMessage(body)}
-		changed, err := rewriteImageRegistryInRecord(rec, upper)
+		changed, err := rewriteImageRegistryInRecord(rec, noExclusions, upper)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -125,7 +125,7 @@ func TestRewriteImageRegistryInRecord(t *testing.T) {
 	t.Run("Deployment nested at spec.template.spec", func(t *testing.T) {
 		body := `{"kind":"Deployment","spec":{"template":{"spec":{"containers":[{"name":"app","image":"registry.internal.corp/team/app:v1"}]}}}}`
 		rec := &capture.Record{ResponseBody: json.RawMessage(body)}
-		changed, err := rewriteImageRegistryInRecord(rec, upper)
+		changed, err := rewriteImageRegistryInRecord(rec, noExclusions, upper)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -148,7 +148,7 @@ func TestRewriteImageRegistryInRecord(t *testing.T) {
 			"containers":[{"name":"app","image":"registry.internal.corp/team/app:v1"}]
 		}}}}}}`
 		rec := &capture.Record{ResponseBody: json.RawMessage(body)}
-		changed, err := rewriteImageRegistryInRecord(rec, upper)
+		changed, err := rewriteImageRegistryInRecord(rec, noExclusions, upper)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -171,7 +171,7 @@ func TestRewriteImageRegistryInRecord(t *testing.T) {
 		body := `{"kind":"Pod","spec":{"containers":[{"name":"app","image":"nginx:1.21"}]}}`
 		rec := &capture.Record{ResponseBody: json.RawMessage(body)}
 		orig := string(rec.ResponseBody)
-		changed, err := rewriteImageRegistryInRecord(rec, upper)
+		changed, err := rewriteImageRegistryInRecord(rec, noExclusions, upper)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -187,7 +187,7 @@ func TestRewriteImageRegistryInRecord(t *testing.T) {
 		body := `{"kind":"Namespace","metadata":{"name":"prod"}}`
 		rec := &capture.Record{ResponseBody: json.RawMessage(body)}
 		orig := string(rec.ResponseBody)
-		changed, err := rewriteImageRegistryInRecord(rec, upper)
+		changed, err := rewriteImageRegistryInRecord(rec, noExclusions, upper)
 		if err != nil {
 			t.Fatal(err)
 		}

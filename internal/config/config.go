@@ -101,6 +101,49 @@ type RedactionRule struct {
 	ValueType string `mapstructure:"valueType"`
 }
 
+// AnonymizeRule describes a single field-path exclusion for `kshrk
+// anonymize`: an occurrence that would otherwise be anonymized, but should
+// be left alone. Anonymize rules are exclusions only — there is no separate
+// "include" action, since a value's category membership is already
+// determined automatically by where and how it occurs (see #137);
+// Exclude must be true, and internal/anonymize rejects a rule where it
+// isn't, rather than silently ignoring an unsupported "include" request.
+type AnonymizeRule struct {
+	// Category restricts the rule to one anonymize category (e.g.
+	// "namespace", "ip", "image"). Required.
+	Category string `mapstructure:"category"`
+	// FieldPath is the field's path from the object root, using the same
+	// dot-notation as RedactionRule.FieldPath, but with every array index
+	// written as the wildcard "[*]" — never a literal index — since an
+	// anonymize rule targets a kind of occurrence (e.g. every container
+	// image), not one specific array element. Required. Examples:
+	// "metadata.name", "spec.containers[*].image", "status.podIP".
+	FieldPath string `mapstructure:"fieldPath"`
+	// Kind restricts the rule to a specific resource kind (e.g. "Pod",
+	// "Node"). Use "*" or omit to match every kind the category applies to.
+	Kind string `mapstructure:"kind"`
+	// Exclude must be true — see the type's own doc comment.
+	Exclude bool `mapstructure:"exclude"`
+}
+
+// AnonymizeConfig is the top-level anonymize section of the capture config,
+// consumed by `kshrk anonymize --config`.
+type AnonymizeConfig struct {
+	// Categories is a list of categories to anonymize, e.g. ["namespace",
+	// "ip"], merged with any --categories flags.
+	Categories []string `mapstructure:"categories"`
+	// Rules is a list of field-path exclusions (see AnonymizeRule) applied
+	// on top of Categories.
+	Rules []AnonymizeRule `mapstructure:"rules"`
+	// EmitMapping, when true, writes the original-to-alias mapping
+	// alongside the anonymized archive (equivalent to --emit-mapping on
+	// the CLI). Never emitted unless explicitly requested here or via the
+	// CLI flag.
+	EmitMapping bool `mapstructure:"emitMapping"`
+	// MappingPath optionally overrides the mapping sidecar's default path.
+	MappingPath string `mapstructure:"mappingPath"`
+}
+
 // RedactionConfig is the top-level redaction section of the capture config.
 type RedactionConfig struct {
 	// RedactSecrets, when true, redacts all Kubernetes Secret data and
@@ -146,6 +189,8 @@ type Config struct {
 	// Redaction holds field-level redaction rules applied during capture and
 	// post-capture redact workflows.
 	Redaction RedactionConfig `mapstructure:"redaction"`
+	// Anonymize holds category and rule settings for `kshrk anonymize`.
+	Anonymize AnonymizeConfig `mapstructure:"anonymize"`
 	// UI holds settings for the `kshrk ui` web explorer. CLI flags override
 	// these when provided.
 	UI UIConfig `mapstructure:"ui"`

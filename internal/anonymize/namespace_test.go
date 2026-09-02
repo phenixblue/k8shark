@@ -15,7 +15,7 @@ func TestRewriteNamespaceInObject(t *testing.T) {
 			"kind":     "Namespace",
 			"metadata": map[string]interface{}{"name": "prod"},
 		}
-		if !rewriteNamespaceInObject(obj, "Namespace", alias) {
+		if !rewriteNamespaceInObject(obj, "Namespace", noExclusions, alias) {
 			t.Fatal("want modified=true")
 		}
 		meta := obj["metadata"].(map[string]interface{})
@@ -32,7 +32,7 @@ func TestRewriteNamespaceInObject(t *testing.T) {
 			"kind":     "Pod",
 			"metadata": map[string]interface{}{"name": "web-1", "namespace": "prod"},
 		}
-		if !rewriteNamespaceInObject(obj, "Pod", alias) {
+		if !rewriteNamespaceInObject(obj, "Pod", noExclusions, alias) {
 			t.Fatal("want modified=true")
 		}
 		meta := obj["metadata"].(map[string]interface{})
@@ -50,7 +50,7 @@ func TestRewriteNamespaceInObject(t *testing.T) {
 			"metadata":       map[string]interface{}{"name": "web-1.abc", "namespace": "prod"},
 			"involvedObject": map[string]interface{}{"kind": "Pod", "name": "web-1", "namespace": "prod"},
 		}
-		if !rewriteNamespaceInObject(obj, "Event", alias) {
+		if !rewriteNamespaceInObject(obj, "Event", noExclusions, alias) {
 			t.Fatal("want modified=true")
 		}
 		meta := obj["metadata"].(map[string]interface{})
@@ -75,7 +75,7 @@ func TestRewriteNamespaceInObject(t *testing.T) {
 			"regarding": map[string]interface{}{"kind": "Pod", "name": "web-1", "namespace": "prod"},
 			"related":   map[string]interface{}{"kind": "ReplicaSet", "name": "web-1-rs", "namespace": "prod"},
 		}
-		if !rewriteNamespaceInObject(obj, "Event", alias) {
+		if !rewriteNamespaceInObject(obj, "Event", noExclusions, alias) {
 			t.Fatal("want modified=true")
 		}
 		regarding := obj["regarding"].(map[string]interface{})
@@ -96,7 +96,7 @@ func TestRewriteNamespaceInObject(t *testing.T) {
 			"kind":     "Node",
 			"metadata": map[string]interface{}{"name": "worker-1"},
 		}
-		if rewriteNamespaceInObject(obj, "Node", alias) {
+		if rewriteNamespaceInObject(obj, "Node", noExclusions, alias) {
 			t.Error("want modified=false for an object with no namespace occurrence")
 		}
 		meta := obj["metadata"].(map[string]interface{})
@@ -107,7 +107,7 @@ func TestRewriteNamespaceInObject(t *testing.T) {
 
 	t.Run("object with no metadata at all is left alone, not a crash", func(t *testing.T) {
 		obj := map[string]interface{}{"kind": "Status"}
-		if rewriteNamespaceInObject(obj, "Status", alias) {
+		if rewriteNamespaceInObject(obj, "Status", noExclusions, alias) {
 			t.Error("want modified=false")
 		}
 	})
@@ -120,7 +120,7 @@ func TestRewriteNamespaceInRecord(t *testing.T) {
 		rec := &capture.Record{
 			ResponseBody: json.RawMessage(`{"kind":"Namespace","metadata":{"name":"prod"}}`),
 		}
-		changed, err := rewriteNamespaceInRecord(rec, alias)
+		changed, err := rewriteNamespaceInRecord(rec, noExclusions, alias)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -143,7 +143,7 @@ func TestRewriteNamespaceInRecord(t *testing.T) {
 			{"metadata":{"name":"web-2","namespace":"staging"}}
 		]}`
 		rec := &capture.Record{ResponseBody: json.RawMessage(body)}
-		changed, err := rewriteNamespaceInRecord(rec, alias)
+		changed, err := rewriteNamespaceInRecord(rec, noExclusions, alias)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -179,7 +179,7 @@ func TestRewriteNamespaceInRecord(t *testing.T) {
 		body := `{"kind":"Table","apiVersion":"meta.k8s.io/v1","rows":[{"cells":["web-1","Running"]}]}`
 		rec := &capture.Record{ResponseBody: json.RawMessage(body)}
 		orig := string(rec.ResponseBody)
-		changed, err := rewriteNamespaceInRecord(rec, alias)
+		changed, err := rewriteNamespaceInRecord(rec, noExclusions, alias)
 		if err != nil {
 			t.Fatalf("Table-format body should not error, got: %v", err)
 		}
@@ -202,7 +202,7 @@ func TestRewriteNamespaceInRecord(t *testing.T) {
 		body := `{"kind":"Node","metadata":{"name":"worker-1"}}`
 		rec := &capture.Record{ResponseBody: json.RawMessage(body)}
 		orig := string(rec.ResponseBody)
-		changed, err := rewriteNamespaceInRecord(rec, alias)
+		changed, err := rewriteNamespaceInRecord(rec, noExclusions, alias)
 		if err != nil {
 			t.Fatal(err)
 		}

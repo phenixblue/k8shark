@@ -546,6 +546,7 @@
       row('Watch enabled', c.watch_enabled ? 'yes' : 'no');
       if (c.intervals && c.intervals.length) row('Poll interval(s)', c.intervals.join(', '));
       row('Redaction', c.redacted ? ('yes' + ((c.secrets_redacted || c.fields_redacted) ? ' (' + (c.secrets_redacted || 0) + ' secrets, ' + (c.fields_redacted || 0) + ' fields)' : '')) : 'no');
+      row('Anonymization', c.anonymized ? ('yes' + ((c.anonymized_categories && c.anonymized_categories.length) ? ' (' + c.anonymized_categories.join(', ') + ')' : '')) : 'no');
     } else {
       row('Capture config', 'not recorded (captured before this was tracked)');
     }

@@ -4,6 +4,11 @@ import "testing"
 
 func upper(s string) string { return s + "-ALIASED" }
 
+// noExclusions is the excludedFunc used by every test that isn't
+// specifically exercising rule-based exclusion — equivalent to an archive
+// run with no configured AnonymizeRule entries.
+func noExclusions(Category, string, string) bool { return false }
+
 func TestRewriteNamespaceInPath(t *testing.T) {
 	cases := []struct {
 		name   string

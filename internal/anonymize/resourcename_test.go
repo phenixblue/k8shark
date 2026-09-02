@@ -25,7 +25,7 @@ func TestRewriteResourceNameInObject(t *testing.T) {
 			"kind":     "Node",
 			"metadata": map[string]interface{}{"name": "worker-1"},
 		}
-		if !rewriteResourceNameInObject(obj, "Node", allResourceCategories, aliasByCategory) {
+		if !rewriteResourceNameInObject(obj, "Node", allResourceCategories, noExclusions, aliasByCategory) {
 			t.Fatal("want modified=true")
 		}
 		meta := obj["metadata"].(map[string]interface{})
@@ -40,7 +40,7 @@ func TestRewriteResourceNameInObject(t *testing.T) {
 			"metadata": map[string]interface{}{"name": "web-1", "namespace": "prod"},
 			"spec":     map[string]interface{}{"nodeName": "worker-1"},
 		}
-		if !rewriteResourceNameInObject(obj, "Pod", allResourceCategories, aliasByCategory) {
+		if !rewriteResourceNameInObject(obj, "Pod", allResourceCategories, noExclusions, aliasByCategory) {
 			t.Fatal("want modified=true")
 		}
 		meta := obj["metadata"].(map[string]interface{})
@@ -58,7 +58,7 @@ func TestRewriteResourceNameInObject(t *testing.T) {
 			"kind":     "Deployment",
 			"metadata": map[string]interface{}{"name": "web", "namespace": "prod"},
 		}
-		if !rewriteResourceNameInObject(obj, "Deployment", allResourceCategories, aliasByCategory) {
+		if !rewriteResourceNameInObject(obj, "Deployment", allResourceCategories, noExclusions, aliasByCategory) {
 			t.Fatal("want modified=true")
 		}
 		meta := obj["metadata"].(map[string]interface{})
@@ -77,7 +77,7 @@ func TestRewriteResourceNameInObject(t *testing.T) {
 				},
 			},
 		}
-		if !rewriteResourceNameInObject(obj, "Pod", allResourceCategories, aliasByCategory) {
+		if !rewriteResourceNameInObject(obj, "Pod", allResourceCategories, noExclusions, aliasByCategory) {
 			t.Fatal("want modified=true")
 		}
 		meta := obj["metadata"].(map[string]interface{})
@@ -99,7 +99,7 @@ func TestRewriteResourceNameInObject(t *testing.T) {
 				},
 			},
 		}
-		if !rewriteResourceNameInObject(obj, "Node", allResourceCategories, aliasByCategory) {
+		if !rewriteResourceNameInObject(obj, "Node", allResourceCategories, noExclusions, aliasByCategory) {
 			t.Fatal("want modified=true")
 		}
 		addrs := obj["status"].(map[string]interface{})["addresses"].([]interface{})
@@ -120,7 +120,7 @@ func TestRewriteResourceNameInObject(t *testing.T) {
 			"involvedObject": map[string]interface{}{"kind": "Pod", "name": "web-1", "namespace": "prod"},
 			"source":         map[string]interface{}{"component": "kubelet", "host": "worker-1"},
 		}
-		if !rewriteResourceNameInObject(obj, "Event", allResourceCategories, aliasByCategory) {
+		if !rewriteResourceNameInObject(obj, "Event", allResourceCategories, noExclusions, aliasByCategory) {
 			t.Fatal("want modified=true")
 		}
 		involved := obj["involvedObject"].(map[string]interface{})
@@ -147,7 +147,7 @@ func TestRewriteResourceNameInObject(t *testing.T) {
 			"related":          map[string]interface{}{"kind": "ReplicaSet", "name": "web-1-rs", "namespace": "prod"},
 			"deprecatedSource": map[string]interface{}{"component": "kubelet", "host": "worker-1"},
 		}
-		if !rewriteResourceNameInObject(obj, "Event", allResourceCategories, aliasByCategory) {
+		if !rewriteResourceNameInObject(obj, "Event", allResourceCategories, noExclusions, aliasByCategory) {
 			t.Fatal("want modified=true")
 		}
 		regarding := obj["regarding"].(map[string]interface{})
@@ -171,7 +171,7 @@ func TestRewriteResourceNameInObject(t *testing.T) {
 			"spec":     map[string]interface{}{"nodeName": "worker-1"},
 		}
 		enabled := map[Category]bool{CategoryPod: true}
-		if !rewriteResourceNameInObject(obj, "Pod", enabled, aliasByCategory) {
+		if !rewriteResourceNameInObject(obj, "Pod", enabled, noExclusions, aliasByCategory) {
 			t.Fatal("want modified=true for the pod name itself")
 		}
 		meta := obj["metadata"].(map[string]interface{})
@@ -189,14 +189,14 @@ func TestRewriteResourceNameInObject(t *testing.T) {
 			"kind":     "Namespace",
 			"metadata": map[string]interface{}{"name": "prod"},
 		}
-		if rewriteResourceNameInObject(obj, "Namespace", allResourceCategories, aliasByCategory) {
+		if rewriteResourceNameInObject(obj, "Namespace", allResourceCategories, noExclusions, aliasByCategory) {
 			t.Error("want modified=false — Namespace is not a node/pod/workload kind")
 		}
 	})
 
 	t.Run("object with no metadata at all is left alone, not a crash", func(t *testing.T) {
 		obj := map[string]interface{}{"kind": "Status"}
-		if rewriteResourceNameInObject(obj, "Status", allResourceCategories, aliasByCategory) {
+		if rewriteResourceNameInObject(obj, "Status", allResourceCategories, noExclusions, aliasByCategory) {
 			t.Error("want modified=false")
 		}
 	})
@@ -207,7 +207,7 @@ func TestRewriteResourceNameInRecord(t *testing.T) {
 		rec := &capture.Record{
 			ResponseBody: json.RawMessage(`{"kind":"Node","metadata":{"name":"worker-1"}}`),
 		}
-		changed, err := rewriteResourceNameInRecord(rec, allResourceCategories, aliasByCategory)
+		changed, err := rewriteResourceNameInRecord(rec, allResourceCategories, noExclusions, aliasByCategory)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -230,7 +230,7 @@ func TestRewriteResourceNameInRecord(t *testing.T) {
 			{"metadata":{"name":"web-2"},"spec":{"nodeName":"worker-2"}}
 		]}`
 		rec := &capture.Record{ResponseBody: json.RawMessage(body)}
-		changed, err := rewriteResourceNameInRecord(rec, allResourceCategories, aliasByCategory)
+		changed, err := rewriteResourceNameInRecord(rec, allResourceCategories, noExclusions, aliasByCategory)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -265,7 +265,7 @@ func TestRewriteResourceNameInRecord(t *testing.T) {
 		body := `{"kind":"Namespace","metadata":{"name":"prod"}}`
 		rec := &capture.Record{ResponseBody: json.RawMessage(body)}
 		orig := string(rec.ResponseBody)
-		changed, err := rewriteResourceNameInRecord(rec, allResourceCategories, aliasByCategory)
+		changed, err := rewriteResourceNameInRecord(rec, allResourceCategories, noExclusions, aliasByCategory)
 		if err != nil {
 			t.Fatal(err)
 		}

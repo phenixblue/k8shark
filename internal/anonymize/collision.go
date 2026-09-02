@@ -68,3 +68,15 @@ func (c *collisionTracker) Err() error { return c.err }
 // exactly the bookkeeping Result's per-category counts need, and a
 // byproduct of collision detection rather than separate state to maintain.
 func (c *collisionTracker) Count() int { return len(c.aliasOf) }
+
+// Mapping returns a copy of the original-to-alias mapping accumulated so
+// far, for Options.EmitMapping's benefit (archive.go) — a copy, not the
+// live map, so a caller holding onto it can't observe (or corrupt) this
+// tracker's own state as more values are aliased after the copy is taken.
+func (c *collisionTracker) Mapping() map[string]string {
+	m := make(map[string]string, len(c.aliasOf))
+	for k, v := range c.aliasOf {
+		m[k] = v
+	}
+	return m
+}

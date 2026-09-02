@@ -12,6 +12,7 @@ import (
 	"filippo.io/age"
 	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/capture"
+	"github.com/phenixblue/k8shark/internal/config"
 	"github.com/phenixblue/k8shark/internal/store"
 )
 
@@ -112,6 +113,22 @@ func TestArchive_NamespaceConsistentAcrossKindsAndPaths(t *testing.T) {
 
 	wantAlias := NewAliaser(salt).Alias(CategoryNamespace, "prod")
 
+	t.Run("Result.Mapping carries the same original->alias pair, only for requested categories", func(t *testing.T) {
+		nsMapping, ok := result.Mapping[CategoryNamespace]
+		if !ok {
+			t.Fatal("Mapping has no entry for the requested namespace category")
+		}
+		if got, want := nsMapping["prod"], wantAlias; got != want {
+			t.Errorf(`Mapping[namespace]["prod"] = %q, want %q`, got, want)
+		}
+		if len(nsMapping) != 1 {
+			t.Errorf("Mapping[namespace] has %d entries, want 1", len(nsMapping))
+		}
+		if _, ok := result.Mapping[CategoryPod]; ok {
+			t.Error("Mapping has an entry for CategoryPod, which was never requested")
+		}
+	})
+
 	ar, err := archive.Open(dst)
 	if err != nil {
 		t.Fatalf("opening output archive: %v", err)
@@ -194,6 +211,44 @@ func indexKeys(idx capture.Index) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// The output archive's own metadata must record that it was anonymized,
+// and with which categories — mirroring Redacted/SecretsRedacted's
+// identical provenance pattern (internal/redact) — so a later `kshrk
+// inspect` or the UI's capture-info card can say so without guessing.
+func TestArchive_SetsAnonymizedProvenanceMetadata(t *testing.T) {
+	src := buildAnonymizeTestArchive(t, namespaceFixtureRecords())
+	dst := filepath.Join(t.TempDir(), "out.kshrk")
+
+	if _, err := Archive(src, dst, Options{
+		Categories: []Category{CategoryNamespace, CategoryNode},
+		Salt:       []byte("provenance-test-salt"),
+	}); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+
+	ar, err := archive.Open(dst)
+	if err != nil {
+		t.Fatalf("archive.Open: %v", err)
+	}
+	defer ar.Close()
+	meta, err := ar.ReadMetadata()
+	if err != nil {
+		t.Fatalf("ReadMetadata: %v", err)
+	}
+	if !meta.Anonymized {
+		t.Error("meta.Anonymized = false, want true")
+	}
+	want := []string{"namespace", "node"}
+	if len(meta.AnonymizedCategories) != len(want) {
+		t.Fatalf("AnonymizedCategories = %v, want %v", meta.AnonymizedCategories, want)
+	}
+	for i := range want {
+		if meta.AnonymizedCategories[i] != want[i] {
+			t.Errorf("AnonymizedCategories[%d] = %q, want %q", i, meta.AnonymizedCategories[i], want[i])
+		}
+	}
 }
 
 // The sharpest regression risk named in the design plan: proving the output
@@ -1069,5 +1124,191 @@ func TestArchive_DetectsRealURLCollision(t *testing.T) {
 	}
 	if _, statErr := os.Stat(dst); statErr == nil {
 		t.Error("no (corrupt) output file should be left behind on a detected collision")
+	}
+}
+
+// An AnonymizeRule excluding a Namespace object's own metadata.name must
+// leave that specific occurrence alone while every other namespace
+// occurrence in the same archive still gets aliased normally — proving the
+// exclude wiring reaches all the way from Options.Rules through
+// newExcludeMatcher into rewriteNamespaceInObject's actual field-write
+// site, not just that the matcher itself works in isolation
+// (rules_test.go already covers that). The path rewrite
+// (rewriteNamespaceInPath) is a separate, unconditional mechanism not
+// gated by rules at all — only the body's own metadata.name field is
+// excluded here.
+func TestArchive_RuleExcludesSpecificFieldPath(t *testing.T) {
+	src := buildAnonymizeTestArchive(t, namespaceFixtureRecords())
+	dst := filepath.Join(t.TempDir(), "out.kshrk")
+	salt := []byte("rule-exclude-test-salt")
+
+	result, err := Archive(src, dst, Options{
+		Categories: []Category{CategoryNamespace},
+		Salt:       salt,
+		Rules: []config.AnonymizeRule{
+			{Category: "namespace", Kind: "Namespace", FieldPath: "metadata.name", Exclude: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+	// The Pod's metadata.namespace and the Event's namespace occurrences are
+	// NOT excluded (different fieldPath/kind), so "prod" is still seen and
+	// counted there — only the Namespace object's own identity is skipped.
+	if result.NamespacesRenamed != 1 {
+		t.Errorf("NamespacesRenamed = %d, want 1 (still counted via the Pod/Event occurrences)", result.NamespacesRenamed)
+	}
+
+	wantAlias := NewAliaser(salt).Alias(CategoryNamespace, "prod")
+	ar, err := archive.Open(dst)
+	if err != nil {
+		t.Fatalf("opening output archive: %v", err)
+	}
+	defer ar.Close()
+
+	data, err := ar.ReadRecord("/api/v1/namespaces/"+wantAlias, 0)
+	if err != nil {
+		t.Fatalf("ReadRecord: %v", err)
+	}
+	var rec capture.Record
+	if err := json.Unmarshal(data, &rec); err != nil {
+		t.Fatal(err)
+	}
+	var nsObj map[string]interface{}
+	if err := json.Unmarshal(rec.ResponseBody, &nsObj); err != nil {
+		t.Fatal(err)
+	}
+	if got := nsObj["metadata"].(map[string]interface{})["name"]; got != "prod" {
+		t.Errorf("Namespace metadata.name = %v, want unchanged prod — excluded by rule", got)
+	}
+
+	// The Pod's metadata.namespace, a different fieldPath, is still aliased.
+	data, err = ar.ReadRecord("/api/v1/namespaces/"+wantAlias+"/pods", 0)
+	if err != nil {
+		t.Fatalf("ReadRecord: %v", err)
+	}
+	if err := json.Unmarshal(data, &rec); err != nil {
+		t.Fatal(err)
+	}
+	var podList map[string]interface{}
+	if err := json.Unmarshal(rec.ResponseBody, &podList); err != nil {
+		t.Fatal(err)
+	}
+	podNS := podList["items"].([]interface{})[0].(map[string]interface{})["metadata"].(map[string]interface{})["namespace"]
+	if podNS != wantAlias {
+		t.Errorf("Pod metadata.namespace = %v, want %v — not excluded by this rule", podNS, wantAlias)
+	}
+}
+
+// A rule scoped to a Kind that never occurs in the archive must be a
+// complete no-op — proving Kind scoping is exact, not accidentally broad.
+func TestArchive_RuleScopedToWrongKindDoesNotExclude(t *testing.T) {
+	src := buildAnonymizeTestArchive(t, namespaceFixtureRecords())
+	dst := filepath.Join(t.TempDir(), "out.kshrk")
+	salt := []byte("rule-wrong-kind-test-salt")
+
+	_, err := Archive(src, dst, Options{
+		Categories: []Category{CategoryNamespace},
+		Salt:       salt,
+		Rules: []config.AnonymizeRule{
+			// Same fieldPath, but scoped to a Kind that never appears —
+			// must not accidentally suppress the real Namespace occurrence.
+			{Category: "namespace", Kind: "ConfigMap", FieldPath: "metadata.name", Exclude: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+
+	wantAlias := NewAliaser(salt).Alias(CategoryNamespace, "prod")
+	ar, err := archive.Open(dst)
+	if err != nil {
+		t.Fatalf("opening output archive: %v", err)
+	}
+	defer ar.Close()
+	data, err := ar.ReadRecord("/api/v1/namespaces/"+wantAlias, 0)
+	if err != nil {
+		t.Fatalf("ReadRecord: %v", err)
+	}
+	var rec capture.Record
+	if err := json.Unmarshal(data, &rec); err != nil {
+		t.Fatal(err)
+	}
+	var nsObj map[string]interface{}
+	if err := json.Unmarshal(rec.ResponseBody, &nsObj); err != nil {
+		t.Fatal(err)
+	}
+	if got := nsObj["metadata"].(map[string]interface{})["name"]; got != wantAlias {
+		t.Errorf("Namespace metadata.name = %v, want %v — the rule's Kind doesn't match, so it must not exclude", got, wantAlias)
+	}
+}
+
+// A rule excluding a full-tree-scanned category's occurrence (IP) by its
+// computed field path, proving the walkStrings path-tracking added for
+// exclusion actually reaches the IP/URL full-tree scans, not just the
+// schema-aware categories' fixed field-write sites.
+func TestArchive_RuleExcludesFullTreeIPOccurrence(t *testing.T) {
+	body := `{"kind":"Pod","metadata":{"name":"web-1"},"status":{"podIP":"10.1.2.3","hostIP":"10.9.9.9"}}`
+	rec := &capture.Record{
+		ID: "r1", CapturedAt: fixedNow, APIPath: "/api/v1/namespaces/prod/pods/web-1",
+		HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(body),
+	}
+	src := buildAnonymizeTestArchive(t, []*capture.Record{rec})
+	dst := filepath.Join(t.TempDir(), "out.kshrk")
+	salt := []byte("rule-exclude-ip-test-salt")
+
+	_, err := Archive(src, dst, Options{
+		Categories: []Category{CategoryIP},
+		Salt:       salt,
+		Rules: []config.AnonymizeRule{
+			{Category: "ip", Kind: "Pod", FieldPath: "status.podIP", Exclude: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+
+	ar, err := archive.Open(dst)
+	if err != nil {
+		t.Fatalf("opening output archive: %v", err)
+	}
+	defer ar.Close()
+	data, err := ar.ReadRecord("/api/v1/namespaces/prod/pods/web-1", 0)
+	if err != nil {
+		t.Fatalf("ReadRecord: %v", err)
+	}
+	var outRec capture.Record
+	if err := json.Unmarshal(data, &outRec); err != nil {
+		t.Fatal(err)
+	}
+	var podObj map[string]interface{}
+	if err := json.Unmarshal(outRec.ResponseBody, &podObj); err != nil {
+		t.Fatal(err)
+	}
+	status := podObj["status"].(map[string]interface{})
+	if got := status["podIP"]; got != "10.1.2.3" {
+		t.Errorf("status.podIP = %v, want unchanged 10.1.2.3 — excluded by rule", got)
+	}
+	if got := status["hostIP"]; got == "10.9.9.9" {
+		t.Error("status.hostIP was not aliased — the exclude rule for status.podIP must not also suppress a different field path")
+	}
+}
+
+func TestArchive_RejectsInvalidRule(t *testing.T) {
+	src := buildAnonymizeTestArchive(t, namespaceFixtureRecords())
+	dst := filepath.Join(t.TempDir(), "out.kshrk")
+
+	_, err := Archive(src, dst, Options{
+		Categories: []Category{CategoryNamespace},
+		Salt:       []byte("s"),
+		Rules: []config.AnonymizeRule{
+			{Category: "namespace", FieldPath: "metadata.name", Exclude: false},
+		},
+	})
+	if err == nil {
+		t.Fatal("want an error for a rule with Exclude: false")
+	}
+	if _, statErr := os.Stat(dst); statErr == nil {
+		t.Error("no output file should be left behind on a rejected rule")
 	}
 }

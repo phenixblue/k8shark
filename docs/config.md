@@ -556,6 +556,71 @@ kshrk redact capture.kshrk --out redacted.kshrk --config k8shark.yaml
 
 ---
 
+## Anonymize
+
+`kshrk anonymize` replaces every occurrence of a value it recognizes — a namespace name, a node's IP, an image registry host — with a stable, deterministic alias, consistently across the whole archive. This is different from redaction: redaction replaces one exact field path with a fixed constant; anonymize replaces every occurrence of a *value*, using an alias derived from a salt (never stored in this config — see [Naming convention](#naming-convention) and the CLI's `--anonymize-salt-file` flag).
+
+Categories and field-path exclusion rules live in a top-level `anonymize` block and are applied when running `kshrk anonymize --config`.
+
+### `anonymize` fields
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `categories` | list of strings | `[]` | Categories to anonymize: `namespace`, `node`, `pod`, `workload`, `ip`, `url`, `image`. Merged with any `--categories` flags. |
+| `rules` | list | `[]` | Field-path exclusions layered on top of `categories`. See below. |
+| `emitMapping` | bool | `false` | Write the original-to-alias mapping alongside the output archive (same as `--emit-mapping` on the CLI). |
+| `mappingPath` | string | *(computed)* | Override the mapping file's path. |
+
+### Anonymize rule fields
+
+Anonymize rules are **exclusions only** — a value's category membership is already determined automatically by where and how it occurs, so there is no separate "include" action. Every rule must set `exclude: true`; `kshrk anonymize` rejects a config where it isn't.
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `category` | string | yes | The category this exclusion applies to (`namespace`, `node`, `pod`, `workload`, `ip`, `url`, or `image`). |
+| `fieldPath` | string | yes | The field's path from the object root, e.g. `metadata.name`, `spec.containers[*].image`, `status.podIP`. Every array index is written as the wildcard `[*]` — never a literal index — since a rule targets a kind of occurrence, not one specific array element. |
+| `kind` | string | no | Resource kind to match, e.g. `Pod`, `Node`. Use `*` or omit to match every kind the category applies to. |
+| `exclude` | bool | yes | Must be `true`. |
+
+### Example: unified config with anonymize
+
+```yaml
+duration: 10m
+output: ./capture.kshrk
+kubeconfig: ~/.kube/config
+
+resources:
+  - all: true
+
+anonymize:
+  categories:
+    - namespace
+    - node
+    - ip
+
+  rules:
+    # A known, non-sensitive reserved IP that should stay readable
+    - category: ip
+      kind: Pod
+      fieldPath: status.podIP
+      exclude: true
+
+    # Leave a specific Node's own identity alone, but still alias its
+    # appearance elsewhere (spec.nodeName, Event source.host, ...)
+    - category: node
+      kind: Node
+      fieldPath: metadata.name
+      exclude: true
+```
+
+Apply the same categories and rules to an existing archive:
+
+```bash
+kshrk anonymize capture.kshrk --out safe.kshrk --config k8shark.yaml
+```
+
+---
+
 ## Duration and interval units
 
 Both `duration` and `interval` accept Go duration strings:

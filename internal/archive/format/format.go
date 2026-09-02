@@ -79,6 +79,14 @@ type CaptureMetadata struct {
 	// ciphertext and so is only readable after decryption). Omitted for
 	// plaintext archives.
 	Encrypted bool `json:"encrypted,omitempty"`
+	// Anonymized and AnonymizedCategories mirror Redacted/SecretsRedacted's
+	// provenance pattern for `kshrk anonymize` (#137): Anonymized is true
+	// for any archive that went through an anonymize pass, and
+	// AnonymizedCategories names which categories (e.g. "namespace", "ip")
+	// were actually applied. Omitted for archives that were never
+	// anonymized.
+	Anonymized           bool     `json:"anonymized,omitempty"`
+	AnonymizedCategories []string `json:"anonymized_categories,omitempty"`
 }
 
 // IndexEntry maps an API path to the ordered list of record sequence numbers.

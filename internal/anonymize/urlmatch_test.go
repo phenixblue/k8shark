@@ -104,7 +104,7 @@ func TestRewriteURLInObject(t *testing.T) {
 				},
 			},
 		}
-		if !rewriteURLInObject(obj, "Ingress", upper) {
+		if !rewriteURLInObject(obj, "Ingress", noExclusions, upper) {
 			t.Fatal("want modified=true")
 		}
 		spec := obj["spec"].(map[string]interface{})
@@ -126,7 +126,7 @@ func TestRewriteURLInObject(t *testing.T) {
 			"kind": "Service",
 			"spec": map[string]interface{}{"externalName": "db.upstream.example.com", "type": "ExternalName"},
 		}
-		if !rewriteURLInObject(obj, "Service", upper) {
+		if !rewriteURLInObject(obj, "Service", noExclusions, upper) {
 			t.Fatal("want modified=true")
 		}
 		spec := obj["spec"].(map[string]interface{})
@@ -143,14 +143,14 @@ func TestRewriteURLInObject(t *testing.T) {
 			"kind": "Service",
 			"spec": map[string]interface{}{"clusterIP": "10.0.0.5"},
 		}
-		if rewriteURLInObject(obj, "Service", upper) {
+		if rewriteURLInObject(obj, "Service", noExclusions, upper) {
 			t.Error("want modified=false")
 		}
 	})
 
 	t.Run("an object with no spec at all is left alone, not a crash", func(t *testing.T) {
 		obj := map[string]interface{}{"kind": "Status"}
-		if rewriteURLInObject(obj, "Status", upper) {
+		if rewriteURLInObject(obj, "Status", noExclusions, upper) {
 			t.Error("want modified=false")
 		}
 	})
@@ -161,7 +161,7 @@ func TestRewriteURLInRecord(t *testing.T) {
 		body := `{"kind":"Ingress","metadata":{"annotations":{"cert-manager.io/issuer-url":"https://acme.example.com/directory"}},
 			"spec":{"rules":[{"host":"app.example.com"}]}}`
 		rec := &capture.Record{ResponseBody: json.RawMessage(body)}
-		changed, err := rewriteURLInRecord(rec, upper)
+		changed, err := rewriteURLInRecord(rec, noExclusions, upper)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -188,7 +188,7 @@ func TestRewriteURLInRecord(t *testing.T) {
 			{"metadata":{"name":"b"},"spec":{"rules":[{"host":"b.example.com"}]}}
 		]}`
 		rec := &capture.Record{ResponseBody: json.RawMessage(body)}
-		changed, err := rewriteURLInRecord(rec, upper)
+		changed, err := rewriteURLInRecord(rec, noExclusions, upper)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -211,7 +211,7 @@ func TestRewriteURLInRecord(t *testing.T) {
 		body := `{"kind":"Namespace","metadata":{"name":"prod"}}`
 		rec := &capture.Record{ResponseBody: json.RawMessage(body)}
 		orig := string(rec.ResponseBody)
-		changed, err := rewriteURLInRecord(rec, upper)
+		changed, err := rewriteURLInRecord(rec, noExclusions, upper)
 		if err != nil {
 			t.Fatal(err)
 		}

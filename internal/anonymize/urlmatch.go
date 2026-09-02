@@ -75,7 +75,7 @@ func spliceURLHosts(s string, alias func(string) string) (string, bool) {
 // not here — these two mechanisms are mutually exclusive by construction
 // (one requires a scheme prefix, the other only ever looks at fields that
 // never have one), so there's no risk of double-aliasing the same value.
-func rewriteURLInObject(obj map[string]interface{}, kind string, alias func(string) string) bool {
+func rewriteURLInObject(obj map[string]interface{}, kind string, excluded excludedFunc, alias func(string) string) bool {
 	modified := false
 
 	spec, ok := obj["spec"].(map[string]interface{})
@@ -85,7 +85,7 @@ func rewriteURLInObject(obj map[string]interface{}, kind string, alias func(stri
 
 	switch kind {
 	case "Ingress":
-		if rules, ok := spec["rules"].([]interface{}); ok {
+		if rules, ok := spec["rules"].([]interface{}); ok && !excluded(CategoryURL, kind, "spec.rules[*].host") {
 			for _, raw := range rules {
 				rule, ok := raw.(map[string]interface{})
 				if !ok {
@@ -97,7 +97,7 @@ func rewriteURLInObject(obj map[string]interface{}, kind string, alias func(stri
 				}
 			}
 		}
-		if tlsEntries, ok := spec["tls"].([]interface{}); ok {
+		if tlsEntries, ok := spec["tls"].([]interface{}); ok && !excluded(CategoryURL, kind, "spec.tls[*].hosts[*]") {
 			for _, raw := range tlsEntries {
 				entry, ok := raw.(map[string]interface{})
 				if !ok {
@@ -118,7 +118,7 @@ func rewriteURLInObject(obj map[string]interface{}, kind string, alias func(stri
 			}
 		}
 	case "Service":
-		if externalName, ok := spec["externalName"].(string); ok && externalName != "" {
+		if externalName, ok := spec["externalName"].(string); ok && externalName != "" && !excluded(CategoryURL, kind, "spec.externalName") {
 			spec["externalName"] = alias(externalName)
 			modified = true
 		}
@@ -129,19 +129,35 @@ func rewriteURLInObject(obj map[string]interface{}, kind string, alias func(stri
 
 // rewriteURLInRecord decodes rec's body and rewrites every URL/hostname
 // occurrence it recognizes: the bare-hostname schema-aware fields
-// (rewriteURLInObject, list-aware the same way rewriteNamespaceInRecord and
-// rewriteResourceNameInRecord are) plus a full-tree walk for
-// scheme://host substrings anywhere in the body (webhook URLs,
-// cert-manager/external-dns annotations, status condition messages).
-func rewriteURLInRecord(rec *capture.Record, alias func(string) string) (bool, error) {
+// (rewriteURLInObject) plus a full-tree walk for scheme://host substrings
+// anywhere else in the body (webhook URLs, cert-manager/external-dns
+// annotations, status condition messages).
+//
+// Both passes run per-item for a List response, using each item's own
+// Kind — not once over the whole record body — so an exclude rule scoped
+// to a Kind applies correctly to a List response's items[] too, the same
+// requirement rewriteIPInRecord has (see its own doc comment).
+func rewriteURLInRecord(rec *capture.Record, excluded excludedFunc, alias func(string) string) (bool, error) {
 	var obj map[string]interface{}
 	if err := json.Unmarshal(rec.ResponseBody, &obj); err != nil {
 		return false, nil
 	}
 
 	kind, _ := obj["kind"].(string)
-	modified := false
+	rewriteItem := func(item map[string]interface{}, itemKind string) bool {
+		itemModified := rewriteURLInObject(item, itemKind, excluded, alias)
+		if walkStrings(item, "", func(path, s string) (string, bool) {
+			if excluded(CategoryURL, itemKind, path) {
+				return "", false
+			}
+			return spliceURLHosts(s, alias)
+		}) {
+			itemModified = true
+		}
+		return itemModified
+	}
 
+	modified := false
 	if strings.HasSuffix(kind, "List") {
 		items, _ := obj["items"].([]interface{})
 		itemKind := strings.TrimSuffix(kind, "List")
@@ -154,18 +170,12 @@ func rewriteURLInRecord(rec *capture.Record, alias func(string) string) (bool, e
 			if k, ok := item["kind"].(string); ok && k != "" {
 				ik = k
 			}
-			if rewriteURLInObject(item, ik, alias) {
+			if rewriteItem(item, ik) {
 				items[i] = item
 				modified = true
 			}
 		}
-	} else if rewriteURLInObject(obj, kind, alias) {
-		modified = true
-	}
-
-	if walkStrings(interface{}(obj), func(s string) (string, bool) {
-		return spliceURLHosts(s, alias)
-	}) {
+	} else if rewriteItem(obj, kind) {
 		modified = true
 	}
 

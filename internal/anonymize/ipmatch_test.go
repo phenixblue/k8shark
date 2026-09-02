@@ -12,7 +12,7 @@ func TestRewriteIPInRecord(t *testing.T) {
 		rec := &capture.Record{
 			ResponseBody: json.RawMessage(`{"kind":"Pod","status":{"podIP":"10.1.2.3"}}`),
 		}
-		changed, err := rewriteIPInRecord(rec, upper)
+		changed, err := rewriteIPInRecord(rec, noExclusions, upper)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -32,7 +32,7 @@ func TestRewriteIPInRecord(t *testing.T) {
 		rec := &capture.Record{
 			ResponseBody: json.RawMessage(`{"kind":"Pod","status":{"podIPs":[{"ip":"10.1.2.3"},{"ip":"fd00::1"}]}}`),
 		}
-		changed, err := rewriteIPInRecord(rec, upper)
+		changed, err := rewriteIPInRecord(rec, noExclusions, upper)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -63,7 +63,7 @@ func TestRewriteIPInRecord(t *testing.T) {
 			ResponseBody: json.RawMessage(`{"kind":"Pod","metadata":{"annotations":{"note":"reachable at 10.1.2.3 for now"}}}`),
 		}
 		orig := string(rec.ResponseBody)
-		changed, err := rewriteIPInRecord(rec, upper)
+		changed, err := rewriteIPInRecord(rec, noExclusions, upper)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -79,7 +79,7 @@ func TestRewriteIPInRecord(t *testing.T) {
 		rec := &capture.Record{
 			ResponseBody: json.RawMessage(`{"kind":"Pod","metadata":{"annotations":{"external-ip":"203.0.113.5"}}}`),
 		}
-		changed, err := rewriteIPInRecord(rec, upper)
+		changed, err := rewriteIPInRecord(rec, noExclusions, upper)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -101,7 +101,7 @@ func TestRewriteIPInRecord(t *testing.T) {
 			ResponseBody: json.RawMessage(`{"kind":"Node","spec":{"podCIDR":"10.244.0.0/16"}}`),
 		}
 		orig := string(rec.ResponseBody)
-		changed, err := rewriteIPInRecord(rec, upper)
+		changed, err := rewriteIPInRecord(rec, noExclusions, upper)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -117,7 +117,7 @@ func TestRewriteIPInRecord(t *testing.T) {
 		body := `{"kind":"Namespace","metadata":{"name":"prod"}}`
 		rec := &capture.Record{ResponseBody: json.RawMessage(body)}
 		orig := string(rec.ResponseBody)
-		changed, err := rewriteIPInRecord(rec, upper)
+		changed, err := rewriteIPInRecord(rec, noExclusions, upper)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -137,7 +137,7 @@ func TestRewriteIPInRecord(t *testing.T) {
 		// scalar types decoded generically — walkStrings still visits a
 		// string cell like any other string leaf, so this is caught too,
 		// unlike the schema-aware categories' documented Table-cell gap.
-		changed, err := rewriteIPInRecord(rec, upper)
+		changed, err := rewriteIPInRecord(rec, noExclusions, upper)
 		if err != nil {
 			t.Fatal(err)
 		}
