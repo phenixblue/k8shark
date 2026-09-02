@@ -321,8 +321,13 @@ func TestArchive_EventNamespaceReferenceAliasesName(t *testing.T) {
 		 "involvedObject":{"kind":"Namespace","name":"prod"},
 		 "message":"Namespace prod is active"}
 	]}`
+	// Appended under the *same* path as namespaceFixtureRecords' own events
+	// record (real Kubernetes API paths never have an "events2" resource
+	// type) — buildAnonymizeTestArchive assigns sequence numbers per path,
+	// so this lands as seq 1 alongside the fixture's own seq-0 record, the
+	// same way a real capture accumulates multiple polls of one endpoint.
 	records := append(namespaceFixtureRecords(), &capture.Record{
-		ID: "r5", CapturedAt: fixedNow, APIPath: "/api/v1/namespaces/prod/events2",
+		ID: "r5", CapturedAt: fixedNow, APIPath: "/api/v1/namespaces/prod/events",
 		HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(eventListBody),
 	})
 	src := buildAnonymizeTestArchive(t, records)
@@ -339,7 +344,7 @@ func TestArchive_EventNamespaceReferenceAliasesName(t *testing.T) {
 		t.Fatalf("archive.Open: %v", err)
 	}
 	defer ar.Close()
-	data, err := ar.ReadRecord("/api/v1/namespaces/"+wantAlias+"/events2", 0)
+	data, err := ar.ReadRecord("/api/v1/namespaces/"+wantAlias+"/events", 1)
 	if err != nil {
 		t.Fatalf("ReadRecord: %v", err)
 	}
