@@ -11,8 +11,8 @@ package anonymize
 //
 // Namespace was bumped from 2 to 3 words after #359: a real 76-namespace
 // OpenShift cluster hit a same-category collision on 8 of the first 10 salt
-// attempts under the 2-word (64x64=4096-combination) encoding, matching the
-// birthday-bound math below almost exactly. At 3 words (64^3=262,144
+// attempts under the 2-word (64x64=4096-combination) encoding, matching
+// collision.go's own birthday-bound math almost exactly. At 3 words (64^3=262,144
 // combinations), the expected collision count at 76 namespaces drops from
 // ~0.7 to ~0.011 — a first-attempt success becomes the overwhelmingly common
 // case instead of a near coin flip.
