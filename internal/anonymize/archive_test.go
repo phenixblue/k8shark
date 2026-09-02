@@ -307,6 +307,61 @@ func TestArchive_RoundTripReadableViaStore(t *testing.T) {
 	}
 }
 
+// Found missing against a real cluster capture, not constructed from first
+// principles: a namespace-lifecycle Event's involvedObject.kind is
+// "Namespace", and namespace.go's Event handling previously only ever
+// aliased a reference's "namespace" field, never its "name" field — the
+// one a Namespace reference actually needs, since a Namespace has no
+// membership of its own. This end-to-end-checks the fix through the full
+// Archive() path, not just rewriteNamespaceInObject in isolation
+// (namespace_test.go covers that).
+func TestArchive_EventNamespaceReferenceAliasesName(t *testing.T) {
+	eventListBody := `{"kind":"EventList","apiVersion":"v1","items":[
+		{"metadata":{"name":"prod.abc","namespace":"prod"},
+		 "involvedObject":{"kind":"Namespace","name":"prod"},
+		 "message":"Namespace prod is active"}
+	]}`
+	// Appended under the *same* path as namespaceFixtureRecords' own events
+	// record (real Kubernetes API paths never have an "events2" resource
+	// type) — buildAnonymizeTestArchive assigns sequence numbers per path,
+	// so this lands as seq 1 alongside the fixture's own seq-0 record, the
+	// same way a real capture accumulates multiple polls of one endpoint.
+	records := append(namespaceFixtureRecords(), &capture.Record{
+		ID: "r5", CapturedAt: fixedNow, APIPath: "/api/v1/namespaces/prod/events",
+		HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(eventListBody),
+	})
+	src := buildAnonymizeTestArchive(t, records)
+	dst := filepath.Join(t.TempDir(), "out.kshrk")
+	salt := []byte("event-namespace-reference-test-salt")
+
+	if _, err := Archive(src, dst, Options{Categories: []Category{CategoryNamespace}, Salt: salt}); err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+
+	wantAlias := NewAliaser(salt).Alias(CategoryNamespace, "prod")
+	ar, err := archive.Open(dst)
+	if err != nil {
+		t.Fatalf("archive.Open: %v", err)
+	}
+	defer ar.Close()
+	data, err := ar.ReadRecord("/api/v1/namespaces/"+wantAlias+"/events", 1)
+	if err != nil {
+		t.Fatalf("ReadRecord: %v", err)
+	}
+	var rec capture.Record
+	if err := json.Unmarshal(data, &rec); err != nil {
+		t.Fatal(err)
+	}
+	var eventList map[string]interface{}
+	if err := json.Unmarshal(rec.ResponseBody, &eventList); err != nil {
+		t.Fatal(err)
+	}
+	involved := eventList["items"].([]interface{})[0].(map[string]interface{})["involvedObject"].(map[string]interface{})
+	if got := involved["name"]; got != wantAlias {
+		t.Errorf("involvedObject.name = %v, want %v — the real bug: this leaked the unaliased namespace name", got, wantAlias)
+	}
+}
+
 // Running Archive twice over the identical source with the identical salt
 // must produce byte-identical output — this is the property the whole
 // single-pass, stateless design in alias.go exists to guarantee. Comparing
