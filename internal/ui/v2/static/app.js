@@ -545,11 +545,18 @@
       row('Dynamic discovery', c.auto_discovered ? 'yes' : 'no');
       row('Watch enabled', c.watch_enabled ? 'yes' : 'no');
       if (c.intervals && c.intervals.length) row('Poll interval(s)', c.intervals.join(', '));
-      row('Redaction', c.redacted ? ('yes' + ((c.secrets_redacted || c.fields_redacted) ? ' (' + (c.secrets_redacted || 0) + ' secrets, ' + (c.fields_redacted || 0) + ' fields)' : '')) : 'no');
-      row('Anonymization', c.anonymized ? ('yes' + ((c.anonymized_categories && c.anonymized_categories.length) ? ' (' + c.anonymized_categories.join(', ') + ')' : '')) : 'no');
     } else {
       row('Capture config', 'not recorded (captured before this was tracked)');
     }
+    // Redaction/Anonymization are independent of has_config_meta: both are
+    // written by a later rewrite pass (kshrk redact / kshrk anonymize), not
+    // by the original capture, so an archive captured before the
+    // config-fact fields existed can still be correctly redacted or
+    // anonymized afterward — the rewrite carries the source's own
+    // uncompressed_bytes (and hence has_config_meta) through unchanged, so
+    // gating these two rows on it would hide real provenance data.
+    row('Redaction', c.redacted ? ('yes' + ((c.secrets_redacted || c.fields_redacted) ? ' (' + (c.secrets_redacted || 0) + ' secrets, ' + (c.fields_redacted || 0) + ' fields)' : '')) : 'no');
+    row('Anonymization', c.anonymized ? ('yes' + ((c.anonymized_categories && c.anonymized_categories.length) ? ' (' + c.anonymized_categories.join(', ') + ')' : '')) : 'no');
     row('Archive', c.archive_path);
     return grid;
   }
