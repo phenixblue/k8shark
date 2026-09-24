@@ -75,6 +75,14 @@ https://github.com/phenixblue/k8shark/issues/137.
 Categories and field-path exclusion rules may also be loaded from a config
 file's anonymize block via --config; see docs/config.md.
 
+By default, a value is only anonymized at the field paths each category
+already knows to look at. --full-sweep additionally replaces any substring
+occurrence of a discovered namespace/node/pod/workload/ip/url value anywhere
+else in a record's text (an Event message, an escaped-JSON-string
+annotation, an unrecognized CRD's field) -- slower, and opt-in, since
+matching a short or common value as a substring carries a real
+false-positive risk. See https://github.com/phenixblue/k8shark/issues/361.
+
 ```
 kshrk anonymize <capture.kshrk> --categories <category> [--out <anonymized.kshrk>] [flags]
 ```
@@ -102,6 +110,9 @@ kshrk anonymize <capture.kshrk> --categories <category> [--out <anonymized.kshrk
 
   # Anonymize and write to a chosen path
   kshrk anonymize capture.kshrk --out safe.kshrk --categories namespace
+
+  # Also catch occurrences outside known field paths (slower, opt-in)
+  kshrk anonymize capture.kshrk --categories namespace --categories ip --full-sweep
 ```
 
 ### Options
@@ -116,6 +127,7 @@ kshrk anonymize <capture.kshrk> --categories <category> [--out <anonymized.kshrk
       --encrypt-passphrase-file string   read the encryption passphrase from this file (first line) instead of prompting
       --encrypt-recipient stringArray    age recipient public key (age1...) to encrypt to (repeatable); mutually exclusive with passphrase encryption
       --encrypt-recipients-file string   file of age recipient public keys (one per line) to encrypt to
+      --full-sweep                       also replace any substring occurrence of a discovered namespace/node/pod/workload/ip/url value anywhere in a record's text, not just at known field paths (slower, opt-in; see #361)
   -h, --help                             help for anonymize
       --mapping-path string              path for the mapping file (default: <out>.mapping.json, or .mapping.json.age when encrypted)
       --out string                       output archive path (default: <in>-anonymized.kshrk)

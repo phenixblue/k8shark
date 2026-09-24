@@ -73,6 +73,15 @@ type Options struct {
 	// must have Exclude set; Archive rejects the whole run otherwise (see
 	// newExcludeMatcher).
 	Rules []config.AnonymizeRule
+	// FullSweep enables a second, opt-in pass (see sweep.go's own doc
+	// comment) that replaces any substring occurrence of an
+	// already-discovered namespace/node/pod/workload/ip/url value with its
+	// alias, anywhere in a record's string content — not just at the known
+	// field paths the schema-aware/full-tree matchers cover. Off by
+	// default: it doubles the archive read cost (a full collection pass
+	// before the normal rewrite pass) and carries a real false-positive
+	// risk for short or common values (see #361).
+	FullSweep bool
 }
 
 // SchemaVersion is the version of the `kshrk anonymize -o json` output
@@ -104,6 +113,23 @@ type Result struct {
 	// RegistriesRenamed counts distinct container-image registry hosts
 	// (the leading host[:port] segment of an image reference).
 	RegistriesRenamed int `json:"registries_renamed"`
+	// SweepOccurrencesFound counts additional occurrences rewritten by the
+	// opt-in full-sweep pass (Options.FullSweep) — a value already caught
+	// by the schema-aware/full-tree matchers above doesn't count again
+	// here; this is purely the substring occurrences those matchers would
+	// have missed (a name in an Event message, a value embedded in an
+	// escaped-JSON-string annotation like
+	// kubectl.kubernetes.io/last-applied-configuration). Always 0 when
+	// FullSweep was not requested.
+	SweepOccurrencesFound int `json:"sweep_occurrences_found"`
+	// SweepAmbiguousSkipped counts distinct original values that were
+	// eligible for the full-sweep pass but excluded from it because the
+	// same literal string was a candidate under more than one category
+	// with a different alias (e.g. a namespace and a pod both named
+	// "prod") — left untouched rather than guessed at, matching this
+	// package's existing collision-detection discipline. Always 0 when
+	// FullSweep was not requested.
+	SweepAmbiguousSkipped int `json:"sweep_ambiguous_skipped"`
 	// OutputPath and OutputBytes are populated by the CLI layer (cmd/anonymize.go),
 	// not by Archive itself — Archive doesn't know its own caller's chosen
 	// output path or need to stat the file it just finished writing.
@@ -140,6 +166,12 @@ type Result struct {
 // proven out risked regressing a shipped, fuzz-tested command for an
 // unproven second caller. Revisit sharing once this package's shape is
 // settled across more categories.
+//
+// Single streaming pass, with one opt-in exception: Options.FullSweep adds
+// a read-only collection pass over the whole archive *before* the write
+// pass below (and before the output archive is even created) — see that
+// pass's own comment for why a sweep can't be done in one pass the way
+// every other category here can.
 func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 	if len(opts.Categories) == 0 {
 		return Result{}, fmt.Errorf("anonymize: no categories requested")
@@ -286,6 +318,125 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 		return nil
 	}
 
+	// applyRecordRewrites runs every requested category's schema-aware/
+	// full-tree matcher against rec, in place. Shared between the two
+	// passes FullSweep needs (see below): pass 1 calls this on a throwaway
+	// record purely for its tracker side effects, pass 2 (rewriteEntryRecords)
+	// calls the identical code on the record that actually gets written —
+	// one list, not two hand-copied ones that could drift apart.
+	applyRecordRewrites := func(rec *capture.Record, apiPath string, seq int) error {
+		if doNamespace {
+			if _, err := rewriteNamespaceInRecord(rec, excluded, namespaceAlias); err != nil {
+				return fmt.Errorf("anonymizing record %s seq %d: %w", apiPath, seq, err)
+			}
+		}
+		if doResourceName {
+			if _, err := rewriteResourceNameInRecord(rec, enabledResource, excluded, resourceAlias); err != nil {
+				return fmt.Errorf("anonymizing record %s seq %d: %w", apiPath, seq, err)
+			}
+		}
+		if doIP {
+			if _, err := rewriteIPInRecord(rec, excluded, ipAlias); err != nil {
+				return fmt.Errorf("anonymizing record %s seq %d: %w", apiPath, seq, err)
+			}
+		}
+		if doURL {
+			if _, err := rewriteURLInRecord(rec, excluded, urlAlias); err != nil {
+				return fmt.Errorf("anonymizing record %s seq %d: %w", apiPath, seq, err)
+			}
+		}
+		if doImage {
+			if _, err := rewriteImageRegistryInRecord(rec, excluded, imageAlias); err != nil {
+				return fmt.Errorf("anonymizing record %s seq %d: %w", apiPath, seq, err)
+			}
+		}
+		return nil
+	}
+
+	// applyPathRewrites is the same namespace-then-resource-name path chain
+	// the main write loop below uses, factored out so FullSweep's
+	// collection pass can trigger the same Alias() calls (for its tracker
+	// side effects) without needing the resulting string for anything.
+	applyPathRewrites := func(apiPath string) (string, error) {
+		newAPIPath := apiPath
+		if doNamespace {
+			if rewritten, ok := rewriteNamespaceInPath(apiPath, namespaceAlias); ok {
+				newAPIPath = rewritten
+			}
+			if err := firstCollisionErr(); err != nil {
+				return "", err
+			}
+		}
+		if doResourceName {
+			if rewritten, ok := rewriteResourceNameInPath(newAPIPath, enabledResource, resourceAlias); ok {
+				newAPIPath = rewritten
+			}
+			if err := firstCollisionErr(); err != nil {
+				return "", err
+			}
+		}
+		return newAPIPath, nil
+	}
+
+	// FullSweep needs the *complete* candidate set (every distinct original
+	// value anywhere in the archive) before it can safely sweep any single
+	// record — a value first seen in record #300 must still be caught in
+	// record #5. This collection-only pass runs the exact same matchers the
+	// write pass below runs, on throwaway record copies, purely for their
+	// tracker side effects — and runs before the output archive is even
+	// created, so a collision found here never leaves a partial file behind.
+	// See sweep.go's own doc comment for what the resulting candidate set is
+	// used for.
+	var sweepCandidates *sweepCandidateSet
+	if opts.FullSweep {
+		for _, apiPath := range sortedKeys(map[string]*capture.IndexEntry(idx)) {
+			entry := idx[apiPath]
+			if _, err := applyPathRewrites(apiPath); err != nil {
+				return Result{}, err
+			}
+			for _, seq := range entry.Seqs {
+				data, err := ar.ReadRecord(apiPath, seq)
+				if err != nil {
+					return Result{}, fmt.Errorf("reading record %s seq %d: %w", apiPath, seq, err)
+				}
+				var rec capture.Record
+				if err := json.Unmarshal(data, &rec); err != nil {
+					return Result{}, fmt.Errorf("parsing record %s seq %d: %w", apiPath, seq, err)
+				}
+				if err := applyRecordRewrites(&rec, apiPath, seq); err != nil {
+					return Result{}, err
+				}
+				if err := firstCollisionErr(); err != nil {
+					return Result{}, err
+				}
+			}
+		}
+		for _, apiPath := range sortedKeys(map[string]*capture.WatchIndexEntry(wi)) {
+			wiEntry := wi[apiPath]
+			if _, err := applyPathRewrites(apiPath); err != nil {
+				return Result{}, err
+			}
+			for _, seq := range wiEntry.Seqs {
+				data, err := ar.ReadRecord(apiPath, seq)
+				if err != nil {
+					return Result{}, fmt.Errorf("reading watch record %s seq %d: %w", apiPath, seq, err)
+				}
+				var rec capture.Record
+				if err := json.Unmarshal(data, &rec); err != nil {
+					return Result{}, fmt.Errorf("parsing watch record %s seq %d: %w", apiPath, seq, err)
+				}
+				if err := applyRecordRewrites(&rec, apiPath, seq); err != nil {
+					return Result{}, err
+				}
+				if err := firstCollisionErr(); err != nil {
+					return Result{}, err
+				}
+			}
+		}
+		sweepCandidates = buildSweepCandidates(namespaceTracker, nodeTracker, podTracker, workloadTracker, ipTracker, urlTracker)
+	}
+	var sweepOccurrences int
+
 	var sw *archive.StreamWriter
 	if len(opts.Recipients) > 0 {
 		sw, err = archive.NewEncryptedStreamWriter(dstPath, opts.Recipients)
@@ -346,29 +497,24 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 				return nil, fmt.Errorf("parsing record %s seq %d: %w", apiPath, seq, err)
 			}
 
-			if doNamespace {
-				if _, err := rewriteNamespaceInRecord(&rec, excluded, namespaceAlias); err != nil {
-					return nil, fmt.Errorf("anonymizing record %s seq %d: %w", apiPath, seq, err)
-				}
+			if err := applyRecordRewrites(&rec, apiPath, seq); err != nil {
+				return nil, err
 			}
-			if doResourceName {
-				if _, err := rewriteResourceNameInRecord(&rec, enabledResource, excluded, resourceAlias); err != nil {
-					return nil, fmt.Errorf("anonymizing record %s seq %d: %w", apiPath, seq, err)
+			// Runs after the schema-aware/full-tree matchers above, not
+			// before: by the time the sweep scans a leaf, any occurrence
+			// those matchers already know how to find has already been
+			// replaced with its alias — so the sweep only ever finds and
+			// counts occurrences those matchers didn't already know to
+			// look for (SweepOccurrencesFound stays a clean "additional
+			// recall" number, not inflated by double-counting the same
+			// occurrence twice).
+			if sweepCandidates != nil {
+				changed, occurrences, err := sweepRecord(&rec, sweepCandidates, excluded)
+				if err != nil {
+					return nil, fmt.Errorf("sweeping record %s seq %d: %w", apiPath, seq, err)
 				}
-			}
-			if doIP {
-				if _, err := rewriteIPInRecord(&rec, excluded, ipAlias); err != nil {
-					return nil, fmt.Errorf("anonymizing record %s seq %d: %w", apiPath, seq, err)
-				}
-			}
-			if doURL {
-				if _, err := rewriteURLInRecord(&rec, excluded, urlAlias); err != nil {
-					return nil, fmt.Errorf("anonymizing record %s seq %d: %w", apiPath, seq, err)
-				}
-			}
-			if doImage {
-				if _, err := rewriteImageRegistryInRecord(&rec, excluded, imageAlias); err != nil {
-					return nil, fmt.Errorf("anonymizing record %s seq %d: %w", apiPath, seq, err)
+				if changed {
+					sweepOccurrences += occurrences
 				}
 			}
 			// Keep the record's own APIPath field in sync with wherever it's
@@ -570,15 +716,22 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 		}
 	}
 
+	sweepAmbiguousSkipped := 0
+	if sweepCandidates != nil {
+		sweepAmbiguousSkipped = sweepCandidates.ambiguousSkipped
+	}
+
 	return Result{
-		SchemaVersion:     SchemaVersion,
-		NamespacesRenamed: namespaceTracker.Count(),
-		NodesRenamed:      nodeTracker.Count(),
-		PodsRenamed:       podTracker.Count(),
-		WorkloadsRenamed:  workloadTracker.Count(),
-		IPsRenamed:        ipTracker.Count(),
-		HostsRenamed:      urlTracker.Count(),
-		RegistriesRenamed: imageTracker.Count(),
-		Mapping:           mapping,
+		SchemaVersion:         SchemaVersion,
+		NamespacesRenamed:     namespaceTracker.Count(),
+		NodesRenamed:          nodeTracker.Count(),
+		PodsRenamed:           podTracker.Count(),
+		WorkloadsRenamed:      workloadTracker.Count(),
+		IPsRenamed:            ipTracker.Count(),
+		HostsRenamed:          urlTracker.Count(),
+		RegistriesRenamed:     imageTracker.Count(),
+		SweepOccurrencesFound: sweepOccurrences,
+		SweepAmbiguousSkipped: sweepAmbiguousSkipped,
+		Mapping:               mapping,
 	}, nil
 }

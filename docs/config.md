@@ -570,6 +570,7 @@ Categories and field-path exclusion rules live in a top-level `anonymize` block 
 | `rules` | list | `[]` | Field-path exclusions layered on top of `categories`. See below. |
 | `emitMapping` | bool | `false` | Write the original-to-alias mapping alongside the output archive (same as `--emit-mapping` on the CLI). |
 | `mappingPath` | string | *(computed)* | Override the mapping file's path. |
+| `fullSweep` | bool | `false` | Also replace any substring occurrence of a discovered `namespace`/`node`/`pod`/`workload`/`ip`/`url` value anywhere in a record's text, not just at known field paths — e.g. a name in an Event message, or one embedded in an escaped-JSON-string annotation like `kubectl.kubernetes.io/last-applied-configuration`. Same as `--full-sweep` on the CLI. Slower (a full extra read pass) and opt-in: matching a short or common value as a substring carries a real false-positive risk. A value that's a candidate under more than one category (e.g. a namespace and a pod both named `prod`) is left untouched rather than guessed at. See [#361](https://github.com/phenixblue/k8shark/issues/361). |
 
 ### Anonymize rule fields
 

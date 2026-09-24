@@ -142,6 +142,13 @@ type AnonymizeConfig struct {
 	EmitMapping bool `mapstructure:"emitMapping"`
 	// MappingPath optionally overrides the mapping sidecar's default path.
 	MappingPath string `mapstructure:"mappingPath"`
+	// FullSweep, when true, enables a second, opt-in pass that replaces any
+	// substring occurrence of an already-discovered original value with its
+	// alias anywhere in a record's string content — not just at the known
+	// field paths the schema-aware/full-tree matchers already cover. See
+	// internal/anonymize/sweep.go's doc comment for the mechanism and its
+	// precision/recall tradeoffs (#361).
+	FullSweep bool `mapstructure:"fullSweep"`
 }
 
 // RedactionConfig is the top-level redaction section of the capture config.

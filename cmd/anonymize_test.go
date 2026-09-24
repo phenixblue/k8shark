@@ -134,6 +134,7 @@ func newTestAnonymizeCmdCommand(t *testing.T) *cobra.Command {
 	cmd.Flags().Bool("emit-mapping", false, "")
 	cmd.Flags().String("mapping-path", "", "")
 	cmd.Flags().Bool("emit-mapping-plaintext", false, "")
+	cmd.Flags().Bool("full-sweep", false, "")
 	addAnonymizeFlags(cmd)
 	addEncryptFlags(cmd)
 	cmd.Flags().AddFlagSet(cmd.PersistentFlags())
@@ -285,6 +286,7 @@ func TestRunAnonymize_JSONOutput(t *testing.T) {
 	for _, k := range []string{
 		"schema_version", "namespaces_renamed", "nodes_renamed", "pods_renamed",
 		"workloads_renamed", "ips_renamed", "hosts_renamed", "registries_renamed", "output_path",
+		"sweep_occurrences_found", "sweep_ambiguous_skipped",
 	} {
 		if _, ok := raw[k]; !ok {
 			t.Errorf("missing expected top-level key %q; got %s", k, stdout.String())
@@ -493,5 +495,82 @@ func TestRunAnonymize_EmitMappingTightensPreExistingPermissions(t *testing.T) {
 	}
 	if got := fi.Mode().Perm(); got != 0o600 {
 		t.Errorf("mapping file mode = %o, want 0600 (a pre-existing 0644 mode must be tightened, not preserved)", got)
+	}
+}
+
+func TestRunAnonymize_FullSweepFlagIsPlumbedThrough(t *testing.T) {
+	// A namespace mention inside a free-text field the schema-aware
+	// matchers don't know about — only --full-sweep can catch it.
+	in := buildDiffArchive(t, `{"kind":"PodList","items":[
+		{"metadata":{"name":"web-1","namespace":"prod"},"status":{"message":"scheduled onto namespace prod"}}
+	]}`)
+
+	cmd := newTestAnonymizeCmdCommand(t)
+	var stdout strings.Builder
+	cmd.SetOut(&stdout)
+	_ = cmd.Flags().Set("categories", "namespace")
+	_ = cmd.Flags().Set("output", "json")
+	_ = cmd.Flags().Set("full-sweep", "true")
+	_ = cmd.Flags().Set("anonymize-salt-file", writeAnonymizeTestSaltFile(t))
+
+	if err := runAnonymize(cmd, []string{in}); err != nil {
+		t.Fatalf("runAnonymize: %v", err)
+	}
+
+	var result anonymize.Result
+	if err := json.Unmarshal([]byte(stdout.String()), &result); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\noutput: %s", err, stdout.String())
+	}
+	if result.SweepOccurrencesFound == 0 {
+		t.Error("sweep_occurrences_found = 0, want > 0 — --full-sweep should have caught the free-text mention")
+	}
+}
+
+func TestRunAnonymize_ConfigFileSuppliesFullSweep(t *testing.T) {
+	in := buildDiffArchive(t, `{"kind":"PodList","items":[
+		{"metadata":{"name":"web-1","namespace":"prod"},"status":{"message":"scheduled onto namespace prod"}}
+	]}`)
+	cfgPath := filepath.Join(t.TempDir(), "k8shark.yaml")
+	if err := os.WriteFile(cfgPath, []byte("anonymize:\n  categories: [namespace]\n  fullSweep: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := newTestAnonymizeCmdCommand(t)
+	var stdout strings.Builder
+	cmd.SetOut(&stdout)
+	_ = cmd.Flags().Set("config", cfgPath)
+	_ = cmd.Flags().Set("output", "json")
+	_ = cmd.Flags().Set("anonymize-salt-file", writeAnonymizeTestSaltFile(t))
+
+	// No --full-sweep flag at all: the config file must enable it on its own.
+	if err := runAnonymize(cmd, []string{in}); err != nil {
+		t.Fatalf("runAnonymize: %v", err)
+	}
+
+	var result anonymize.Result
+	if err := json.Unmarshal([]byte(stdout.String()), &result); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\noutput: %s", err, stdout.String())
+	}
+	if result.SweepOccurrencesFound == 0 {
+		t.Error("sweep_occurrences_found = 0, want > 0 — anonymize.fullSweep in the config file should have enabled the sweep")
+	}
+}
+
+func TestRunAnonymize_FullSweepWithNoEligibleCategoryWarns(t *testing.T) {
+	in := buildDiffArchive(t, `{"kind":"PodList","items":[{"metadata":{"name":"web-1","namespace":"prod"}}]}`)
+
+	cmd := newTestAnonymizeCmdCommand(t)
+	cmd.SetOut(io.Discard)
+	var stderr strings.Builder
+	cmd.SetErr(&stderr)
+	_ = cmd.Flags().Set("categories", "image")
+	_ = cmd.Flags().Set("full-sweep", "true")
+	_ = cmd.Flags().Set("anonymize-salt-file", writeAnonymizeTestSaltFile(t))
+
+	if err := runAnonymize(cmd, []string{in}); err != nil {
+		t.Fatalf("runAnonymize: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "--full-sweep has no effect") {
+		t.Errorf("stderr = %q, want a warning that --full-sweep has no effect for --categories image", stderr.String())
 	}
 }
