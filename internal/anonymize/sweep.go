@@ -117,7 +117,11 @@ func ipBoundaryReject(b byte) bool {
 // this package's existing collision-detection discipline (refuse rather
 // than silently guess), any original value seen under more than one
 // distinct alias is excluded from the sweep entirely, not guessed at.
-func buildSweepCandidates(namespaceTracker, nodeTracker, podTracker, workloadTracker, ipTracker, urlTracker *collisionTracker) *sweepCandidateSet {
+//
+// Returns an error only if the compiled alternation itself is rejected by
+// the regexp engine (see buildCandidateGroup) — a real possibility on a
+// huge, real-world candidate set, not just a theoretical one.
+func buildSweepCandidates(namespaceTracker, nodeTracker, podTracker, workloadTracker, ipTracker, urlTracker *collisionTracker) (*sweepCandidateSet, error) {
 	type firstSeenEntry struct {
 		alias string
 	}
@@ -156,11 +160,19 @@ func buildSweepCandidates(namespaceTracker, nodeTracker, podTracker, workloadTra
 		}
 	}
 
-	return &sweepCandidateSet{
-		nameGroup:        buildCandidateGroup(nameCands, nameBoundaryReject),
-		ipGroup:          buildCandidateGroup(ipCands, ipBoundaryReject),
-		ambiguousSkipped: len(ambiguous),
+	nameGroup, err := buildCandidateGroup(nameCands, nameBoundaryReject)
+	if err != nil {
+		return nil, fmt.Errorf("compiling name/host sweep candidates: %w", err)
 	}
+	ipGroup, err := buildCandidateGroup(ipCands, ipBoundaryReject)
+	if err != nil {
+		return nil, fmt.Errorf("compiling IP sweep candidates: %w", err)
+	}
+	return &sweepCandidateSet{
+		nameGroup:        nameGroup,
+		ipGroup:          ipGroup,
+		ambiguousSkipped: len(ambiguous),
+	}, nil
 }
 
 // buildCandidateGroup compiles cands into one alternation regex, sorted by
@@ -172,9 +184,15 @@ func buildSweepCandidates(namespaceTracker, nodeTracker, podTracker, workloadTra
 // prefix of a longer one (e.g. "web" vs. "web-1") would otherwise win
 // arbitrarily depending on list order — sorting longest-first guarantees
 // the more specific candidate is always preferred.
-func buildCandidateGroup(cands []sweepCandidate, reject func(byte) bool) *candidateGroup {
+//
+// Uses regexp.Compile, not MustCompile: a real, large capture can discover
+// enough distinct candidates that the joined alternation exceeds RE2's
+// compiled-program size limit, which Compile reports as an ordinary error —
+// MustCompile would instead panic and crash the whole anonymize run instead
+// of failing it gracefully.
+func buildCandidateGroup(cands []sweepCandidate, reject func(byte) bool) (*candidateGroup, error) {
 	if len(cands) == 0 {
-		return nil
+		return nil, nil
 	}
 	sort.Slice(cands, func(i, j int) bool {
 		if len(cands[i].Original) != len(cands[j].Original) {
@@ -188,11 +206,15 @@ func buildCandidateGroup(cands []sweepCandidate, reject func(byte) bool) *candid
 		byOriginal[c.Original] = c
 		parts[i] = regexp.QuoteMeta(c.Original)
 	}
+	re, err := regexp.Compile(strings.Join(parts, "|"))
+	if err != nil {
+		return nil, fmt.Errorf("anonymize: full sweep: %d candidate value(s) produced an alternation pattern the regexp engine rejected: %w", len(cands), err)
+	}
 	return &candidateGroup{
-		re:         regexp.MustCompile(strings.Join(parts, "|")),
+		re:         re,
 		byOriginal: byOriginal,
 		reject:     reject,
-	}
+	}, nil
 }
 
 // spliceCandidates replaces every accepted match of group's alternation in

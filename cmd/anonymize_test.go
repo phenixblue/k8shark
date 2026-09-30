@@ -560,7 +560,8 @@ func TestRunAnonymize_FullSweepWithNoEligibleCategoryWarns(t *testing.T) {
 	in := buildDiffArchive(t, `{"kind":"PodList","items":[{"metadata":{"name":"web-1","namespace":"prod"}}]}`)
 
 	cmd := newTestAnonymizeCmdCommand(t)
-	cmd.SetOut(io.Discard)
+	var stdout strings.Builder
+	cmd.SetOut(&stdout)
 	var stderr strings.Builder
 	cmd.SetErr(&stderr)
 	_ = cmd.Flags().Set("categories", "image")
@@ -572,5 +573,13 @@ func TestRunAnonymize_FullSweepWithNoEligibleCategoryWarns(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "--full-sweep has no effect") {
 		t.Errorf("stderr = %q, want a warning that --full-sweep has no effect for --categories image", stderr.String())
+	}
+	// The warning says the flag has no effect; the run must then actually
+	// behave that way — no "Full sweep found ..." line, because runAnonymize
+	// turns fullSweep back off once it's determined to be a no-op, rather
+	// than still asking Archive to pay for a pass it warned the user is
+	// pointless.
+	if strings.Contains(stdout.String(), "Full sweep found") {
+		t.Errorf("stdout = %q, want no \"Full sweep found\" line once --full-sweep has been flipped back off", stdout.String())
 	}
 }

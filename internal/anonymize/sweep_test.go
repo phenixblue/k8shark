@@ -28,7 +28,10 @@ func TestBuildSweepCandidates_BasicRouting(t *testing.T) {
 	ip := trackerWith(CategoryIP, upper, "10.1.2.3")
 	url := trackerWith(CategoryURL, upper, "webhook-svc.default.svc")
 
-	cs := buildSweepCandidates(ns, node, pod, workload, ip, url)
+	cs, err := buildSweepCandidates(ns, node, pod, workload, ip, url)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if cs.nameGroup == nil {
 		t.Fatal("want a non-nil nameGroup for the namespace/url candidates")
@@ -62,7 +65,10 @@ func TestBuildSweepCandidates_URLCandidateThatIsAnIPRoutesToIPGroup(t *testing.T
 	ip := emptyTracker(CategoryIP)
 	url := trackerWith(CategoryURL, upper, "10.1.2.3")
 
-	cs := buildSweepCandidates(ns, node, pod, workload, ip, url)
+	cs, err := buildSweepCandidates(ns, node, pod, workload, ip, url)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if cs.nameGroup != nil {
 		t.Error("want nameGroup nil — the only URL candidate is IP-shaped and should route to ipGroup")
@@ -94,7 +100,10 @@ func TestBuildSweepCandidates_CrossCategoryAmbiguityExcluded(t *testing.T) {
 	ip := emptyTracker(CategoryIP)
 	url := emptyTracker(CategoryURL)
 
-	cs := buildSweepCandidates(ns, node, pod, workload, ip, url)
+	cs, err := buildSweepCandidates(ns, node, pod, workload, ip, url)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if cs.nameGroup != nil {
 		t.Fatal("want nameGroup nil — the only candidate is ambiguous and should be fully excluded")
@@ -112,7 +121,10 @@ func TestBuildSweepCandidates_ShortCandidatesFiltered(t *testing.T) {
 	ip := emptyTracker(CategoryIP)
 	url := emptyTracker(CategoryURL)
 
-	cs := buildSweepCandidates(ns, node, pod, workload, ip, url)
+	cs, err := buildSweepCandidates(ns, node, pod, workload, ip, url)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if cs.nameGroup != nil {
 		t.Error("want nameGroup nil — the only candidate is below minSweepCandidateLength")
@@ -124,7 +136,10 @@ func TestSpliceCandidates_LongestCandidatePreferred(t *testing.T) {
 		{Category: CategoryPod, Original: "web", Alias: "pod-alias"},
 		{Category: CategoryWorkload, Original: "web-1", Alias: "workload-alias"},
 	}
-	group := buildCandidateGroup(cands, nameBoundaryReject)
+	group, err := buildCandidateGroup(cands, nameBoundaryReject)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	out, changed, n := spliceCandidates("connecting to web-1 now", group, noExclusions, "Event", "message")
 	if !changed || n != 1 {
@@ -137,7 +152,10 @@ func TestSpliceCandidates_LongestCandidatePreferred(t *testing.T) {
 
 func TestSpliceCandidates_NameBoundaryAllowsFQDNEmbedding(t *testing.T) {
 	cands := []sweepCandidate{{Category: CategoryNamespace, Original: "prod", Alias: "namespace-quiet-otter-fox"}}
-	group := buildCandidateGroup(cands, nameBoundaryReject)
+	group, err := buildCandidateGroup(cands, nameBoundaryReject)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	out, changed, n := spliceCandidates("svc.prod.svc.cluster.local", group, noExclusions, "Pod", "status.message")
 	if !changed || n != 1 {
@@ -150,7 +168,10 @@ func TestSpliceCandidates_NameBoundaryAllowsFQDNEmbedding(t *testing.T) {
 
 func TestSpliceCandidates_NameBoundaryRejectsAlnumAdjacency(t *testing.T) {
 	cands := []sweepCandidate{{Category: CategoryNamespace, Original: "prod", Alias: "ALIASED"}}
-	group := buildCandidateGroup(cands, nameBoundaryReject)
+	group, err := buildCandidateGroup(cands, nameBoundaryReject)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	out, changed, n := spliceCandidates("this is unrelated-prodcuction text", group, noExclusions, "Pod", "status.message")
 	if changed || n != 0 {
@@ -162,7 +183,10 @@ func TestSpliceCandidates_NameBoundaryRejectsAlnumAdjacency(t *testing.T) {
 // literal must not match inside an unrelated, longer address.
 func TestSpliceCandidates_IPBoundaryRejectsWithinLongerIPv6Address(t *testing.T) {
 	cands := []sweepCandidate{{Category: CategoryIP, Original: "::1", Alias: "ALIASED"}}
-	group := buildCandidateGroup(cands, ipBoundaryReject)
+	group, err := buildCandidateGroup(cands, ipBoundaryReject)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	out, changed, n := spliceCandidates("connecting to fe80::1 on the link", group, noExclusions, "Event", "message")
 	if changed || n != 0 {
@@ -172,7 +196,10 @@ func TestSpliceCandidates_IPBoundaryRejectsWithinLongerIPv6Address(t *testing.T)
 
 func TestSpliceCandidates_IPBoundaryAcceptsGenuineOccurrence(t *testing.T) {
 	cands := []sweepCandidate{{Category: CategoryIP, Original: "10.1.2.3", Alias: "10.99.99.99"}}
-	group := buildCandidateGroup(cands, ipBoundaryReject)
+	group, err := buildCandidateGroup(cands, ipBoundaryReject)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	out, changed, n := spliceCandidates("Pulling image failed, dialing 10.1.2.3 timed out", group, noExclusions, "Event", "message")
 	if !changed || n != 1 {
@@ -185,7 +212,10 @@ func TestSpliceCandidates_IPBoundaryAcceptsGenuineOccurrence(t *testing.T) {
 
 func TestSpliceCandidates_IPBoundaryRejectsPartialOctetMatch(t *testing.T) {
 	cands := []sweepCandidate{{Category: CategoryIP, Original: "10.1.2.3", Alias: "ALIASED"}}
-	group := buildCandidateGroup(cands, ipBoundaryReject)
+	group, err := buildCandidateGroup(cands, ipBoundaryReject)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	for _, s := range []string{"110.1.2.3 is unrelated", "10.1.2.34 is unrelated", "10.1.2.3.4 is unrelated"} {
 		out, changed, n := spliceCandidates(s, group, noExclusions, "Event", "message")
@@ -197,7 +227,10 @@ func TestSpliceCandidates_IPBoundaryRejectsPartialOctetMatch(t *testing.T) {
 
 func TestSpliceCandidates_ExcludeRuleSkipsMatch(t *testing.T) {
 	cands := []sweepCandidate{{Category: CategoryNamespace, Original: "prod", Alias: "ALIASED"}}
-	group := buildCandidateGroup(cands, nameBoundaryReject)
+	group, err := buildCandidateGroup(cands, nameBoundaryReject)
+	if err != nil {
+		t.Fatal(err)
+	}
 	excluded := func(cat Category, kind, path string) bool {
 		return cat == CategoryNamespace && kind == "Event" && path == "message"
 	}
@@ -210,7 +243,11 @@ func TestSpliceCandidates_ExcludeRuleSkipsMatch(t *testing.T) {
 
 func TestSweepRecord_ListUsesEachItemsOwnKindForExclusion(t *testing.T) {
 	cands := []sweepCandidate{{Category: CategoryNamespace, Original: "prod", Alias: "ALIASED"}}
-	cs := &sweepCandidateSet{nameGroup: buildCandidateGroup(cands, nameBoundaryReject)}
+	group, err := buildCandidateGroup(cands, nameBoundaryReject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs := &sweepCandidateSet{nameGroup: group}
 
 	body := `{"kind":"EventList","items":[
 		{"kind":"Event","message":"Namespace prod is active"},

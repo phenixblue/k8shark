@@ -225,6 +225,14 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 		CategoryWorkload: doWorkload,
 	}
 	doResourceName := doNode || doPod || doWorkload
+	// sweepEligible mirrors cmd/anonymize.go's sweepEligibleCategories:
+	// Options.FullSweep's collection pass only ever has something to find
+	// for these six categories (sweep.go's buildSweepCandidates never adds
+	// an image-category candidate — see its own package doc for why). A
+	// request like --categories image --full-sweep would otherwise still
+	// pay for a full extra read-only pass over the archive that can never
+	// produce a single sweep candidate.
+	sweepEligible := doNamespace || doNode || doPod || doWorkload || doIP || doURL
 
 	excluded, err := newExcludeMatcher(opts.Rules)
 	if err != nil {
@@ -387,8 +395,16 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 	// created, so a collision found here never leaves a partial file behind.
 	// See sweep.go's own doc comment for what the resulting candidate set is
 	// used for.
+	//
+	// Gated on sweepEligible, not just opts.FullSweep: with no sweep-eligible
+	// category requested (e.g. --categories image --full-sweep), this pass
+	// would read every record in the archive a second time only to populate
+	// trackers that stay empty and build a sweepCandidateSet that's always
+	// nil — full read cost for a guaranteed no-op. cmd/anonymize.go already
+	// warns the user about exactly this case; this is the corresponding
+	// guarantee that the run doesn't pay for it anyway.
 	var sweepCandidates *sweepCandidateSet
-	if opts.FullSweep {
+	if opts.FullSweep && sweepEligible {
 		for _, apiPath := range sortedKeys(map[string]*capture.IndexEntry(idx)) {
 			entry := idx[apiPath]
 			if _, err := applyPathRewrites(apiPath); err != nil {
@@ -433,7 +449,10 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 				}
 			}
 		}
-		sweepCandidates = buildSweepCandidates(namespaceTracker, nodeTracker, podTracker, workloadTracker, ipTracker, urlTracker)
+		sweepCandidates, err = buildSweepCandidates(namespaceTracker, nodeTracker, podTracker, workloadTracker, ipTracker, urlTracker)
+		if err != nil {
+			return Result{}, err
+		}
 	}
 	var sweepOccurrences int
 

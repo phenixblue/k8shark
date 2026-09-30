@@ -326,3 +326,66 @@ func TestArchive_WithoutFullSweepLeavesFreeTextUntouched(t *testing.T) {
 		t.Errorf("status.message = %q, want the free-text mention left untouched without FullSweep", got)
 	}
 }
+
+// CategoryImage is the one archiveCategories entry that's never sweep-
+// eligible (sweep.go's buildSweepCandidates never adds an image-category
+// candidate — see its own package doc). Requesting --full-sweep with only
+// --categories image must still succeed as a clean no-op: this is the
+// Archive-level guarantee behind cmd/anonymize.go's own "--full-sweep has no
+// effect" warning for exactly this case — the run must not pay for a wasted
+// collection pass, and it must not error just because no category could
+// ever contribute a sweep candidate.
+func TestArchive_FullSweepNoOpWhenNoCategoryIsSweepEligible(t *testing.T) {
+	podBody := `{"kind":"Pod","apiVersion":"v1","metadata":{"name":"web-1","namespace":"prod"},
+		"spec":{"containers":[{"name":"app","image":"registry.internal.corp/team/app:v1"}]},
+		"status":{"message":"scheduled onto namespace prod"}}`
+	records := []*capture.Record{
+		{ID: "r1", CapturedAt: fixedNow, APIPath: "/api/v1/namespaces/prod/pods/web-1", HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(podBody)},
+	}
+	src := buildAnonymizeTestArchive(t, records)
+	dst := filepath.Join(t.TempDir(), "out.kshrk")
+	salt := []byte("image-only-full-sweep-test-salt")
+
+	result, err := Archive(src, dst, Options{
+		Categories: []Category{CategoryImage},
+		Salt:       salt,
+		FullSweep:  true,
+	})
+	if err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+	if result.SweepOccurrencesFound != 0 || result.SweepAmbiguousSkipped != 0 {
+		t.Errorf("want both sweep counts 0 — image is never sweep-eligible, got SweepOccurrencesFound=%d SweepAmbiguousSkipped=%d",
+			result.SweepOccurrencesFound, result.SweepAmbiguousSkipped)
+	}
+	if result.RegistriesRenamed != 1 {
+		t.Errorf("RegistriesRenamed = %d, want 1 — the image category itself must still run normally", result.RegistriesRenamed)
+	}
+
+	// The namespace mention in status.message is exactly the kind of
+	// free-text occurrence only a sweep could catch — but namespace wasn't
+	// requested at all, so this also confirms the run did real work (the
+	// image rewrite) without the sweep's collection pass silently
+	// populating a namespace candidate some other path never asked for.
+	ar, err := archive.Open(dst)
+	if err != nil {
+		t.Fatalf("archive.Open: %v", err)
+	}
+	defer ar.Close()
+	data, err := ar.ReadRecord("/api/v1/namespaces/prod/pods/web-1", 0)
+	if err != nil {
+		t.Fatalf("ReadRecord: %v", err)
+	}
+	var rec capture.Record
+	if err := json.Unmarshal(data, &rec); err != nil {
+		t.Fatal(err)
+	}
+	var obj map[string]interface{}
+	if err := json.Unmarshal(rec.ResponseBody, &obj); err != nil {
+		t.Fatal(err)
+	}
+	status := obj["status"].(map[string]interface{})
+	if got := status["message"]; got != "scheduled onto namespace prod" {
+		t.Errorf("status.message = %q, want the free-text namespace mention left untouched", got)
+	}
+}

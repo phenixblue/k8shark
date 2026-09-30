@@ -212,6 +212,12 @@ func runAnonymize(cmd *cobra.Command, args []string) error {
 		if !eligible {
 			fmt.Fprintf(cmd.ErrOrStderr(),
 				"warning: --full-sweep has no effect: none of the requested categories (%v) are sweep-eligible (namespace, node, pod, workload, ip, url)\n", categories)
+			// anonymize.Archive itself also guards its collection pass on a
+			// sweep-eligible category being enabled, so this isn't load-bearing
+			// for correctness — but flipping the flag back off here keeps this
+			// command's own behavior matching the warning it just printed,
+			// rather than relying on a callee to make the request a no-op.
+			fullSweep = false
 		}
 	}
 
