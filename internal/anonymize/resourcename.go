@@ -48,6 +48,53 @@ var resourceTypeCategories = func() map[string]Category {
 	return m
 }()
 
+// resourceTypeKind maps a REST resource-type path segment (e.g. "nodes") to
+// its Kind (e.g. "Node"), for every entry in resourceKindTable, plus
+// "namespaces" — Namespace isn't in that table (it's handled directly by
+// namespace.go rather than through kindCategories), but sweep.go's
+// tableRowKindFromAPIPath needs it too. Used to recover the real object
+// Kind a captured Table/TableSchema response's rows describe, since a
+// Table row's own "object" field never carries it (see that function's own
+// doc comment).
+var resourceTypeKind = func() map[string]string {
+	m := make(map[string]string, len(resourceKindTable)+1)
+	for _, e := range resourceKindTable {
+		m[e.ResourceType] = e.Kind
+	}
+	m["namespaces"] = "Namespace"
+	return m
+}()
+
+// tableRowKindFromAPIPath resolves the real object Kind a captured Table/
+// TableSchema record's rows actually describe, from the REST resource-type
+// segment of the record's own APIPath (e.g. "/api/v1/nodes?as=Table" ->
+// "nodes" -> "Node").
+//
+// This is the only place that Kind is recoverable from at all: a Table
+// row's own "object" field is always typed PartialObjectMetadata/
+// meta.k8s.io-v1 by the Kubernetes Table API's own design (see
+// internal/server/table.go's renderTableFromColumns) — never the real
+// resource's Kind — so, unlike a List response's items[], there is no
+// per-row "kind" field to read instead.
+//
+// Returns ok=false for any resource type outside resourceTypeKind's own
+// small, maintained set (every other native kind, and any CRD) — sweep.go
+// falls back to its prior, conservative behavior in that case rather than
+// guessing: reporting the Table wrapper's own "Table" kind to excluded().
+func tableRowKindFromAPIPath(apiPath string) (string, bool) {
+	p := apiPath
+	if i := strings.IndexByte(p, '?'); i >= 0 {
+		p = p[:i]
+	}
+	p = strings.TrimSuffix(p, "/")
+	i := strings.LastIndexByte(p, '/')
+	if i < 0 {
+		return "", false
+	}
+	kind, ok := resourceTypeKind[p[i+1:]]
+	return kind, ok
+}
+
 // rewriteResourceNameInObject rewrites node/pod/workload resource-name
 // occurrences in a single decoded JSON object (not a list) — kind is the
 // object's own Kind, passed down by the caller, same convention as

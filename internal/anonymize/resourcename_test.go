@@ -376,3 +376,33 @@ func TestRewriteResourceNameInPath_NamespaceValueEqualToResourceTypeIsNotConfuse
 		t.Fatalf("rewriteResourceNameInPath(%q) = (%q, %v), want (%q, true)", path, got, ok, want)
 	}
 }
+
+func TestTableRowKindFromAPIPath(t *testing.T) {
+	cases := []struct {
+		path     string
+		wantKind string
+		wantOK   bool
+	}{
+		{"/api/v1/nodes?as=Table", "Node", true},
+		{"/api/v1/nodes?as=TableSchema", "Node", true},
+		{"/api/v1/namespaces/basic-demo/pods?as=Table", "Pod", true},
+		{"/apis/apps/v1/namespaces/basic-demo/deployments?as=Table", "Deployment", true},
+		{"/apis/apps/v1/replicasets?as=TableSchema", "ReplicaSet", true},
+		{"/api/v1/namespaces?as=TableSchema", "Namespace", true},
+		// A cluster-scoped list with no query string at all, just in case
+		// one is ever passed through — not just the Table-suffixed form.
+		{"/api/v1/nodes", "Node", true},
+		// Outside resourceTypeKind's small, maintained set: every other
+		// native kind (Service here) and any CRD must report ok=false, not
+		// a wrong guess.
+		{"/api/v1/services?as=TableSchema", "", false},
+		{"/apis/portworx.io/v1/storagenodes?as=TableSchema", "", false},
+		{"", "", false},
+	}
+	for _, tc := range cases {
+		kind, ok := tableRowKindFromAPIPath(tc.path)
+		if kind != tc.wantKind || ok != tc.wantOK {
+			t.Errorf("tableRowKindFromAPIPath(%q) = (%q, %v), want (%q, %v)", tc.path, kind, ok, tc.wantKind, tc.wantOK)
+		}
+	}
+}

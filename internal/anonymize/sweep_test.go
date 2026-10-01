@@ -281,6 +281,142 @@ func TestSweepRecord_ListUsesEachItemsOwnKindForExclusion(t *testing.T) {
 	}
 }
 
+// Reproduces a real gap found in manual end-to-end testing: a Table/
+// TableSchema response's rows[*] describe a real Kind (Node here), but the
+// response's own top-level "kind" is always "Table" and each row's embedded
+// "object" is always typed PartialObjectMetadata (see
+// tableRowKindFromAPIPath's own doc comment) — neither carries the real
+// Kind the way a List item's own "kind" field does. Before sweepRecord
+// resolved the real Kind from the record's APIPath, every occurrence inside
+// a Table response was checked against excluded() as kind="Table", so a
+// rule scoped to the real Kind (exactly docs/config.md's own documented
+// example, `category: node, kind: Node, fieldPath: metadata.name`) silently
+// never matched there — even though the identical rule correctly protects
+// that exact field on a plain GET/List response of that Kind.
+func TestSweepRecord_TableRowsUseResolvedKindForExclusion(t *testing.T) {
+	nodeTracker := trackerWith(CategoryNode, upper, "worker-1")
+	cs, err := buildSweepCandidates(
+		emptyTracker(CategoryNamespace), nodeTracker, emptyTracker(CategoryPod),
+		emptyTracker(CategoryWorkload), emptyTracker(CategoryIP), emptyTracker(CategoryURL),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	newTableRecord := func() *capture.Record {
+		body := `{"kind":"Table","apiVersion":"meta.k8s.io/v1",
+			"columnDefinitions":[{"name":"Name","description":"worker-1 is a fine example name"}],
+			"rows":[{"cells":["worker-1"],"object":{"kind":"PartialObjectMetadata","apiVersion":"meta.k8s.io/v1",
+				"metadata":{"name":"worker-1"}}}]}`
+		return &capture.Record{APIPath: "/api/v1/nodes?as=Table", ResponseBody: json.RawMessage(body)}
+	}
+	parseTable := func(t *testing.T, rec *capture.Record) (cellName, objectName, colDesc string) {
+		t.Helper()
+		var out struct {
+			ColumnDefinitions []struct {
+				Description string `json:"description"`
+			} `json:"columnDefinitions"`
+			Rows []struct {
+				Cells  []string `json:"cells"`
+				Object struct {
+					Metadata struct {
+						Name string `json:"name"`
+					} `json:"metadata"`
+				} `json:"object"`
+			} `json:"rows"`
+		}
+		if err := json.Unmarshal(rec.ResponseBody, &out); err != nil {
+			t.Fatal(err)
+		}
+		return out.Rows[0].Cells[0], out.Rows[0].Object.Metadata.Name, out.ColumnDefinitions[0].Description
+	}
+
+	t.Run("no exclude rule: both object.metadata.name and cells are swept", func(t *testing.T) {
+		rec := newTableRecord()
+		changed, occurrences, err := sweepRecord(rec, cs, noExclusions)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !changed || occurrences == 0 {
+			t.Fatalf("changed=%v occurrences=%d, want changed=true occurrences>0", changed, occurrences)
+		}
+		cell, object, _ := parseTable(t, rec)
+		if cell != "worker-1-ALIASED" || object != "worker-1-ALIASED" {
+			t.Errorf("cell=%q object=%q, want both aliased", cell, object)
+		}
+	})
+
+	t.Run("exclude rule scoped to the real Kind protects object.metadata.name, not cells", func(t *testing.T) {
+		rec := newTableRecord()
+		excluded := func(cat Category, kind, path string) bool {
+			return cat == CategoryNode && kind == "Node" && path == "metadata.name"
+		}
+		if _, _, err := sweepRecord(rec, cs, excluded); err != nil {
+			t.Fatal(err)
+		}
+		cell, object, _ := parseTable(t, rec)
+		if object != "worker-1" {
+			t.Errorf("object.metadata.name = %q, want the real value left untouched by the Kind-scoped exclude rule", object)
+		}
+		if cell != "worker-1-ALIASED" {
+			t.Errorf("cells[0] = %q, want it still aliased — the exclude rule only covers fieldPath metadata.name, not cells[*]", cell)
+		}
+	})
+
+	t.Run("an additional cells[*] exclude rule protects the printed cell too", func(t *testing.T) {
+		rec := newTableRecord()
+		excluded := func(cat Category, kind, path string) bool {
+			return cat == CategoryNode && kind == "Node" && (path == "metadata.name" || path == "cells[*]")
+		}
+		if _, _, err := sweepRecord(rec, cs, excluded); err != nil {
+			t.Fatal(err)
+		}
+		cell, object, _ := parseTable(t, rec)
+		if object != "worker-1" || cell != "worker-1" {
+			t.Errorf("cell=%q object=%q, want both left untouched", cell, object)
+		}
+	})
+
+	t.Run("columnDefinitions and other Table-wrapper content are still swept under kind=Table", func(t *testing.T) {
+		rec := newTableRecord()
+		excluded := func(cat Category, kind, path string) bool {
+			// A rule scoped to kind=Table (the wrapper's own kind, as
+			// opposed to kind=Node) must still apply to columnDefinitions
+			// — unaffected by the rows[*]-specific Kind resolution above.
+			return cat == CategoryNode && kind == "Table" && path == "columnDefinitions[*].description"
+		}
+		if _, _, err := sweepRecord(rec, cs, excluded); err != nil {
+			t.Fatal(err)
+		}
+		_, _, colDesc := parseTable(t, rec)
+		if colDesc != "worker-1 is a fine example name" {
+			t.Errorf("columnDefinitions[0].description = %q, want it left untouched by the Table-kind-scoped exclude rule", colDesc)
+		}
+	})
+
+	t.Run("a resource type outside resourceTypeKind's set falls back to kind=Table for its rows too", func(t *testing.T) {
+		rec := newTableRecord()
+		rec.APIPath = "/apis/portworx.io/v1/storagenodes?as=Table" // not in resourceTypeKind
+		var excludedCalls []string
+		excluded := func(cat Category, kind, path string) bool {
+			excludedCalls = append(excludedCalls, kind+"/"+path)
+			return false
+		}
+		if _, _, err := sweepRecord(rec, cs, excluded); err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, c := range excludedCalls {
+			if c == "Table/metadata.name" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("excluded() calls = %v, want a Table/metadata.name call for the unmapped resource type's row", excludedCalls)
+		}
+	})
+}
+
 func TestSweepRecord_NilCandidatesIsNoOp(t *testing.T) {
 	rec := &capture.Record{ResponseBody: json.RawMessage(`{"kind":"Event","message":"Namespace prod is active"}`)}
 	orig := string(rec.ResponseBody)

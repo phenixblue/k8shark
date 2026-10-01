@@ -276,6 +276,20 @@ func spliceCandidates(s string, group *candidateGroup, excluded excludedFunc, ki
 // List-aware exactly like the other matchers in this package: an exclude
 // rule scoped to a Kind applies correctly to a List response's items[], not
 // the List wrapper itself.
+//
+// Table-aware too, for the same reason: a Table/TableSchema response's
+// rows[*] describe some real Kind (a Node, a Pod, ...), but the response's
+// own top-level "kind" is always "Table" and each row's embedded "object"
+// is always typed PartialObjectMetadata — neither carries the real Kind the
+// way a List item's own "kind" field does. Reporting "Table" to excluded()
+// for everything in a Table response (as this function used to) meant an
+// exclude rule scoped to the real Kind — e.g. docs/config.md's own example,
+// `category: node, kind: Node, fieldPath: metadata.name` — silently never
+// matched there, even though the identical rule correctly protects that
+// exact field on a plain GET/List response of that Kind. tableRowKindFromAPIPath
+// recovers the real Kind from the record's own APIPath so rows[*] are swept
+// under it instead, making an existing Kind-scoped rule apply consistently
+// regardless of which response shape the value happens to appear in.
 func sweepRecord(rec *capture.Record, candidates *sweepCandidateSet, excluded excludedFunc) (bool, int, error) {
 	if candidates == nil || (candidates.nameGroup == nil && candidates.ipGroup == nil) {
 		return false, 0, nil
@@ -302,7 +316,8 @@ func sweepRecord(rec *capture.Record, candidates *sweepCandidateSet, excluded ex
 	}
 
 	modified := false
-	if strings.HasSuffix(kind, "List") {
+	switch {
+	case strings.HasSuffix(kind, "List"):
 		items, _ := obj["items"].([]interface{})
 		itemKind := strings.TrimSuffix(kind, "List")
 		for i, itemRaw := range items {
@@ -319,8 +334,59 @@ func sweepRecord(rec *capture.Record, candidates *sweepCandidateSet, excluded ex
 				modified = true
 			}
 		}
-	} else if sweepItem(obj, kind) {
-		modified = true
+	case kind == "Table":
+		// Sweep everything except "rows" under the wrapper's own "Table"
+		// kind first (columnDefinitions, metadata, apiVersion, kind) —
+		// temporarily removed so this pass can't also touch "rows" under
+		// the wrong kind before the precise per-row pass below gets to it.
+		origRows, hadRowsKey := obj["rows"]
+		delete(obj, "rows")
+		if sweepItem(obj, "Table") {
+			modified = true
+		}
+		if hadRowsKey {
+			obj["rows"] = origRows
+		}
+		if rows, ok := origRows.([]interface{}); ok {
+			rowKind := "Table"
+			if rk, ok := tableRowKindFromAPIPath(rec.APIPath); ok {
+				rowKind = rk
+			}
+			for i, rowRaw := range rows {
+				row, ok := rowRaw.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				rowChanged := false
+				if rowObj, ok := row["object"].(map[string]interface{}); ok {
+					if sweepItem(rowObj, rowKind) {
+						rowChanged = true
+					}
+				}
+				// Cells have no field names of their own (they're
+				// positional, one per columnDefinition), so there's no
+				// natural path to give them the way "object"'s nested
+				// fields get one — "cells[*]" at least lets a rule
+				// exclude every printed cell for this Kind at once, the
+				// same "[*]" convention every other array path in this
+				// package uses.
+				if cellsRaw, ok := row["cells"]; ok {
+					wrapper := map[string]interface{}{"cells": cellsRaw}
+					if sweepItem(wrapper, rowKind) {
+						row["cells"] = wrapper["cells"]
+						rowChanged = true
+					}
+				}
+				if rowChanged {
+					rows[i] = row
+					modified = true
+				}
+			}
+		}
+	default:
+		if sweepItem(obj, kind) {
+			modified = true
+		}
 	}
 
 	if !modified {

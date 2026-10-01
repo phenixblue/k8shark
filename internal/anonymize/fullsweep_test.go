@@ -389,3 +389,107 @@ func TestArchive_FullSweepNoOpWhenNoCategoryIsSweepEligible(t *testing.T) {
 		t.Errorf("status.message = %q, want the free-text namespace mention left untouched", got)
 	}
 }
+
+// End-to-end reproduction of a real gap found in manual testing, through
+// Archive() itself rather than sweepRecord in isolation — and exactly
+// docs/config.md's own documented exclude-rule example ("Leave a specific
+// Node's own identity alone, but still alias its appearance elsewhere"):
+// a captured Node GET and its corresponding "?as=Table" response (what
+// `kubectl get nodes` actually renders from) both mention the same node
+// name. Before sweepRecord resolved a Table row's real Kind from its
+// record's own APIPath, the rule's `kind: Node` could never match an
+// occurrence inside the Table response (sweepRecord always reported
+// kind="Table" there), so --full-sweep silently re-aliased the Table's
+// rows[*].object.metadata.name despite the user's explicit exclusion —
+// even though the identical rule correctly protected the plain Node GET's
+// own metadata.name the whole time.
+func TestArchive_FullSweepRespectsKindScopedExcludeRuleInsideTableResponse(t *testing.T) {
+	// The Node's own metadata.name is excluded, so nothing schema-aware ever
+	// aliases *that* occurrence — but a Pod's spec.nodeName (not excluded)
+	// is a recognized node-category field too, and is what actually gets
+	// "worker-1" discovered as a sweep candidate in the first place.
+	nodeBody := `{"kind":"Node","apiVersion":"v1","metadata":{"name":"worker-1","labels":{"kubernetes.io/hostname":"worker-1"}}}`
+	podBody := `{"kind":"Pod","apiVersion":"v1","metadata":{"name":"web-1","namespace":"default"},"spec":{"nodeName":"worker-1"}}`
+	tableBody := `{"kind":"Table","apiVersion":"meta.k8s.io/v1",
+		"columnDefinitions":[{"name":"Name","description":"the node's name"}],
+		"rows":[{"cells":["worker-1"],"object":{"kind":"PartialObjectMetadata","apiVersion":"meta.k8s.io/v1",
+			"metadata":{"name":"worker-1"}}}]}`
+	records := []*capture.Record{
+		{ID: "r1", CapturedAt: fixedNow, APIPath: "/api/v1/nodes/worker-1", HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(nodeBody)},
+		{ID: "r2", CapturedAt: fixedNow, APIPath: "/api/v1/namespaces/default/pods/web-1", HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(podBody)},
+		{ID: "r3", CapturedAt: fixedNow, APIPath: "/api/v1/nodes?as=Table", HTTPMethod: "GET", ResponseCode: 200, ResponseBody: json.RawMessage(tableBody)},
+	}
+	src := buildAnonymizeTestArchive(t, records)
+	dst := filepath.Join(t.TempDir(), "out.kshrk")
+	salt := []byte("table-exclude-rule-test-salt")
+
+	result, err := Archive(src, dst, Options{
+		Categories: []Category{CategoryNode},
+		Salt:       salt,
+		FullSweep:  true,
+		Rules: []config.AnonymizeRule{
+			{Category: "node", Kind: "Node", FieldPath: "metadata.name", Exclude: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+	if result.SweepOccurrencesFound == 0 {
+		t.Error("want SweepOccurrencesFound > 0 — the label and the Table's cells should still have been caught")
+	}
+
+	ar, err := archive.Open(dst)
+	if err != nil {
+		t.Fatalf("archive.Open: %v", err)
+	}
+	defer ar.Close()
+
+	// The single-object GET path's own trailing name segment is aliased by
+	// rewriteResourceNameInPath regardless of the body-field exclude rule
+	// (the exclude rule is scoped to a body fieldPath, not the APIPath) —
+	// same convention every other end-to-end test in this file follows.
+	nodeAlias := NewAliaser(salt).Alias(CategoryNode, "worker-1")
+	nodeData, err := ar.ReadRecord("/api/v1/nodes/"+nodeAlias, 0)
+	if err != nil {
+		t.Fatalf("ReadRecord (Node GET): %v", err)
+	}
+	var nodeRec capture.Record
+	if err := json.Unmarshal(nodeData, &nodeRec); err != nil {
+		t.Fatal(err)
+	}
+	var nodeObj map[string]interface{}
+	if err := json.Unmarshal(nodeRec.ResponseBody, &nodeObj); err != nil {
+		t.Fatal(err)
+	}
+	if got := nodeObj["metadata"].(map[string]interface{})["name"]; got != "worker-1" {
+		t.Errorf("plain Node GET metadata.name = %v, want the real value left untouched by the exclude rule", got)
+	}
+
+	tableData, err := ar.ReadRecord("/api/v1/nodes?as=Table", 0)
+	if err != nil {
+		t.Fatalf("ReadRecord (Table): %v", err)
+	}
+	var tableRec capture.Record
+	if err := json.Unmarshal(tableData, &tableRec); err != nil {
+		t.Fatal(err)
+	}
+	var tableObj map[string]interface{}
+	if err := json.Unmarshal(tableRec.ResponseBody, &tableObj); err != nil {
+		t.Fatal(err)
+	}
+	row := tableObj["rows"].([]interface{})[0].(map[string]interface{})
+	rowObjectName := row["object"].(map[string]interface{})["metadata"].(map[string]interface{})["name"]
+	if rowObjectName != "worker-1" {
+		t.Errorf("Table rows[0].object.metadata.name = %v, want the real value left untouched — this is the exact field the reported gap mangled", rowObjectName)
+	}
+	// Not covered by the rule (it only names fieldPath metadata.name): the
+	// printed cell and the unrelated hostname label are still aliased,
+	// proving the exclude rule is honored narrowly, not by accidentally
+	// suppressing the whole sweep for this Kind/category.
+	if cell := row["cells"].([]interface{})[0]; cell == "worker-1" {
+		t.Error("Table rows[0].cells[0] was left untouched, want it still aliased — the rule doesn't cover fieldPath cells[*]")
+	}
+	if label := nodeObj["metadata"].(map[string]interface{})["labels"].(map[string]interface{})["kubernetes.io/hostname"]; label == "worker-1" {
+		t.Error("Node metadata.labels[kubernetes.io/hostname] was left untouched, want it still aliased")
+	}
+}

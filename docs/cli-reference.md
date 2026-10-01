@@ -83,6 +83,17 @@ annotation, an unrecognized CRD's field) -- slower, and opt-in, since
 matching a short or common value as a substring carries a real
 false-positive risk. See https://github.com/phenixblue/k8shark/issues/361.
 
+IMPORTANT for namespace/node/pod/workload: without --full-sweep, "kshrk
+open"/"kshrk replay" + plain "kubectl get <resource>" (which negotiates
+Kubernetes' Table format by default) will still show the REAL, un-anonymized
+name -- only "-o json"/"-o yaml"/a typed client reflect the alias. This is
+because a Table response's printed cells and embedded per-row object carry
+no recognizable field path for these categories to match, the same way an
+Event message or an annotation's embedded JSON doesn't. "ip" and "url" do
+not have this gap (their self-evident-shape matching already reaches Table
+content). If you intend to replay or hand off an anonymized capture and
+verify it with ordinary "kubectl get" commands, pass --full-sweep.
+
 ```
 kshrk anonymize <capture.kshrk> --categories <category> [--out <anonymized.kshrk>] [flags]
 ```
@@ -127,7 +138,7 @@ kshrk anonymize <capture.kshrk> --categories <category> [--out <anonymized.kshrk
       --encrypt-passphrase-file string   read the encryption passphrase from this file (first line) instead of prompting
       --encrypt-recipient stringArray    age recipient public key (age1...) to encrypt to (repeatable); mutually exclusive with passphrase encryption
       --encrypt-recipients-file string   file of age recipient public keys (one per line) to encrypt to
-      --full-sweep                       also replace any substring occurrence of a discovered namespace/node/pod/workload/ip/url value anywhere in a record's text, not just at known field paths (slower, opt-in; see #361)
+      --full-sweep                       also replace any substring occurrence of a discovered namespace/node/pod/workload/ip/url value anywhere in a record's text, not just at known field paths -- needed for plain 'kubectl get' (Table output) to reflect namespace/node/pod/workload aliasing (slower, opt-in; see #361)
   -h, --help                             help for anonymize
       --mapping-path string              path for the mapping file (default: <out>.mapping.json, or .mapping.json.age when encrypted)
       --out string                       output archive path (default: <in>-anonymized.kshrk)

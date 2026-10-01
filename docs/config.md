@@ -570,7 +570,7 @@ Categories and field-path exclusion rules live in a top-level `anonymize` block 
 | `rules` | list | `[]` | Field-path exclusions layered on top of `categories`. See below. |
 | `emitMapping` | bool | `false` | Write the original-to-alias mapping alongside the output archive (same as `--emit-mapping` on the CLI). |
 | `mappingPath` | string | *(computed)* | Override the mapping file's path. |
-| `fullSweep` | bool | `false` | Also replace any substring occurrence of a discovered `namespace`/`node`/`pod`/`workload`/`ip`/`url` value anywhere in a record's text, not just at known field paths — e.g. a name in an Event message, or one embedded in an escaped-JSON-string annotation like `kubectl.kubernetes.io/last-applied-configuration`. Same as `--full-sweep` on the CLI. Slower (a full extra read pass) and opt-in: matching a short or common value as a substring carries a real false-positive risk. A value that's a candidate under more than one category (e.g. a namespace and a pod both named `prod`) is left untouched rather than guessed at. See [#361](https://github.com/phenixblue/k8shark/issues/361). |
+| `fullSweep` | bool | `false` | Also replace any substring occurrence of a discovered `namespace`/`node`/`pod`/`workload`/`ip`/`url` value anywhere in a record's text, not just at known field paths — e.g. a name in an Event message, or one embedded in an escaped-JSON-string annotation like `kubectl.kubernetes.io/last-applied-configuration`. Same as `--full-sweep` on the CLI. Slower (a full extra read pass) and opt-in: matching a short or common value as a substring carries a real false-positive risk. A value that's a candidate under more than one category (e.g. a namespace and a pod both named `prod`) is left untouched rather than guessed at. **For `namespace`/`node`/`pod`/`workload`, this is also what makes plain `kubectl get <resource>` (Kubernetes' Table output, kubectl's default) reflect the alias at all** — without it, only `-o json`/`-o yaml`/a typed client show the alias, because a Table response's printed cells and embedded per-row object carry no recognizable field path for these categories to match otherwise. `ip`/`url` don't have this gap. See [#361](https://github.com/phenixblue/k8shark/issues/361). |
 
 ### Anonymize rule fields
 
@@ -613,6 +613,15 @@ anonymize:
       fieldPath: metadata.name
       exclude: true
 ```
+
+With `fullSweep` on, a Table response's rows are swept under the real
+resource Kind (resolved from the record's own captured API path), so a rule
+like the one above also protects a Node's name inside a captured
+`?as=Table`/`?as=TableSchema` response — the same path `fieldPath:
+metadata.name` already names. The printed cell `kubectl get` actually
+displays is a *different* field, though (Table cells have no field names of
+their own, just a position); to keep that out of `kubectl get`'s output too,
+add a second rule for the same category/kind with `fieldPath: "cells[*]"`.
 
 Apply the same categories and rules to an existing archive:
 
