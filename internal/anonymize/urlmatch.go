@@ -127,6 +127,33 @@ func rewriteURLInObject(obj map[string]interface{}, kind string, excluded exclud
 	return modified
 }
 
+// isOpenAPIDocumentPath reports whether apiPath is one of the API server's
+// own OpenAPI/discovery-document endpoints ("/openapi/v2", "/openapi/v3",
+// and every "/openapi/v3/..." per-group-version document). These are pure
+// API schema text — generated from the Kubernetes source tree's own godoc
+// comments — not captured cluster data: every field is either fixed schema
+// metadata (types, property names) or human-written description prose that
+// routinely embeds a scheme://host reference as illustrative documentation
+// (e.g. "More info: https://kubernetes.io/docs/..."), never a real Ingress
+// host, webhook URL, or any other value that actually describes the
+// captured cluster. A full-tree URL scan can't tell the two apart by shape
+// alone — both are syntactically valid scheme://host substrings — so this
+// whole-record skip is the correct fix, not the full-tree matcher itself.
+func isOpenAPIDocumentPath(apiPath string) bool {
+	return apiPath == "/openapi/v2" || strings.HasPrefix(apiPath, "/openapi/v3")
+}
+
+// tableColumnDefinitionsPrefix is the walkStrings path prefix (per its own
+// "[*]" array-index convention) under which a Table-kind response's column
+// schema lives: columnDefinitions[*].description carries the same kind of
+// fixed, human-written schema prose as an OpenAPI document (see
+// isOpenAPIDocumentPath) — e.g. "Name must be unique... More info:
+// https://kubernetes.io/docs/...". Unlike a whole OpenAPI document, a Table
+// response also carries real captured data in rows[*].cells, so the record
+// as a whole can't be skipped the way an OpenAPI document is — only this
+// one schema-only subtree needs excluding from the full-tree URL scan.
+const tableColumnDefinitionsPrefix = "columnDefinitions[*]"
+
 // rewriteURLInRecord decodes rec's body and rewrites every URL/hostname
 // occurrence it recognizes: the bare-hostname schema-aware fields
 // (rewriteURLInObject) plus a full-tree walk for scheme://host substrings
@@ -138,6 +165,10 @@ func rewriteURLInObject(obj map[string]interface{}, kind string, excluded exclud
 // to a Kind applies correctly to a List response's items[] too, the same
 // requirement rewriteIPInRecord has (see its own doc comment).
 func rewriteURLInRecord(rec *capture.Record, excluded excludedFunc, alias func(string) string) (bool, error) {
+	if isOpenAPIDocumentPath(rec.APIPath) {
+		return false, nil
+	}
+
 	var obj map[string]interface{}
 	if err := json.Unmarshal(rec.ResponseBody, &obj); err != nil {
 		return false, nil
@@ -147,6 +178,9 @@ func rewriteURLInRecord(rec *capture.Record, excluded excludedFunc, alias func(s
 	rewriteItem := func(item map[string]interface{}, itemKind string) bool {
 		itemModified := rewriteURLInObject(item, itemKind, excluded, alias)
 		if walkStrings(item, "", func(path, s string) (string, bool) {
+			if itemKind == "Table" && strings.HasPrefix(path, tableColumnDefinitionsPrefix) {
+				return "", false
+			}
 			if excluded(CategoryURL, itemKind, path) {
 				return "", false
 			}

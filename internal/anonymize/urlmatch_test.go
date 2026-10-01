@@ -222,4 +222,101 @@ func TestRewriteURLInRecord(t *testing.T) {
 			t.Error("body must be byte-identical when nothing was rewritten")
 		}
 	})
+
+	// Reproduces the false-positive this package's own doc-URL noise caused
+	// (see isOpenAPIDocumentPath's doc comment): a real cluster's built-in
+	// OpenAPI document has no captured infrastructure in it at all, only
+	// schema prose that happens to contain scheme://host substrings.
+	t.Run("an /openapi/v2 document is left untouched even though its schema text contains doc-URL hosts", func(t *testing.T) {
+		body := `{"swagger":"2.0","info":{"title":"Kubernetes","version":"1.36"},
+			"definitions":{"io.k8s.api.core.v1.ObjectMeta":{"properties":{
+				"name":{"description":"More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names#names"}
+			}}}}`
+		rec := &capture.Record{APIPath: "/openapi/v2", ResponseBody: json.RawMessage(body)}
+		orig := string(rec.ResponseBody)
+		changed, err := rewriteURLInRecord(rec, noExclusions, upper)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if changed {
+			t.Error("want changed=false — an OpenAPI document must never be scanned for URL candidates")
+		}
+		if string(rec.ResponseBody) != orig {
+			t.Error("body must be byte-identical when nothing was rewritten")
+		}
+	})
+
+	t.Run("an /openapi/v3/apis/... per-group-version document is also left untouched", func(t *testing.T) {
+		body := `{"openapi":"3.0.0","info":{"title":"Kubernetes","version":"1.36"},
+			"paths":{"/apis/apps/v1/deployments":{"get":{"description":"see https://kubernetes.io/docs/ for details"}}}}`
+		rec := &capture.Record{APIPath: "/openapi/v3/apis/apps/v1", ResponseBody: json.RawMessage(body)}
+		changed, err := rewriteURLInRecord(rec, noExclusions, upper)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if changed {
+			t.Error("want changed=false — every /openapi/v3/... document must be skipped, not just /openapi/v3 itself")
+		}
+	})
+
+	// Reproduces the other half of the same false-positive: a Table
+	// response's columnDefinitions[*].description is the identical kind of
+	// fixed schema prose, but unlike a whole OpenAPI document, the rest of
+	// the Table (rows[*].cells) is real captured data and must still be
+	// scanned normally.
+	t.Run("a Table response's columnDefinitions descriptions are skipped, but its rows are still scanned", func(t *testing.T) {
+		body := `{"kind":"Table","apiVersion":"meta.k8s.io/v1",
+			"columnDefinitions":[
+				{"name":"Name","description":"Name must be unique. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names#names"}
+			],
+			"rows":[{"cells":["node-1"],"object":{"kind":"PartialObjectMetadata","apiVersion":"meta.k8s.io/v1",
+				"metadata":{"annotations":{"webhook-url":"https://webhook.example.com/notify"}}}}]}`
+		rec := &capture.Record{APIPath: "/api/v1/nodes?as=Table", ResponseBody: json.RawMessage(body)}
+		changed, err := rewriteURLInRecord(rec, noExclusions, upper)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !changed {
+			t.Fatal("want changed=true — the row's webhook-url annotation is real data and must still be aliased")
+		}
+		var out map[string]interface{}
+		if err := json.Unmarshal(rec.ResponseBody, &out); err != nil {
+			t.Fatal(err)
+		}
+		colDesc := out["columnDefinitions"].([]interface{})[0].(map[string]interface{})["description"]
+		if colDesc != "Name must be unique. More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names#names" {
+			t.Errorf("columnDefinitions[0].description was modified, want it left untouched: %v", colDesc)
+		}
+		if got := out["apiVersion"]; got != "meta.k8s.io/v1" {
+			t.Errorf("top-level apiVersion = %v, want meta.k8s.io/v1 untouched — this is exactly what the reported corruption mangled", got)
+		}
+		row := out["rows"].([]interface{})[0].(map[string]interface{})
+		ann := row["object"].(map[string]interface{})["metadata"].(map[string]interface{})["annotations"].(map[string]interface{})
+		if got := ann["webhook-url"]; got != "https://webhook.example.com-ALIASED/notify" {
+			t.Errorf("row webhook-url = %v, want the host aliased (rows must still be scanned normally)", got)
+		}
+	})
+}
+
+func TestIsOpenAPIDocumentPath(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"/openapi/v2", true},
+		{"/openapi/v3", true}, // the root discovery document is itself captured, not just its per-group-version subpaths
+		{"/openapi/v3/api", true},
+		{"/openapi/v3/api/v1", true},
+		{"/openapi/v3/apis/apps/v1", true},
+		{"/openapi/v3/.well-known/openid-configuration", true},
+		{"/api/v1/nodes", false},
+		{"/api/v1/nodes?as=Table", false},
+		{"/apis/apps/v1/deployments", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := isOpenAPIDocumentPath(tc.path); got != tc.want {
+			t.Errorf("isOpenAPIDocumentPath(%q) = %v, want %v", tc.path, got, tc.want)
+		}
+	}
 }
