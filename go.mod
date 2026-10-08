@@ -1,10 +1,10 @@
 module github.com/phenixblue/k8shark
 
-go 1.26.6
+go 1.27
 
 require (
 	filippo.io/age v1.3.2
-	github.com/chromedp/cdproto v0.0.0-20260714215040-dc233986426f
+	github.com/chromedp/cdproto v0.157.7
 	github.com/chromedp/chromedp v0.16.0
 	github.com/go-viper/mapstructure/v2 v2.5.0
 	github.com/google/uuid v1.6.0
@@ -24,7 +24,6 @@ require (
 
 require (
 	filippo.io/hpke v0.4.0 // indirect
-	github.com/chromedp/sysutil v1.1.0 // indirect
 	github.com/cpuguy83/go-md2man/v2 v2.0.6 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/emicklei/go-restful/v3 v3.13.0 // indirect
