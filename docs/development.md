@@ -40,9 +40,13 @@ The CI `contract` job enforces that `gofmt -w . && git diff --exit-code` is clea
 For golangci-lint (run in CI):
 
 ```sh
-go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
+go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0
 golangci-lint run
 ```
+
+golangci-lint must be built by a Go toolchain at least as new as the `go`
+directive in `go.mod`, so install it with the same Go version CI uses rather
+than an older one on your PATH.
 
 Enabled linters are defined in [`.golangci.yml`](../.golangci.yml): `errcheck`, `govet`, `ineffassign`, `staticcheck`, `unused`.
 
