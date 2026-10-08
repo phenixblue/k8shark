@@ -60,6 +60,14 @@ const (
 	perRouteTimeout = 30 * time.Second
 )
 
+// Browser *startup* is a different budget from the per-route ones above: it is
+// paid once per test rather than once per route, so headroom here costs nothing
+// on a healthy run. chromedp's default wsURLReadTimeout is 20s, and Chrome 154
+// on GitHub's runners takes ~10s to print the DevTools websocket URL — close
+// enough to the default to flake, which it did on #376. Raise it well clear of
+// observed startup latency instead of tracking it.
+const browserStartTimeout = 60 * time.Second
+
 // pageProbe runs before app.js on every document. It gives the tests three
 // things the CDP event stream alone can't: a count of in-flight fetches, so
 // waiting is deterministic instead of a sleep; an in-page record of error
@@ -180,6 +188,7 @@ func newBrowser(t *testing.T) (context.Context, *collector) {
 	allocOpts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.DisableGPU,
 		chromedp.NoSandbox, // required in most CI containers
+		chromedp.WSURLReadTimeout(browserStartTimeout),
 	)
 	allocCtx, cancelAlloc := chromedp.NewExecAllocator(context.Background(), allocOpts...)
 	t.Cleanup(cancelAlloc)
