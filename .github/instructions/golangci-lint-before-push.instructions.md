@@ -7,7 +7,7 @@ description: "Use when performing git push operations, updating PR branches, or 
 Before any `git push` to a branch used for a PR:
 
 1. Install the pinned CI lint version:
-   - `go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8`
+   - `go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0`
 2. Run the same lint command as CI from repo root:
    - `golangci-lint run`
 

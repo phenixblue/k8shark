@@ -1,10 +1,39 @@
+version: "2"
+
 run:
   timeout: 3m
 
 linters:
-  enable:
-    - errcheck
-    - govet
-    - ineffassign
-    - staticcheck
-    - unused
+  # errcheck, govet, ineffassign, staticcheck and unused are exactly the
+  # "standard" default set in golangci-lint v2, so they no longer need an
+  # explicit enable list.
+  default: standard
+
+  settings:
+    staticcheck:
+      # v2 folded gosimple (S1*), stylecheck (ST1*) and quickfix (QF*) into
+      # the staticcheck linter and turns them all on by default. Under v1 this
+      # repo only ran the SA* analyzers, so restrict the set to keep the lint
+      # surface unchanged across the upgrade.
+      checks:
+        - SA*
+
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+
+formatters:
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

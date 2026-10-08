@@ -4,7 +4,7 @@ BINARY  := kshrk
 VERSION ?= dev
 LDFLAGS := -w -s -X github.com/phenixblue/k8shark/cmd.Version=$(VERSION)
 GOFLAGS := -trimpath
-GOLANGCI_LINT_VERSION ?= v1.64.8
+GOLANGCI_LINT_VERSION ?= v2.14.0
 
 build: ## Build the kshrk binary
 	go build $(GOFLAGS) -ldflags "$(LDFLAGS)" -o $(BINARY) .
@@ -29,7 +29,7 @@ lint: ## Run go vet
 	go vet ./...
 
 lint-ci-install: ## Install the pinned golangci-lint version used in CI
-	go install github.com/golangci/golangci-lint/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 
 lint-ci: ## Run golangci-lint exactly like CI (requires lint-ci-install)
 	golangci-lint run
