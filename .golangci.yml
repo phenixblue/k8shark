@@ -9,14 +9,8 @@ linters:
   # explicit enable list.
   default: standard
 
-  settings:
-    staticcheck:
-      # v2 folded gosimple (S1*), stylecheck (ST1*) and quickfix (QF*) into
-      # the staticcheck linter and turns them all on by default. Under v1 this
-      # repo only ran the SA* analyzers, so restrict the set to keep the lint
-      # surface unchanged across the upgrade.
-      checks:
-        - SA*
+  # staticcheck runs its full default set: SA* plus the gosimple (S1*),
+  # stylecheck (ST1*) and quickfix (QF*) analyzers that v2 folded into it.
 
   exclusions:
     generated: lax

@@ -18,11 +18,12 @@ import (
 //	istioctl proxy-status      → GET/POST .../pods/<name>/proxy/...
 //	                             GET/POST .../services/<name>/proxy/...
 func (h *handler) tryRejectInteractiveSubresource(w http.ResponseWriter, path string) bool {
-	if !(strings.HasSuffix(path, "/exec") ||
+	interactive := strings.HasSuffix(path, "/exec") ||
 		strings.HasSuffix(path, "/portforward") ||
 		strings.HasSuffix(path, "/attach") ||
 		strings.HasSuffix(path, "/proxy") ||
-		strings.Contains(path, "/proxy/")) {
+		strings.Contains(path, "/proxy/")
+	if !interactive {
 		return false
 	}
 	w.Header().Set("Allow", "")

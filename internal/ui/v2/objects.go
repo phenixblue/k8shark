@@ -388,7 +388,8 @@ func buildDiscoveryResourceMeta(store *store.CaptureStore) map[string]discMeta {
 			continue
 		}
 		// Discovery docs are /api/v1 (core) or /apis/<group>/<version>.
-		if path != "/api/v1" && !(strings.HasPrefix(path, "/apis/") && strings.Count(path, "/") == 3) {
+		groupDiscovery := strings.HasPrefix(path, "/apis/") && strings.Count(path, "/") == 3
+		if path != "/api/v1" && !groupDiscovery {
 			continue
 		}
 		body, code, err := store.Latest(path, time.Time{})

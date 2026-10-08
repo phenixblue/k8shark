@@ -308,7 +308,7 @@ func redactSecretList(obj map[string]json.RawMessage, allowList map[string]bool,
 		if err := json.Unmarshal(itemRaw, &itemObj); err != nil {
 			continue
 		}
-		var newBody json.RawMessage = itemRaw
+		newBody := itemRaw
 		changed, err := redactSecretObj(itemObj, allowList, &newBody)
 		if err != nil {
 			return false, err

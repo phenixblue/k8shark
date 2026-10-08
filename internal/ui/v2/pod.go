@@ -541,9 +541,10 @@ func (h *Handler) podRestartSparkline(ns, name string, buckets int) []SparkBucke
 		if i < len(wi.EventTypes) {
 			et = wi.EventTypes[i]
 		}
-		if et == "DELETED" {
+		switch et {
+		case "DELETED":
 			cells[idx].Bad++
-		} else if et == "MODIFIED" {
+		case "MODIFIED":
 			cells[idx].Warn++
 		}
 	}
@@ -581,9 +582,10 @@ func buildPodMetadata(pod podObject) PodMetadata {
 	}
 	for _, c := range pod.Status.Conditions {
 		sev := "neutral"
-		if c.Status == "True" {
+		switch c.Status {
+		case "True":
 			sev = "good"
-		} else if c.Status == "False" {
+		case "False":
 			sev = "bad"
 		}
 		out.Conditions = append(out.Conditions, PodCondition{
