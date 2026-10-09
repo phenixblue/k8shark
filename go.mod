@@ -1,6 +1,6 @@
 module github.com/phenixblue/k8shark
 
-go 1.26.6
+go 1.27.2
 
 require (
 	filippo.io/age v1.3.2

@@ -676,8 +676,8 @@ func wildcardServerPaginated(t *testing.T, allNS []string, pageSize int) *httpte
 		case "/version":
 			fmt.Fprint(w, `{"gitVersion":"v1.29.0"}`)
 		case "/api/v1/namespaces":
-			cont := r.URL.Query().Get("continue")
-			if cont == "" {
+			switch cont := r.URL.Query().Get("continue"); cont {
+			case "":
 				// First page
 				page := allNS
 				var continueVal string
@@ -687,12 +687,12 @@ func wildcardServerPaginated(t *testing.T, allNS []string, pageSize int) *httpte
 				}
 				b, _ := buildNsList(page, continueVal)
 				fmt.Fprint(w, b)
-			} else if cont == tok {
+			case tok:
 				// Second page
 				page := allNS[pageSize:]
 				b, _ := buildNsList(page, "")
 				fmt.Fprint(w, b)
-			} else {
+			default:
 				w.WriteHeader(http.StatusBadRequest)
 			}
 		default:

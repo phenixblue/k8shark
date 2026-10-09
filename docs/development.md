@@ -4,7 +4,7 @@
 
 | Tool | Minimum version | Notes |
 |------|----------------|-------|
-| Go | 1.26 | Check `go.mod` for the exact minimum |
+| Go | 1.27 | Check `go.mod` for the exact minimum |
 | `kind` | any recent | Required for `make e2e` and `make kind-up` |
 | `kubectl` | any recent | Required for E2E and manual testing |
 | `goreleaser` | v2 | Required for `make release-snapshot` / `make release-local` only |
