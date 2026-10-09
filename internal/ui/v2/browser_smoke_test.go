@@ -62,11 +62,16 @@ const (
 
 // Browser *startup* is a different budget from the per-route ones above: it is
 // paid once per test rather than once per route, so headroom here costs nothing
-// on a healthy run. chromedp's default wsURLReadTimeout is 20s, and Chrome 154
-// on GitHub's runners takes ~10s to print the DevTools websocket URL — close
-// enough to the default to flake, which it did on #376. Raise it well clear of
-// observed startup latency instead of tracking it.
-const browserStartTimeout = 60 * time.Second
+// on a healthy run and only changes how long a genuinely dead browser takes to
+// report. chromedp's default wsURLReadTimeout is 20s, which Chrome 154 on
+// GitHub's runners blows through often enough to make the job a coin flip.
+//
+// Startup latency there is wildly variable rather than merely slow: across four
+// observed runs of this job it ranged from ~10s to ~53s, so this is sized for
+// the tail and not for the median. 2 tests x 180s still fits inside the job's
+// 10m `go test -timeout`. If it ever trips again, raise it rather than retrying
+// — a retry pays the same unbounded wait twice.
+const browserStartTimeout = 180 * time.Second
 
 // pageProbe runs before app.js on every document. It gives the tests three
 // things the CDP event stream alone can't: a count of in-flight fetches, so
