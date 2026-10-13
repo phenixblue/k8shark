@@ -83,6 +83,14 @@ annotation, an unrecognized CRD's field) -- slower, and opt-in, since
 matching a short or common value as a substring carries a real
 false-positive risk. See https://github.com/phenixblue/k8shark/issues/361.
 
+The sweep also reaches object KEYS that embed a name or IP (managedFields
+uses keys like k:{"name":"redis"}), and matches 2-3 character names (a
+workload called "api") only where they stand alone -- a label or selector
+value, a "deployment/api" reference, an Event name, a whole word in a message
+-- so paths and identifiers like "/api/v1" or "kube-api-access-x" are never
+mangled. A 1-character name is ignored, and OpenAPI schema documents (which
+carry no cluster data) are skipped.
+
 Plain "kubectl get <resource>" (which negotiates Kubernetes' Table format by
 default) reflects namespace/node/pod/workload aliases in the Name and
 Namespace columns -- and the row's embedded object -- for the resources

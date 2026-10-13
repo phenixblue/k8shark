@@ -157,3 +157,49 @@ func TestRewriteIPInRecord(t *testing.T) {
 		}
 	})
 }
+
+// /api discovery's serverAddressByClientCIDRs[*].serverAddress is a whole
+// "<ip>:<port>" value — wholly an IP plus a port, not free text — and used
+// to leak the API server's real address in every archive (neither a bare IP
+// nor a scheme://host URL, so neither matcher saw it).
+func TestRewriteIPInRecord_HostPort(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"IPv4:port", "172.18.0.2:6443", "172.18.0.2-ALIASED:6443"},
+		{"bracketed IPv6:port", "[fd00::1]:6443", "[fd00::1-ALIASED]:6443"},
+		{"a hostname:port is not this category's to alias", "kubernetes.default.svc:443", "kubernetes.default.svc:443"},
+		{"a non-numeric port is left alone", "10.1.2.3:http", "10.1.2.3:http"},
+		{"an empty port is left alone", "10.1.2.3:", "10.1.2.3:"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body, _ := json.Marshal(map[string]interface{}{
+				"serverAddressByClientCIDRs": []interface{}{map[string]interface{}{"serverAddress": tc.in}},
+			})
+			rec := &capture.Record{ResponseBody: body}
+			if _, err := rewriteIPInRecord(rec, noExclusions, upper); err != nil {
+				t.Fatal(err)
+			}
+			var out struct {
+				S []struct {
+					A string `json:"serverAddress"`
+				} `json:"serverAddressByClientCIDRs"`
+			}
+			if err := json.Unmarshal(rec.ResponseBody, &out); err != nil {
+				t.Fatal(err)
+			}
+			if got := out.S[0].A; got != tc.want {
+				t.Errorf("serverAddress = %q, want %q", got, tc.want)
+			}
+		})
+	}
+
+	t.Run("an exclude rule on the field keeps host:port real", func(t *testing.T) {
+		rec := &capture.Record{ResponseBody: json.RawMessage(`{"kind":"APIVersions","serverAddress":"172.18.0.2:6443"}`)}
+		excluded := func(cat Category, kind, path string) bool {
+			return cat == CategoryIP && kind == "APIVersions" && path == "serverAddress"
+		}
+		if changed, _ := rewriteIPInRecord(rec, excluded, upper); changed {
+			t.Error("want changed=false")
+		}
+	})
+}
