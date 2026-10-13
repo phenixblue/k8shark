@@ -103,12 +103,17 @@ func tableRowKindFromAPIPath(apiPath string) (string, bool) {
 // left untouched even if it's recognized, so e.g. --categories pod alone
 // doesn't also alias a Pod's spec.nodeName.
 //
-// Schema-aware only, matching this milestone's scope: catching a resource
-// name as a substring inside free text (an annotation value, an Event
-// message) or an opaque Table cell is deliberately deferred — there is no
-// generic pattern for "this token is a Kubernetes name" the way there is
-// for an IP literal, so recall would need a candidate set built from these
-// same structured fields first (see #137's plan, Open Question 5).
+// Schema-aware only: catching a resource name as a substring inside free
+// text (an annotation value, an Event message) is deliberately deferred —
+// there is no generic pattern for "this token is a Kubernetes name" the way
+// there is for an IP literal, so recall would need a candidate set built
+// from these same structured fields first (see --full-sweep, #361). A
+// Table/TableSchema response's rows[*] aren't free text, though — each
+// row's embedded "object" has the exact same metadata.name field this
+// function already knows to alias, just under a different real Kind than
+// its own "Table" wrapper (see rewriteResourceNameInRecord's Table branch
+// and tableRowKindFromAPIPath), so that specific case doesn't need to wait
+// for full-sweep's substring matching at all.
 //
 // A closely related, confirmed-real instance of that same gap: kindCategories
 // only recognizes built-in Kubernetes Kinds, so an Event whose
@@ -227,9 +232,10 @@ func rewriteResourceNameInObject(obj map[string]interface{}, kind string, enable
 // rewriteResourceNameInRecord decodes rec's body, rewrites every node/pod/
 // workload name occurrence rewriteResourceNameInObject recognizes, and
 // re-encodes the body if anything changed. Mirrors
-// rewriteNamespaceInRecord's list-handling exactly (see its own doc comment
-// for why a non-JSON or Table/discovery body is left untouched rather than
-// erroring).
+// rewriteNamespaceInRecord's list- and Table-handling exactly (see its own
+// doc comment for why a non-JSON or discovery body is left untouched rather
+// than erroring, and for what a Table response's rewrite does and doesn't
+// cover).
 func rewriteResourceNameInRecord(rec *capture.Record, enabled map[Category]bool, excluded excludedFunc, alias func(Category, string) string) (bool, error) {
 	var obj map[string]interface{}
 	if err := json.Unmarshal(rec.ResponseBody, &obj); err != nil {
@@ -239,7 +245,8 @@ func rewriteResourceNameInRecord(rec *capture.Record, enabled map[Category]bool,
 	kind, _ := obj["kind"].(string)
 	modified := false
 
-	if strings.HasSuffix(kind, "List") {
+	switch {
+	case strings.HasSuffix(kind, "List"):
 		items, _ := obj["items"].([]interface{})
 		itemKind := strings.TrimSuffix(kind, "List")
 		for i, itemRaw := range items {
@@ -256,8 +263,37 @@ func rewriteResourceNameInRecord(rec *capture.Record, enabled map[Category]bool,
 				modified = true
 			}
 		}
-	} else if rewriteResourceNameInObject(obj, kind, enabled, excluded, alias) {
-		modified = true
+	case kind == "Table":
+		if rewriteTableRows(obj, rec.APIPath,
+			func(item map[string]interface{}, itemKind string) bool {
+				return rewriteResourceNameInObject(item, itemKind, enabled, excluded, alias)
+			},
+			func(tableObj, row, rowObj map[string]interface{}, rowKind string) {
+				cat, ok := kindCategories[rowKind]
+				if !ok || excluded(cat, rowKind, "cells[*]") {
+					return
+				}
+				meta, ok := rowObj["metadata"].(map[string]interface{})
+				if !ok {
+					return
+				}
+				cells, ok := row["cells"].([]interface{})
+				if !ok {
+					return
+				}
+				if idx, ok := tableCellIndex(tableObj, "Name"); ok && idx < len(cells) {
+					if name, ok := meta["name"].(string); ok {
+						cells[idx] = name
+					}
+				}
+			},
+		) {
+			modified = true
+		}
+	default:
+		if rewriteResourceNameInObject(obj, kind, enabled, excluded, alias) {
+			modified = true
+		}
 	}
 
 	if !modified {
