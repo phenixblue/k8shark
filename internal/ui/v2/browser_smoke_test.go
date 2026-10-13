@@ -36,6 +36,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
@@ -112,10 +113,34 @@ const readyExpr = `
 })()
 `
 
-// awaitPromise lets an Evaluate expression return a promise.
-var awaitPromise = func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
-	return p.WithAwaitPromise(true)
+// routeSnapshot is everything loadRoute asserts about a settled route.
+//
+// These five values used to be five separate Evaluate calls inside one Run.
+// chromedp's Evaluate is generic over a single result type now and Run carries
+// a single action, so they are read together instead. That is also a small
+// correctness gain: the numbers describe one instant rather than five
+// successive round trips, so a route that mutated the DOM between them can no
+// longer produce a self-inconsistent snapshot.
+type routeSnapshot struct {
+	Children int      `json:"children"`
+	TextLen  int      `json:"textLen"`
+	Errors   []string `json:"errors"`
+	Search   string   `json:"search"`
+	Hash     string   `json:"hash"`
 }
+
+const routeSnapshotExpr = `
+(function () {
+  const c = document.getElementById('content');
+  return {
+    children: c ? c.childElementCount : 0,
+    textLen: ((c && c.textContent) || '').trim().length,
+    errors: window.__kshrkErrors || [],
+    search: location.search,
+    hash: location.hash,
+  };
+})()
+`
 
 // collector accumulates errors seen through the CDP event stream.
 type collector struct {
@@ -202,29 +227,48 @@ func newBrowser(t *testing.T) (context.Context, *collector) {
 	t.Cleanup(cancel)
 
 	col := &collector{}
-	chromedp.ListenTarget(ctx, func(ev any) {
-		switch e := ev.(type) {
-		case *runtime.EventConsoleAPICalled:
+	// chromedp.Events replaces ListenTarget: one iterator per event rather than
+	// one callback for all of them. Both subscriptions are established here,
+	// before the first navigation below, so no event can arrive too early —
+	// Events subscribes when it returns, not when the range starts.
+	consoleCalled := chromedp.Events(ctx, runtime.ConsoleAPICalled)
+	exceptionThrown := chromedp.Events(ctx, runtime.ExceptionThrown)
+
+	// The iterators are drained on their own goroutines because the collector
+	// has to keep accumulating while the test body runs its own actions. An
+	// unread subscription queues without limit, so these must not block.
+	go func() {
+		for e, err := range consoleCalled {
+			if err != nil {
+				return // the context ended, or the browser never started
+			}
 			// console.error and console.assert are failures. Warnings and logs
 			// are not: the app logs legitimately.
 			if e.Type != "error" && e.Type != "assert" {
-				return
+				continue
 			}
 			parts := make([]string, 0, len(e.Args))
 			for _, a := range e.Args {
 				parts = append(parts, argText(a))
 			}
 			col.add("console", strings.Join(parts, " "))
-		case *runtime.EventExceptionThrown:
-			col.add("exception", e.ExceptionDetails.Error())
 		}
-	})
+	}()
+	go func() {
+		for e, err := range exceptionThrown {
+			if err != nil {
+				return
+			}
+			col.add("exception", exceptionText(e.ExceptionDetails))
+		}
+	}()
 
 	// Fail with the actionable message rather than a raw exec error when Chrome
 	// is missing. This is the one setup problem a contributor is likely to hit.
-	if err := chromedp.Run(ctx,
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			_, err := page.AddScriptToEvaluateOnNewDocument(pageProbe).Do(ctx)
+	if err := chromedp.Do(ctx,
+		chromedp.Func(func(ctx context.Context, t *chromedp.Target) error {
+			_, err := cdp.Call(ctx, t, page.AddScriptToEvaluateOnNewDocument,
+				page.AddScriptToEvaluateOnNewDocumentParams{Source: pageProbe})
 			return err
 		}),
 		chromedp.Navigate("about:blank"),
@@ -235,6 +279,22 @@ func newBrowser(t *testing.T) (context.Context, *collector) {
 			"    Install Chrome, or drop -tags browser to skip them.", err)
 	}
 	return ctx, col
+}
+
+// exceptionText renders an uncaught exception for a failure message. cdproto
+// dropped ExceptionDetails.Error() when it stopped implementing the error
+// interface on protocol types; this keeps the wording of the message those
+// failures used to carry.
+func exceptionText(e *runtime.ExceptionDetails) string {
+	if e == nil {
+		return "<nil exception>"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "exception %q (%d:%d)", e.Text, e.LineNumber, e.ColumnNumber)
+	if obj := e.Exception; obj != nil && obj.Description != "" {
+		fmt.Fprintf(&b, ": %s", obj.Description)
+	}
+	return b.String()
 }
 
 func argText(a *runtime.RemoteObject) string {
@@ -275,37 +335,36 @@ func loadRoute(t *testing.T, ctx context.Context, base, hash string) (children, 
 	token := fmt.Sprintf("load-%d", loadCounter.Add(1))
 	pageURL := base + "/v2/?" + token + hash
 
-	var gotSearch, gotHash string
-	err := chromedp.Run(rctx,
+	if err := chromedp.Do(rctx,
 		chromedp.Navigate(pageURL),
 		// Binds to the freshly-created document before anything is evaluated
 		// against it; without this the first Evaluate can race the navigation
 		// and fail with "Cannot find context with specified id".
-		chromedp.WaitReady("body", chromedp.ByQuery),
-		chromedp.Poll(readyExpr, nil,
+		chromedp.WaitReady(chromedp.CSS("body")),
+		chromedp.Poll[chromedp.Void](readyExpr,
 			chromedp.WithPollingInterval(50*time.Millisecond),
 			chromedp.WithPollingTimeout(pollTimeout)),
-		chromedp.Evaluate(`document.getElementById('content').childElementCount`, &children),
-		chromedp.Evaluate(`(document.getElementById('content').textContent || '').trim().length`, &textLen),
-		chromedp.Evaluate(`window.__kshrkErrors`, &pageErrs),
-		chromedp.Evaluate(`location.search`, &gotSearch),
-		chromedp.Evaluate(`location.hash`, &gotHash),
-	)
-	if err != nil {
+	); err != nil {
 		t.Errorf("%s: did not settle: %v\n"+
 			"    Either the route threw before painting, or a fetch never resolved.", hash, err)
-		return 0, 0, pageErrs
+		return 0, 0, nil
+	}
+
+	snap, err := chromedp.Run(rctx, chromedp.Evaluate[routeSnapshot](routeSnapshotExpr))
+	if err != nil {
+		t.Errorf("%s: settled but could not be read back: %v", hash, err)
+		return 0, 0, nil
 	}
 	// Freshness: prove these numbers describe the document we just asked for and
 	// not the one left over from the previous subtest.
-	if !strings.Contains(gotSearch, token) {
+	if !strings.Contains(snap.Search, token) {
 		t.Errorf("%s: expected a fresh document carrying %q but location.search is %q — "+
-			"the assertions for this route describe a stale page", hash, token, gotSearch)
+			"the assertions for this route describe a stale page", hash, token, snap.Search)
 	}
-	if gotHash != hash {
-		t.Errorf("%s: document settled on hash %q instead", hash, gotHash)
+	if snap.Hash != hash {
+		t.Errorf("%s: document settled on hash %q instead", hash, snap.Hash)
 	}
-	return children, textLen, pageErrs
+	return snap.Children, snap.TextLen, snap.Errors
 }
 
 // assertClean reports every error channel for a route.
@@ -416,6 +475,14 @@ func TestBrowser_RouteListMatchesRenderDispatch(t *testing.T) {
 	}
 }
 
+// xssProbeResult is what the in-page XSS probe reports back.
+type xssProbeResult struct {
+	XSSFired     bool     `json:"xssFired"`
+	InjectedTags []string `json:"injectedTags"`
+	JSHrefs      []string `json:"jsHrefs"`
+	Text         string   `json:"text"`
+}
+
 // xssPayloads are strings that execute if they reach an HTML parser.
 var xssPayloads = []string{
 	`<img src=x onerror="window.__xss=1">`,
@@ -506,12 +573,6 @@ func TestBrowser_HostileCaptureDataRendersAsText(t *testing.T) {
 					"assertions below would be vacuous", r.hash, children, textLen)
 			}
 
-			var res struct {
-				XSSFired     bool     `json:"xssFired"`
-				InjectedTags []string `json:"injectedTags"`
-				JSHrefs      []string `json:"jsHrefs"`
-				Text         string   `json:"text"`
-			}
 			// app.js builds no svg/img/iframe/object/embed/script anywhere, so
 			// any such element inside #content can only have come from a parsed
 			// payload.
@@ -531,7 +592,8 @@ func TestBrowser_HostileCaptureDataRendersAsText(t *testing.T) {
   };
 })()
 `
-			if err := chromedp.Run(ctx, chromedp.Evaluate(probe, &res)); err != nil {
+			res, err := chromedp.Run(ctx, chromedp.Evaluate[xssProbeResult](probe))
+			if err != nil {
 				t.Fatalf("evaluating the XSS probe: %v", err)
 			}
 
@@ -559,7 +621,6 @@ func TestBrowser_HostileCaptureDataRendersAsText(t *testing.T) {
 	// A control: the detector must be able to see an execution at all, or every
 	// assertion above passes for the wrong reason.
 	t.Run("positive-control", func(t *testing.T) {
-		var fired bool
 		const control = `
 (function () {
   window.__xss = 0;
@@ -576,7 +637,9 @@ func TestBrowser_HostileCaptureDataRendersAsText(t *testing.T) {
   }, 250));
 })()
 `
-		if err := chromedp.Run(ctx, chromedp.Evaluate(control, &fired, awaitPromise)); err != nil {
+		fired, err := chromedp.Run(ctx,
+			chromedp.Evaluate[bool](control, chromedp.EvalAwaitPromise))
+		if err != nil {
 			t.Fatalf("running the positive control: %v", err)
 		}
 		if !fired {
