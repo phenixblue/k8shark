@@ -9,6 +9,23 @@ import (
 	"github.com/phenixblue/k8shark/internal/capture"
 )
 
+// splitIPHostPort splits a whole-value "<ip>:<port>" (IPv6 in brackets) into
+// its IP host and numeric port. ok is false for anything else — in
+// particular a bare IPv6 literal, which net.SplitHostPort rejects for its
+// extra colons, and a hostname:port, which isn't this category's to alias.
+func splitIPHostPort(s string) (host, port string, ok bool) {
+	host, port, err := net.SplitHostPort(s)
+	if err != nil || net.ParseIP(host) == nil || port == "" {
+		return "", "", false
+	}
+	for _, c := range port {
+		if c < '0' || c > '9' {
+			return "", "", false
+		}
+	}
+	return host, port, true
+}
+
 // rewriteIPInRecord decodes rec's body and replaces every string value that
 // parses as a valid IP literal (net.ParseIP) with alias(original), anywhere
 // in the tree.
@@ -25,7 +42,8 @@ import (
 // needed in the implementation.
 //
 // This is a whole-value match only, not substring splicing: a field whose
-// entire value is exactly an IP literal is caught wherever it occurs
+// entire value is exactly an IP literal — or an IP literal plus a ":port" —
+// is caught wherever it occurs
 // (including an annotation or a Table cell that holds nothing else), but an
 // IP embedded inside a longer free-text string — the common shape for a
 // real Event message ("Pulling image ... from 10.1.2.3") — is not, since
@@ -57,7 +75,15 @@ func rewriteIPInRecord(rec *capture.Record, excluded excludedFunc, alias func(st
 	visit := func(node interface{}, itemKind string) bool {
 		return walkStrings(node, "", func(path, s string) (string, bool) {
 			if net.ParseIP(s) == nil {
-				return "", false
+				// A whole value of the form "<ip>:<port>" ("172.18.0.2:6443",
+				// "[fd00::1]:6443") — /api discovery's serverAddress, an
+				// Endpoints-style address — is still wholly an IP plus a
+				// port, not free text: alias the host, keep the port.
+				host, port, ok := splitIPHostPort(s)
+				if !ok || excluded(CategoryIP, itemKind, path) {
+					return "", false
+				}
+				return net.JoinHostPort(alias(host), port), true
 			}
 			if excluded(CategoryIP, itemKind, path) {
 				return "", false

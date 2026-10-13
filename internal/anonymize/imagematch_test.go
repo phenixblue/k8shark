@@ -199,3 +199,43 @@ func TestRewriteImageRegistryInRecord(t *testing.T) {
 		}
 	})
 }
+
+// A Node's status.images[*].names[*] is the kubelet's cache of every image on
+// that node, each under every reference form — it leaked the registry host
+// from every Node record because it isn't a container list.
+func TestRewriteImageRegistryInRecord_NodeStatusImages(t *testing.T) {
+	body := `{"kind":"Node","status":{"images":[
+		{"names":["registry.internal.corp/team/app@sha256:abc","registry.internal.corp/team/app:v1"],"sizeBytes":1},
+		{"names":["nginx:1.25-alpine"],"sizeBytes":2}]}}`
+	rec := &capture.Record{ResponseBody: json.RawMessage(body)}
+	changed, err := rewriteImageRegistryInRecord(rec, noExclusions, upper)
+	if err != nil || !changed {
+		t.Fatalf("changed=%v err=%v, want true, nil", changed, err)
+	}
+	var out struct {
+		Status struct {
+			Images []struct {
+				Names []string `json:"names"`
+			} `json:"images"`
+		} `json:"status"`
+	}
+	if err := json.Unmarshal(rec.ResponseBody, &out); err != nil {
+		t.Fatal(err)
+	}
+	if got := out.Status.Images[0].Names; got[0] != "registry.internal.corp-ALIASED/team/app@sha256:abc" || got[1] != "registry.internal.corp-ALIASED/team/app:v1" {
+		t.Errorf("names = %v, want both reference forms re-hosted", got)
+	}
+	if got := out.Status.Images[1].Names[0]; got != "nginx:1.25-alpine" {
+		t.Errorf("a registry-less reference was changed: %q", got)
+	}
+
+	t.Run("an exclude rule on the field keeps them real", func(t *testing.T) {
+		rec := &capture.Record{ResponseBody: json.RawMessage(body)}
+		excluded := func(cat Category, kind, path string) bool {
+			return cat == CategoryImage && kind == "Node" && path == "status.images[*].names[*]"
+		}
+		if changed, _ := rewriteImageRegistryInRecord(rec, excluded, upper); changed {
+			t.Error("want changed=false")
+		}
+	})
+}

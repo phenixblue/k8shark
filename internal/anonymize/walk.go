@@ -1,5 +1,7 @@
 package anonymize
 
+import "fmt"
+
 // joinFieldPath appends key to base using this package's field-path
 // convention (dot-separated, base=="" for the root), shared by every
 // rewrite function that builds a path to check against excludedFunc —
@@ -70,5 +72,87 @@ func walkStrings(node interface{}, path string, visit func(path, s string) (stri
 		return changed
 	default:
 		return false
+	}
+}
+
+// walkKeys is walkStrings' counterpart for object *keys*: it visits every
+// key of every map in a decoded JSON tree and renames the key to whatever
+// visit returns when it reports changed=true. walkStrings deliberately only
+// ever sees values, which is right for the IP/URL matchers that share it —
+// but the full sweep (sweep.go) has to reach keys too, because some real
+// Kubernetes data is *keyed* by a name or IP: managedFields' fieldsV1 uses
+// keys like `k:{"name":"redis"}` and `k:{"ip":"10.244.0.20"}`, and
+// ConfigMap/Secret data keys are routinely derived from a resource name.
+//
+// path is the dotted path of the *containing* object, and the path handed to
+// visit for a key is that object's path plus the key's own original name
+// (same convention as walkStrings' value paths, so a field-path exclude rule
+// that names a field also covers a rename of that field's key). Children are
+// always walked under their key's original name, never its renamed one, so
+// every path a rule could name is computed from the capture as it was.
+//
+// Renaming two distinct keys to the same name (or onto an existing key that
+// isn't itself being renamed away) would silently drop one of them, so that
+// is reported as an error instead — the caller fails the whole run rather
+// than writing an archive that lost data. Mutates in place and returns
+// whether anything changed.
+func walkKeys(node interface{}, path string, visit func(path, key string) (string, bool)) (bool, error) {
+	switch v := node.(type) {
+	case map[string]interface{}:
+		changed := false
+		renames := make(map[string]string)
+		for k, val := range v {
+			childPath := joinFieldPath(path, k)
+			if newK, ok := visit(childPath, k); ok && newK != k {
+				renames[k] = newK
+			}
+			c, err := walkKeys(val, childPath, visit)
+			if err != nil {
+				return false, err
+			}
+			if c {
+				changed = true
+			}
+		}
+		if len(renames) == 0 {
+			return changed, nil
+		}
+		final := make(map[string]string, len(v))
+		for k := range v {
+			nk := k
+			if r, ok := renames[k]; ok {
+				nk = r
+			}
+			if prior, dup := final[nk]; dup {
+				return false, fmt.Errorf("anonymize: full sweep: renaming object key %q to %q at %q would collide with key %q", k, nk, path, prior)
+			}
+			final[nk] = k
+		}
+		rebuilt := make(map[string]interface{}, len(v))
+		for nk, origK := range final {
+			rebuilt[nk] = v[origK]
+		}
+		for k := range v {
+			delete(v, k)
+		}
+		for k, val := range rebuilt {
+			v[k] = val
+		}
+		return true, nil
+	case []interface{}:
+		changed := false
+		childPath := path + "[*]"
+		for _, val := range v {
+			c, err := walkKeys(val, childPath, visit)
+			if err != nil {
+				return false, err
+			}
+			if c {
+				changed = true
+			}
+		}
+		return changed, nil
+	default:
+		return false, nil
 	}
 }

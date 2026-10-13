@@ -88,3 +88,88 @@ func TestWalkStrings_NoMatchReportsUnchanged(t *testing.T) {
 		t.Error("want changed=false when visit never matches")
 	}
 }
+
+func TestWalkKeys(t *testing.T) {
+	rename := func(path, key string) (string, bool) {
+		if key == "old" {
+			return "new", true
+		}
+		return "", false
+	}
+
+	t.Run("renames nested and array-contained keys, keeps values", func(t *testing.T) {
+		obj := map[string]interface{}{
+			"old": "v1",
+			"list": []interface{}{
+				map[string]interface{}{"old": map[string]interface{}{"old": "deep"}},
+			},
+			"keep": "x",
+		}
+		changed, err := walkKeys(obj, "", rename)
+		if err != nil || !changed {
+			t.Fatalf("changed=%v err=%v, want true, nil", changed, err)
+		}
+		if _, ok := obj["old"]; ok || obj["new"] != "v1" || obj["keep"] != "x" {
+			t.Errorf("top level = %v", obj)
+		}
+		inner := obj["list"].([]interface{})[0].(map[string]interface{})
+		deep := inner["new"].(map[string]interface{})
+		if deep["new"] != "deep" {
+			t.Errorf("nested = %v", inner)
+		}
+	})
+
+	t.Run("paths use the original key names and [*] for arrays", func(t *testing.T) {
+		var got []string
+		obj := map[string]interface{}{"a": []interface{}{map[string]interface{}{"b": "x"}}}
+		_, _ = walkKeys(obj, "", func(path, key string) (string, bool) {
+			got = append(got, path)
+			return "", false
+		})
+		want := map[string]bool{"a": true, "a[*].b": true}
+		if len(got) != 2 || !want[got[0]] || !want[got[1]] {
+			t.Errorf("paths = %v, want a and a[*].b", got)
+		}
+	})
+
+	t.Run("a swap (A->B while B->C) doesn't clobber either value", func(t *testing.T) {
+		obj := map[string]interface{}{"a": 1, "b": 2}
+		changed, err := walkKeys(obj, "", func(path, key string) (string, bool) {
+			switch key {
+			case "a":
+				return "b", true
+			case "b":
+				return "c", true
+			}
+			return "", false
+		})
+		if err != nil || !changed {
+			t.Fatalf("changed=%v err=%v", changed, err)
+		}
+		if obj["b"] != 1 || obj["c"] != 2 || len(obj) != 2 {
+			t.Errorf("obj = %v, want b:1 c:2", obj)
+		}
+	})
+
+	t.Run("two keys renamed onto the same name is an error, not silent data loss", func(t *testing.T) {
+		obj := map[string]interface{}{"x": 1, "y": 2}
+		_, err := walkKeys(obj, "", func(path, key string) (string, bool) { return "same", true })
+		if err == nil {
+			t.Fatal("want a collision error")
+		}
+	})
+
+	t.Run("renaming onto an existing key that stays is an error", func(t *testing.T) {
+		obj := map[string]interface{}{"old": 1, "new": 2}
+		if _, err := walkKeys(obj, "", rename); err == nil {
+			t.Fatal("want a collision error")
+		}
+	})
+
+	t.Run("nothing to rename reports unchanged", func(t *testing.T) {
+		obj := map[string]interface{}{"a": map[string]interface{}{"b": "c"}}
+		if changed, err := walkKeys(obj, "", func(string, string) (string, bool) { return "", false }); changed || err != nil {
+			t.Errorf("changed=%v err=%v", changed, err)
+		}
+	})
+}
