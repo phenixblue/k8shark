@@ -42,16 +42,15 @@ annotation, an unrecognized CRD's field) -- slower, and opt-in, since
 matching a short or common value as a substring carries a real
 false-positive risk. See https://github.com/phenixblue/k8shark/issues/361.
 
-IMPORTANT for namespace/node/pod/workload: without --full-sweep, "kshrk
-open"/"kshrk replay" + plain "kubectl get <resource>" (which negotiates
-Kubernetes' Table format by default) will still show the REAL, un-anonymized
-name -- only "-o json"/"-o yaml"/a typed client reflect the alias. This is
-because a Table response's printed cells and embedded per-row object carry
-no recognizable field path for these categories to match, the same way an
-Event message or an annotation's embedded JSON doesn't. "ip" and "url" do
-not have this gap (their self-evident-shape matching already reaches Table
-content). If you intend to replay or hand off an anonymized capture and
-verify it with ordinary "kubectl get" commands, pass --full-sweep.`,
+Plain "kubectl get <resource>" (which negotiates Kubernetes' Table format by
+default) reflects namespace/node/pod/workload aliases in the Name and
+Namespace columns -- and the row's embedded object -- for the resources
+these categories own (namespaces, nodes, pods, and the workload kinds), with
+or without --full-sweep. Any other printed column (a Pod's NODE column, say)
+and the Table of any other resource still shows the real value unless
+--full-sweep is on; "ip" and "url" already reach Table content on their own.
+If you intend to replay or hand off an anonymized capture, pass --full-sweep
+for the most complete coverage.`,
 	Example: `  # Anonymize every namespace name in a capture
   kshrk anonymize capture.kshrk --categories namespace
 
@@ -89,7 +88,7 @@ func init() {
 	anonymizeCmd.Flags().Bool("emit-mapping", false, "write the original-to-alias mapping alongside the output archive")
 	anonymizeCmd.Flags().String("mapping-path", "", "path for the mapping file (default: <out>.mapping.json, or .mapping.json.age when encrypted)")
 	anonymizeCmd.Flags().Bool("emit-mapping-plaintext", false, "allow --emit-mapping to write an unencrypted mapping when no --encrypt-* flag is set (not recommended)")
-	anonymizeCmd.Flags().Bool("full-sweep", false, "also replace any substring occurrence of a discovered namespace/node/pod/workload/ip/url value anywhere in a record's text, not just at known field paths -- needed for plain 'kubectl get' (Table output) to reflect namespace/node/pod/workload aliasing (slower, opt-in; see #361)")
+	anonymizeCmd.Flags().Bool("full-sweep", false, "also replace any substring occurrence of a discovered namespace/node/pod/workload/ip/url value anywhere in a record's text, not just at known field paths -- also covers 'kubectl get' (Table output) columns other than Name/Namespace (slower, opt-in; see #361)")
 	_ = anonymizeCmd.MarkFlagFilename("out", captureExt)
 	_ = anonymizeCmd.MarkFlagFilename("config", configExts...)
 	_ = anonymizeCmd.RegisterFlagCompletionFunc("output",

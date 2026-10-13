@@ -203,26 +203,146 @@ func TestRewriteNamespaceInRecord(t *testing.T) {
 		}
 	})
 
-	t.Run("a Table-format body is left untouched, not an error", func(t *testing.T) {
+	t.Run("a Table-format body with an unrecognized APIPath is left untouched, not an error", func(t *testing.T) {
 		body := `{"kind":"Table","apiVersion":"meta.k8s.io/v1","rows":[{"cells":["web-1","Running"]}]}`
+		// No APIPath at all — tableRowKindFromAPIPath can't resolve a real
+		// Kind (every native kind outside resourceTypeKind's own small set,
+		// and any CRD, hits this same path), so there's no "object" to
+		// rewrite either. This exercises the "decodes but has nothing to
+		// rewrite" path, not the "doesn't decode as JSON at all" path, and
+		// covers what a discovery/OpenAPI document (the true non-object
+		// case, rare in a real capture) would also hit.
 		rec := &capture.Record{ResponseBody: json.RawMessage(body)}
 		orig := string(rec.ResponseBody)
 		changed, err := rewriteNamespaceInRecord(rec, noExclusions, alias)
 		if err != nil {
 			t.Fatalf("Table-format body should not error, got: %v", err)
 		}
-		// A Table body IS valid JSON (decodes into map[string]interface{}
-		// fine — it just has "rows" instead of "items", and no top-level
-		// metadata.namespace), so this exercises the "decodes but has
-		// nothing to rewrite" path, not the "doesn't decode as JSON at all"
-		// path. Both should leave the body untouched; this covers the one
-		// this package will most often actually see, since discovery/OpenAPI
-		// documents (the true non-object case) are rare in a real capture.
 		if changed {
-			t.Error("want changed=false for a Table-format body")
+			t.Error("want changed=false for a Table-format body with no resolvable Kind")
 		}
 		if string(rec.ResponseBody) != orig {
 			t.Error("body must be byte-identical when nothing was rewritten")
+		}
+	})
+
+	// This is what `kubectl get pods -A` actually renders from by default —
+	// without it, the real namespace would show up in exactly the command a
+	// customer is most likely to run first after anonymizing.
+	t.Run("a Table response for a namespaced Kind aliases rows[*].object.metadata.namespace and mirrors the Namespace cell", func(t *testing.T) {
+		body := `{"kind":"Table","apiVersion":"meta.k8s.io/v1",
+			"columnDefinitions":[{"name":"Name"},{"name":"Namespace"},{"name":"Status"}],
+			"rows":[{"cells":["web-1","prod","Running"],"object":{"kind":"PartialObjectMetadata","apiVersion":"meta.k8s.io/v1",
+				"metadata":{"name":"web-1","namespace":"prod"}}}]}`
+		rec := &capture.Record{APIPath: "/api/v1/namespaces/prod/pods?as=Table", ResponseBody: json.RawMessage(body)}
+		changed, err := rewriteNamespaceInRecord(rec, noExclusions, alias)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !changed {
+			t.Fatal("want changed=true")
+		}
+		var out struct {
+			Rows []struct {
+				Cells  []string `json:"cells"`
+				Object struct {
+					Metadata struct {
+						Name      string `json:"name"`
+						Namespace string `json:"namespace"`
+					} `json:"metadata"`
+				} `json:"object"`
+			} `json:"rows"`
+		}
+		if err := json.Unmarshal(rec.ResponseBody, &out); err != nil {
+			t.Fatal(err)
+		}
+		row := out.Rows[0]
+		if row.Object.Metadata.Namespace != "prod-ALIASED" {
+			t.Errorf("rows[0].object.metadata.namespace = %q, want prod-ALIASED", row.Object.Metadata.Namespace)
+		}
+		if row.Object.Metadata.Name != "web-1" {
+			t.Errorf("rows[0].object.metadata.name = %q, want unchanged web-1 (namespace category only)", row.Object.Metadata.Name)
+		}
+		if row.Cells[1] != "prod-ALIASED" {
+			t.Errorf("rows[0].cells[1] (Namespace column) = %q, want prod-ALIASED — this is what kubectl actually prints", row.Cells[1])
+		}
+		if row.Cells[0] != "web-1" {
+			t.Errorf("rows[0].cells[0] (Name column) = %q, want unchanged — namespace category doesn't own this cell", row.Cells[0])
+		}
+	})
+
+	// Namespace is cluster-scoped, so its own Table ("kubectl get ns") is
+	// the one case where the *Name* column — not Namespace — carries the
+	// value this category aliases, mirroring rewriteNamespaceInObject's own
+	// metadata.name/metadata.namespace distinction for the embedded object.
+	t.Run("a Namespace's own Table response aliases rows[*].object.metadata.name and mirrors the Name cell", func(t *testing.T) {
+		body := `{"kind":"Table","apiVersion":"meta.k8s.io/v1",
+			"columnDefinitions":[{"name":"Name"},{"name":"Status"}],
+			"rows":[{"cells":["prod","Active"],"object":{"kind":"PartialObjectMetadata","apiVersion":"meta.k8s.io/v1",
+				"metadata":{"name":"prod"}}}]}`
+		rec := &capture.Record{APIPath: "/api/v1/namespaces?as=Table", ResponseBody: json.RawMessage(body)}
+		changed, err := rewriteNamespaceInRecord(rec, noExclusions, alias)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !changed {
+			t.Fatal("want changed=true")
+		}
+		var out struct {
+			Rows []struct {
+				Cells  []string `json:"cells"`
+				Object struct {
+					Metadata struct {
+						Name string `json:"name"`
+					} `json:"metadata"`
+				} `json:"object"`
+			} `json:"rows"`
+		}
+		if err := json.Unmarshal(rec.ResponseBody, &out); err != nil {
+			t.Fatal(err)
+		}
+		if got := out.Rows[0].Object.Metadata.Name; got != "prod-ALIASED" {
+			t.Errorf("rows[0].object.metadata.name = %q, want prod-ALIASED", got)
+		}
+		if got := out.Rows[0].Cells[0]; got != "prod-ALIASED" {
+			t.Errorf("rows[0].cells[0] (Name column) = %q, want prod-ALIASED", got)
+		}
+	})
+
+	t.Run("an exclude rule on the Namespace cell leaves it real even though the object field is aliased elsewhere", func(t *testing.T) {
+		body := `{"kind":"Table","apiVersion":"meta.k8s.io/v1",
+			"columnDefinitions":[{"name":"Name"},{"name":"Namespace"}],
+			"rows":[{"cells":["web-1","prod"],"object":{"kind":"PartialObjectMetadata","apiVersion":"meta.k8s.io/v1",
+				"metadata":{"name":"web-1","namespace":"prod"}}}]}`
+		rec := &capture.Record{APIPath: "/api/v1/namespaces/prod/pods?as=Table", ResponseBody: json.RawMessage(body)}
+		excluded := func(cat Category, kind, path string) bool {
+			return cat == CategoryNamespace && kind == "Pod" && path == "cells[*]"
+		}
+		changed, err := rewriteNamespaceInRecord(rec, excluded, alias)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !changed {
+			t.Fatal("want changed=true — the embedded object is still aliased")
+		}
+		var out struct {
+			Rows []struct {
+				Cells  []string `json:"cells"`
+				Object struct {
+					Metadata struct {
+						Namespace string `json:"namespace"`
+					} `json:"metadata"`
+				} `json:"object"`
+			} `json:"rows"`
+		}
+		if err := json.Unmarshal(rec.ResponseBody, &out); err != nil {
+			t.Fatal(err)
+		}
+		if got := out.Rows[0].Object.Metadata.Namespace; got != "prod-ALIASED" {
+			t.Errorf("rows[0].object.metadata.namespace = %q, want prod-ALIASED — the exclude rule only names cells[*]", got)
+		}
+		if got := out.Rows[0].Cells[1]; got != "prod" {
+			t.Errorf("rows[0].cells[1] = %q, want the real value left untouched by the cells[*] exclude rule", got)
 		}
 	})
 
