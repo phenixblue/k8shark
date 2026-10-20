@@ -135,6 +135,8 @@ func newTestAnonymizeCmdCommand(t *testing.T) *cobra.Command {
 	cmd.Flags().String("mapping-path", "", "")
 	cmd.Flags().Bool("emit-mapping-plaintext", false, "")
 	cmd.Flags().Bool("full-sweep", false, "")
+	cmd.Flags().Bool("verify", true, "")
+	cmd.Flags().Bool("fail-on-residual", false, "")
 	addAnonymizeFlags(cmd)
 	addEncryptFlags(cmd)
 	cmd.Flags().AddFlagSet(cmd.PersistentFlags())
@@ -582,4 +584,162 @@ func TestRunAnonymize_FullSweepWithNoEligibleCategoryWarns(t *testing.T) {
 	if strings.Contains(stdout.String(), "Full sweep found") {
 		t.Errorf("stdout = %q, want no \"Full sweep found\" line once --full-sweep has been flipped back off", stdout.String())
 	}
+}
+
+// leakyArchive has a namespace mention in a free-text field only --full-sweep
+// can rewrite, so a run without it leaves exactly one original behind.
+func leakyArchive(t *testing.T) string {
+	t.Helper()
+	return buildDiffArchive(t, `{"kind":"PodList","items":[
+		{"metadata":{"name":"web-1","namespace":"prod"},"status":{"message":"scheduled onto namespace prod"}}
+	]}`)
+}
+
+func TestRunAnonymize_VerifyReportsResidualWithoutValues(t *testing.T) {
+	cmd := newTestAnonymizeCmdCommand(t)
+	var stdout, stderr strings.Builder
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	_ = cmd.Flags().Set("categories", "namespace")
+	_ = cmd.Flags().Set("anonymize-salt-file", writeAnonymizeTestSaltFile(t))
+
+	if err := runAnonymize(cmd, []string{leakyArchive(t)}); err != nil {
+		t.Fatalf("runAnonymize: %v (a residual is a warning unless --fail-on-residual)", err)
+	}
+	if !strings.Contains(stderr.String(), "occurrence(s) of original values remain") || !strings.Contains(stderr.String(), "--full-sweep") {
+		t.Errorf("stderr = %q, want a residual warning that points at --full-sweep", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "status.message") {
+		t.Errorf("stderr = %q, want the field path", stderr.String())
+	}
+	// The report says where, never what.
+	if strings.Contains(stderr.String(), "prod") || strings.Contains(stdout.String(), "Verified: no original") {
+		t.Errorf("stderr=%q stdout=%q: must not echo the original or claim a clean result", stderr.String(), stdout.String())
+	}
+}
+
+func TestRunAnonymize_VerifyCleanAfterFullSweep(t *testing.T) {
+	cmd := newTestAnonymizeCmdCommand(t)
+	var stdout, stderr strings.Builder
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	_ = cmd.Flags().Set("categories", "namespace")
+	_ = cmd.Flags().Set("full-sweep", "true")
+	_ = cmd.Flags().Set("anonymize-salt-file", writeAnonymizeTestSaltFile(t))
+
+	if err := runAnonymize(cmd, []string{leakyArchive(t)}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), "Verified: no original value remains in the output.") {
+		t.Errorf("stdout = %q, want the clean verification line", stdout.String())
+	}
+	if strings.Contains(stderr.String(), "remain in the output") {
+		t.Errorf("stderr = %q, want no residual warning", stderr.String())
+	}
+}
+
+func TestRunAnonymize_FailOnResidualRemovesOutputAndWritesNoMapping(t *testing.T) {
+	in := leakyArchive(t)
+	out := filepath.Join(t.TempDir(), "out.kshrk")
+	mapping := filepath.Join(t.TempDir(), "map.json")
+
+	cmd := newTestAnonymizeCmdCommand(t)
+	cmd.SetOut(io.Discard)
+	var stderr strings.Builder
+	cmd.SetErr(&stderr)
+	_ = cmd.Flags().Set("categories", "namespace")
+	_ = cmd.Flags().Set("out", out)
+	_ = cmd.Flags().Set("fail-on-residual", "true")
+	_ = cmd.Flags().Set("emit-mapping", "true")
+	_ = cmd.Flags().Set("emit-mapping-plaintext", "true")
+	_ = cmd.Flags().Set("mapping-path", mapping)
+	_ = cmd.Flags().Set("anonymize-salt-file", writeAnonymizeTestSaltFile(t))
+
+	err := runAnonymize(cmd, []string{in})
+	if err == nil || !strings.Contains(err.Error(), "--fail-on-residual") {
+		t.Fatalf("err = %v, want a --fail-on-residual error", err)
+	}
+	if _, statErr := os.Stat(out); !os.IsNotExist(statErr) {
+		t.Errorf("the leaking output archive must be removed, stat err = %v", statErr)
+	}
+	if _, statErr := os.Stat(mapping); !os.IsNotExist(statErr) {
+		t.Errorf("no mapping should be written for an archive that was removed, stat err = %v", statErr)
+	}
+	if strings.Contains(err.Error(), "prod") {
+		t.Errorf("error echoes an original: %v", err)
+	}
+}
+
+func TestRunAnonymize_FailOnResidualPassesWhenClean(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "out.kshrk")
+	cmd := newTestAnonymizeCmdCommand(t)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	_ = cmd.Flags().Set("categories", "namespace")
+	_ = cmd.Flags().Set("out", out)
+	_ = cmd.Flags().Set("full-sweep", "true")
+	_ = cmd.Flags().Set("fail-on-residual", "true")
+	_ = cmd.Flags().Set("anonymize-salt-file", writeAnonymizeTestSaltFile(t))
+	if err := runAnonymize(cmd, []string{leakyArchive(t)}); err != nil {
+		t.Fatalf("a clean run must succeed under --fail-on-residual: %v", err)
+	}
+	if _, err := os.Stat(out); err != nil {
+		t.Errorf("output should exist: %v", err)
+	}
+}
+
+func TestRunAnonymize_FailOnResidualInJSONStillEmitsTheReport(t *testing.T) {
+	cmd := newTestAnonymizeCmdCommand(t)
+	var stdout strings.Builder
+	cmd.SetOut(&stdout)
+	cmd.SetErr(io.Discard)
+	_ = cmd.Flags().Set("categories", "namespace")
+	_ = cmd.Flags().Set("output", "json")
+	_ = cmd.Flags().Set("fail-on-residual", "true")
+	_ = cmd.Flags().Set("anonymize-salt-file", writeAnonymizeTestSaltFile(t))
+
+	if err := runAnonymize(cmd, []string{leakyArchive(t)}); err == nil {
+		t.Fatal("want an error")
+	}
+	var result anonymize.Result
+	if err := json.Unmarshal([]byte(stdout.String()), &result); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\n%s", err, stdout.String())
+	}
+	if !result.Verified || result.ResidualOccurrences == 0 || len(result.ResidualLocations) == 0 {
+		t.Errorf("result = %+v, want the residual report even though the run failed", result)
+	}
+}
+
+func TestRunAnonymize_VerifyFalseSkipsTheCheck(t *testing.T) {
+	cmd := newTestAnonymizeCmdCommand(t)
+	var stdout, stderr strings.Builder
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	_ = cmd.Flags().Set("categories", "namespace")
+	_ = cmd.Flags().Set("output", "json")
+	_ = cmd.Flags().Set("verify", "false")
+	_ = cmd.Flags().Set("anonymize-salt-file", writeAnonymizeTestSaltFile(t))
+	if err := runAnonymize(cmd, []string{leakyArchive(t)}); err != nil {
+		t.Fatal(err)
+	}
+	var result anonymize.Result
+	if err := json.Unmarshal([]byte(stdout.String()), &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Verified || result.ResidualOccurrences != 0 {
+		t.Errorf("result = %+v, want the check skipped", result)
+	}
+
+	t.Run("--fail-on-residual can't be combined with --verify=false", func(t *testing.T) {
+		cmd := newTestAnonymizeCmdCommand(t)
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+		_ = cmd.Flags().Set("categories", "namespace")
+		_ = cmd.Flags().Set("verify", "false")
+		_ = cmd.Flags().Set("fail-on-residual", "true")
+		_ = cmd.Flags().Set("anonymize-salt-file", writeAnonymizeTestSaltFile(t))
+		if err := runAnonymize(cmd, []string{leakyArchive(t)}); err == nil {
+			t.Error("want an error for a self-contradicting flag combination")
+		}
+	})
 }

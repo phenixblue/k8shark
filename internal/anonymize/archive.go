@@ -82,6 +82,14 @@ type Options struct {
 	// before the normal rewrite pass) and carries a real false-positive
 	// risk for short or common values (see #361).
 	FullSweep bool
+	// Verify checks every record's final body (plus its API path and the
+	// archive's server_address) for any original value that survived, and
+	// reports where in Result — see verify.go. Off by default for library
+	// callers; the CLI turns it on. When no sweep was requested it still
+	// costs one extra read-only pass over the source (the same collection
+	// pass FullSweep uses), because a value first seen late in the archive
+	// must still be recognized as an original in an earlier record.
+	Verify bool
 }
 
 // SchemaVersion is the version of the `kshrk anonymize -o json` output
@@ -130,6 +138,14 @@ type Result struct {
 	// package's existing collision-detection discipline. Always 0 when
 	// FullSweep was not requested.
 	SweepAmbiguousSkipped int `json:"sweep_ambiguous_skipped"`
+	// Verified is true when the post-write leak check ran (Options.Verify).
+	// ResidualOccurrences is how many times an original value was still found
+	// in the output, at a path no exclude rule covers; ResidualLocations
+	// aggregates those by (category, kind, field path) — never by value, so
+	// the report is safe to share. All three are always present in -o json.
+	Verified            bool               `json:"verified"`
+	ResidualOccurrences int                `json:"residual_occurrences"`
+	ResidualLocations   []ResidualLocation `json:"residual_locations"`
 	// OutputPath and OutputBytes are populated by the CLI layer (cmd/anonymize.go),
 	// not by Archive itself — Archive doesn't know its own caller's chosen
 	// output path or need to stat the file it just finished writing.
@@ -403,8 +419,13 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 	// nil — full read cost for a guaranteed no-op. cmd/anonymize.go already
 	// warns the user about exactly this case; this is the corresponding
 	// guarantee that the run doesn't pay for it anyway.
+	//
+	// The same pass also serves Options.Verify, which needs every original
+	// known before the first record is checked (a value first seen in record
+	// #300 must be recognized as a leak in record #5).
 	var sweepCandidates *sweepCandidateSet
-	if opts.FullSweep && sweepEligible {
+	var residual *residualTracker
+	if (opts.FullSweep && sweepEligible) || opts.Verify {
 		for _, apiPath := range sortedKeys(map[string]*capture.IndexEntry(idx)) {
 			entry := idx[apiPath]
 			if _, err := applyPathRewrites(apiPath); err != nil {
@@ -449,9 +470,41 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 				}
 			}
 		}
-		sweepCandidates, err = buildSweepCandidates(namespaceTracker, nodeTracker, podTracker, workloadTracker, ipTracker, urlTracker)
-		if err != nil {
-			return Result{}, err
+		// The archive's own server_address is a URL-category occurrence too
+		// (it is aliased after the record loop below), so its host must be a
+		// known original before the candidate sets are built — otherwise
+		// the same host appearing elsewhere (a discovery document, a
+		// message) would be neither swept nor flagged.
+		if doURL {
+			_, _ = spliceURLHosts(meta.ServerAddress, urlAlias)
+			if err := firstCollisionErr(); err != nil {
+				return Result{}, err
+			}
+		}
+		if opts.FullSweep && sweepEligible {
+			sweepCandidates, err = buildSweepCandidates(namespaceTracker, nodeTracker, podTracker, workloadTracker, ipTracker, urlTracker)
+			if err != nil {
+				return Result{}, err
+			}
+		}
+		if opts.Verify {
+			// A superset of the sweep's candidates: image registries (not
+			// sweepable as free text, but still originals) and values that
+			// are ambiguous across categories (not safely sweepable, but
+			// still supposed to be gone).
+			verifyCandidates, err := buildCandidateSet([]categoryMapping{
+				{CategoryNamespace, namespaceTracker.Mapping()},
+				{CategoryNode, nodeTracker.Mapping()},
+				{CategoryPod, podTracker.Mapping()},
+				{CategoryWorkload, workloadTracker.Mapping()},
+				{CategoryIP, ipTracker.Mapping()},
+				{CategoryURL, urlTracker.Mapping()},
+				{CategoryImage, imageTracker.Mapping()},
+			}, true)
+			if err != nil {
+				return Result{}, fmt.Errorf("compiling leak-check candidates: %w", err)
+			}
+			residual = newResidualTracker(verifyCandidates, excluded)
 		}
 	}
 	var sweepOccurrences int
@@ -542,6 +595,10 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 			// newAPIPath, the record's body would disagree with the index
 			// entry it's filed under.
 			rec.APIPath = newAPIPath
+			if residual != nil {
+				residual.checkRecord(&rec)
+				residual.checkString(newAPIPath, "api_path", newAPIPath)
+			}
 
 			newSeq, err := sw.WriteRecordRaw(newAPIPath, rec)
 			if err != nil {
@@ -706,6 +763,10 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 		}
 	}
 
+	if residual != nil {
+		residual.checkString(meta.ServerAddress, "metadata.server_address", "")
+	}
+
 	if err := sw.Finish(&meta, newIdx, newWI); err != nil {
 		return Result{}, fmt.Errorf("finishing output archive: %w", err)
 	}
@@ -740,8 +801,18 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 		sweepAmbiguousSkipped = sweepCandidates.ambiguousSkipped
 	}
 
+	residualLocations := []ResidualLocation{}
+	residualOccurrences := 0
+	if residual != nil {
+		residualLocations = residual.locations()
+		residualOccurrences = residual.total
+	}
+
 	return Result{
 		SchemaVersion:         SchemaVersion,
+		Verified:              residual != nil,
+		ResidualOccurrences:   residualOccurrences,
+		ResidualLocations:     residualLocations,
 		NamespacesRenamed:     namespaceTracker.Count(),
 		NodesRenamed:          nodeTracker.Count(),
 		PodsRenamed:           podTracker.Count(),

@@ -38,10 +38,18 @@ func TestArchive_JSONContract(t *testing.T) {
 		// exactly the case an accidental omitempty would drop, so their
 		// presence here is a real check, not a formality.
 		"output_path", "output_bytes",
+		// The leak-check fields are zero-valued here too (Options.Verify is
+		// off), and must still be present: verified:false and an empty —
+		// not null — residual_locations array.
+		"verified", "residual_occurrences", "residual_locations",
 	} {
 		if _, ok := got[k]; !ok {
 			t.Errorf("missing frozen top-level key %q (must be present even when zero-valued); got %s", k, b)
 		}
+	}
+
+	if string(got["residual_locations"]) != "[]" {
+		t.Errorf("residual_locations = %s, want an empty array (never null)", got["residual_locations"])
 	}
 
 	var fields struct {

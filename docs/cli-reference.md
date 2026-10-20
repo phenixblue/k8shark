@@ -91,6 +91,13 @@ value, a "deployment/api" reference, an Event name, a whole word in a message
 mangled. A 1-character name is ignored, and OpenAPI schema documents (which
 carry no cluster data) are skipped.
 
+After writing, the output is checked for any original value that survived
+(--verify, on by default) and the result reports WHERE any remain -- by
+category, kind, and field path, never the values themselves, so the report is
+safe to share. Without --full-sweep expect free-text occurrences to be
+reported; use --fail-on-residual to turn any remaining occurrence into an
+error (and remove the output) in a pipeline.
+
 Plain "kubectl get <resource>" (which negotiates Kubernetes' Table format by
 default) reflects namespace/node/pod/workload aliases in the Name and
 Namespace columns -- and the row's embedded object -- for the resources
@@ -131,6 +138,9 @@ kshrk anonymize <capture.kshrk> --categories <category> [--out <anonymized.kshrk
 
   # Also catch occurrences outside known field paths (slower, opt-in)
   kshrk anonymize capture.kshrk --categories namespace --categories ip --full-sweep
+
+  # In a pipeline: fail (and write nothing) if any original value survives
+  kshrk anonymize capture.kshrk --categories namespace --categories pod --full-sweep --fail-on-residual
 ```
 
 ### Options
@@ -145,11 +155,13 @@ kshrk anonymize <capture.kshrk> --categories <category> [--out <anonymized.kshrk
       --encrypt-passphrase-file string   read the encryption passphrase from this file (first line) instead of prompting
       --encrypt-recipient stringArray    age recipient public key (age1...) to encrypt to (repeatable); mutually exclusive with passphrase encryption
       --encrypt-recipients-file string   file of age recipient public keys (one per line) to encrypt to
+      --fail-on-residual                 exit non-zero, and remove the output archive, if --verify finds any original value remaining (for CI/pipelines)
       --full-sweep                       also replace any substring occurrence of a discovered namespace/node/pod/workload/ip/url value anywhere in a record's text, not just at known field paths -- also covers 'kubectl get' (Table output) columns other than Name/Namespace (slower, opt-in; see #361)
   -h, --help                             help for anonymize
       --mapping-path string              path for the mapping file (default: <out>.mapping.json, or .mapping.json.age when encrypted)
       --out string                       output archive path (default: <in>-anonymized.kshrk)
   -o, --output string                    output format: text or json (default "text")
+      --verify                           after writing, check the output for any original value that survived and report where (never the values); costs one extra read pass unless --full-sweep already makes one (--verify=false to skip) (default true)
 ```
 
 ### Options inherited from parent commands

@@ -218,6 +218,30 @@ func shortNameContext(s string, start, end int) bool {
 // the regexp engine (see buildCandidateGroup) — a real possibility on a
 // huge, real-world candidate set, not just a theoretical one.
 func buildSweepCandidates(namespaceTracker, nodeTracker, podTracker, workloadTracker, ipTracker, urlTracker *collisionTracker) (*sweepCandidateSet, error) {
+	return buildCandidateSet([]categoryMapping{
+		{CategoryNamespace, namespaceTracker.Mapping()},
+		{CategoryNode, nodeTracker.Mapping()},
+		{CategoryPod, podTracker.Mapping()},
+		{CategoryWorkload, workloadTracker.Mapping()},
+		{CategoryIP, ipTracker.Mapping()},
+		{CategoryURL, urlTracker.Mapping()},
+	}, false)
+}
+
+// categoryMapping is one category's original-to-alias mapping, as a tracker
+// reports it.
+type categoryMapping struct {
+	cat     Category
+	mapping map[string]string
+}
+
+// buildCandidateSet compiles maps into the sweep's candidate groups.
+// includeAmbiguous is false for the sweep itself (a value that's a candidate
+// under two categories with different aliases is skipped — see
+// buildSweepCandidates) and true for the post-write leak check, which must
+// still flag such a value if it survives anywhere: it can't be swept safely,
+// but it is still an original that was supposed to be gone.
+func buildCandidateSet(maps []categoryMapping, includeAmbiguous bool) (*sweepCandidateSet, error) {
 	type firstSeenEntry struct {
 		alias string
 	}
@@ -225,28 +249,25 @@ func buildSweepCandidates(namespaceTracker, nodeTracker, podTracker, workloadTra
 	ambiguous := make(map[string]bool)
 
 	var all []sweepCandidate
-	add := func(cat Category, mapping map[string]string) {
-		for original, alias := range mapping {
-			all = append(all, sweepCandidate{Category: cat, Original: original, Alias: alias})
+	for _, cm := range maps {
+		for original, alias := range cm.mapping {
 			if prior, ok := firstSeen[original]; ok {
 				if prior.alias != alias {
 					ambiguous[original] = true
 				}
+				if !includeAmbiguous {
+					all = append(all, sweepCandidate{Category: cm.cat, Original: original, Alias: alias})
+				}
 				continue
 			}
 			firstSeen[original] = firstSeenEntry{alias: alias}
+			all = append(all, sweepCandidate{Category: cm.cat, Original: original, Alias: alias})
 		}
 	}
-	add(CategoryNamespace, namespaceTracker.Mapping())
-	add(CategoryNode, nodeTracker.Mapping())
-	add(CategoryPod, podTracker.Mapping())
-	add(CategoryWorkload, workloadTracker.Mapping())
-	add(CategoryIP, ipTracker.Mapping())
-	add(CategoryURL, urlTracker.Mapping())
 
 	var nameCands, ipCands, shortCands []sweepCandidate
 	for _, c := range all {
-		if ambiguous[c.Original] {
+		if ambiguous[c.Original] && !includeAmbiguous {
 			continue
 		}
 		switch {
