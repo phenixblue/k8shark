@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -50,6 +51,13 @@ value, a "deployment/api" reference, an Event name, a whole word in a message
 mangled. A 1-character name is ignored, and OpenAPI schema documents (which
 carry no cluster data) are skipped.
 
+After writing, the output is checked for any original value that survived
+(--verify, on by default) and the result reports WHERE any remain -- by
+category, kind, and field path, never the values themselves, so the report is
+safe to share. Without --full-sweep expect free-text occurrences to be
+reported; use --fail-on-residual to turn any remaining occurrence into an
+error (and remove the output) in a pipeline.
+
 Plain "kubectl get <resource>" (which negotiates Kubernetes' Table format by
 default) reflects namespace/node/pod/workload aliases in the Name and
 Namespace columns -- and the row's embedded object -- for the resources
@@ -81,7 +89,10 @@ for the most complete coverage.`,
   kshrk anonymize capture.kshrk --out safe.kshrk --categories namespace
 
   # Also catch occurrences outside known field paths (slower, opt-in)
-  kshrk anonymize capture.kshrk --categories namespace --categories ip --full-sweep`,
+  kshrk anonymize capture.kshrk --categories namespace --categories ip --full-sweep
+
+  # In a pipeline: fail (and write nothing) if any original value survives
+  kshrk anonymize capture.kshrk --categories namespace --categories pod --full-sweep --fail-on-residual`,
 	Args:              cobra.ExactArgs(1),
 	ValidArgsFunction: completeArchiveArg,
 	RunE:              runAnonymize,
@@ -97,6 +108,8 @@ func init() {
 	anonymizeCmd.Flags().String("mapping-path", "", "path for the mapping file (default: <out>.mapping.json, or .mapping.json.age when encrypted)")
 	anonymizeCmd.Flags().Bool("emit-mapping-plaintext", false, "allow --emit-mapping to write an unencrypted mapping when no --encrypt-* flag is set (not recommended)")
 	anonymizeCmd.Flags().Bool("full-sweep", false, "also replace any substring occurrence of a discovered namespace/node/pod/workload/ip/url value anywhere in a record's text, not just at known field paths -- also covers 'kubectl get' (Table output) columns other than Name/Namespace (slower, opt-in; see #361)")
+	anonymizeCmd.Flags().Bool("verify", true, "after writing, check the output for any original value that survived and report where (never the values); costs one extra read pass unless --full-sweep already makes one (--verify=false to skip)")
+	anonymizeCmd.Flags().Bool("fail-on-residual", false, "exit non-zero, and remove the output archive, if --verify finds any original value remaining (for CI/pipelines)")
 	_ = anonymizeCmd.MarkFlagFilename("out", captureExt)
 	_ = anonymizeCmd.MarkFlagFilename("config", configExts...)
 	_ = anonymizeCmd.RegisterFlagCompletionFunc("output",
@@ -188,6 +201,11 @@ func runAnonymize(cmd *cobra.Command, args []string) error {
 	mappingPath, _ := cmd.Flags().GetString("mapping-path")
 	emitMappingPlaintext, _ := cmd.Flags().GetBool("emit-mapping-plaintext")
 	fullSweep, _ := cmd.Flags().GetBool("full-sweep")
+	verify, _ := cmd.Flags().GetBool("verify")
+	failOnResidual, _ := cmd.Flags().GetBool("fail-on-residual")
+	if failOnResidual && !verify {
+		return fmt.Errorf("--fail-on-residual needs the leak check; it can't be combined with --verify=false")
+	}
 
 	if outputFormat != "text" && outputFormat != "json" {
 		return fmt.Errorf("--output must be text or json (got %q)", outputFormat)
@@ -320,6 +338,7 @@ func runAnonymize(cmd *cobra.Command, args []string) error {
 		Recipients: enc.recipients,
 		Rules:      rules,
 		FullSweep:  fullSweep,
+		Verify:     verify,
 	})
 	if err != nil {
 		return err
@@ -331,29 +350,83 @@ func runAnonymize(cmd *cobra.Command, args []string) error {
 	}
 	result.OutputPath = out
 
-	if emitMapping {
+	// --fail-on-residual means "never hand me an archive that still leaks":
+	// the output is removed before anything else happens, and the mapping
+	// (which would only describe a file that no longer exists) isn't written.
+	leaked := failOnResidual && result.ResidualOccurrences > 0
+	if leaked {
+		_ = os.Remove(out)
+	}
+
+	if emitMapping && !leaked {
 		if err := writeAnonymizeMapping(mappingPath, result.Mapping, enc.recipients); err != nil {
 			return fmt.Errorf("writing mapping: %w", err)
 		}
 	}
 
+	residualErr := fmt.Errorf("--fail-on-residual: %d occurrence(s) of original values remain in the output at %d location(s); the output archive was removed (re-run without --fail-on-residual to keep it, with --full-sweep to rewrite free-text occurrences)",
+		result.ResidualOccurrences, len(result.ResidualLocations))
+
 	if outputFormat == "json" {
 		jsonEnc := json.NewEncoder(cmd.OutOrStdout())
 		jsonEnc.SetIndent("", "  ")
-		return jsonEnc.Encode(result)
+		if err := jsonEnc.Encode(result); err != nil {
+			return err
+		}
+		if leaked {
+			return residualErr
+		}
+		return nil
 	}
 
-	fmt.Fprintf(cmd.OutOrStdout(), "Anonymized %d namespace(s), %d node(s), %d pod(s), %d workload(s), %d IP(s), %d host(s), %d registry host(s) → %s (%d bytes)\n",
-		result.NamespacesRenamed, result.NodesRenamed, result.PodsRenamed, result.WorkloadsRenamed,
-		result.IPsRenamed, result.HostsRenamed, result.RegistriesRenamed, out, result.OutputBytes)
-	if fullSweep {
-		fmt.Fprintf(cmd.OutOrStdout(), "Full sweep found %d additional occurrence(s); skipped %d ambiguous value(s)\n",
-			result.SweepOccurrencesFound, result.SweepAmbiguousSkipped)
+	if !leaked {
+		fmt.Fprintf(cmd.OutOrStdout(), "Anonymized %d namespace(s), %d node(s), %d pod(s), %d workload(s), %d IP(s), %d host(s), %d registry host(s) → %s (%d bytes)\n",
+			result.NamespacesRenamed, result.NodesRenamed, result.PodsRenamed, result.WorkloadsRenamed,
+			result.IPsRenamed, result.HostsRenamed, result.RegistriesRenamed, out, result.OutputBytes)
+		if fullSweep {
+			fmt.Fprintf(cmd.OutOrStdout(), "Full sweep found %d additional occurrence(s); skipped %d ambiguous value(s)\n",
+				result.SweepOccurrencesFound, result.SweepAmbiguousSkipped)
+		}
+		if emitMapping {
+			fmt.Fprintf(cmd.OutOrStdout(), "Mapping written to %s\n", mappingPath)
+		}
 	}
-	if emitMapping {
-		fmt.Fprintf(cmd.OutOrStdout(), "Mapping written to %s\n", mappingPath)
+	if result.Verified {
+		if result.ResidualOccurrences == 0 {
+			fmt.Fprintln(cmd.OutOrStdout(), "Verified: no original value remains in the output.")
+		} else {
+			printResidualReport(cmd.ErrOrStderr(), result, fullSweep)
+		}
+	}
+	if leaked {
+		return residualErr
 	}
 	return nil
+}
+
+// printResidualReport writes the human-readable form of a leak-check result.
+// It prints only where originals were found — never the values — so the
+// output is safe to paste into a bug report or CI log.
+func printResidualReport(w io.Writer, result anonymize.Result, fullSweep bool) {
+	shown := fmt.Sprintf("%d location(s)", len(result.ResidualLocations))
+	if len(result.ResidualLocations) >= anonymize.MaxResidualLocations {
+		shown = fmt.Sprintf("at least %d locations (the %d most frequent are listed)", anonymize.MaxResidualLocations, anonymize.MaxResidualLocations)
+	}
+	fmt.Fprintf(w, "warning: %d occurrence(s) of original values remain in the output, in %s:\n",
+		result.ResidualOccurrences, shown)
+	for _, l := range result.ResidualLocations {
+		kind := l.Kind
+		if kind == "" {
+			kind = "-"
+		}
+		fmt.Fprintf(w, "  %-9s %-12s %-48s %5d×  e.g. %s\n", l.Category, kind, l.FieldPath, l.Occurrences, l.ExampleAPIPath)
+	}
+	if fullSweep {
+		fmt.Fprintln(w, "These are outside what --full-sweep can rewrite safely (a value shared by two categories, an exact-match object key, a 1-character name). Keep one on purpose with an exclude rule for its field path, or remove the field before sharing the archive.")
+	} else {
+		fmt.Fprintln(w, "Re-run with --full-sweep to rewrite free-text occurrences (names inside labels, annotations, messages, and non-Name table columns).")
+	}
+	fmt.Fprintln(w, "Pass --fail-on-residual to make this an error.")
 }
 
 // writeAnonymizeMapping JSON-marshals mapping and writes it to path,

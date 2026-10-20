@@ -623,6 +623,12 @@ real while the object itself is still aliased — or, with `fullSweep` on, to
 keep `--full-sweep`'s separate pass over the cells from aliasing them — add a
 second rule for the same category/kind with `fieldPath: "cells[*]"`.
 
+### Checking the result
+
+`kshrk anonymize` checks every record it writes (plus the record's API path and the archive's `server_address`) for any original value that survived, and reports **where** — category, kind, and field path, with an example API path — never the values, so the report is safe to paste into a bug report or CI log. `-o json` carries it as `verified`, `residual_occurrences`, and `residual_locations`. The check uses the same matching rules as `--full-sweep` (so `/api/v1` or `kube-api-access-x` aren't reported for a workload called `api`), skips occurrences an exclude rule deliberately keeps, and works even when the output is encrypted to recipients. Without `--full-sweep` it reports the free-text occurrences the sweep would rewrite; with it, anything still reported is something the sweep can't safely rewrite (a value shared by two categories, an exact-match object key, a 1-character name).
+
+Pass `--fail-on-residual` in a pipeline to turn any remaining occurrence into an error and remove the output archive; `--verify=false` skips the check (it costs one extra read pass over the source unless `--full-sweep` already makes one).
+
 Apply the same categories and rules to an existing archive:
 
 ```bash
