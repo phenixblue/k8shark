@@ -276,6 +276,149 @@ func TestRewriteResourceNameInRecord(t *testing.T) {
 			t.Error("body must be byte-identical when nothing was rewritten")
 		}
 	})
+
+	type tableOut struct {
+		Rows []struct {
+			Cells  []string `json:"cells"`
+			Object struct {
+				Metadata struct {
+					Name      string `json:"name"`
+					Namespace string `json:"namespace"`
+				} `json:"metadata"`
+			} `json:"object"`
+		} `json:"rows"`
+	}
+
+	// `kubectl get pods` renders the printed Name cell, not the embedded
+	// object — both must carry the alias, and a column this category doesn't
+	// own (Namespace, Node) must be left alone: --full-sweep remains the
+	// only way to reach those.
+	t.Run("a Pod Table response aliases rows[*].object.metadata.name and mirrors only the Name cell", func(t *testing.T) {
+		body := `{"kind":"Table","apiVersion":"meta.k8s.io/v1",
+			"columnDefinitions":[{"name":"Name"},{"name":"Namespace"},{"name":"Node"}],
+			"rows":[{"cells":["web-1","prod","worker-1"],"object":{"kind":"PartialObjectMetadata","apiVersion":"meta.k8s.io/v1",
+				"metadata":{"name":"web-1","namespace":"prod"}}}]}`
+		rec := &capture.Record{APIPath: "/api/v1/namespaces/prod/pods?as=Table", ResponseBody: json.RawMessage(body)}
+		changed, err := rewriteResourceNameInRecord(rec, allResourceCategories, noExclusions, aliasByCategory)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !changed {
+			t.Fatal("want changed=true")
+		}
+		var out tableOut
+		if err := json.Unmarshal(rec.ResponseBody, &out); err != nil {
+			t.Fatal(err)
+		}
+		row := out.Rows[0]
+		if row.Object.Metadata.Name != "pod:web-1-ALIASED" {
+			t.Errorf("rows[0].object.metadata.name = %q, want pod:web-1-ALIASED", row.Object.Metadata.Name)
+		}
+		if row.Cells[0] != "pod:web-1-ALIASED" {
+			t.Errorf("rows[0].cells[0] (Name) = %q, want pod:web-1-ALIASED", row.Cells[0])
+		}
+		if row.Cells[1] != "prod" {
+			t.Errorf("rows[0].cells[1] (Namespace) = %q, want unchanged — not this category's cell", row.Cells[1])
+		}
+		if row.Cells[2] != "worker-1" {
+			t.Errorf("rows[0].cells[2] (Node) = %q, want unchanged — only --full-sweep reaches non-Name columns", row.Cells[2])
+		}
+	})
+
+	t.Run("a Node Table response aliases its Name cell under the node category", func(t *testing.T) {
+		body := `{"kind":"Table","apiVersion":"meta.k8s.io/v1",
+			"columnDefinitions":[{"name":"Name"},{"name":"Status"}],
+			"rows":[{"cells":["worker-1","Ready"],"object":{"kind":"PartialObjectMetadata","apiVersion":"meta.k8s.io/v1",
+				"metadata":{"name":"worker-1"}}}]}`
+		rec := &capture.Record{APIPath: "/api/v1/nodes?as=Table", ResponseBody: json.RawMessage(body)}
+		if _, err := rewriteResourceNameInRecord(rec, allResourceCategories, noExclusions, aliasByCategory); err != nil {
+			t.Fatal(err)
+		}
+		var out tableOut
+		if err := json.Unmarshal(rec.ResponseBody, &out); err != nil {
+			t.Fatal(err)
+		}
+		if got := out.Rows[0].Cells[0]; got != "node:worker-1-ALIASED" {
+			t.Errorf("cells[0] = %q, want node:worker-1-ALIASED", got)
+		}
+	})
+
+	t.Run("a category not in enabled leaves its Table untouched", func(t *testing.T) {
+		body := `{"kind":"Table","apiVersion":"meta.k8s.io/v1",
+			"columnDefinitions":[{"name":"Name"}],
+			"rows":[{"cells":["web-1"],"object":{"kind":"PartialObjectMetadata","metadata":{"name":"web-1"}}}]}`
+		rec := &capture.Record{APIPath: "/api/v1/namespaces/prod/pods?as=Table", ResponseBody: json.RawMessage(body)}
+		orig := string(rec.ResponseBody)
+		changed, err := rewriteResourceNameInRecord(rec, map[Category]bool{CategoryNode: true}, noExclusions, aliasByCategory)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if changed || string(rec.ResponseBody) != orig {
+			t.Error("--categories node alone must not alias a Pod Table's names")
+		}
+	})
+
+	t.Run("an exclude rule on metadata.name leaves both the object and the Name cell real", func(t *testing.T) {
+		// Nothing else on a bare Node row is aliasable, so the excluded
+		// metadata.name means rewriteObject reports no change at all and
+		// the cell is never touched — one rule protects both
+		// representations, unlike --full-sweep's separately-swept cells.
+		body := `{"kind":"Table","apiVersion":"meta.k8s.io/v1",
+			"columnDefinitions":[{"name":"Name"}],
+			"rows":[{"cells":["worker-1"],"object":{"kind":"PartialObjectMetadata","metadata":{"name":"worker-1"}}}]}`
+		rec := &capture.Record{APIPath: "/api/v1/nodes?as=Table", ResponseBody: json.RawMessage(body)}
+		excluded := func(cat Category, kind, path string) bool {
+			return cat == CategoryNode && kind == "Node" && path == "metadata.name"
+		}
+		if _, err := rewriteResourceNameInRecord(rec, allResourceCategories, excluded, aliasByCategory); err != nil {
+			t.Fatal(err)
+		}
+		var out tableOut
+		if err := json.Unmarshal(rec.ResponseBody, &out); err != nil {
+			t.Fatal(err)
+		}
+		if out.Rows[0].Object.Metadata.Name != "worker-1" || out.Rows[0].Cells[0] != "worker-1" {
+			t.Errorf("object=%q cell=%q, want both left real", out.Rows[0].Object.Metadata.Name, out.Rows[0].Cells[0])
+		}
+	})
+
+	t.Run("a cells[*] exclude rule keeps the printed cell real while the object is aliased", func(t *testing.T) {
+		body := `{"kind":"Table","apiVersion":"meta.k8s.io/v1",
+			"columnDefinitions":[{"name":"Name"}],
+			"rows":[{"cells":["worker-1"],"object":{"kind":"PartialObjectMetadata","metadata":{"name":"worker-1"}}}]}`
+		rec := &capture.Record{APIPath: "/api/v1/nodes?as=Table", ResponseBody: json.RawMessage(body)}
+		excluded := func(cat Category, kind, path string) bool {
+			return cat == CategoryNode && kind == "Node" && path == "cells[*]"
+		}
+		if _, err := rewriteResourceNameInRecord(rec, allResourceCategories, excluded, aliasByCategory); err != nil {
+			t.Fatal(err)
+		}
+		var out tableOut
+		if err := json.Unmarshal(rec.ResponseBody, &out); err != nil {
+			t.Fatal(err)
+		}
+		if out.Rows[0].Object.Metadata.Name != "node:worker-1-ALIASED" {
+			t.Errorf("object name = %q, want aliased", out.Rows[0].Object.Metadata.Name)
+		}
+		if out.Rows[0].Cells[0] != "worker-1" {
+			t.Errorf("cell = %q, want real — cells[*] is excluded", out.Rows[0].Cells[0])
+		}
+	})
+
+	t.Run("a Table for a resource type outside the recognized set is left untouched", func(t *testing.T) {
+		body := `{"kind":"Table","apiVersion":"meta.k8s.io/v1",
+			"columnDefinitions":[{"name":"Name"}],
+			"rows":[{"cells":["svc-1"],"object":{"kind":"PartialObjectMetadata","metadata":{"name":"svc-1"}}}]}`
+		rec := &capture.Record{APIPath: "/api/v1/services?as=Table", ResponseBody: json.RawMessage(body)}
+		orig := string(rec.ResponseBody)
+		changed, err := rewriteResourceNameInRecord(rec, allResourceCategories, noExclusions, aliasByCategory)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if changed || string(rec.ResponseBody) != orig {
+			t.Error("a Service Table has no resource-name category; want it byte-identical")
+		}
+	})
 }
 
 func TestRewriteResourceNameInPath(t *testing.T) {

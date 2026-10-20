@@ -97,20 +97,18 @@ func rewriteNamespaceInObject(obj map[string]interface{}, kind string, excluded 
 // separate seen map for that, which became redundant bookkeeping once the
 // tracker existed to do the same thing more safely.
 //
-// Handles both a single-object response and a List response's items[],
-// mirroring internal/redact/fields.go's ApplyRules list-handling. Two
-// different kinds of record are left untouched, and it's worth keeping them
-// straight: a body that isn't valid JSON at all (rare — a corrupt record)
-// fails the initial Unmarshal and returns immediately; a meta.k8s.io/v1
-// Table response's rows[] or a discovery/OpenAPI document decodes into obj
-// just fine (they're ordinary JSON) but has no metadata/items shaped like a
-// Kubernetes object or list, so nothing below ever matches and modified
-// stays false. Both end up untouched, but for different reasons — this
-// mirrors internal/redact's identical precedent for the same two cases.
-// Catching a namespace name inside an opaque Table cell is deliberately out
-// of scope for the archive-rewrite path in this milestone: Table rows have
-// no field names, so it needs a different, value-pattern-based approach
-// layered on top of this schema-aware one, not a fix to this function.
+// Handles a single-object response, a List response's items[], and a
+// Table/TableSchema response's rows[] (see rewriteTableRows) — the last of
+// these is what `kubectl get <resource>` actually renders by default, so
+// without it a Table's own embedded object and printed Name/Namespace cells
+// would both still show the real value even though every other response
+// shape was correctly anonymized. A Table response outside
+// tableRowKindFromAPIPath's small, maintained set of native kinds (and a
+// discovery/OpenAPI document, which decodes into obj just fine but has no
+// metadata/items/rows shaped like a Kubernetes object, list, or Table at
+// all) is left untouched here, same as before — --full-sweep remains the
+// only way to reach those, and any Table cell beyond Name/Namespace (a
+// Node, Images, or Age column, say).
 func rewriteNamespaceInRecord(rec *capture.Record, excluded excludedFunc, alias func(string) string) (bool, error) {
 	var obj map[string]interface{}
 	if err := json.Unmarshal(rec.ResponseBody, &obj); err != nil {
@@ -120,7 +118,8 @@ func rewriteNamespaceInRecord(rec *capture.Record, excluded excludedFunc, alias 
 	kind, _ := obj["kind"].(string)
 	modified := false
 
-	if strings.HasSuffix(kind, "List") {
+	switch {
+	case strings.HasSuffix(kind, "List"):
 		items, _ := obj["items"].([]interface{})
 		itemKind := strings.TrimSuffix(kind, "List")
 		for i, itemRaw := range items {
@@ -137,8 +136,47 @@ func rewriteNamespaceInRecord(rec *capture.Record, excluded excludedFunc, alias 
 				modified = true
 			}
 		}
-	} else if rewriteNamespaceInObject(obj, kind, excluded, alias) {
-		modified = true
+	case kind == "Table":
+		if rewriteTableRows(obj, rec.APIPath,
+			func(item map[string]interface{}, itemKind string) bool {
+				return rewriteNamespaceInObject(item, itemKind, excluded, alias)
+			},
+			func(tableObj, row, rowObj map[string]interface{}, rowKind string) {
+				// Mirror whichever field rewriteNamespaceInObject actually
+				// owns for this Kind — metadata.name for a Namespace's own
+				// Table (Namespace is cluster-scoped, so it has no
+				// metadata.namespace to alias instead), metadata.namespace
+				// for every other namespaced Kind — matching the exact
+				// same distinction rewriteNamespaceInObject's own doc
+				// comment makes for the embedded object.
+				field, cellColumn := "namespace", "Namespace"
+				if rowKind == "Namespace" {
+					field, cellColumn = "name", "Name"
+				}
+				if excluded(CategoryNamespace, rowKind, "cells[*]") {
+					return
+				}
+				meta, ok := rowObj["metadata"].(map[string]interface{})
+				if !ok {
+					return
+				}
+				cells, ok := row["cells"].([]interface{})
+				if !ok {
+					return
+				}
+				if idx, ok := tableCellIndex(tableObj, cellColumn); ok && idx < len(cells) {
+					if v, ok := meta[field].(string); ok {
+						cells[idx] = v
+					}
+				}
+			},
+		) {
+			modified = true
+		}
+	default:
+		if rewriteNamespaceInObject(obj, kind, excluded, alias) {
+			modified = true
+		}
 	}
 
 	if !modified {
