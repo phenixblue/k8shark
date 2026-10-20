@@ -148,6 +148,37 @@ func rewriteContainerImages(node interface{}, kind, path string, excluded exclud
 			}
 		}
 
+		// A Node's status.images[*].names[*] — the kubelet's cache of every
+		// image pulled onto that node, each listed under all of its
+		// references (tag and digest forms). Not a container list, so the
+		// two loops above never see it, but it carries the same registry
+		// hosts and was leaking them from every Node record.
+		if images, ok := v["images"].([]interface{}); ok {
+			namesPath := joinFieldPath(path, "images") + "[*].names[*]"
+			if !excluded(CategoryImage, kind, namesPath) {
+				for _, raw := range images {
+					entry, ok := raw.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					names, ok := entry["names"].([]interface{})
+					if !ok {
+						continue
+					}
+					for i, n := range names {
+						ref, ok := n.(string)
+						if !ok || ref == "" {
+							continue
+						}
+						if rewritten, changed := rewriteImageRegistryHost(ref, alias); changed {
+							names[i] = rewritten
+							modified = true
+						}
+					}
+				}
+			}
+		}
+
 		// Recurse into everything else — this is what finds a container
 		// list at whatever depth a given Kind happens to nest its
 		// PodTemplateSpec (e.g. spec.template.spec for a Deployment,

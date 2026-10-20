@@ -36,6 +36,17 @@ import (
 // IP fragment) colliding with ordinary, unrelated text.
 const minSweepCandidateLength = 4
 
+// minShortSweepCandidateLength is the floor for the *short-name* group: a
+// 2–3 character name (workload "api", namespace "db") can't be swept by plain
+// substring matching without mangling structural text — "/api/v1" paths,
+// "kube-api-access-*" volume names, "io.k8s.api.core" — which is why
+// minSweepCandidateLength exists. But dropping them entirely leaks them in
+// labels ("app: api"), kubectl's "deployment/api" cells, and Event names
+// ("api.18c4…"). So they get their own group that only matches in contexts
+// that unambiguously stand alone (see shortNameContext). One character is
+// still ignored: nothing safe distinguishes it from noise.
+const minShortSweepCandidateLength = 2
+
 // sweepCandidate is one (original, alias) pair eligible for the sweep.
 type sweepCandidate struct {
 	Category Category
@@ -52,6 +63,10 @@ type candidateGroup struct {
 	// reject reports whether a byte immediately before or after a raw match
 	// disqualifies it — see nameBoundaryReject/ipBoundaryReject.
 	reject func(byte) bool
+	// context, when non-nil, replaces reject: it decides from the whole
+	// string and the match's [start,end) span whether the match stands alone
+	// (see shortNameContext, ipContext).
+	context func(s string, start, end int) bool
 }
 
 // sweepCandidateSet is the compiled, ready-to-scan form of every distinct
@@ -67,6 +82,9 @@ type sweepCandidateSet struct {
 	// nothing eligible, so sweepRecord can skip the work entirely.
 	nameGroup *candidateGroup
 	ipGroup   *candidateGroup
+	// shortGroup covers 2–3 character name/host candidates, matched only in
+	// standalone contexts — see minShortSweepCandidateLength.
+	shortGroup *candidateGroup
 	// ambiguousSkipped is the number of distinct original values excluded
 	// from the sweep because the same literal string was a candidate under
 	// more than one category with a different alias (e.g. a namespace and
@@ -101,6 +119,84 @@ func nameBoundaryReject(b byte) bool {
 // dotted-decimal string.
 func ipBoundaryReject(b byte) bool {
 	return isAlnum(b) || b == '.' || b == ':'
+}
+
+// ipContext is the match predicate for IP-shaped candidates. The two shapes
+// need different rules, which a single byte predicate can't express:
+//
+//   - IPv6 keeps ipBoundaryReject's strictness (no alnum, '.', ':' on either
+//     side), or "::1" would match inside "fe80::1".
+//   - IPv4 has no colons of its own, so a ':' next to it can only be a
+//     neighbor, never part of a longer literal: "172.18.0.2:6443" (a
+//     host:port, e.g. /api discovery's serverAddress) must match, as must
+//     "ip:10.1.2.3". What an IPv4 match still can't be is a fragment of a
+//     longer dotted-decimal run, so alnum and a '.' that continues into
+//     another digit are rejected — but a sentence-ending '.' is not, so
+//     "dialing 10.1.2.3." is caught.
+func ipContext(s string, start, end int) bool {
+	if strings.Contains(s[start:end], ":") {
+		return (start == 0 || !ipBoundaryReject(s[start-1])) && (end == len(s) || !ipBoundaryReject(s[end]))
+	}
+	if start > 0 && (isAlnum(s[start-1]) || s[start-1] == '.') {
+		return false
+	}
+	if end < len(s) {
+		if isAlnum(s[end]) {
+			return false
+		}
+		if s[end] == '.' && end+1 < len(s) && s[end+1] >= '0' && s[end+1] <= '9' {
+			return false
+		}
+	}
+	return true
+}
+
+var (
+	kindRefPrefix = regexp.MustCompile(`^[a-z][a-z0-9.]*$`)
+	eventHexTail  = regexp.MustCompile(`^\.[0-9a-f]{8,}$`)
+)
+
+// shortNameContext reports whether a 2–3 character candidate's match at
+// s[start:end] stands alone, rather than being a fragment of a path, a
+// hyphenated compound, or a dotted identifier. It accepts exactly:
+//
+//   - the whole string ("app: api"; a whole object key)
+//   - a delimited token: bounded on the left by the start of the string, a
+//     quote, '=', ',', '(' or whitespace, and on the right by the end, a
+//     quote, ',', ')', '&', ';' or whitespace — which covers a selector cell
+//     ("app=api,tier=web"), a managedFields key (`k:{"name":"api"}`), a
+//     comma-separated list, and a word in free text ("Scaled up api now");
+//     sentence punctuation (". : ,") right before a space or the end counts as
+//     the end of the word too
+//   - kubectl's "<kind>/<name>" reference ("deployment/api",
+//     "replicaset.apps/api")
+//   - an Event's generated name ("api.18c4b942c8a33b9c")
+//
+// A '-', '.', '/' or '_' on either side never qualifies (a path like
+// "/api/v1", "kube-api-access-x", "io.k8s.api.core" or "api-gateway" is
+// structure, not a mention).
+//
+// This trades a rare false positive (an English word that happens to equal a
+// short name, inside a free-text message) for not leaking the name; it never
+// touches structural text.
+func shortNameContext(s string, start, end int) bool {
+	if start == 0 && end == len(s) {
+		return true
+	}
+	if end == len(s) && start > 1 && s[start-1] == '/' && kindRefPrefix.MatchString(s[:start-1]) {
+		return true
+	}
+	if start == 0 && eventHexTail.MatchString(s[end:]) {
+		return true
+	}
+	if start > 0 && strings.IndexByte("\"'=,( \t\n", s[start-1]) < 0 {
+		return false
+	}
+	if end == len(s) || strings.IndexByte("\"',)&; \t\n", s[end]) >= 0 {
+		return true
+	}
+	isSpace := func(b byte) bool { return b == ' ' || b == '\t' || b == '\n' }
+	return strings.IndexByte(".:", s[end]) >= 0 && (end+1 == len(s) || isSpace(s[end+1]))
 }
 
 // buildSweepCandidates gathers every distinct (original, alias) pair the
@@ -148,15 +244,20 @@ func buildSweepCandidates(namespaceTracker, nodeTracker, podTracker, workloadTra
 	add(CategoryIP, ipTracker.Mapping())
 	add(CategoryURL, urlTracker.Mapping())
 
-	var nameCands, ipCands []sweepCandidate
+	var nameCands, ipCands, shortCands []sweepCandidate
 	for _, c := range all {
-		if ambiguous[c.Original] || len(c.Original) < minSweepCandidateLength {
+		if ambiguous[c.Original] {
 			continue
 		}
-		if net.ParseIP(c.Original) != nil {
-			ipCands = append(ipCands, c)
-		} else {
+		switch {
+		case net.ParseIP(c.Original) != nil:
+			if len(c.Original) >= minSweepCandidateLength {
+				ipCands = append(ipCands, c)
+			}
+		case len(c.Original) >= minSweepCandidateLength:
 			nameCands = append(nameCands, c)
+		case len(c.Original) >= minShortSweepCandidateLength:
+			shortCands = append(shortCands, c)
 		}
 	}
 
@@ -168,9 +269,20 @@ func buildSweepCandidates(namespaceTracker, nodeTracker, podTracker, workloadTra
 	if err != nil {
 		return nil, fmt.Errorf("compiling IP sweep candidates: %w", err)
 	}
+	if ipGroup != nil {
+		ipGroup.context = ipContext
+	}
+	shortGroup, err := buildCandidateGroup(shortCands, nameBoundaryReject)
+	if err != nil {
+		return nil, fmt.Errorf("compiling short-name sweep candidates: %w", err)
+	}
+	if shortGroup != nil {
+		shortGroup.context = shortNameContext
+	}
 	return &sweepCandidateSet{
 		nameGroup:        nameGroup,
 		ipGroup:          ipGroup,
+		shortGroup:       shortGroup,
 		ambiguousSkipped: len(ambiguous),
 	}, nil
 }
@@ -230,6 +342,22 @@ func buildCandidateGroup(cands []sweepCandidate, reject func(byte) bool) (*candi
 // entirely — both a rejected and an accepted match leave every byte outside
 // the actual candidate text untouched and available for the next check.
 func spliceCandidates(s string, group *candidateGroup, excluded excludedFunc, kind, path string) (string, bool, int) {
+	return spliceCandidatesIn(s, group, excluded, kind, path, false)
+}
+
+// spliceCandidatesIn is spliceCandidates with a keyMode switch for sweeping
+// an object *key* rather than a value. Two extra rules apply to keys, both
+// to avoid corrupting schema structure rather than hiding data:
+//
+//   - a key that is exactly a candidate is left alone: structural keys
+//     ("data", "status", "app") are far more common than name-keyed maps, and
+//     a namespace that happens to be called "data" must not rename every
+//     ConfigMap's data field. (Substrings of a longer key are still swept.)
+//   - a match immediately after "f:" is skipped: managedFields' fieldsV1
+//     uses "f:<fieldName>" for schema field names, which are never object
+//     names — while its "k:{...}"/"v:..." keys, which do carry names and IPs,
+//     are swept.
+func spliceCandidatesIn(s string, group *candidateGroup, excluded excludedFunc, kind, path string, keyMode bool) (string, bool, int) {
 	if group == nil {
 		return s, false, 0
 	}
@@ -242,11 +370,25 @@ func spliceCandidates(s string, group *candidateGroup, excluded excludedFunc, ki
 	occurrences := 0
 	for _, m := range matches {
 		start, end := m[0], m[1]
-		if start > 0 && group.reject(s[start-1]) {
-			continue
+		if group.context != nil {
+			if !group.context(s, start, end) {
+				continue
+			}
+		} else {
+			if start > 0 && group.reject(s[start-1]) {
+				continue
+			}
+			if end < len(s) && group.reject(s[end]) {
+				continue
+			}
 		}
-		if end < len(s) && group.reject(s[end]) {
-			continue
+		if keyMode {
+			if start == 0 && end == len(s) {
+				continue
+			}
+			if start >= 2 && s[start-2:start] == "f:" {
+				continue
+			}
 		}
 		cand := group.byOriginal[s[start:end]]
 		if excluded(cand.Category, kind, path) {
@@ -291,7 +433,15 @@ func spliceCandidates(s string, group *candidateGroup, excluded excludedFunc, ki
 // under it instead, making an existing Kind-scoped rule apply consistently
 // regardless of which response shape the value happens to appear in.
 func sweepRecord(rec *capture.Record, candidates *sweepCandidateSet, excluded excludedFunc) (bool, int, error) {
-	if candidates == nil || (candidates.nameGroup == nil && candidates.ipGroup == nil) {
+	if candidates == nil || (candidates.nameGroup == nil && candidates.ipGroup == nil && candidates.shortGroup == nil) {
+		return false, 0, nil
+	}
+	// An OpenAPI document is generated from the apiserver's own source, so it
+	// carries no cluster data to sweep — only schema prose that happens to
+	// contain example values ("127.0.0.1", "api") and a great many words a
+	// short-name candidate could collide with. Same reasoning, and same
+	// predicate, as urlmatch.go's whole-record skip.
+	if isOpenAPIDocumentPath(rec.APIPath) {
 		return false, 0, nil
 	}
 
@@ -302,17 +452,38 @@ func sweepRecord(rec *capture.Record, candidates *sweepCandidateSet, excluded ex
 
 	kind, _ := obj["kind"].(string)
 	total := 0
+	var sweepErr error
+	// sweepString applies every group to one string — a leaf value or, with
+	// keyMode, an object key — and is the single place the group order and
+	// the short-group exemptions live. Short names go last and are never
+	// applied to a Table's columnDefinitions: that's schema prose (every
+	// "api" in it is an English word), not data.
+	sweepString := func(s, itemKind, path string, keyMode bool) (string, bool) {
+		changed := false
+		if out, ok, n := spliceCandidatesIn(s, candidates.nameGroup, excluded, itemKind, path, keyMode); ok {
+			s, changed, total = out, true, total+n
+		}
+		if out, ok, n := spliceCandidatesIn(s, candidates.ipGroup, excluded, itemKind, path, keyMode); ok {
+			s, changed, total = out, true, total+n
+		}
+		if !strings.HasPrefix(path, tableColumnDefinitionsPrefix) {
+			if out, ok, n := spliceCandidatesIn(s, candidates.shortGroup, excluded, itemKind, path, keyMode); ok {
+				s, changed, total = out, true, total+n
+			}
+		}
+		return s, changed
+	}
 	sweepItem := func(item map[string]interface{}, itemKind string) bool {
-		return walkStrings(item, "", func(path, s string) (string, bool) {
-			changed := false
-			if out, ok, n := spliceCandidates(s, candidates.nameGroup, excluded, itemKind, path); ok {
-				s, changed, total = out, true, total+n
-			}
-			if out, ok, n := spliceCandidates(s, candidates.ipGroup, excluded, itemKind, path); ok {
-				s, changed, total = out, true, total+n
-			}
-			return s, changed
+		changed := walkStrings(item, "", func(path, s string) (string, bool) {
+			return sweepString(s, itemKind, path, false)
 		})
+		keysChanged, err := walkKeys(item, "", func(path, key string) (string, bool) {
+			return sweepString(key, itemKind, path, true)
+		})
+		if err != nil && sweepErr == nil {
+			sweepErr = err
+		}
+		return changed || keysChanged
 	}
 
 	modified := false
@@ -389,6 +560,9 @@ func sweepRecord(rec *capture.Record, candidates *sweepCandidateSet, excluded ex
 		}
 	}
 
+	if sweepErr != nil {
+		return false, 0, sweepErr
+	}
 	if !modified {
 		return false, 0, nil
 	}
