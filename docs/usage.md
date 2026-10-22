@@ -894,6 +894,88 @@ See [config.md](config.md#redaction) for the full `redaction:` config block refe
 
 ---
 
+## Anonymize
+
+`kshrk anonymize` replaces the values that identify a cluster — namespace, node, pod and workload names, IP addresses, hostnames, image registries — with stable, readable aliases, so a capture can be shared (with a vendor, in a bug report, on a public issue) and still be opened, replayed and read. It is a different tool from [`kshrk redact`](#redact): `redact` blanks one exact field path with a fixed constant (Secret data, a password field); `anonymize` replaces every occurrence of a *value* it recognizes, consistently everywhere it appears, so `kubectl get pods -o wide` still shows that this pod runs on that node in that namespace — just under different names. Use `redact --redact-secrets` first if the capture holds Secrets: anonymize does not blank Secret or ConfigMap contents.
+
+### Sharing a capture safely
+
+```sh
+kshrk anonymize capture.kshrk \
+  --categories namespace --categories node --categories pod --categories workload \
+  --categories ip --categories url --categories image \
+  --full-sweep --fail-on-residual \
+  --anonymize-salt-file salt.txt \
+  --encrypt-recipient age1... \
+  --out shareable.kshrk
+```
+
+- **All seven categories**, so nothing identifying is left because it wasn't asked for.
+- **`--full-sweep`** also rewrites those values wherever else they appear as text — a label (`app: orders-api`), an Event message, the `kubectl.kubernetes.io/last-applied-configuration` annotation (which holds the whole original manifest), a managedFields key, a pod log — not just at the field paths each category knows. It costs one extra read pass.
+- **`--fail-on-residual`** makes the run fail, and **removes the output**, if the built-in leak check (below) still finds an original value in what it wrote. Without it, a leak is a warning.
+- **`--anonymize-salt-file`** pins the aliases (see [the salt](#the-salt-and-the-mapping)); omit it and a random salt is generated and printed once.
+- **`--encrypt-recipient`** (or `--encrypt`) wraps the shareable archive in an [age](https://age-encryption.org) envelope; see [Encryption](#encryption).
+
+### What each category covers
+
+| Category | Rewrites |
+|---|---|
+| `namespace` | Namespace names; every `metadata.namespace`; Event object references; namespaces in API paths; the Namespace/Name columns of `kubectl get` |
+| `node` | Node names; Pod `spec.nodeName`; Event `source.host`; a Node's `Hostname` address |
+| `pod` | Pod names; `ownerReferences`; Event references |
+| `workload` | Deployment, ReplicaSet, StatefulSet, DaemonSet, Job, CronJob, ReplicationController names |
+| `ip` | every IP literal that is a whole value — `status.podIP`, `status.addresses`, `clusterIP`, and `host:port` such as the `/api` discovery document's `serverAddress` |
+| `url` | the host of any `scheme://host` URL anywhere (webhooks, annotations, logs), Ingress hosts, Service `externalName`, the archive's own server address |
+| `image` | the registry host of container images, `imageID`s, and a Node's cached image names — **not** the repository path or tag (`registry.corp/team/app:v1` → `<alias>/team/app:v1`) |
+
+Plain `kubectl get <resource>` (which asks for Kubernetes' Table format) shows the aliases in the Name and Namespace columns of namespaces, nodes, pods and the workload kinds even without `--full-sweep`; any other printed column (a Pod's `NODE`, say) needs it.
+
+### Checking the result
+
+After writing, `anonymize` checks every record (plus its API path and the archive's server address) for any original value that survived, and tells you **where** — never the values, so the report is safe to paste into a bug report or CI log:
+
+```
+Verified: no original value remains in the output.
+```
+```
+warning: 324 occurrence(s) of original values remain in the output, in 25 location(s):
+  workload  Pod   metadata.labels.app            30×  e.g. /api/v1/namespaces/namespace-quiet-…/pods
+  node      Pod   cells[*]                       15×  e.g. …/pods?as=Table
+Re-run with --full-sweep to rewrite free-text occurrences (…)
+```
+
+Without `--full-sweep` expect a report like the second one; with it, anything still listed is something the sweep can't safely rewrite (a value shared by two categories, an exact-match object key, a one-character name). Keep one deliberately with an [exclude rule](config.md#anonymize) for its field path — the check honors the same rules. `-o json` carries the same report (`verified`, `residual_occurrences`, `residual_locations`) for scripts; `--verify=false` skips it. See [config.md](config.md#checking-the-result) for how it decides what counts.
+
+You can also look yourself: replay the anonymized archive and use it the way the recipient will.
+
+```sh
+kshrk open shareable.kshrk
+kubectl get ns,nodes,pods,deploy -A
+kubectl get pods -A -o json --show-managed-fields | grep -c "<a real name>"   # expect 0
+kshrk query shareable.kshrk "<a real name>" --text                             # expect no matches
+```
+
+### The salt and the mapping
+
+Each alias is a keyed hash of the value under the **salt**, so the same value always gets the same alias: re-running with the same salt reproduces the archive byte for byte, and two captures of the same cluster anonymized with one salt use the same aliases, so `kshrk diff` between them stays meaningful. Give the salt with `--anonymize-salt-file` (first line, hex) or `$KSHRK_ANONYMIZE_SALT`; if you give neither, a random one is generated and printed once, and a different run gets different aliases.
+
+**Treat the salt as a secret.** Aliases are drawn from small word lists, so anyone holding the salt can confirm a guess ("is this `team-backend`?") by hashing it. Don't ship it with the archive.
+
+`--emit-mapping` writes the original → alias table (so you can translate a reply back). It lists every real name, so it is as sensitive as the original capture: it is written encrypted when you pass an `--encrypt-*` flag, and refused unless you add `--emit-mapping-plaintext`.
+
+### What anonymize does not do
+
+Know these before relying on the output:
+
+- **It only rewrites what it discovered.** A value is recognized as a namespace, node, pod, workload, IP, host or registry from where it appears as a *field*; the sweep then finds more copies of it. A sensitive string that appears only as free text — a company name in an annotation, a username or e-mail, a hostname in a pod log that is never a field anywhere — is neither rewritten nor reported (the leak check only knows the values it discovered).
+- **Identifiers outside those categories stay.** Custom-resource names, cloud `providerID`s and account/instance IDs, `machineID`/`systemUUID`/`bootID`, pod CIDRs, zone/region labels, UIDs, and image repository paths and tags are not aliased.
+- **Secret and ConfigMap contents** are not blanked — run [`kshrk redact`](#redact) first.
+- **Short names** (2–3 characters) are rewritten only where they stand alone (a label value, `deployment/api`, a whole word in a message), and a one-character name is not rewritten at all; an English word that equals a short name can be aliased inside a free-text message.
+- **Shape and timing are preserved.** Object counts, record timestamps and sizes still describe the cluster's activity.
+- **Large clusters currently fail.** Aliases are short and a collision aborts the run; past roughly a thousand pods (a hundred nodes, a few thousand pod IPs) it effectively always does. Tracked in [#391](https://github.com/phenixblue/k8shark/issues/391).
+
+---
+
 ## Encryption
 
 Captures can contain Secret values and other sensitive cluster data.
