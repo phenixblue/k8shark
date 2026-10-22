@@ -85,6 +85,26 @@ This runs `scripts/e2e.sh`, which:
 
 Prerequisites: `kind`, `kubectl`, and `jq` must be in your `PATH`, and the binary must already be built (`make build`). The script checks all of these in its first phase and exits immediately if one is missing.
 
+### Anonymize end-to-end test
+
+```sh
+make e2e-anonymize
+```
+
+`scripts/e2e-anonymize.sh` needs no cluster: it anonymizes every committed
+`examples/*/capture.kshrk` and checks that the result neither leaks nor breaks.
+For each example it asserts that `anonymize --full-sweep --fail-on-residual`
+succeeds with a clean built-in leak check; that an **independent** probe
+(`kshrk query --text` for each original value in the mapping) finds the values
+in the source capture and none in the anonymized one; that real `kubectl`
+against a `kshrk open` replay — default Table output, `-o json
+--show-managed-fields`, and the `/api` discovery document — shows no original
+and the same number of rows as the source; and that the same salt produces a
+byte-identical archive. Negative controls (without `--full-sweep` the check must
+report residuals, and `--fail-on-residual` must fail and remove the output) keep
+the checks from passing vacuously. Prerequisites: `kubectl` and `jq`; CI runs it
+as the `e2e-anonymize` job.
+
 ### Testing against a specific Kubernetes version
 
 `NODE_IMAGE` pins the KinD node image, so the whole suite can be pointed at any
@@ -222,6 +242,7 @@ Run `make help` to print all targets:
   fmt             Format Go source files
   lint            Run go vet
   e2e             Build binary and run end-to-end tests (requires kind + kubectl)
+  e2e-anonymize   Build binary and run the anonymize end-to-end test against the example captures (requires kubectl + jq; no cluster)
   kind-up         Create a dev KinD cluster with test resources (use --reset to recreate)
   kind-down       Delete the dev KinD cluster (k8shark-dev)
   release-snapshot  Build a local release snapshot without publishing (DOES sign: needs OIDC)
