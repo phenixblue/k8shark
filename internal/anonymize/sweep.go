@@ -427,6 +427,29 @@ func spliceCandidatesIn(s string, group *candidateGroup, excluded excludedFunc, 
 	return out.String(), true, occurrences
 }
 
+// sweepPathQuery applies the sweep to the query part of a record's API path
+// (everything after '?'), leaving the path itself to the namespace/resource-
+// name path rewriters. The only query that carries data is a pod log's
+// "?container=<name>" — and a container is very often named after its
+// workload, so the sweep aliases the container's name inside the Pod spec;
+// the log's index key has to be aliased the same way or `kubectl logs -c
+// <alias>` on a replay finds no record (and the real name sits in the key).
+// Returns the path unchanged when there is no query or nothing matched.
+func sweepPathQuery(apiPath string, candidates *sweepCandidateSet, excluded excludedFunc) string {
+	if candidates == nil {
+		return apiPath
+	}
+	i := strings.IndexByte(apiPath, '?')
+	if i < 0 {
+		return apiPath
+	}
+	query := apiPath[i:]
+	for _, g := range []*candidateGroup{candidates.nameGroup, candidates.ipGroup, candidates.shortGroup} {
+		query, _, _ = spliceCandidatesIn(query, g, excluded, textBodyKind(apiPath), "api_path", false)
+	}
+	return apiPath[:i] + query
+}
+
 // sweepRecord applies the full sweep to rec: every string leaf in the
 // decoded body is scanned against candidates' two boundary-predicate
 // groups, splicing in the alias for any accepted match. Runs after the
@@ -466,12 +489,6 @@ func sweepRecord(rec *capture.Record, candidates *sweepCandidateSet, excluded ex
 		return false, 0, nil
 	}
 
-	var obj map[string]interface{}
-	if err := json.Unmarshal(rec.ResponseBody, &obj); err != nil {
-		return false, 0, nil
-	}
-
-	kind, _ := obj["kind"].(string)
 	total := 0
 	var sweepErr error
 	// sweepString applies every group to one string — a leaf value or, with
@@ -494,6 +511,28 @@ func sweepRecord(rec *capture.Record, candidates *sweepCandidateSet, excluded ex
 		}
 		return s, changed
 	}
+
+	// A pod's log is a JSON string, not an object (see textbody.go): sweep its
+	// text as a single leaf.
+	if text, ok := stringBody(rec.ResponseBody); ok {
+		out, changed := sweepString(text, textBodyKind(rec.APIPath), textBodyField, false)
+		if !changed {
+			return false, 0, nil
+		}
+		newBody, err := json.Marshal(out)
+		if err != nil {
+			return false, 0, fmt.Errorf("re-marshaling record: %w", err)
+		}
+		rec.ResponseBody = newBody
+		return true, total, nil
+	}
+
+	var obj map[string]interface{}
+	if err := json.Unmarshal(rec.ResponseBody, &obj); err != nil {
+		return false, 0, nil
+	}
+
+	kind, _ := obj["kind"].(string)
 	sweepItem := func(item map[string]interface{}, itemKind string) bool {
 		changed := walkStrings(item, "", func(path, s string) (string, bool) {
 			return sweepString(s, itemKind, path, false)

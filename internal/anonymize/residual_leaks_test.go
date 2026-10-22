@@ -8,7 +8,18 @@ import (
 
 	"github.com/phenixblue/k8shark/internal/archive"
 	"github.com/phenixblue/k8shark/internal/capture"
+	"github.com/phenixblue/k8shark/internal/config"
 )
+
+// excludeLogRules keeps every category's occurrences in a Pod's log: one rule
+// per category, since a rule names a category.
+func excludeLogRules() []config.AnonymizeRule {
+	var rules []config.AnonymizeRule
+	for _, c := range allCategories {
+		rules = append(rules, config.AnonymizeRule{Category: string(c), Kind: "Pod", FieldPath: "log", Exclude: true})
+	}
+	return rules
+}
 
 // allResponseBodies returns every record body in the archive at path,
 // keyed by "<apiPath>#<seq>", as compact JSON text.
@@ -71,8 +82,14 @@ func residualLeakFixture() []*capture.Record {
 	events := `{"kind":"EventList","apiVersion":"v1","items":[{"kind":"Event","metadata":{"name":"api.18c4b942c8a33b9c","namespace":"team-backend"},
 		"involvedObject":{"kind":"Deployment","name":"api","namespace":"team-backend"},
 		"message":"Scaled up replica set api-7d9f8 from 0 to 1"}]}`
+	// A pod's log is captured as plain text stored as a JSON *string*, not an
+	// object — the most name/IP/URL-dense text in a capture, and the one
+	// shape every object-decoding matcher used to skip.
+	logText, _ := json.Marshal("2026-07-22T21:03:25Z INFO starting on node worker-1 as pod api-7d9f8-x2k4z in team-backend\n" +
+		"2026-07-22T21:03:26Z INFO listening on 10.244.0.20:8080, upstream https://internal.corp.example/v1\n")
 	return []*capture.Record{
 		rec("r1", "/api/v1/namespaces/team-backend/pods/api-7d9f8-x2k4z", pod),
+		rec("r8", "/api/v1/namespaces/team-backend/pods/api-7d9f8-x2k4z/log?container=api", string(logText)),
 		rec("r2", "/apis/apps/v1/namespaces/team-backend/deployments/api", deploy),
 		rec("r3", "/api/v1/nodes/worker-1", node),
 		rec("r4", "/api/v1/namespaces/team-backend", ns),
@@ -103,6 +120,7 @@ var residualLeakForms = []struct{ what, form string }{
 	{"short workload name as a kind/name ref", "deployment/api"},
 	{"short workload name as an Event name", "api.18c4b942c8a33b9c"},
 	{"short workload name as a bare cell / involvedObject name", `"api"`},
+	{"hostname in a pod log (scheme://host)", "internal.corp.example"},
 }
 
 func assertNoLeaks(t *testing.T, path string) {
@@ -165,5 +183,73 @@ func TestArchive_NonSweepFixesWork(t *testing.T) {
 		if strings.Contains(body, "registry.internal.corp") {
 			t.Errorf("%s: image registry still present without a sweep: %s", rec, body)
 		}
+	}
+}
+
+// The log record above must actually have been rewritten (not merely absent
+// of originals because the fixture changed), and must stay a JSON string.
+func TestArchive_PodLogTextIsRewrittenAndStaysAString(t *testing.T) {
+	src := buildAnonymizeTestArchive(t, residualLeakFixture())
+	dst := filepath.Join(t.TempDir(), "out.kshrk")
+	if _, err := Archive(src, dst, Options{Categories: allCategories, Salt: []byte("pod-log-salt"), FullSweep: true, Verify: true}); err != nil {
+		t.Fatal(err)
+	}
+	found := 0
+	for k, body := range allResponseBodies(t, dst) {
+		if !strings.Contains(k, "/log?container=") {
+			continue
+		}
+		found++
+		var text string
+		if err := json.Unmarshal([]byte(body), &text); err != nil {
+			t.Fatalf("%s: a log body must remain a JSON string, got %s", k, body)
+		}
+		if !strings.Contains(text, "INFO starting on node ") || !strings.Contains(text, ":8080, upstream https://") {
+			t.Errorf("log text lost its structure: %q", text)
+		}
+	}
+	if found != 1 {
+		t.Fatalf("found %d log records, want 1", found)
+	}
+}
+
+// Without a sweep, only the URL matcher can reach log text (it looks for
+// scheme://host anywhere in any string); discovered names need --full-sweep.
+func TestArchive_PodLogURLHostRewrittenWithoutSweep(t *testing.T) {
+	src := buildAnonymizeTestArchive(t, residualLeakFixture())
+	dst := filepath.Join(t.TempDir(), "out.kshrk")
+	if _, err := Archive(src, dst, Options{Categories: allCategories, Salt: []byte("pod-log-salt")}); err != nil {
+		t.Fatal(err)
+	}
+	for k, body := range allResponseBodies(t, dst) {
+		if strings.Contains(k, "/log?container=") && strings.Contains(body, "internal.corp.example") {
+			t.Errorf("%s: URL host survived in log text without a sweep: %s", k, body)
+		}
+	}
+}
+
+// An exclude rule scoped to a Pod's log keeps it, and the leak check respects
+// the same rule rather than reporting a deliberate keep.
+func TestArchive_PodLogExcludeRuleKeepsItAndIsNotReportedAsLeak(t *testing.T) {
+	src := buildAnonymizeTestArchive(t, residualLeakFixture())
+	dst := filepath.Join(t.TempDir(), "out.kshrk")
+	res, err := Archive(src, dst, Options{
+		Categories: allCategories, Salt: []byte("pod-log-salt"), FullSweep: true, Verify: true,
+		Rules: excludeLogRules(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.ResidualOccurrences != 0 {
+		t.Errorf("residual = %d %+v, want 0: an excluded log is a deliberate keep", res.ResidualOccurrences, res.ResidualLocations)
+	}
+	kept := false
+	for k, body := range allResponseBodies(t, dst) {
+		if strings.Contains(k, "/log?container=") && strings.Contains(body, "worker-1") && strings.Contains(body, "internal.corp.example") {
+			kept = true
+		}
+	}
+	if !kept {
+		t.Error("the excluded log should still carry its original text")
 	}
 }

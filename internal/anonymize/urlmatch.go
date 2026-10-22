@@ -169,6 +169,24 @@ func rewriteURLInRecord(rec *capture.Record, excluded excludedFunc, alias func(s
 		return false, nil
 	}
 
+	// A pod's log is a JSON string, not an object (see textbody.go): scan its
+	// text for scheme://host like any other string leaf.
+	if text, ok := stringBody(rec.ResponseBody); ok {
+		if excluded(CategoryURL, textBodyKind(rec.APIPath), textBodyField) {
+			return false, nil
+		}
+		out, changed := spliceURLHosts(text, alias)
+		if !changed {
+			return false, nil
+		}
+		newBody, err := json.Marshal(out)
+		if err != nil {
+			return false, fmt.Errorf("re-marshaling record: %w", err)
+		}
+		rec.ResponseBody = newBody
+		return true, nil
+	}
+
 	var obj map[string]interface{}
 	if err := json.Unmarshal(rec.ResponseBody, &obj); err != nil {
 		return false, nil

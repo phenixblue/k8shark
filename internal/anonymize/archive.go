@@ -651,6 +651,7 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 				return Result{}, err
 			}
 		}
+		newAPIPath = sweepPathQuery(newAPIPath, sweepCandidates, excluded)
 		if existing, ok := newIdx[newAPIPath]; ok {
 			return Result{}, fmt.Errorf("anonymize: internal error: both %q and %q rewrite to output path %q — refusing to silently drop one", existing.APIPath, apiPath, newAPIPath)
 		}
@@ -698,6 +699,7 @@ func Archive(srcPath, dstPath string, opts Options) (Result, error) {
 				return Result{}, err
 			}
 		}
+		newAPIPath = sweepPathQuery(newAPIPath, sweepCandidates, excluded)
 		if existing, ok := newWI[newAPIPath]; ok {
 			return Result{}, fmt.Errorf("anonymize: internal error: both %q and %q rewrite to output watch-path %q — refusing to silently drop one", existing.APIPath, apiPath, newAPIPath)
 		}
