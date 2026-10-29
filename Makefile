@@ -1,4 +1,4 @@
-.PHONY: build test test-race test-cover bench fmt lint lint-ci-install lint-ci fieldselector-drift fieldselector-drift-update docs e2e e2e-kwok kind-up kind-chaos kind-scale kind-down release-snapshot release-local clean help
+.PHONY: build test test-race test-cover bench fmt lint lint-ci-install lint-ci fieldselector-drift fieldselector-drift-update docs e2e e2e-anonymize e2e-kwok kind-up kind-chaos kind-scale kind-down release-snapshot release-local clean help
 
 BINARY  := kshrk
 VERSION ?= dev
@@ -45,6 +45,9 @@ docs: ## Regenerate docs/cli-reference.md from the live Cobra command tree
 
 e2e: build ## Build binary and run end-to-end tests (requires kind + kubectl)
 	./scripts/e2e.sh
+
+e2e-anonymize: build ## Build binary and run the anonymize end-to-end test against the example captures (requires kubectl + jq; no cluster)
+	./scripts/e2e-anonymize.sh
 
 e2e-kwok: build ## Build binary and run the KWOK closed-loop e2e (requires kind + kubectl + kwok)
 	./scripts/e2e-kwok.sh
