@@ -49,7 +49,10 @@ workload called "api") only where they stand alone -- a label or selector
 value, a "deployment/api" reference, an Event name, a whole word in a message
 -- so paths and identifiers like "/api/v1" or "kube-api-access-x" are never
 mangled. A 1-character name is ignored, and OpenAPI schema documents (which
-carry no cluster data) are skipped.
+carry no cluster data) are skipped. Captured pod logs (plain text) are scanned
+too: hostnames in scheme://host URLs always, and with --full-sweep every
+already-discovered name and IP -- but a value that appears ONLY in a log, and
+nowhere as a field, is never discovered, so is neither rewritten nor reported.
 
 After writing, the output is checked for any original value that survived
 (--verify, on by default) and the result reports WHERE any remain -- by
