@@ -4,7 +4,7 @@ go 1.27.2
 
 require (
 	filippo.io/age v1.3.2
-	github.com/chromedp/cdproto v0.157.10
+	github.com/chromedp/cdproto v0.158.5
 	github.com/chromedp/chromedp v0.21.0
 	github.com/go-viper/mapstructure/v2 v2.5.0
 	github.com/google/uuid v1.6.0
